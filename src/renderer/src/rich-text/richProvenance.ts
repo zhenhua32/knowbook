@@ -2,7 +2,6 @@ import { Mark, type Node as PMNode } from 'prosemirror-model'
 import type { EditorState, Transaction } from 'prosemirror-state'
 import { AddMarkStep, RemoveMarkStep, ReplaceAroundStep, ReplaceStep, type Step, type StepMap } from 'prosemirror-transform'
 import type { MarkdownEnvironment } from '@shared/markdownEngine'
-import { collectDocumentMarkdownLinks } from '@shared/markdownLinkMaintenance'
 import { resolveMarkdownDocumentPath } from '@shared/markdownLinks'
 import type { SyncedBindingClaim, SyncedBindingKey, SyncedCanonicalEdit, SyncedOriginV1 } from '@shared/synced-blocks'
 import { SyncedValidationError, validateSyncedCanonicalEdit } from '@shared/syncedBlockValidation'
@@ -10,6 +9,8 @@ import { validateSyncedBindingClaims } from '@shared/syncedBlockInputs'
 import { richBlockEntries, richTextInlineFingerprint, serializeRichTextInlineWithLinkTrace } from './model'
 import { richLinkOccurrence, type RichPmSpan } from './linkProvenance'
 import { seedRichProvenance, type RichProvenanceSeed } from './richProvenanceSeed'
+import { createRichPmDocIndex } from './richPmDocIndex'
+import { createRichActualKeyCache, prepareRichActualKeys, type RichActualKeyCache } from './richActualKeys'
 
 const keyId = (key: Readonly<SyncedBindingKey>) => JSON.stringify([key.blockId, key.from, key.to, key.raw, key.syntax])
 const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right)
@@ -23,7 +24,8 @@ type RawLink = { key: Readonly<SyncedBindingKey>; spans: readonly RichPmSpan[] }
 type RawReference = { definition: Origin; spans: readonly RichPmSpan[] }
 type RawRecord = { content: string; fingerprint: string; links: readonly RawLink[]; references: readonly RawReference[] }
 type Data = { doc: PMNode; blocks: readonly SyncedCanonicalEdit[]; origin: Readonly<SyncedOriginV1>; pieces: readonly Piece[];
-  atoms: readonly Atom[]; raw: ReadonlyMap<object, RawRecord>; physical: ReadonlyMap<Origin, Physical>; tokens: ReadonlySet<string>; rank: number }
+  atoms: readonly Atom[]; raw: ReadonlyMap<object, RawRecord>; physical: ReadonlyMap<Origin, Physical>; tokens: ReadonlySet<string>; rank: number;
+  actualKeys: RichActualKeyCache }
 
 /** Opaque, immutable local state. Actual PM nodes are immutable PM values;
  * mutable maps/pieces never escape this module or become Main authority. */
@@ -38,27 +40,25 @@ function dataFor(value: RichProvenanceState): Data {
 }
 const carrier = (node: PMNode): object | null => node.attrs.block && typeof node.attrs.block === 'object' ? node.attrs.block : null
 const local = (origin: Readonly<SyncedOriginV1>, href: string) => resolveMarkdownDocumentPath(origin.pathAtCreation, href) !== null
+const docIndexes = new WeakMap<PMNode, ReturnType<typeof createRichPmDocIndex>>()
+function indexFor(doc: PMNode): ReturnType<typeof createRichPmDocIndex> {
+  let index = docIndexes.get(doc)
+  if (!index) { index = createRichPmDocIndex(doc); docIndexes.set(doc, index) }
+  return index
+}
+// Actual immutable PM node identity is a computation cache only. Neither a
+// matching fingerprint nor metadata equality grants a source key or lineage.
+const fingerprints = new WeakMap<PMNode, string>()
+function fingerprint(node: PMNode): string {
+  let value = fingerprints.get(node)
+  if (value === undefined) { value = richTextInlineFingerprint(node); fingerprints.set(node, value) }
+  return value
+}
 function markFor(doc: PMNode, from: number, to: number, token: string, href: string): boolean {
-  let covered = 0, accepted = true
-  doc.nodesBetween(from, to, (node, pos) => {
-    if (!node.isInline) return true
-    const width = Math.max(0, Math.min(to, pos + node.nodeSize) - Math.max(from, pos))
-    const mark = node.marks.find(item => item.type.name === 'link')
-    if (width && (!mark || richLinkOccurrence(mark) !== token || mark.attrs.href !== href)) accepted = false
-    covered += width; return false
-  })
-  return accepted && covered === to - from
+  return indexFor(doc).hasLinkMark(from, to, token, href)
 }
 function hrefAt(doc: PMNode, span: RichPmSpan, token: string): string {
-  let href: string | undefined
-  doc.nodesBetween(span.from, span.to, node => {
-    if (!node.isInline) return true
-    const mark = node.marks.find(item => item.type.name === 'link')
-    if (!mark || richLinkOccurrence(mark) !== token || typeof mark.attrs.href !== 'string') invalid('播种的实际链接片段不一致。')
-    if (href !== undefined && href !== mark.attrs.href) invalid('一个来源片段跨越不同链接。')
-    href = mark.attrs.href; return false
-  })
-  return href ?? invalid('链接来源没有实际 PM 内容片段。')
+  return indexFor(doc).linkHref(span.from, span.to, token) ?? invalid('播种的实际链接片段不一致或没有实际 PM 内容。')
 }
 function fromSeed(seed: RichProvenanceSeed): Data {
   let rank = 0
@@ -93,13 +93,16 @@ function fromSeed(seed: RichProvenanceSeed): Data {
       if (found.length !== 1 || !found[0].pmSpans.length) invalid('raw 目的地没有唯一实际链接片段。')
       return { key, spans: relative(found[0].pmSpans) }
     })
-    raw.set(value, { content: record.node.attrs.block.content, fingerprint: richTextInlineFingerprint(record.node), links: directs,
+    raw.set(value, { content: record.node.attrs.block.content, fingerprint: fingerprint(record.node), links: directs,
       references: links.filter(link => link.via === 'reference').map(link => ({
         definition: byKey.get(keyId(link.sourceKey))!.origin, spans: relative(link.pmSpans)
       })) })
   }
+  const actual = createRichActualKeyCache({ doc: seed.doc, blocks: seed.blocks, origin: seed.origin })
+  if (actual.keys.length !== seed.sourceInventory.length || actual.keys.some((key, index) => keyId(key) !== keyId(seed.sourceInventory[index])))
+    invalid('初始实际目的地与播种完整来源不一致。')
   return { doc: seed.doc, blocks: seed.blocks, origin: seed.origin, pieces, atoms, raw, physical,
-    tokens: new Set(seed.links.map(link => link.token)), rank }
+    tokens: new Set(seed.links.map(link => link.token)), rank, actualKeys: actual.cache }
 }
 
 export function seedSyncedRichProvenance(blocks: readonly SyncedCanonicalEdit[], options: {
@@ -142,7 +145,7 @@ export function setRichAtomAttributeIntent(tr: Transaction, stepIndex: number): 
   const step = tr.steps[stepIndex], doc = tr.docs[stepIndex]
   if (!Number.isSafeInteger(stepIndex) || !(step instanceof ReplaceStep) || !doc || step.slice.openStart || step.slice.openEnd
     || step.slice.content.childCount !== 1) invalid('原子身份修复不是实际 leaf replacement。')
-  const before = doc.nodeAt(step.from), after = step.slice.content.firstChild!
+  const before = indexFor(doc).nodeAtStart(step.from), after = step.slice.content.firstChild!
   if (!before || step.to !== step.from + before.nodeSize || !sameAtomBody(before, after)) invalid('身份修复改变了原子正文。')
   const entries = atomIntents.get(tr) ?? new Map<number, AtomIntent>()
   if (entries.has(stepIndex)) invalid('重复的原子身份修复。')
@@ -229,19 +232,19 @@ function mappedAtoms(atoms: readonly Atom[], step: Step, before: PMNode, after: 
   const map = step.getMap(), edits = windows(map), result: Atom[] = []
   for (const atom of atoms) {
     if (intent && atom.pos === (step as ReplaceStep).from && atom.node === intent.before) {
-      if (intent.step !== step || intent.doc !== before || before.nodeAt(atom.pos) !== intent.before
-        || after.nodeAt(atom.pos) !== intent.after) invalid('原子身份 correspondence 不属于这次真实 step。')
+      if (intent.step !== step || intent.doc !== before || indexFor(before).nodeAtStart(atom.pos) !== intent.before
+        || indexFor(after).nodeAtStart(atom.pos) !== intent.after) invalid('原子身份 correspondence 不属于这次真实 step。')
       result.push({ ...atom, node: intent.after }); continue
     }
     if (edits.some(edit => edit.from < atom.pos + atom.node.nodeSize && atom.pos < edit.to)) continue
-    const pos = map.map(atom.pos, 1), node = after.nodeAt(pos)
+    const pos = map.map(atom.pos, 1), node = indexFor(after).nodeAtStart(pos)
     if (node !== atom.node) invalid('原子节点缺少实际保留 correspondence。')
     result.push({ ...atom, pos })
   }
   return result
 }
 function transferCarrier(raw: Map<object, RawRecord>, step: ReplaceAroundStep, before: PMNode, after: PMNode): void {
-  const old = before.nodeAt(step.from), next = after.nodeAt(step.from)
+  const old = indexFor(before).nodeAtStart(step.from), next = indexFor(after).nodeAtStart(step.from)
   if (!old?.isTextblock || !next?.isTextblock || step.gapFrom !== step.from + 1
     || step.gapTo !== step.to - 1 || !old.content.eq(next.content)) return
   const oldCarrier = carrier(old), nextCarrier = carrier(next), record = oldCarrier && raw.get(oldCarrier)
@@ -259,16 +262,6 @@ function emit(key: SyncedBindingKey, spans: readonly RichPmSpan[], pieces: reado
   return { key, spans, token: token ?? source.token, contributors: found, source: source.source, lineage: source.lineage,
     origin: source.origin, copyOnly: found.every(piece => piece.role === 'reference') }
 }
-function actualKeys(blocks: SyncedCanonicalEdit[], origin: Readonly<SyncedOriginV1>): SyncedBindingKey[] {
-  return collectDocumentMarkdownLinks(blocks).flatMap(link => {
-    if (link.kind === 'image' || link.kind !== 'wiki' && !local(origin, link.url)) return []
-    const block = blocks[link.blockIndex]
-    if (!block || !link.blockId) invalid('最终 parser 目的地缺少真实块身份。')
-    return [{ blockId: link.blockId, from: link.start, to: link.end, raw: block.content.slice(link.start, link.end),
-      syntax: link.kind === 'wiki' ? 'wiki' as const : 'markdown' as const }]
-  })
-}
-
 export function prepareSyncedRichProvenance(previous: RichProvenanceState, batch: {
   before: EditorState; transactions: readonly Transaction[]; after: EditorState
 }): { blocks: SyncedCanonicalEdit[]; bindingClaims: SyncedBindingClaim[]; nextState: RichProvenanceState; hasIntent: boolean } {
@@ -290,11 +283,9 @@ export function prepareSyncedRichProvenance(previous: RichProvenanceState, batch
             // A manually constructed real RemoveMarkStep may cover marks that
             // are not eq(step.mark). PM retains those, and so must provenance.
             const removed: Array<{ from: number; to: number }> = []
-            before.nodesBetween(step.from, step.to, (node, pos) => {
-              if (!node.isInline) return true
+            for (const { node, pos } of indexFor(before).inlineEntries(step.from, step.to)) {
               if (step.mark.isInSet(node.marks)) removed.push({ from: Math.max(step.from, pos), to: Math.min(step.to, pos + node.nodeSize) })
-              return false
-            })
+            }
             for (const range of removed) pieces = subtract(pieces, range.from, range.to)
           }
           else {
@@ -304,13 +295,11 @@ export function prepareSyncedRichProvenance(previous: RichProvenanceState, batch
               tokens.add(intent.token); pieces = subtract(pieces, step.from, step.to)
               const lineage = Object.freeze({}), href = step.mark.attrs.href
               if (typeof href !== 'string') invalid('新链接没有实际 href。')
-              after.nodesBetween(step.from, step.to, (node, pos) => {
-                if (!node.isInline) return true
+              for (const { node, pos } of indexFor(after).inlineEntries(step.from, step.to)) {
                 const from = Math.max(step.from, pos), to = Math.min(step.to, pos + node.nodeSize)
                 if (to > from && markFor(after, from, to, intent.token, href)) pieces.push({ from, to, token: intent.token,
                   href, lineage, source: null, origin: null, role: 'new' })
-                return false
-              })
+              }
             } else {
               const token = richLinkOccurrence(step.mark)
               if (token === null || !markFor(before, step.from, step.to, token, step.mark.attrs.href)) invalid('未声明的新 link mark 或失去来源的 token。')
@@ -355,7 +344,7 @@ export function prepareSyncedRichProvenance(previous: RichProvenanceState, batch
     const block = structuredClone(node.attrs.block) as SyncedCanonicalEdit
     if (node.type.name === 'text_block') {
       const record = raw.get(carrier(node)!), inBlock = piecesIn(pieces, pos + 1, pos + node.nodeSize - 1)
-      let keep = !!record && record.content === block.content && record.fingerprint === richTextInlineFingerprint(node)
+      let keep = !!record && record.content === block.content && record.fingerprint === fingerprint(node)
         && !inBlock.some(piece => piece.role === 'new')
       if (keep && record) for (const reference of record.references) {
         const spans = reference.spans.map(span => ({ from: span.from + pos + 1, to: span.to + pos + 1 }))
@@ -388,7 +377,10 @@ export function prepareSyncedRichProvenance(previous: RichProvenanceState, batch
     }
     blocks.push(block)
   }
-  const checked = validateSyncedCanonicalEdit(blocks), actual = actualKeys(checked, saved.origin)
+  const checked = validateSyncedCanonicalEdit(blocks)
+  const actualResult = prepareRichActualKeys(saved.actualKeys, { before: saved.doc, transactions: batch.transactions, after: doc,
+    blocks: checked, origin: saved.origin })
+  const actual = actualResult.keys
   const byDestination = new Map(emissions.map(item => [keyId(item.key), item]))
   if (byDestination.size !== emissions.length || actual.length !== emissions.length || actual.some(key => !byDestination.has(keyId(key))))
     invalid('来源未精确覆盖最终 forest 的全部实际目的地。')
@@ -423,5 +415,5 @@ export function prepareSyncedRichProvenance(previous: RichProvenanceState, batch
   }
   return { blocks: checked, bindingClaims: claims, hasIntent: claims.some(claim => claim.kind !== 'continue' || keyId(claim.source) !== keyId(claim.destination)),
     nextState: state(previous.generation, { doc, blocks: checked, origin: saved.origin, pieces: nextPieces, atoms: nextAtoms, raw,
-      physical: nextPhysical, tokens, rank }) }
+      physical: nextPhysical, tokens, rank, actualKeys: actualResult.cache }) }
 }
