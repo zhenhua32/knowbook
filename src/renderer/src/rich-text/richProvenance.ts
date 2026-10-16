@@ -1,5 +1,5 @@
 import { Mark, type Node as PMNode } from 'prosemirror-model'
-import type { EditorState, Transaction } from 'prosemirror-state'
+import { EditorState, Transaction } from 'prosemirror-state'
 import { AddMarkStep, RemoveMarkStep, ReplaceAroundStep, ReplaceStep, type Step, type StepMap } from 'prosemirror-transform'
 import type { MarkdownEnvironment } from '@shared/markdownEngine'
 import { resolveMarkdownDocumentPath } from '@shared/markdownLinks'
@@ -11,6 +11,7 @@ import { richLinkOccurrence, type RichPmSpan } from './linkProvenance'
 import { seedRichProvenance, type RichProvenanceSeed } from './richProvenanceSeed'
 import { createRichPmDocIndex } from './richPmDocIndex'
 import { createRichActualKeyCache, prepareRichActualKeys, type RichActualKeyCache } from './richActualKeys'
+import { captureRichObservedStep, copyRichObservedLeaf, isRichObservedStepCurrent, replayRichObservedStep, type ClosedRichObservedStep } from './richObservedStepPayload'
 
 const keyId = (key: Readonly<SyncedBindingKey>) => JSON.stringify([key.blockId, key.from, key.to, key.raw, key.syntax])
 const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right)
@@ -262,13 +263,16 @@ function emit(key: SyncedBindingKey, spans: readonly RichPmSpan[], pieces: reado
   return { key, spans, token: token ?? source.token, contributors: found, source: source.source, lineage: source.lineage,
     origin: source.origin, copyOnly: found.every(piece => piece.role === 'reference') }
 }
-export function prepareSyncedRichProvenance(previous: RichProvenanceState, batch: {
+type RichBatch = {
   before: EditorState; transactions: readonly Transaction[]; after: EditorState
-}): { blocks: SyncedCanonicalEdit[]; bindingClaims: SyncedBindingClaim[]; nextState: RichProvenanceState; hasIntent: boolean } {
-  const saved = dataFor(previous)
-  if (batch.before.doc !== saved.doc) invalid('富文本候选不属于当前工作来源世代。')
-  let doc = saved.doc, pieces = saved.pieces.map(piece => ({ ...piece })), atoms = saved.atoms.map(atom => ({ ...atom })), rank = saved.rank
-  const raw = new Map(saved.raw), tokens = new Set(saved.tokens)
+}
+export type PreparedRichProvenance = { blocks: SyncedCanonicalEdit[]; bindingClaims: SyncedBindingClaim[]; nextState: RichProvenanceState; hasIntent: boolean }
+type ProvenStep = { step: Step; before: PMNode; after: PMNode; newIntent?: NewIntent; atomIntent?: AtomIntent }
+
+/** Existing actual-Transaction entry: private witnesses are read only here and
+ * at observed capture. Both entries share the same lineage/final AST engine. */
+function* actualSteps(batch: RichBatch, initial: PMNode): Generator<ProvenStep> {
+  let doc = initial
   for (const transaction of batch.transactions) {
     if (transaction.before !== doc || transaction.docs.length !== transaction.steps.length
       || transaction.mapping.maps.length !== transaction.steps.length) invalid('富文本事务链不完整。')
@@ -277,6 +281,27 @@ export function prepareSyncedRichProvenance(previous: RichProvenanceState, batch
       if (before !== doc || !same(windows(step.getMap()), windows(transaction.mapping.maps[index]))) invalid('step map 不属于实际事务。')
       const applied = step.apply(before)
       if (!applied.doc || !applied.doc.eq(after)) invalid('step 的实际结果与事务不一致。')
+      yield { step, before, after, newIntent: newIntents.get(transaction)?.get(index), atomIntent: atomIntents.get(transaction)?.get(index) }
+      doc = after
+    }
+    if (doc !== transaction.doc) invalid('事务最终 doc 不一致。')
+  }
+  if (doc !== batch.after.doc) invalid('富文本最终状态不属于实际事务链。')
+}
+export function prepareSyncedRichProvenance(previous: RichProvenanceState, batch: RichBatch): PreparedRichProvenance {
+  const saved = dataFor(previous)
+  if (batch.before.doc !== saved.doc) invalid('富文本候选不属于当前工作来源世代。')
+  return prepareProvenSteps(previous, actualSteps(batch, saved.doc), batch.after.doc, batch.transactions)
+}
+
+function prepareProvenSteps(previous: RichProvenanceState, evidence: Iterable<ProvenStep>, actualAfter: PMNode,
+  transactions?: readonly Transaction[]): PreparedRichProvenance {
+  const saved = dataFor(previous)
+  let doc = saved.doc, pieces = saved.pieces.map(piece => ({ ...piece })), atoms = saved.atoms.map(atom => ({ ...atom })), rank = saved.rank
+  const raw = new Map(saved.raw), tokens = new Set(saved.tokens)
+  for (const item of evidence) {
+      const { step, before, after } = item
+      if (before !== doc) invalid('封闭 step 链不属于当前来源世代。')
       if (step instanceof AddMarkStep || step instanceof RemoveMarkStep) {
         if (step.mark.type.name === 'link') {
           if (step instanceof RemoveMarkStep) {
@@ -289,7 +314,7 @@ export function prepareSyncedRichProvenance(previous: RichProvenanceState, batch
             for (const range of removed) pieces = subtract(pieces, range.from, range.to)
           }
           else {
-            const intent = newIntents.get(transaction)?.get(index)
+            const intent = item.newIntent
             if (intent) {
               if (intent.step !== step || tokens.has(intent.token)) invalid('新链接 token 不是本次实际新建。')
               tokens.add(intent.token); pieces = subtract(pieces, step.from, step.to)
@@ -325,16 +350,16 @@ export function prepareSyncedRichProvenance(previous: RichProvenanceState, batch
         if (step.from === 0 && step.to === before.content.size && step.slice.size) invalid('整页重建没有精确来源 correspondence。')
         const original = pieces
         pieces = pieces.flatMap(piece => survivors(piece, step.getMap()))
-        const intent = atomIntents.get(transaction)?.get(index)
+        const intent = item.atomIntent
         atoms = mappedAtoms(atoms, step, before, after, intent)
         if (!intent) pieces.push(...inheritInserted(original, step))
       } else invalid('此富文本 step 尚无严格来源支持，未生成来源声明。')
       for (const piece of pieces) if (!markFor(after, piece.from, piece.to, piece.token, piece.href)) invalid('step 改变链接 mark，来源不能自动延续。')
       doc = after
-    }
-    if (doc !== transaction.doc) invalid('事务最终 doc 不一致。')
   }
-  if (doc !== batch.after.doc) invalid('富文本最终状态不属于实际事务链。')
+  // Equality checks the result of a previously attested opaque chain. It never
+  // turns an arbitrary same-body PM document into a source witness.
+  if (doc !== actualAfter && (transactions !== undefined || !doc.eq(actualAfter))) invalid('富文本最终状态不属于实际事务链。')
 
   const blocks: SyncedCanonicalEdit[] = [], emissions: Emission[] = [], retainedReferences: Array<{ entryPos: number; reference: RawReference; pieces: Piece[] }> = []
   const liveAtomOrigins = new Set(atoms.flatMap(atom => atom.keys.map(item => item.origin)))
@@ -378,8 +403,9 @@ export function prepareSyncedRichProvenance(previous: RichProvenanceState, batch
     blocks.push(block)
   }
   const checked = validateSyncedCanonicalEdit(blocks)
-  const actualResult = prepareRichActualKeys(saved.actualKeys, { before: saved.doc, transactions: batch.transactions, after: doc,
-    blocks: checked, origin: saved.origin })
+  const actualResult = transactions === undefined
+    ? createRichActualKeyCache({ doc: actualAfter, blocks: checked, origin: saved.origin })
+    : prepareRichActualKeys(saved.actualKeys, { before: saved.doc, transactions, after: doc, blocks: checked, origin: saved.origin })
   const actual = actualResult.keys
   const byDestination = new Map(emissions.map(item => [keyId(item.key), item]))
   if (byDestination.size !== emissions.length || actual.length !== emissions.length || actual.some(key => !byDestination.has(keyId(key))))
@@ -413,7 +439,193 @@ export function prepareSyncedRichProvenance(previous: RichProvenanceState, batch
     if (!definition) invalid('引用定义未保留，不能静默复用旧 reference use。')
     for (const piece of retained.pieces) nextPieces.push({ ...piece, source: definition.key, origin: definition.origin, lineage: definition.lineage, role: 'reference' })
   }
+  const adopted = transactions === undefined ? adoptObservedTail(doc, actualAfter, nextAtoms, raw) : { atoms: nextAtoms, raw }
   return { blocks: checked, bindingClaims: claims, hasIntent: claims.some(claim => claim.kind !== 'continue' || keyId(claim.source) !== keyId(claim.destination)),
-    nextState: state(previous.generation, { doc, blocks: checked, origin: saved.origin, pieces: nextPieces, atoms: nextAtoms, raw,
+    nextState: state(previous.generation, { doc: actualAfter, blocks: checked, origin: saved.origin, pieces: nextPieces, atoms: adopted.atoms, raw: adopted.raw,
       physical: nextPhysical, tokens, rank, actualKeys: actualResult.cache }) }
+}
+
+/** Reanchor only after replay and the actual tail have compared equal. Positions
+ * are an inspected one-to-one tree correspondence, not block-ID/text matching. */
+function adoptObservedTail(replayed: PMNode, actual: PMNode, atoms: readonly Atom[], raw: ReadonlyMap<object, RawRecord>): {
+  atoms: Atom[]; raw: Map<object, RawRecord>
+} {
+  if (!replayed.eq(actual)) invalid('重放结果与实际 tail 不一致。')
+  const left = richBlockEntries(replayed), right = richBlockEntries(actual), actualAt = new Map<number, PMNode>(), nextRaw = new Map<object, RawRecord>()
+  if (left.length !== right.length) invalid('实际 tail 的块承载不一致。')
+  for (let index = 0; index < left.length; index++) {
+    const before = left[index], after = right[index]
+    if (before.pos !== after.pos || !before.node.eq(after.node)) invalid('实际 tail 的块位置 correspondence 不一致。')
+    actualAt.set(after.pos, after.node)
+    const oldCarrier = carrier(before.node), nextCarrier = carrier(after.node), record = oldCarrier && raw.get(oldCarrier)
+    if (record) {
+      if (!nextCarrier || nextCarrier !== after.node.attrs.block) invalid('实际 tail 缺少 raw carrier。')
+      nextRaw.set(nextCarrier, record)
+    }
+  }
+  const nextAtoms = atoms.map(atom => {
+    const node = actualAt.get(atom.pos)
+    if (!node?.isLeaf || !node.eq(atom.node)) invalid('实际 tail 的原子承载不一致。')
+    return { ...atom, node }
+  })
+  return { atoms: nextAtoms, raw: nextRaw }
+}
+
+/** Capture-only local identities. Public fields are diagnostics, never authority.
+ * The first slice supports only forward edits to the session's latest tail. */
+export interface RichObservedCapture { readonly id: string }
+export interface RichObservedCursor { readonly id: string }
+export interface ObservedRichDelta { readonly id: string }
+export type RichObservedCaptureResult = Readonly<{ delta: ObservedRichDelta | null; cursor: RichObservedCursor;
+  status: 'replayable' | 'quarantined-layout' }>
+type CapturedNewIntent = Readonly<{ from: number; to: number; token: string }>
+type CapturedAtomIntent = Readonly<{ before: PMNode }>
+type CapturedStep = Readonly<{ payload: ClosedRichObservedStep; newIntent?: CapturedNewIntent; atomIntent?: CapturedAtomIntent }>
+type CaptureSession = { base: RichProvenanceState; baseBoundary: object; tailBoundary: object; tailDoc: PMNode;
+  tailCursor: RichObservedCursor; count: number; quarantined: boolean }
+type CursorData = Readonly<{ session: CaptureSession; boundary: object; count: number }>
+type DeltaData = Readonly<{ session: CaptureSession; from: object; to: object; count: number;
+  steps: readonly CapturedStep[] | null }>
+const observedCaptures = new WeakMap<RichObservedCapture, CaptureSession>()
+const observedCursors = new WeakMap<RichObservedCursor, CursorData>()
+const observedDeltas = new WeakMap<ObservedRichDelta, DeltaData>()
+let observedSerial = 0
+const observedIdentity = (kind: string) => Object.freeze({ id: `${kind}:${++observedSerial}` })
+function dense<T>(value: readonly T[]): boolean {
+  return Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype
+    && Reflect.ownKeys(value).length === value.length + 1
+    && Array.from({ length: value.length }, (_, index) => Object.getOwnPropertyDescriptor(value, String(index)))
+      .every(descriptor => !!descriptor && 'value' in descriptor)
+}
+function captureSession(capture: RichObservedCapture): CaptureSession {
+  return observedCaptures.get(capture) ?? invalid('观察会话无效，未生成来源声明。')
+}
+export function beginObservedRichCapture(base: RichProvenanceState, actualBase: EditorState): Readonly<{
+  capture: RichObservedCapture; cursor: RichObservedCursor
+}> {
+  const saved = dataFor(base)
+  if (!(actualBase instanceof EditorState) || actualBase.doc !== saved.doc) invalid('观察会话必须从实际当前来源 doc 开始。')
+  const capture = observedIdentity('rich-capture'), cursor = observedIdentity('rich-cursor'), boundary = Object.freeze({})
+  const session: CaptureSession = { base, baseBoundary: boundary, tailBoundary: boundary, tailDoc: saved.doc,
+    tailCursor: cursor, count: 0, quarantined: false }
+  observedCaptures.set(capture, session); observedCursors.set(cursor, { session, boundary, count: 0 })
+  return Object.freeze({ capture, cursor })
+}
+
+/** Call synchronously with the real dispatch result before releasing its
+ * Transactions. Only closed owned payloads and the real private intent witnesses
+ * survive. No Transaction, docs array, selection, or historical root is stored.
+ * "replayable" describes the payload layout; final lineage/AST may still reject. */
+export function captureObservedRichDelta(capture: RichObservedCapture, batch: RichBatch): RichObservedCaptureResult {
+  const session = captureSession(capture)
+  if (!(batch.before instanceof EditorState) || !(batch.after instanceof EditorState) || !dense(batch.transactions)
+    || batch.before.doc !== session.tailDoc) invalid('观察事务不是本会话最新实际 tail。')
+  let doc = session.tailDoc, stepCount = 0, quarantined = false
+  const captured: CapturedStep[] = []
+  for (const transaction of batch.transactions) {
+    if (Object.getPrototypeOf(transaction) !== Transaction.prototype || !dense(transaction.steps) || !dense(transaction.docs)
+      || !dense(transaction.mapping.maps) || transaction.before !== doc || transaction.docs.length !== transaction.steps.length
+      || transaction.mapping.maps.length !== transaction.steps.length) invalid('观察事务链不完整。')
+    for (let index = 0; index < transaction.steps.length; index++) {
+      const original = transaction.steps[index], before = transaction.docs[index], after = transaction.docs[index + 1] ?? transaction.doc
+      if (before !== doc) invalid('观察 step 的实际 before 不连续。')
+      stepCount++
+      const payload = captureRichObservedStep(original, before.type.schema), replayed = payload && replayRichObservedStep(payload, before)
+      if (!payload || !replayed) quarantined = true
+      else {
+        if (!replayed.after.eq(after) || !same(windows(replayed.step.getMap()), windows(transaction.mapping.maps[index])))
+          invalid('观察到的封闭 step 与实际结果/map 不一致。')
+        // The existing lineage entry rejects whole-document rebuilding. Do not
+        // retain its inserted whole-forest tree as a historical edge snapshot.
+        if (replayed.step instanceof ReplaceStep && replayed.step.from === 0 && replayed.step.to === before.content.size && replayed.step.slice.size) {
+          quarantined = true; doc = after; continue
+        }
+        const newWitness = newIntents.get(transaction)?.get(index), atomWitness = atomIntents.get(transaction)?.get(index)
+        let newIntent: CapturedNewIntent | undefined, atomIntent: CapturedAtomIntent | undefined
+        if (newWitness) {
+          if (newWitness.step !== original || !(replayed.step instanceof AddMarkStep) || replayed.step.from !== newWitness.from
+            || replayed.step.to !== newWitness.to || richLinkOccurrence(replayed.step.mark) !== newWitness.token)
+            invalid('观察到的新链接意图不属于这次实际 step。')
+          newIntent = Object.freeze({ from: newWitness.from, to: newWitness.to, token: newWitness.token })
+        }
+        if (atomWitness) {
+          if (atomWitness.step !== original || atomWitness.doc !== before || !(replayed.step instanceof ReplaceStep)
+            || indexFor(before).nodeAtStart(replayed.step.from) !== atomWitness.before
+            || indexFor(after).nodeAtStart(replayed.step.from) !== atomWitness.after
+            || !sameAtomBody(atomWitness.before, atomWitness.after)) invalid('观察到的原子意图不属于这次实际身份 step。')
+          const copy = copyRichObservedLeaf(atomWitness.before, before.type.schema)
+          if (!copy) quarantined = true
+          else atomIntent = Object.freeze({ before: copy })
+        }
+        captured.push(Object.freeze({ payload, newIntent, atomIntent }))
+      }
+      doc = after
+    }
+    if (doc !== transaction.doc) invalid('观察事务最终 doc 不连续。')
+  }
+  if (doc !== batch.after.doc) invalid('观察结果不是实际 dispatch 的最终 doc。')
+  // Commit the session transition only after the complete batch is inspected.
+  if (!stepCount) return Object.freeze({ delta: null, cursor: session.tailCursor,
+    status: session.quarantined ? 'quarantined-layout' : 'replayable' })
+  const from = session.tailBoundary, to = Object.freeze({}), count = session.count + 1
+  const delta = observedIdentity('rich-delta'), cursor = observedIdentity('rich-cursor')
+  observedDeltas.set(delta, Object.freeze({ session, from, to, count,
+    steps: quarantined ? null : Object.freeze(captured) }))
+  observedCursors.set(cursor, Object.freeze({ session, boundary: to, count }))
+  session.tailBoundary = to; session.tailDoc = doc; session.tailCursor = cursor; session.count = count
+  session.quarantined ||= quarantined
+  return Object.freeze({ delta, cursor, status: session.quarantined ? 'quarantined-layout' : 'replayable' })
+}
+
+function* observedSteps(session: CaptureSession, edges: readonly DeltaData[]): Generator<ProvenStep> {
+  let doc = dataFor(session.base).doc
+  for (const edge of edges) for (const captured of edge.steps!) {
+    const replayed = replayRichObservedStep(captured.payload, doc) ?? invalid('封闭 step 不能严格重放，未生成来源声明。')
+    const { step, after } = replayed
+    let newIntent: NewIntent | undefined, atomIntent: AtomIntent | undefined
+    if (captured.newIntent) {
+      if (!(step instanceof AddMarkStep)) invalid('捕获的新链接意图布局不一致。')
+      newIntent = { step, ...captured.newIntent }
+    }
+    if (captured.atomIntent) {
+      if (!(step instanceof ReplaceStep) || step.slice.openStart || step.slice.openEnd || step.slice.content.childCount !== 1)
+        invalid('捕获的原子意图布局不一致。')
+      const before = indexFor(doc).nodeAtStart(step.from), next = step.slice.content.firstChild!
+      if (!before?.isLeaf || !before.eq(captured.atomIntent.before) || step.to !== step.from + before.nodeSize
+        || !sameAtomBody(before, next) || indexFor(after).nodeAtStart(step.from) !== next)
+        invalid('原子身份重放缺少闭合 correspondence。')
+      // An internal transient witness of an already captured real registration.
+      // It never enters/re-registers the public Transaction intent maps.
+      atomIntent = { step, before, after: next, doc }
+    }
+    yield { step, before: doc, after, newIntent, atomIntent }
+    doc = after
+  }
+}
+
+/** Latest-tail only. No old-prefix, branch, private Undo/Redo, UI recovery or
+ * clipboard receipt support is implied by this forward-path kernel. */
+export function prepareObservedRichPath(previous: RichProvenanceState, input: {
+  capture: RichObservedCapture; cursor: RichObservedCursor; activeDeltas: readonly ObservedRichDelta[]; actualAfter: EditorState
+}): PreparedRichProvenance {
+  const session = captureSession(input.capture), cursor = observedCursors.get(input.cursor)
+  if (previous !== session.base || input.cursor !== session.tailCursor || !cursor || cursor.session !== session
+    || cursor.boundary !== session.tailBoundary || cursor.count !== session.count || !dense(input.activeDeltas)
+    || input.activeDeltas.length !== session.count || !(input.actualAfter instanceof EditorState)
+    || input.actualAfter.doc !== session.tailDoc) invalid('观察路径不是本来源会话的完整最新实际 tail。')
+  let boundary = session.baseBoundary
+  const edges: DeltaData[] = []
+  for (let index = 0; index < input.activeDeltas.length; index++) {
+    const edge = observedDeltas.get(input.activeDeltas[index])
+    if (!edge || edge.session !== session || edge.from !== boundary || edge.count !== index + 1 || !edge.steps)
+      invalid('观察路径缺边、重排、跨会话或包含隔离 step，未生成来源声明。')
+    edges.push(edge); boundary = edge.to
+  }
+  if (session.quarantined || boundary !== session.tailBoundary) invalid('观察路径含未知 step，未生成来源声明。')
+  const result = prepareProvenSteps(previous, observedSteps(session, edges), session.tailDoc)
+  // Also recheck after complete parser/serializer finalization. An authentic
+  // shared type/schema mutation cannot be legitimized by equal output bytes.
+  if (edges.some(edge => edge.steps!.some(step => !isRichObservedStepCurrent(step.payload, session.tailDoc.type.schema))))
+    invalid('观察路径的实际 schema/type 已改变，未生成来源声明。')
+  return result
 }
