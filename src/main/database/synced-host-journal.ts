@@ -8,6 +8,7 @@ import { hostJson, hostTime, type HostContent } from './synced-host-document-rea
 import { hasSyncedInsertWorkingStructure, isHostInsertInput, planSyncedHostInsert, type HostInsertInput } from './synced-host-insert-plan'
 
 import { isHostMoveInput, planSyncedHostMove, assertSyncedHostMoveContext, type HostMoveInput } from './synced-host-move-plan'
+import { decodeHostCreateJournal, type HostCreateJournal } from './synced-host-create-codec'
 
 export type HostFinalInput = Extract<SyncedStructureInput, { mode: 'host-final' }>
 export interface HostSide { documentId: string; content: HostContent }
@@ -70,11 +71,12 @@ const matchingHosts = (left: readonly HostSide[], right: readonly HostSide[]) =>
 
 /** Finite executable branches share side/birth/incarnation validation. The
  * original bare-create lifecycle action remains a separate, unsupported format. */
-export function decodeHostJournal(row: Readonly<SyncedHostHistoryBranchRow>): HostJournal {
+export function decodeHostJournal(row: Readonly<SyncedHostHistoryBranchRow>): HostJournal | HostCreateJournal {
   try {
     if (!isSyncedUuid(row.id)) return bad()
     hostTime(row.created_at)
     const action = hostJson(row.action_json)
+    if (syncedPlainRecord(action) && action.kind === 'host-command' && action.version === 2) return decodeHostCreateJournal(row)
     assertSyncedShape(action, ['kind', 'version', 'input', 'persisted', 'births', 'groups'])
     if (action.version !== 1) return bad()
     const parsed = validateSyncedStructureInput(action.input)

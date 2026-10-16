@@ -7,9 +7,15 @@ import { isSyncedUuid, SyncedValidationError, validateSyncedBindings, validateSy
 import { BlockIdentityRepository } from './block-identities'
 import { decodeMarkdownFormat } from '../../shared/markdownFormat'
 import { validateSyncedBindingClaims } from '../../shared/syncedBlockInputs'
+import type { SyncedStableBlockDraft } from '../../shared/synced-blocks'
+import { captureSyncedCreateSourceFacts } from './synced-host-create-plan'
+import type { CreateCapturedBinding } from './synced-host-create-codec'
 
 type Occurrence = Omit<SyncedLinkBinding, 'target'> & { url: string }
 type DocumentRow = { id: string; path: string; title: string }
+type ProspectiveHost = { ids: ReadonlySet<string>; blocks: readonly SyncedStableBlockDraft[];
+  headings?: { slug: Map<string, { slug: string; text: string }>; text: Map<string, { slug: string; text: string }> } }
+function prospectiveHeadingTextKey(value: string): string { return value.normalize('NFC').toLowerCase() }
 function fail(message: string): never { throw new SyncedValidationError('binding', message) }
 const key = (value: Omit<SyncedLinkBinding, 'target'>) => JSON.stringify([value.blockId, value.from, value.to, value.raw, value.syntax])
 export interface SyncedVerifiedBindingSource { key: SyncedBindingKey; url: string; target: SyncedLinkTarget }
@@ -79,7 +85,7 @@ export function readSyncedBindingSources(db: Database.Database, origin: SyncedOr
 }
 
 function targetFor(db: Database.Database, origin: SyncedOriginV1, occurrence: Occurrence,
-  candidate?: { groupId: string; ids: ReadonlySet<string> }): SyncedLinkTarget {
+  candidate?: { groupId: string; ids: ReadonlySet<string> }, prospective?: ProspectiveHost): SyncedLinkTarget {
   const wiki = occurrence.syntax === 'wiki'
   const byPath = db.prepare('SELECT id,path,title FROM documents WHERE path=?')
   const byId = db.prepare('SELECT id,path,title FROM documents WHERE id=?')
@@ -102,6 +108,7 @@ function targetFor(db: Database.Database, origin: SyncedOriginV1, occurrence: Oc
     : resolvedWiki?.document ?? pathLookup(path)
   const unresolved = (): SyncedLinkTarget => ({ kind: 'unresolved-url', path, fragment: fragment || null })
   if (wiki && !document && !reference!.hasFragment) {
+    if (prospective?.ids.has(reference!.target)) return { kind: 'block', id: reference!.target, documentId: origin.documentId, state: 'live' }
     const identities = new BlockIdentityRepository(db), identity = identities.get(reference!.target)
     if (identity) {
       const owner = identities.resolveLiveOwner(identity.id)
@@ -118,6 +125,7 @@ function targetFor(db: Database.Database, origin: SyncedOriginV1, occurrence: Oc
   if (!fragment) return bare ? { kind: 'document', id: origin.documentId, state: document ? 'live' : 'missing' }
     : document ? { kind: 'document', id: document.id, state: 'live' } : unresolved()
   const blockId = fragment.startsWith('^') ? fragment.slice(1) : fragment
+  if ((bare || document?.id === origin.documentId) && (fragment.startsWith('^') || isSyncedUuid(fragment)) && prospective?.ids.has(blockId)) return { kind: 'block', id: blockId, documentId: origin.documentId, state: 'live' }
   if (bare && (fragment.startsWith('^') || isSyncedUuid(fragment)) && candidate?.ids.has(blockId)) {
     // Main has already checked candidate ownership/creation metadata. Resolve
     // self/cross references against that final graph, without a fake ledger row.
@@ -138,6 +146,19 @@ function targetFor(db: Database.Database, origin: SyncedOriginV1, occurrence: Oc
   }
   if (fragment.startsWith('^') || isSyncedUuid(fragment)) return unresolved()
   if (!document) return bare ? { kind: 'heading', documentId: origin.documentId, slug: fragment, state: 'missing' } : unresolved()
+  if (document.id === origin.documentId && prospective) {
+    if (!prospective.headings) {
+      if (prospective.blocks.some(block => block.type === 'synced-block')) fail('prospective heading 仍需完整同步投影，保留原稿。')
+      const slug = new Map<string, { slug: string; text: string }>(), text = new Map<string, { slug: string; text: string }>()
+      for (const heading of getMarkdownHeadingTargets([...prospective.blocks], document.title)) {
+        if (!slug.has(heading.slug)) slug.set(heading.slug, heading)
+        const key = prospectiveHeadingTextKey(heading.text); if (!text.has(key)) text.set(key, heading)
+      }
+      prospective.headings = { slug, text }
+    }
+    const heading = prospective.headings.slug.get(fragment) ?? (wiki ? prospective.headings.text.get(prospectiveHeadingTextKey(fragment)) : undefined)
+    return { kind: 'heading', documentId: document.id, slug: heading?.slug ?? fragment, state: heading ? 'live' : 'missing' }
+  }
   const rows = db.prepare(`SELECT id,type,content,checked,depth,parent_block_id,language,list_start,markdown_format_json
     FROM blocks WHERE document_id=? ORDER BY sort_order`).all(document.id) as Array<{
       id: string; type: string; content: string; checked: number; depth: number; parent_block_id: string | null
@@ -162,6 +183,17 @@ export function captureSyncedGroupBindings(db: Database.Database, origin: Synced
     const { url: _url, ...range } = occurrence
     return { ...range, target: targetFor(db, checkedOrigin, occurrence) }
   })
+}
+
+/** Main create alone calls this after its exact W/birth/owner (or original tail
+ * inverse) preflight. No shared input supplies this prospective target space.
+ * Whole strict host source keeps other reference leaves opaque. */
+export function captureSyncedCreateBindings(db: Database.Database, origin: SyncedOriginV1,
+  blocks: readonly SyncedStableBlockDraft[]): CreateCapturedBinding[] {
+  const checked = validateSyncedOrigin(origin), ids = new Set(blocks.filter(block => block.type !== 'synced-block').map(block => block.id))
+  const prospective: ProspectiveHost = { ids, blocks }
+  return captureSyncedCreateSourceFacts(blocks).links.filter(item => !item.image && (item.key.syntax === 'wiki' || resolveMarkdownDocumentPath(checked.pathAtCreation, item.url))).map(item => ({ key: item.key, url: item.url,
+    target: targetFor(db, checked, { ...item.key, url: item.url }, undefined, prospective) }))
 }
 
 type Change = { prefix: number; oldEnd: number; newEnd: number; delta: number }

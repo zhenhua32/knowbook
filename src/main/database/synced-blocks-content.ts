@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type Database from 'better-sqlite3'
-import { decodeSyncedOperationAck } from './synced-host-operation-receipt'
+import { decodeSyncedOperationAck, type SyncedMainOperationResult } from './synced-host-operation-receipt'
 import type { SyncedCanonicalEdit, SyncedCanonicalWire, SyncedFailure, SyncedGroupMutationResult, SyncedGroupSaved,
   SyncedGroupSnapshot, SyncedGroupWire, SyncedOperationResult, SyncedRestoreGroupInput,
   SyncedUpdateGroupInput } from '../../shared/synced-blocks'
@@ -275,7 +275,7 @@ export function restoreSyncedGroupOperation(db: Database.Database, value: unknow
 
 /** Dispatch only strict original group ACKs or the finite host operation
  * envelope. Group-owned source readers keep their group-only decoder. */
-export function getSyncedOperation(db: Database.Database, input: unknown): SyncedOperationResult {
+export function getSyncedOperation(db: Database.Database, input: unknown): SyncedMainOperationResult {
   const id = validateSyncedOperationLookupInput(input)
   return ownedTransaction<SyncedOperationResult>(db, () => {
     const row = readSyncedGroupOperationRow(db, id)

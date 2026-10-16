@@ -3,6 +3,11 @@ import { assertSyncedShape, isSyncedBlockId, isSyncedUuid, validateSyncedGroupSn
 import { decodeSyncedGroupOperationAck, type SyncedGroupOperationRow } from './synced-group-operation-receipt'
 import { hostJson, validateHostDocumentDetail } from './synced-host-document-read'
 import { hostHash, hostReferencedGroups, sameHostContent, validateHostContent } from './synced-host-journal'
+import { createRawHash } from './synced-host-create-plan'
+import { validateCreatedLifecycleSide, type SyncedHostCreateApplied } from './synced-host-create-codec'
+export type { SyncedHostCreateApplied } from './synced-host-create-codec'
+export type SyncedMainHostSuccess = SyncedStructureApplied | SyncedHostCreateApplied
+export type SyncedMainOperationResult = { status: 'unknown' } | { status: 'committed'; result: SyncedGroupSaved | SyncedMainHostSuccess }
 
 const bad = (): never => { throw new Error('宿主结构操作完整回执损坏，不能重建今日状态或重发。') }
 function unique<T>(value: unknown, read: (raw: unknown) => T, key: (item: T) => string): T[] {
@@ -56,10 +61,58 @@ export function decodeHostOperationAck(row: SyncedGroupOperationRow): SyncedStru
 }
 /** Generic operation lookup dispatches only a validated finite envelope. Group
  * source-signing readers continue to call their group-only decoder directly. */
-export function decodeSyncedOperationAck(row: SyncedGroupOperationRow): SyncedGroupSaved | SyncedStructureApplied {
+export function decodeSyncedOperationAck(row: SyncedGroupOperationRow): SyncedGroupSaved | SyncedMainHostSuccess {
   try {
     const value = hostJson(row.result_json)
-    if (value && typeof value === 'object' && !Array.isArray(value) && Object.hasOwn(value, 'kind')) return decodeHostOperationAck(row)
+    if (value && typeof value === 'object' && !Array.isArray(value) && Object.hasOwn(value, 'kind')) return decodeMainHostOperationAck(row)
     return decodeSyncedGroupOperationAck(row)
   } catch (cause) { throw new Error('同步块操作收据损坏，不能猜测提交结果或重新执行。', { cause }) }
+}
+
+/** New finite namespace. The old snapshot-only ACK decoder remains unchanged. */
+export function validateHostCreateOperationAck(value: unknown, operationId: string): SyncedHostCreateApplied {
+  assertSyncedShape(value, ['status', 'operationId', 'historyToken', 'replayed', 'hosts', 'groups', 'affectedInstanceIds', 'blockIdMap', 'createdLifecycle'])
+  if (!isSyncedUuid(operationId) || value.operationId !== operationId || value.status !== 'applied' || value.replayed !== false || !isSyncedUuid(value.historyToken)) return bad()
+  const createdLifecycle = validateCreatedLifecycleSide(value.createdLifecycle)
+  if (createdLifecycle.createHistoryId !== value.historyToken) return bad()
+  const hosts = unique(value.hosts, raw => {
+    assertSyncedShape(raw, ['documentId', 'logicalBefore', 'logicalBeforeHash', 'after'])
+    const logicalBefore = validateHostContent(raw.logicalBefore), after = validateHostDocumentDetail(raw.after)
+    if (!isSyncedBlockId(raw.documentId) || after.id !== raw.documentId || !after.blocks.length || raw.logicalBeforeHash !== hostHash(logicalBefore)) return bad()
+    return { documentId: raw.documentId, logicalBefore, logicalBeforeHash: raw.logicalBeforeHash as string, after }
+  }, item => item.documentId)
+  if (hosts.length !== 1 || hosts[0].documentId !== createdLifecycle.origin.documentId) return bad()
+  const afterContent = { title: hosts[0].after.title, summary: hosts[0].after.summary, blocks: hosts[0].after.blocks.map(({ sortOrder: _sortOrder, ...block }) => block) }
+  if (sameHostContent(hosts[0].logicalBefore, afterContent)) return bad()
+  const groups = unique(value.groups, validateSyncedGroupSnapshot, item => item.groupId), groupIds = new Set(groups.map(group => group.groupId))
+  const required = hostReferencedGroups([{ documentId: hosts[0].documentId, content: hosts[0].logicalBefore }, { documentId: hosts[0].documentId, content: afterContent }])
+  const own = groups.find(group => group.groupId === createdLifecycle.groupId)
+  if (createdLifecycle.state === 'active') {
+    if (!own || own.creationId !== createdLifecycle.creationId || own.createdAt !== createdLifecycle.createdAt || !same(own.origin, createdLifecycle.origin) || own.revision !== createdLifecycle.revision || own.topologyRevision !== createdLifecycle.topologyRevision) return bad()
+    const portable = { kind: 'synced-group', id: own.groupId, creationId: own.creationId, createdAt: own.createdAt, origin: own.origin, bindings: own.bindings, blocks: own.blocks }
+    if (createRawHash(portable) !== createdLifecycle.activationHash || !same(own.instances.map(({ instanceId, hostDocumentId, bindingVersion }) => ({ instanceId, hostDocumentId, bindingVersion })), createdLifecycle.activationInstances)) return bad()
+  } else {
+    if (own) return bad(); groupIds.add(createdLifecycle.groupId)
+  }
+  if (required.size !== groupIds.size || [...required].some(id => !groupIds.has(id))) return bad()
+  const references = (blocks: typeof afterContent.blocks) => blocks.filter(block => block.type === 'synced-block' && JSON.parse(block.content).groupId === createdLifecycle.groupId)
+  const beforeRefs = references(hosts[0].logicalBefore.blocks), afterRefs = references(afterContent.blocks)
+  const actualOwn = createdLifecycle.state === 'active' ? afterRefs : beforeRefs
+  if (actualOwn.length !== 1 || actualOwn[0].id !== createdLifecycle.origin.firstInstanceId || (createdLifecycle.state === 'active' ? beforeRefs : afterRefs).length) return bad()
+  const afterIds = afterContent.blocks.map(block => block.id); if (new Set(afterIds).size !== afterIds.length) return bad()
+  const affectedInstanceIds = unique(value.affectedInstanceIds, raw => isSyncedUuid(raw) ? raw : bad(), item => item)
+  if (!affectedInstanceIds.includes(createdLifecycle.origin.firstInstanceId) || !Array.isArray(value.blockIdMap) || value.blockIdMap.length) return bad()
+  return { status: 'applied', operationId, historyToken: value.historyToken, replayed: false, hosts, groups, affectedInstanceIds, blockIdMap: [], createdLifecycle }
+}
+function same(left: unknown, right: unknown): boolean { return hostHash(left) === hostHash(right) }
+export function decodeMainHostOperationAck(row: SyncedGroupOperationRow): SyncedMainHostSuccess {
+  try {
+    const envelope = hostJson(row.result_json)
+    if (envelope && typeof envelope === 'object' && 'kind' in envelope && envelope.kind === 'synced-host-create-operation') {
+      if (!/^[a-f0-9]{64}$/.test(row.request_hash)) return bad()
+      assertSyncedShape(envelope, ['kind', 'version', 'result']); if (!('version' in envelope) || envelope.version !== 1 || !('result' in envelope)) return bad()
+      return validateHostCreateOperationAck(envelope.result, row.client_operation_id)
+    }
+    return decodeHostOperationAck(row)
+  } catch (cause) { throw new Error('宿主结构操作回执损坏，未重发或重建。', { cause }) }
 }

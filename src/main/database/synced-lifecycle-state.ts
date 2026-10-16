@@ -5,6 +5,7 @@ import { validateSyncedInstanceGuard } from '../../shared/syncedBlockInputs'
 import { canonicalSyncedPortableJson } from '../../shared/syncedBlockPortable'
 import { assertSyncedShape, isSyncedBlockId, isSyncedUuid, validateSyncedGroupWire } from '../../shared/syncedBlockValidation'
 import { parseStrictJson } from '../../shared/strictJson'
+import { decodeHostCreateJournal } from './synced-host-create-codec'
 
 export type SyncedLifecycleState = 'active' | 'retired-create'
 export type SyncedExposureState = 'never' | 'unknown' | 'possible' | 'confirmed'
@@ -66,9 +67,14 @@ function activationInstances(source: string): SyncedInstanceGuard[] {
 }
 
 function assertCreateJournal(db: Database.Database, group: GroupRow, historyId: string): void {
-  const journal = db.prepare('SELECT action_json FROM synced_host_history WHERE id=?').get(historyId) as { action_json: string } | undefined
+  const journal = db.prepare('SELECT id,action_json,before_json,after_json,before_hash,after_hash,created_at FROM synced_host_history WHERE id=?').get(historyId) as { id: string; action_json: string; before_json: string; after_json: string; before_hash: string; after_hash: string; created_at: string } | undefined
   if (!journal) refused('create journal 缺失')
   const action = json(journal.action_json), origin = json(group.origin_json)
+  if (action && typeof action === 'object' && 'kind' in action && action.kind === 'host-command' && 'version' in action && action.version === 2) {
+    const decoded = decodeHostCreateJournal(journal), wire = decoded.create.wire
+    if (wire.id !== group.id || wire.creationId !== group.creation_id || wire.createdAt !== group.created_at || encode(wire.origin) !== encode(origin)) refused('finite create journal 不是该 incarnation 的原创建操作')
+    return
+  }
   assertSyncedShape(action, ['kind', 'documentId', 'selectedRootIds', 'groupId', 'instanceId'])
   assertSyncedShape(origin, ['version', 'documentId', 'pathAtCreation', 'firstInstanceId'])
   if (action.kind !== 'create' || action.groupId !== group.id || action.documentId !== origin.documentId

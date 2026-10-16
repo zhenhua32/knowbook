@@ -3,15 +3,15 @@ import type Database from 'better-sqlite3'
 import type { SyncedFailure, SyncedGroupSnapshot, SyncedGroupWire, SyncedRestoreHostInput,
   SyncedStableBlockDraft, SyncedStructureApplied, SyncedStructureInput, SyncedStructureResult } from '../../shared/synced-blocks'
 import { validateSyncedRestoreHostInput, validateSyncedStructureInput } from '../../shared/syncedBlockInputs'
-import { isSyncedUuid, parseSyncedBlockPayload, SYNCED_MAX_BLOCKS, SyncedValidationError } from '../../shared/syncedBlockValidation'
+import { assertSyncedShape, isSyncedUuid, parseSyncedBlockPayload, SYNCED_MAX_BLOCKS, SyncedValidationError, validateSyncedGroupWire } from '../../shared/syncedBlockValidation'
 import { validateSyncedWorkspaceGraph } from '../../shared/syncedBlockGraph'
 import { projectSyncedGroupBudget, projectSyncedHostBudget } from '../../shared/syncedBlockPortable'
 import { getMarkdownHeadingRewrites, getMarkdownHeadingTargets } from '../../shared/markdownLinkMaintenance'
 import { BlockIdentityRepository } from './block-identities'
 import { getSyncedGroupSnapshots, getSyncedHostHistory } from './synced-blocks-read'
 import { readSyncedGroupOperationRow } from './synced-group-operation-receipt'
-import { decodeHostOperationAck, validateHostOperationAck } from './synced-host-operation-receipt'
-import { readStrictHostDocument, type StrictHostDocument, type HostContent } from './synced-host-document-read'
+import { decodeMainHostOperationAck, validateHostOperationAck, validateHostCreateOperationAck, type SyncedMainHostSuccess } from './synced-host-operation-receipt'
+import { hostJson, readStrictHostDocument, type StrictHostDocument, type HostContent } from './synced-host-document-read'
 import { decodeHostJournal, encodeHostJournal, hostEncode, hostEqual, hostHash, hostReferencedGroups,
   sameHostContent, hostJournalKind, type HostBirth, type HostFinalInput, type HostJournal, type HostSide } from './synced-host-journal'
 import { pruneSyncedHostRedoBranches, type SyncedHostHistoryBranchRow } from './synced-host-history-branch'
@@ -19,9 +19,14 @@ import { MarkdownLinkIndex } from './markdown-link-index'
 import { hasSyncedInsertWorkingStructure, isHostInsertInput, planSyncedHostInsert, type HostInsertInput } from './synced-host-insert-plan'
 
 import { isHostMoveInput, planSyncedHostMove, assertSyncedHostMoveContext, UnsupportedSyncedHostMove, type HostMoveInput } from './synced-host-move-plan'
+import { captureSyncedCreateSourceFacts, createPhysicalKey, createRawHash, isHostCreateInput, planSyncedHostCreate, projectSyncedCreateLinks, UnsupportedSyncedHostCreate, type HostCreateInput } from './synced-host-create-plan'
+import { decodeHostCreateJournal, encodeHostCreateJournal, validateCreatedLifecycleSide, type HostCreateJournal, type CreatedLifecycleSide, type SyncedHostCreateApplied } from './synced-host-create-codec'
+import { readSyncedGroupLifecycles } from './synced-lifecycle-state'
+import { assertSyncedStoredBindings, captureSyncedCreateBindings } from './synced-block-links'
+export type { SyncedHostCreateApplied } from './synced-host-create-codec'
 
 export { getSyncedHostHistory }
-export type SyncedHostFinalResult = SyncedStructureResult | { status: 'unsupported'; reason: 'command' | 'title-change' | 'owner-transfer' | 'journal-kind' | 'heading-rewrite' | 'working-structure' | 'move-selection' | 'semantic-binding' }
+export type SyncedHostFinalResult = SyncedStructureResult | SyncedHostCreateApplied | { status: 'unsupported'; reason: 'command' | 'title-change' | 'owner-transfer' | 'journal-kind' | 'heading-rewrite' | 'working-structure' | 'move-selection' | 'semantic-binding' | 'create-selection' | 'lifecycle' }
 type Groups = Map<string, SyncedGroupSnapshot>
 type Hosts = Map<string, StrictHostDocument>
 type Guards = Pick<SyncedRestoreHostInput, 'groups' | 'expectedInstances'>
@@ -32,13 +37,14 @@ function missing(kind: 'group' | 'document' | 'instance', id: string): never { t
 function conflict(kind: 'host' | 'group' | 'topology' | 'history', groups: Groups, hosts: Hosts): never {
   throw new Refused({ status: 'conflict', kind, groups: [...groups.values()], hosts: [...hosts.values()].map(value => value.detail) })
 }
-function mutation(db: Database.Database, run: () => SyncedStructureApplied): SyncedHostFinalResult {
+function mutation(db: Database.Database, run: () => SyncedMainHostSuccess): SyncedHostFinalResult {
   if (db.inTransaction) throw new Error('宿主结构仓库必须拥有真实外层 IMMEDIATE 事务。')
   if (db.pragma('foreign_keys', { simple: true }) !== 1) throw new Error('宿主结构写入必须启用 SQLite 外键。')
   try { return db.transaction(run).immediate() }
   catch (error) {
     if (error instanceof Refused) return error.result
     if (error instanceof UnsupportedSyncedHostMove) return { status: 'unsupported', reason: error.reason }
+    if (error instanceof UnsupportedSyncedHostCreate) return { status: 'unsupported', reason: error.reason }
     if (error instanceof SyncedValidationError) return { status: 'invalid', code: error.code, blockingInstances: error.blockingInstances }
     throw error
   }
@@ -49,12 +55,12 @@ function validated<T>(read: () => T): T | SyncedFailure {
     throw error
   }
 }
-function replay(db: Database.Database, operationId: string, requestHash: string): SyncedStructureApplied | null {
+function replay(db: Database.Database, operationId: string, requestHash: string): SyncedMainHostSuccess | null {
   const row = readSyncedGroupOperationRow(db, operationId)
   if (!row) return null
   if (!/^[a-f0-9]{64}$/.test(row.request_hash)) throw new Error('宿主操作请求哈希损坏。')
   if (row.request_hash !== requestHash) throw new Refused({ status: 'idempotency-mismatch' })
-  return { ...decodeHostOperationAck(row), replayed: true }
+  return { ...decodeMainHostOperationAck(row), replayed: true }
 }
 function receipt(db: Database.Database, result: SyncedStructureApplied, requestHash: string, now: string): SyncedStructureApplied {
   const exact = validateHostOperationAck(result, result.operationId)
@@ -192,10 +198,12 @@ function checkInsertAuthority(db: Database.Database, input: HostInsertInput, gro
     invalid('identity', 'insert 的 fresh UUID 已被普通、canonical、retained 或实例身份占用。')
   }
 }
-function finalGraph(allHosts: Hosts, groups: Groups, after: HostSide[]) {
+function finalGraph(allHosts: Hosts, groups: Groups, after: HostSide[], create?: { wire: SyncedGroupWire; retire: boolean }) {
   const overlays = new Map(after.map(side => [side.documentId, side.content]))
   const documents = [...allHosts].map(([documentId, value]) => ({ documentId, blocks: (overlays.get(documentId) ?? value.content).blocks }))
-  const wires = [...groups.values()].map(wire), graph = validateSyncedWorkspaceGraph(documents, wires), byGroup = new Map(wires.map(item => [item.id, item]))
+  const wires = [...groups.values()].filter(group => group.groupId !== create?.wire.id).map(wire)
+  if (create && !create.retire) wires.push(create.wire)
+  const graph = validateSyncedWorkspaceGraph(documents, wires), byGroup = new Map(wires.map(item => [item.id, item]))
   for (const group of wires) projectSyncedGroupBudget(group)
   for (const [id, document] of allHosts) projectSyncedHostBudget({ kind: 'document', id, parentId: document.parentId, sortOrder: document.sortOrder,
     createdAt: document.createdAt, content: overlays.get(id) ?? document.content }, byGroup)
@@ -233,8 +241,14 @@ function syncLinks(db: Database.Database, documentIds: string[], now: string): v
   const insert = db.prepare('INSERT INTO links(id,source_document_id,target_document_id,label,created_at) VALUES(?,?,?,?,?)')
   for (const row of rows) insert.run(randomUUID(), row.source_document_id, row.target_id, row.url, now)
 }
+interface CreateWritePermit { journal: HostCreateJournal; direction: 'create' | 'undo' | 'redo'; bindingVersion: string }
+const createWritePermits = new WeakSet<CreateWritePermit>()
+function createWritePermit(journal: HostCreateJournal, direction: CreateWritePermit['direction'], bindingVersion: string): CreateWritePermit {
+  const permit = Object.freeze({ journal, direction, bindingVersion }); createWritePermits.add(permit); return permit
+}
 function writeHosts(db: Database.Database, before: Hosts, after: HostSide[], acceptedBirths: HostBirth[], groups: Groups,
-  graph: ReturnType<typeof finalGraph>, now: string, touchAll = false): string[] {
+  graph: ReturnType<typeof finalGraph>, now: string, touchAll = false, create?: CreateWritePermit): string[] {
+  if (create && !createWritePermits.has(create)) throw new Error('create 物理迁域缺少真实私有预检。')
   const birthMap = new Map(acceptedBirths.map(item => [item.blockId, item]))
   const retain = db.prepare(`INSERT INTO block_identities(id,last_owner_kind,last_owner_id,state,created_at) VALUES(?,'document',?,'retained',?)`)
   // W-only fresh identities remain exactly owned even if A never has a row.
@@ -260,6 +274,7 @@ function writeHosts(db: Database.Database, before: Hosts, after: HostSide[], acc
     // still-registered child. oldInstances retains the actual original bindings.
     db.prepare('DELETE FROM synced_instances WHERE host_document_id=?').run(side.documentId)
     db.prepare('DELETE FROM blocks WHERE document_id=?').run(side.documentId)
+    if (create) writeCreateOwnership(db, create)
     side.content.blocks.forEach((block, index) => {
       const birth = birthMap.get(block.id)
       if (!birth || birth.documentId !== side.documentId) invalid('identity', '实际写入没有其准确接受 birth。')
@@ -271,21 +286,22 @@ function writeHosts(db: Database.Database, before: Hosts, after: HostSide[], acc
       const position = nextPositions.get(block.id)!
       const unchanged = old && old.groupId === groupId && old.hostDocumentId === side.documentId
         && old.parentBlockId === position.parentBlockId && old.depth === position.depth && old.parentType === position.parentType
-      const binding = unchanged ? old.bindingVersion : randomUUID()
+      const binding = create && block.id === create.journal.input.action.instanceId ? create.bindingVersion : unchanged ? old.bindingVersion : randomUUID()
       if (!unchanged) affected.add(block.id)
       insertInstance.run(block.id, groupId, side.documentId, binding, block.parentBlockId, block.depth)
     }
     if (db.prepare('UPDATE documents SET summary=?,updated_at=? WHERE id=? AND updated_at=?')
       .run(side.content.summary, now, side.documentId, p.detail.updatedAt).changes !== 1) conflict('host', groups, before)
   }
-  for (const group of groups.values()) if (group.instances.some(item => affected.has(item.instanceId))
-    || (graph.occurrences.get(group.groupId) ?? []).some(item => affected.has(item.instanceId))) {
+  for (const group of groups.values()) if (group.groupId !== create?.journal.create.wire.id && (group.instances.some(item => affected.has(item.instanceId))
+    || (graph.occurrences.get(group.groupId) ?? []).some(item => affected.has(item.instanceId)))) {
     if (db.prepare('UPDATE synced_groups SET topology_revision=? WHERE id=? AND revision=? AND topology_revision=?')
       .run(randomUUID(), group.groupId, group.revision, group.topologyRevision).changes !== 1) conflict('topology', groups, before)
   }
-  // This slice changes neither owner nor path. Existing historical routes stay
-  // bound to retained identities; no fictitious former route is manufactured.
+  // Ordinary writes preserve historical routes. The private create transition
+  // separately records selected identities at their real original host path.
   syncLinks(db, changedIds, now)
+  if (create) createWritePermits.delete(create)
   return [...affected]
 }
 function result(db: Database.Database, operationId: string, status: 'applied' | 'noop', token: string | null,
@@ -321,6 +337,8 @@ function applyHostMutation(db: Database.Database, value: unknown, method: HostAp
   const request: SyncedStructureInput = parsed
   return mutation(db, () => {
     const requestHash = hostHash({ method, input: request }), previous = replay(db, request.clientOperationId, requestHash)
+    if (method === 'applySyncedHostCommand' && isHostCreateInput(request)) return applyCreate(db, request, requestHash, previous)
+    if (previous && 'createdLifecycle' in previous) throw new Error('原create回执不能当其它结构请求重放。')
     const input = acceptedInput(request, method), after = plannedSides(input)
     if (previous) {
       if (!exactSet(previous.hosts.map(host => host.documentId), input.hostsWorkingBefore.map(host => host.documentId))
@@ -365,16 +383,8 @@ function applyHostMutation(db: Database.Database, value: unknown, method: HostAp
       const row: SyncedHostHistoryBranchRow = { id: token, action_json: encoded.action, before_json: encoded.before, after_json: encoded.after,
         before_hash: encoded.beforeHash, after_hash: encoded.afterHash, created_at: now }
       decodeHostJournal(row)
-      db.prepare('INSERT INTO synced_host_history(id,action_json,before_json,after_json,before_hash,after_hash,created_at) VALUES(?,?,?,?,?,?,?)')
-        .run(token, row.action_json, row.before_json, row.after_json, row.before_hash, row.after_hash, now)
-      for (const id of ids) {
-        const state = db.prepare('SELECT position FROM synced_host_history_state WHERE document_id=?').get(id) as { position: number }
-        if (!Number.isSafeInteger(state.position + 1)) invalid('forest', '宿主历史位置超过安全整数。')
-        db.prepare('INSERT INTO synced_host_history_documents(history_id,document_id,position) VALUES(?,?,?)').run(token, id, state.position + 1)
-        db.prepare('UPDATE synced_host_history_state SET cursor=?,position=? WHERE document_id=?').run(randomUUID(), state.position + 1, id)
-      }
-      for (const dependency of journal.groups) db.prepare('INSERT INTO synced_group_pins(group_id,kind,pin_id,created_at) VALUES(?,?,?,?)')
-        .run(dependency.groupId, 'host-history', token, now)
+      insertHostJournal(db, row)
+      appendHostHistory(db, ids, token, journal.groups, now)
     }
     for (const id of ids) assertHostChain(db, id)
     return receipt(db, result(db, input.clientOperationId, 'applied', token, before, required, affected), requestHash, now)
@@ -394,6 +404,7 @@ export function restoreSyncedHostOperation(db: Database.Database, value: unknown
   return mutation(db, () => {
     const requestHash = hostHash({ method: 'restoreSyncedHostOperation', input }), previous = replay(db, input.clientOperationId, requestHash)
     if (previous) {
+      if ('createdLifecycle' in previous) return replayCreateRestore(db, input, previous)
       if (!exactSet(previous.hosts.map(host => host.documentId), input.expectedHosts.map(host => host.documentId))
         || !exactSet(previous.groups.map(group => group.groupId), input.groups.map(group => group.groupId))
         || previous.historyToken !== null && previous.historyToken !== input.historyToken) throw new Error('原逆操作回执与同一请求身份不一致。')
@@ -403,7 +414,9 @@ export function restoreSyncedHostOperation(db: Database.Database, value: unknown
       .get(input.historyToken) as SyncedHostHistoryBranchRow | undefined
     if (!row) conflict('history', new Map(), new Map())
     if (hostJournalKind(row) === 'bare-create') unsupported('journal-kind')
-    const journal = decodeHostJournal(row), undo = input.direction === 'undo', from = undo ? journal.after : journal.before, to = undo ? journal.before : journal.after
+    const journal = decodeHostJournal(row)
+    if ('create' in journal) return restoreCreate(db, input, requestHash, journal)
+    const undo = input.direction === 'undo', from = undo ? journal.after : journal.before, to = undo ? journal.before : journal.after
     const ids = from.map(side => side.documentId)
     if (!exactSet(input.expectedHosts.map(item => item.documentId), ids)) invalid('binding', '恢复宿主必须与真实 journal 参与者双向闭合。')
     const all = readAllHosts(db), groups = allGroups(db), hosts = participating(all, ids), persisted = persistedSides(hosts)
@@ -438,4 +451,263 @@ export function restoreSyncedHostOperation(db: Database.Database, value: unknown
     }
     return receipt(db, result(db, input.clientOperationId, 'applied', input.historyToken, persisted, required, affected), requestHash, now)
   })
+}
+
+function insertHostJournal(db: Database.Database, row: SyncedHostHistoryBranchRow): void {
+  db.prepare('INSERT INTO synced_host_history(id,action_json,before_json,after_json,before_hash,after_hash,created_at) VALUES(?,?,?,?,?,?,?)')
+    .run(row.id, row.action_json, row.before_json, row.after_json, row.before_hash, row.after_hash, row.created_at)
+}
+function appendHostHistory(db: Database.Database, ids: string[], token: string, dependencies: HostJournal['groups'], now: string): void {
+  for (const id of ids) {
+    const state = db.prepare('SELECT position FROM synced_host_history_state WHERE document_id=?').get(id) as { position: number }
+    if (!Number.isSafeInteger(state.position + 1)) invalid('forest', '宿主历史位置超过安全整数。')
+    db.prepare('INSERT INTO synced_host_history_documents(history_id,document_id,position) VALUES(?,?,?)').run(token, id, state.position + 1)
+    db.prepare('UPDATE synced_host_history_state SET cursor=?,position=? WHERE document_id=?').run(randomUUID(), state.position + 1, id)
+  }
+  for (const dependency of dependencies) db.prepare('INSERT INTO synced_group_pins(group_id,kind,pin_id,created_at) VALUES(?,?,?,?)').run(dependency.groupId, 'host-history', token, now)
+}
+function storedCreateJournal(db: Database.Database, token: string): HostCreateJournal {
+  const row = db.prepare('SELECT id,action_json,before_json,after_json,before_hash,after_hash,created_at FROM synced_host_history WHERE id=?').get(token) as SyncedHostHistoryBranchRow | undefined
+  if (!row) throw new Error('create 原完整日志缺失，不能重建来源。')
+  return decodeHostCreateJournal(row)
+}
+function createReceipt(db: Database.Database, value: SyncedHostCreateApplied, requestHash: string, now: string): SyncedHostCreateApplied {
+  const exact = validateHostCreateOperationAck(value, value.operationId)
+  db.prepare('INSERT INTO synced_operations(client_operation_id,request_hash,result_json,created_at) VALUES(?,?,?,?)').run(exact.operationId, requestHash,
+    hostEncode({ kind: 'synced-host-create-operation', version: 1, result: exact }), now)
+  return exact
+}
+function createLifeSide(db: Database.Database, journal: HostCreateJournal, token: string): CreatedLifecycleSide {
+  const groupId = journal.create.wire.id, state = readSyncedGroupLifecycles(db, [groupId]).get(groupId)
+  const row = db.prepare('SELECT revision,topology_revision,bindings_json,history_cursor,history_position FROM synced_groups WHERE id=?').get(groupId) as { revision: string; topology_revision: string; bindings_json: string; history_cursor: string; history_position: number } | undefined
+  if (!state || !row || state.exposure !== 'never' || state.createHistoryId !== token || state.creationId !== journal.create.wire.creationId
+    || row.revision !== state.activationRevision || row.topology_revision !== state.activationTopologyRevision) unsupported('lifecycle')
+  if (!hostEqual(hostJson(row.bindings_json), journal.create.wire.bindings) || !isSyncedUuid(row.history_cursor) || row.history_position !== 0
+    || db.prepare('SELECT 1 FROM synced_group_history WHERE group_id=? LIMIT 1').get(groupId)) unsupported('lifecycle')
+  const wire = journal.create.wire, base = { groupId, creationId: wire.creationId, createdAt: wire.createdAt, origin: wire.origin,
+    createHistoryId: token, stateVersion: state.stateVersion, exposure: 'never' as const, revision: row.revision, topologyRevision: row.topology_revision,
+    activationRevision: state.activationRevision, activationTopologyRevision: state.activationTopologyRevision, activationHash: state.activationHash, activationInstances: state.activationInstances }
+  if (state.activationHash !== journal.create.wireHash) unsupported('lifecycle')
+  if (state.state === 'active') return validateCreatedLifecycleSide({ ...base, state: 'active' })
+  const retirement = db.prepare('SELECT wire_json,retired_at FROM synced_group_retirements WHERE group_id=?').get(groupId) as { wire_json: string; retired_at: string } | undefined
+  if (!retirement) throw new Error('create 退役原wire缺失。')
+  return validateCreatedLifecycleSide({ ...base, state: 'retired-create', wire: hostJson(retirement.wire_json), retiredAt: retirement.retired_at })
+}
+function createResult(db: Database.Database, operationId: string, token: string, before: HostSide[], required: Set<string>, affected: string[], journal: HostCreateJournal): SyncedHostCreateApplied {
+  const createdLifecycle = createLifeSide(db, journal, token), visible = new Set(required)
+  if (createdLifecycle.state === 'retired-create') visible.delete(createdLifecycle.groupId)
+  return { ...result(db, operationId, 'applied', token, before, visible, affected), status: 'applied', historyToken: token, blockIdMap: [], createdLifecycle }
+}
+function applyCreate(db: Database.Database, input: HostCreateInput, requestHash: string, previous: SyncedMainHostSuccess | null): SyncedHostCreateApplied {
+  if (input.hostsWorkingBefore.length !== 1 || input.hostsWorkingBefore[0].documentId !== input.action.documentId) unsupported('command')
+  if (previous) {
+    if (!('createdLifecycle' in previous) || previous.createdLifecycle.state !== 'active' || previous.createdLifecycle.groupId !== input.action.groupId) throw new Error('原create回执namespace或创建组不匹配。')
+    const journal = storedCreateJournal(db, previous.historyToken)
+    if (!hostEqual(journal.input, input) || !hostEqual(previous.hosts.map(host => ({ documentId: host.documentId, content: host.logicalBefore })), journal.before)
+      || !sameHostContent({ title: previous.hosts[0].after.title, summary: previous.hosts[0].after.summary, blocks: previous.hosts[0].after.blocks.map(({ sortOrder: _order, ...block }) => block) }, journal.after[0].content)) throw new Error('原create回执与同一请求完整 W/A 不一致。')
+    return previous
+  }
+  const all = readAllHosts(db), groups = allGroups(db), ids = [input.action.documentId], hosts = participating(all, ids), persisted = persistedSides(hosts)
+  const before: HostSide[] = input.hostsWorkingBefore.map(item => ({ documentId: item.documentId, content: item.workingBefore }))
+  checkUpdatedAt(input.hostsWorkingBefore.map(item => ({ documentId: item.documentId, expectedUpdatedAt: item.expectedPersistedUpdatedAt })), hosts, groups)
+  if (!hasSyncedInsertWorkingStructure(persisted[0].content, before[0].content)) unsupported('working-structure')
+  const required = guards(input, persisted, before, groups, hosts), repository = new BlockIdentityRepository(db), workspace = repository.getWorkspaceIdentity()
+  if (!isSyncedUuid(workspace.workspaceScope) || !isSyncedUuid(workspace.recoveryEpoch)) invalid('identity', '真实工作区身份无效。')
+  if (db.prepare('SELECT 1 FROM synced_groups WHERE id=?').get(input.action.groupId)) invalid('identity', 'create 组身份已被active或retired incarnation占用。')
+  if (repository.get(input.action.instanceId) || repository.resolveLiveOwner(input.action.instanceId)) invalid('identity', 'create 新实例不是未占用的fresh UUID。')
+  const now = time(hosts), originalBirths = births(db, before, hosts, now), oldBirths = new Map(originalBirths.map(item => [item.blockId, item.createdAt])), allocated = new Set(before[0].content.blocks.map(block => block.id))
+  allocated.add(input.action.instanceId)
+  const shape = planSyncedHostCreate(input, () => {
+    let id: string; do { id = randomUUID() } while (allocated.has(id) || repository.get(id) || repository.resolveLiveOwner(id))
+    allocated.add(id); return { id, createdAt: now }
+  })
+  const after: HostSide[] = [{ documentId: input.action.documentId, content: shape.after }]
+  nonempty(after); checkTitlesAndHeadings(hosts, before, after)
+  const acceptedBirths = births(db, [...before, ...after], hosts, now), birthMap = new Map(acceptedBirths.map(item => [item.blockId, item.createdAt]))
+  const origin = { version: 1 as const, documentId: input.action.documentId, pathAtCreation: hosts.get(input.action.documentId)!.detail.path, firstInstanceId: input.action.instanceId }
+  const sourceBindings = captureSyncedCreateBindings(db, origin, before[0].content.blocks), sourceMap = new Map(sourceBindings.map(item => [createPhysicalKey(item.key), item]))
+  const auxMap = new Map(shape.auxiliary.map(item => [item.id, item]))
+  const candidate = validateSyncedGroupWire({ kind: 'synced-group', id: input.action.groupId, creationId: randomUUID(), createdAt: now, origin,
+    blocks: shape.canonical.map(block => ({ ...block, createdAt: auxMap.get(block.id)?.createdAt ?? oldBirths.get(block.id) ?? invalid('identity', 'canonical 选区缺少其Main准确birth。') })),
+    bindings: projectSyncedCreateLinks(shape, captureSyncedCreateSourceFacts(before[0].content.blocks).links).filter(item => sourceMap.has(createPhysicalKey(item.source))).map(item => ({ ...item.destination, target: sourceMap.get(createPhysicalKey(item.source))!.target })) })
+  const graph = finalGraph(all, groups, after, { wire: candidate, retire: false }), token = randomUUID(), revision = randomUUID(), topology = randomUUID(), binding = randomUUID()
+  const dependencies = [...required].map(id => { const group = groups.get(id)!; return { groupId: id, creationId: group.creationId, createdAt: group.createdAt, origin: group.origin } })
+  dependencies.push({ groupId: candidate.id, creationId: candidate.creationId, createdAt: candidate.createdAt, origin: candidate.origin }); required.add(candidate.id)
+  const journal: HostCreateJournal = { input, persisted: persisted.map(side => ({ ...side, updatedAt: hosts.get(side.documentId)!.detail.updatedAt })), births: acceptedBirths,
+    groups: dependencies, before, after, create: { wire: candidate, wireHash: createRawHash(candidate), selectedIds: shape.selectedIds, auxiliary: shape.auxiliary, instanceCreatedAt: birthMap.get(input.action.instanceId)!, sourceBindings } }
+  const encoded = encodeHostCreateJournal(journal), row = { id: token, action_json: encoded.action, before_json: encoded.before, after_json: encoded.after, before_hash: encoded.beforeHash, after_hash: encoded.afterHash, created_at: now }
+  decodeHostCreateJournal(row); prune(db, ids); insertHostJournal(db, row)
+  db.prepare('INSERT INTO synced_groups(id,creation_id,created_at,origin_json,bindings_json,revision,topology_revision,history_cursor,history_position) VALUES(?,?,?,?,?,?,?,?,0)')
+    .run(candidate.id, candidate.creationId, candidate.createdAt, hostEncode(candidate.origin), hostEncode(candidate.bindings), revision, topology, randomUUID())
+  db.prepare("INSERT INTO synced_group_lifecycle(group_id,creation_id,state,state_version,exposure_state,create_history_id,activation_revision,activation_topology_revision,activation_hash,activation_instances_json,created_at,updated_at) VALUES(?,?,'active',1,'never',?,?,?,?,?,?,?)")
+    .run(candidate.id, candidate.creationId, token, revision, topology, journal.create.wireHash, hostEncode([{ instanceId: input.action.instanceId, hostDocumentId: input.action.documentId, bindingVersion: binding }]), now, now)
+  const affected = writeHosts(db, hosts, after, acceptedBirths, groups, graph, now, true, createWritePermit(journal, 'create', binding))
+  for (const id of journal.create.selectedIds) db.prepare('INSERT OR IGNORE INTO document_block_routes(document_path,block_id) VALUES(?,?)').run(origin.pathAtCreation, id)
+  assertSyncedStoredBindings(db, candidate.origin, candidate.blocks, candidate.bindings, candidate.id)
+  appendHostHistory(db, ids, token, journal.groups, now); assertHostChain(db, ids[0])
+  return createReceipt(db, createResult(db, input.clientOperationId, token, before, required, affected, journal), requestHash, now)
+}
+function writeCreateOwnership(db: Database.Database, permit: CreateWritePermit): void {
+  const { journal, direction } = permit, group = journal.create.wire, documentId = journal.input.action.documentId, undo = direction === 'undo'
+  if (undo) db.prepare('DELETE FROM synced_group_blocks WHERE group_id=?').run(group.id)
+  const birthMap = new Map(journal.births.map(item => [item.blockId, item.createdAt]))
+  for (const id of journal.create.selectedIds) {
+    const from = undo ? 'group' : 'document', to = undo ? 'document' : 'group', sourceId = undo ? group.id : documentId, targetId = undo ? documentId : group.id
+    if (db.prepare("UPDATE block_identities SET last_owner_kind=?,last_owner_id=? WHERE id=? AND last_owner_kind=? AND last_owner_id=? AND state='retained' AND created_at=?")
+      .run(to, targetId, id, from, sourceId, birthMap.get(id)).changes !== 1) invalid('identity', 'create 原selected owner/birth迁域不完整。')
+  }
+  if (undo) return
+  const repository = new BlockIdentityRepository(db)
+  for (const item of journal.create.auxiliary) if (item.role === 'group-definition' && !repository.get(item.id)) db.prepare("INSERT INTO block_identities(id,last_owner_kind,last_owner_id,state,created_at) VALUES(?,'group',?,'retained',?)").run(item.id, group.id, item.createdAt)
+  const insert = db.prepare('INSERT INTO synced_group_blocks(id,group_id,parent_block_id,sort_order,type,content,checked,depth,tags_json,language,list_start,markdown_format_json,highlight,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+  group.blocks.forEach((block, index) => insert.run(block.id, group.id, block.parentBlockId, index, block.type, block.content, block.checked ? 1 : 0, block.depth, block.tags === undefined ? null : hostEncode(block.tags), block.language ?? null, block.listStart ?? null, block.markdownFormat === undefined ? null : hostEncode(block.markdownFormat), block.highlight ?? null, block.createdAt))
+}
+
+function replayCreateRestore(db: Database.Database, input: SyncedRestoreHostInput, previous: SyncedHostCreateApplied): SyncedHostCreateApplied {
+  const journal = storedCreateJournal(db, input.historyToken), undo = input.direction === 'undo', from = undo ? journal.after : journal.before, to = undo ? journal.before : journal.after
+  if (previous.historyToken !== input.historyToken || previous.createdLifecycle.state !== (undo ? 'retired-create' : 'active')
+    || !exactSet(input.expectedHosts.map(item => item.documentId), from.map(side => side.documentId))
+    || !exactSet(input.groups.map(item => item.groupId), journal.groups.map(item => item.groupId))
+    || !hostEqual(previous.hosts.map(item => ({ documentId: item.documentId, content: item.logicalBefore })), from)
+    || previous.hosts.some(item => !sameHostContent({ title: item.after.title, summary: item.after.summary, blocks: item.after.blocks.map(({ sortOrder: _order, ...block }) => block) }, to.find(side => side.documentId === item.documentId)!.content))) throw new Error('原create逆回执与同一请求完整原side不一致。')
+  return previous
+}
+function stableTarget(value: HostCreateJournal['create']['sourceBindings'][number]['target']): unknown {
+  if (value.kind === 'document' || value.kind === 'block') return { kind: value.kind, id: value.id }
+  if (value.kind === 'heading') return { kind: value.kind, documentId: value.documentId, slug: value.slug }
+  return value
+}
+function checkCreateInverseSources(db: Database.Database, journal: HostCreateJournal, hosts: Hosts): void {
+  const original = journal.create.wire.origin, current = hosts.get(original.documentId)!
+  // Relative image/asset bases are not covered by the local-document ledger.
+  // This first create slice conservatively keeps the original host path.
+  if (current.detail.path !== original.pathAtCreation) unsupported('semantic-binding')
+  const source = captureSyncedCreateBindings(db, { ...original, pathAtCreation: current.detail.path }, journal.before[0].content.blocks)
+  const expected = new Map(journal.create.sourceBindings.map(item => [createPhysicalKey(item.key), item]))
+  if (source.length !== expected.size || source.some(item => { const old = expected.get(createPhysicalKey(item.key)); return !old || old.url !== item.url || !hostEqual(stableTarget(old.target), stableTarget(item.target)) })) unsupported('semantic-binding')
+}
+function checkCreateOriginalIdentities(db: Database.Database, journal: HostCreateJournal, undo: boolean): void {
+  const repository = new BlockIdentityRepository(db), selected = new Set(journal.create.selectedIds), from = undo ? journal.after[0].content : journal.before[0].content
+  const currentIds = new Set(from.blocks.map(block => block.id)), groupId = journal.create.wire.id, documentId = journal.input.action.documentId
+  for (const birth of journal.births) {
+    const identity = repository.get(birth.blockId), owner = repository.resolveLiveOwner(birth.blockId), canonical = undo && selected.has(birth.blockId)
+    const kind = canonical ? 'group' : 'document', id = canonical ? groupId : documentId, live = canonical || currentIds.has(birth.blockId)
+    if (!identity || identity.owner.kind !== kind || identity.owner.id !== id || identity.createdAt !== birth.createdAt
+      || (live ? identity.state !== 'live' || owner?.kind !== kind || owner.id !== id : identity.state !== 'retained' || owner !== null)) invalid('identity', 'create 原W/实例/辅助身份、准确birth或retained资格已变化。')
+  }
+  for (const item of journal.create.auxiliary) if (item.role === 'group-definition') {
+    const identity = repository.get(item.id), owner = repository.resolveLiveOwner(item.id)
+    if (!identity || identity.owner.kind !== 'group' || identity.owner.id !== groupId || identity.createdAt !== item.createdAt
+      || (undo ? identity.state !== 'live' || owner?.kind !== 'group' || owner.id !== groupId : identity.state !== 'retained' || owner !== null)) invalid('identity', 'create 原group辅助definition身份不再准确。')
+  }
+}
+function createInversePreflight(db: Database.Database, input: SyncedRestoreHostInput, journal: HostCreateJournal) {
+  const undo = input.direction === 'undo', from = undo ? journal.after : journal.before, to = undo ? journal.before : journal.after, ids = from.map(side => side.documentId)
+  if (!exactSet(input.expectedHosts.map(item => item.documentId), ids)) invalid('binding', 'create 恢复宿主必须与原journal完整闭合。')
+  const all = readAllHosts(db), groups = allGroups(db), hosts = participating(all, ids), persisted = persistedSides(hosts), groupId = journal.create.wire.id
+  checkUpdatedAt(input.expectedHosts, hosts, groups)
+  for (const side of from) {
+    assertHostChain(db, side.documentId); const history = getSyncedHostHistory(db, { documentId: side.documentId })
+    if ((undo ? history.undoToken : history.redoToken) !== input.historyToken || !sameHostContent(hosts.get(side.documentId)!.content, side.content)) conflict('history', groups, hosts)
+  }
+  const mappings = db.prepare('SELECT document_id,position FROM synced_host_history_documents WHERE history_id=?').all(input.historyToken) as Array<{ document_id: string; position: number }>
+  if (!exactSet(mappings.map(item => item.document_id), ids)) throw new Error('create 原journal与mappings参与者不一致。')
+  const lifecycle = createLifeSide(db, journal, input.historyToken)
+  if (lifecycle.state !== (undo ? 'active' : 'retired-create')) unsupported('lifecycle')
+  const ownGuard = input.groups.find(item => item.groupId === groupId)
+  if (!ownGuard || ownGuard.expectedRevision !== lifecycle.revision || ownGuard.expectedTopologyRevision !== lifecycle.topologyRevision) conflict('group', groups, hosts)
+  const ownInstances = input.expectedInstances.filter(item => item.instanceId === journal.input.action.instanceId)
+  if (undo) {
+    const current = groups.get(groupId)
+    if (!current || !hostEqual(wire(current), journal.create.wire) || !hostEqual(current.instances.map(({ instanceId, hostDocumentId, bindingVersion }) => ({ instanceId, hostDocumentId, bindingVersion })), lifecycle.activationInstances)) unsupported('lifecycle')
+    if (ownInstances.length !== 1 || !hostEqual(ownInstances, lifecycle.activationInstances)) conflict('topology', groups, hosts)
+    const pins = db.prepare('SELECT kind,pin_id FROM synced_group_pins WHERE group_id=?').all(groupId) as Array<{ kind: string; pin_id: string }>
+    if (pins.length !== 1 || pins[0].kind !== 'host-history' || pins[0].pin_id !== input.historyToken) unsupported('lifecycle')
+  } else if (ownInstances.length) invalid('binding', 'retired的新实例没有实际registry，不能伪造expectedInstance。')
+  for (const dependency of journal.groups) if (dependency.groupId !== groupId) {
+    const current = groups.get(dependency.groupId) ?? missing('group', dependency.groupId)
+    if (current.creationId !== dependency.creationId || current.createdAt !== dependency.createdAt || !hostEqual(current.origin, dependency.origin)) conflict('group', groups, hosts)
+    if (!db.prepare("SELECT 1 FROM synced_group_pins WHERE group_id=? AND kind='host-history' AND pin_id=?").get(dependency.groupId, input.historyToken)) throw new Error('create 原其它组依赖pin缺失。')
+  }
+  const withoutOwn = (values: HostSide[]) => values.map(side => ({ ...side, content: { ...side.content, blocks: side.content.blocks.filter(block => block.id !== journal.input.action.instanceId) } }))
+  const otherInput = { groups: input.groups.filter(item => item.groupId !== groupId), expectedInstances: input.expectedInstances.filter(item => item.instanceId !== journal.input.action.instanceId) }
+  const other = guards(otherInput, withoutOwn(persisted), withoutOwn(to), groups, hosts, journal.groups.filter(item => item.groupId !== groupId).map(item => item.groupId))
+  if (input.groups.length !== other.size + 1) invalid('binding', 'create 原组与retired组guard未双向闭合。')
+  other.add(groupId)
+  nonempty(to); checkTitlesAndHeadings(hosts, persisted, to); checkCreateOriginalIdentities(db, journal, undo); checkCreateInverseSources(db, journal, hosts)
+  const graph = finalGraph(all, groups, to, { wire: journal.create.wire, retire: undo })
+  return { undo, from, to, ids, all, groups, hosts, persisted, lifecycle, mappings, required: other, graph }
+}
+function restoreCreate(db: Database.Database, input: SyncedRestoreHostInput, requestHash: string, journal: HostCreateJournal): SyncedHostCreateApplied {
+  const checked = createInversePreflight(db, input, journal), group = journal.create.wire, now = time(checked.hosts)
+  const binding = checked.undo ? checked.lifecycle.activationInstances[0].bindingVersion : randomUUID()
+  if (checked.undo) {
+    db.prepare('INSERT INTO synced_group_retirements(group_id,creation_id,create_history_id,wire_json,semantic_hash,retired_at) VALUES(?,?,?,?,?,?)')
+      .run(group.id, group.creationId, input.historyToken, hostEncode(group), journal.create.wireHash, now)
+    if (db.prepare("DELETE FROM synced_group_pins WHERE group_id=? AND kind='host-history' AND pin_id=?").run(group.id, input.historyToken).changes !== 1) throw new Error('create 自身精确pin无法撤回。')
+  } else {
+    const revision = randomUUID(), topology = randomUUID()
+    if (db.prepare('UPDATE synced_groups SET revision=?,topology_revision=?,history_cursor=? WHERE id=? AND revision=? AND topology_revision=?').run(revision, topology, randomUUID(), group.id, checked.lifecycle.revision, checked.lifecycle.topologyRevision).changes !== 1) conflict('group', checked.groups, checked.hosts)
+    if (db.prepare("UPDATE synced_group_lifecycle SET state='active',state_version=state_version+1,activation_revision=?,activation_topology_revision=?,activation_hash=?,activation_instances_json=?,updated_at=? WHERE group_id=? AND state='retired-create' AND exposure_state='never' AND state_version=?")
+      .run(revision, topology, journal.create.wireHash, hostEncode([{ instanceId: journal.input.action.instanceId, hostDocumentId: journal.input.action.documentId, bindingVersion: binding }]), now, group.id, checked.lifecycle.stateVersion).changes !== 1) unsupported('lifecycle')
+    if (db.prepare('DELETE FROM synced_group_retirements WHERE group_id=?').run(group.id).changes !== 1) throw new Error('create 原冻结retirement无法消费。')
+  }
+  const affected = writeHosts(db, checked.hosts, checked.to, journal.births, checked.groups, checked.graph, now, true,
+    createWritePermit(journal, checked.undo ? 'undo' : 'redo', binding))
+  if (checked.undo) {
+    if (db.prepare("UPDATE synced_group_lifecycle SET state='retired-create',state_version=state_version+1,updated_at=? WHERE group_id=? AND state='active' AND exposure_state='never' AND state_version=?")
+      .run(now, group.id, checked.lifecycle.stateVersion).changes !== 1) unsupported('lifecycle')
+  } else {
+    db.prepare("INSERT INTO synced_group_pins(group_id,kind,pin_id,created_at) VALUES(?,'host-history',?,?)").run(group.id, input.historyToken, now)
+    assertSyncedStoredBindings(db, group.origin, group.blocks, group.bindings, group.id)
+  }
+  const map = new Map(checked.mappings.map(item => [item.document_id, item]))
+  for (const id of checked.ids) {
+    const current = db.prepare('SELECT cursor,position FROM synced_host_history_state WHERE document_id=?').get(id) as { cursor: string; position: number }, mapping = map.get(id)!
+    if (mapping.position !== current.position + (checked.undo ? 0 : 1)) conflict('history', checked.groups, checked.hosts)
+    if (db.prepare('UPDATE synced_host_history_state SET cursor=?,position=? WHERE document_id=? AND cursor=? AND position=?').run(randomUUID(), current.position + (checked.undo ? -1 : 1), id, current.cursor, current.position).changes !== 1) conflict('history', checked.groups, checked.hosts)
+    assertHostChain(db, id)
+  }
+  return createReceipt(db, createResult(db, input.clientOperationId, input.historyToken, checked.from, checked.required, affected, journal), requestHash, now)
+}
+
+export type SyncedCreateRestoreContext = { status: 'ready'; workspaceScope: string; restore: Omit<SyncedRestoreHostInput, 'clientOperationId'>; createdLifecycle: CreatedLifecycleSide }
+  | { status: 'unavailable'; reason: 'journal-kind' | 'history' | 'lifecycle' }
+export function getSyncedCreateRestoreContext(db: Database.Database, value: unknown): SyncedCreateRestoreContext {
+  assertSyncedShape(value, ['historyToken', 'direction'])
+  if (!isSyncedUuid(value.historyToken) || value.direction !== 'undo' && value.direction !== 'redo') invalid('identity', 'create restore-context 输入无效。')
+  const historyToken = value.historyToken, direction = value.direction
+  if (db.inTransaction) throw new Error('create restore-context 必须拥有自己的只读事务。')
+  return db.transaction((): SyncedCreateRestoreContext => {
+    const row = db.prepare('SELECT id,action_json,before_json,after_json,before_hash,after_hash,created_at FROM synced_host_history WHERE id=?').get(historyToken) as SyncedHostHistoryBranchRow | undefined
+    if (!row) return { status: 'unavailable', reason: 'history' }
+    if (hostJournalKind(row) === 'bare-create') return { status: 'unavailable', reason: 'journal-kind' }
+    const journal = decodeHostJournal(row)
+    if (!('create' in journal)) return { status: 'unavailable', reason: 'journal-kind' }
+    try {
+      for (const side of journal.before) {
+        assertHostChain(db, side.documentId)
+        const history = getSyncedHostHistory(db, { documentId: side.documentId })
+        if ((direction === 'undo' ? history.undoToken : history.redoToken) !== historyToken) return { status: 'unavailable', reason: 'history' }
+      }
+      const all = readAllHosts(db), groups = allGroups(db), document = all.get(journal.input.action.documentId) ?? missing('document', journal.input.action.documentId)
+      const side = createLifeSide(db, journal, historyToken), guards = journal.groups.map(dependency => {
+        const group = dependency.groupId === side.groupId ? side : groups.get(dependency.groupId) ?? missing('group', dependency.groupId)
+        return { groupId: dependency.groupId, expectedRevision: group.revision, expectedTopologyRevision: group.topologyRevision }
+      })
+      const expectedInstances = document.content.blocks.filter(block => block.type === 'synced-block').map(block => {
+        const group = groups.get(parseSyncedBlockPayload(block.content).groupId), instance = group?.instances.find(item => item.instanceId === block.id)
+        if (!instance) return missing('instance', block.id)
+        return { instanceId: instance.instanceId, hostDocumentId: instance.hostDocumentId, bindingVersion: instance.bindingVersion }
+      })
+      const restore: Omit<SyncedRestoreHostInput, 'clientOperationId'> = { historyToken, direction, expectedHosts: [{ documentId: document.detail.id, expectedUpdatedAt: document.detail.updatedAt }], groups: guards, expectedInstances }
+      const checked = createInversePreflight(db, { clientOperationId: historyToken, ...restore }, journal), workspace = new BlockIdentityRepository(db).getWorkspaceIdentity()
+      if (!isSyncedUuid(workspace.workspaceScope) || !isSyncedUuid(workspace.recoveryEpoch)) invalid('identity', '真实工作区身份无效。')
+      return { status: 'ready', workspaceScope: workspace.workspaceScope, restore, createdLifecycle: checked.lifecycle }
+    } catch (error) {
+      if (error instanceof Refused) return { status: 'unavailable', reason: 'kind' in error.result && error.result.kind === 'history' ? 'history' : 'lifecycle' }
+      if (error instanceof UnsupportedSyncedHostCreate) return { status: 'unavailable', reason: 'lifecycle' }
+      throw error
+    }
+  })()
 }
