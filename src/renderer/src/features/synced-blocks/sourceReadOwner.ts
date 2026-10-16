@@ -5,7 +5,10 @@ import { collectDocumentMarkdownLinks } from '@shared/markdownLinkMaintenance'
 import { resolveMarkdownDocumentPath } from '@shared/markdownLinks'
 import { readSyncedCommittedEndpoint, readSyncedWorkingEndpoint,
   type SyncedCommittedEndpointReceipt, type SyncedWorkingEndpointReceipt, type SyncedSourceReadOwnerFence } from './controller'
-import { readSourceReadOwnerAccess, type SourceCheckpoint, type AcceptedSourceCheckpoint, type AcceptedSourceCheckpointFacts } from './sourceLedger'
+import { readSourceReadOwnerAccess, installSourceHistorySide, revokeSourceHistoryOwner, type SourceCheckpoint, type AcceptedSourceCheckpoint, type AcceptedSourceCheckpointFacts } from './sourceLedger'
+import { createDomain, createConsumer, issueWitness, revokeConsumer, whenDomainDrained, domainDrained,
+  type CopyDomain, type DomainIssuer, type ConsumerIssuer, type WitnessLease } from './sourceCopyResources'
+import type { SyncedBindingKey } from '@shared/synced-blocks'
 
 /** Trusted private adapters only. No production Store/IPC/UI is connected here. */
 export interface SyncedReadSourcesPort {
@@ -21,7 +24,7 @@ export interface SyncedReadSourcesPort {
 }
 
 /** Only the registry's original initial-load context can reach a checkpoint. */
-export interface ControllerReadOwnerContext { readonly kind: 'controller-read-owner'; release(): void }
+export interface ControllerReadOwnerContext { readonly kind: 'controller-read-owner'; readonly copyDomain: CopyDomain; release(): void }
 export interface SourceReadOwner { readonly kind: 'source-read-owner' }
 export interface AdoptedSourceSide { readonly kind: 'adopted-source-side' }
 export interface AdoptedSourceSideFacts {
@@ -45,15 +48,20 @@ export interface SourceReadOwnerAccess {
   finalize(endpoint: SyncedWorkingEndpointReceipt, fence: SyncedSourceReadOwnerFence, validate: () => boolean,
     accepted?: AcceptedSourceCheckpoint): boolean
 }
+export interface SourceHistoryRegistrationPermit { readonly kind: 'source-history-registration-permit' }
+export type SourceHistoryRegistrationResult = Readonly<{ status: 'registered' | 'unavailable' | 'owner-unavailable' }>
 type Context = {
+  copyDomain: CopyDomain; copyIssuer: DomainIssuer
   port: SyncedReadSourcesPort; readOwnerId: string; workspaceScope: string
   snapshot: SyncedGroupSnapshot; source: SyncedBindingSource
   references: number; cleanup: Promise<void> | null; cleanupFailed: boolean
 }
-type Owner = { context: Context; access: SourceReadOwnerAccess; closed: boolean; requests: number; idle: Array<() => void> }
+type Owner = { checkpoint: SourceCheckpoint; issuer: ConsumerIssuer; context: Context; access: SourceReadOwnerAccess; closed: boolean; requests: number; idle: Array<() => void> }
 const contexts = new WeakMap<ControllerReadOwnerContext, Context>()
 const owners = new WeakMap<SourceReadOwner, Owner>()
-const sides = new WeakMap<AdoptedSourceSide, AdoptedSourceSideFacts>()
+const sides = new WeakMap<AdoptedSourceSide, { facts: AdoptedSourceSideFacts; owner: SourceReadOwner; accepted: AcceptedSourceCheckpoint | null }>()
+const historyPermits = new WeakMap<SourceHistoryRegistrationPermit, { checkpoint: SourceCheckpoint; owner: SourceReadOwner; side: AdoptedSourceSide; accepted: AcceptedSourceCheckpoint | null; facts: AdoptedSourceSideFacts }>()
+const historyEntryIndices = new WeakMap<SourceHistoryRegistrationPermit, ReadonlyMap<string, string>>()
 const refused = (reason: string): SourceSideAdoptionResult => Object.freeze({ status: 'unavailable', reason })
 const ownerUnavailable = Object.freeze({ status: 'owner-unavailable' as const })
 const unknownOperation = Object.freeze({ status: 'unknown-operation' as const })
@@ -144,7 +152,11 @@ function portSnapshot(input: SyncedReadSourcesPort): SyncedReadSourcesPort {
 }
 function release(context: Context): Promise<void> | null {
   if (--context.references !== 0) return context.cleanup
-  context.cleanup = Promise.resolve().then(() => context.port.release({ readOwnerId: context.readOwnerId }))
+  context.cleanup = Promise.resolve().then(async () => {
+    await whenDomainDrained(context.copyIssuer)
+    // references reached zero before this wait, so new retains are already refused.
+    await context.port.release({ readOwnerId: context.readOwnerId })
+  })
     .catch(() => { context.cleanupFailed = true })
   return context.cleanup
 }
@@ -180,10 +192,11 @@ export async function captureControllerReadOwner(input: SyncedReadSourcesPort, g
     const snapshot = freeze(validateSyncedGroupSnapshot(value.snapshot))
     if (snapshot.groupId !== groupId) return fail()
     const source = sourceFor(snapshot, value.bindingSource)
-    const saved: Context = { port, readOwnerId: value.readOwnerId, workspaceScope: value.workspaceScope,
+    const domain = createDomain()
+    const saved: Context = { copyDomain: domain.domain, copyIssuer: domain.issuer, port, readOwnerId: value.readOwnerId, workspaceScope: value.workspaceScope,
       snapshot, source, references: 1, cleanup: null, cleanupFailed: false }
     let dropped = false
-    const context: ControllerReadOwnerContext = Object.freeze({ kind: 'controller-read-owner', release: () => {
+    const context: ControllerReadOwnerContext = Object.freeze({ kind: 'controller-read-owner', copyDomain: domain.domain, release: () => {
       if (!dropped) { dropped = true; release(saved) }
     } })
     contexts.set(context, saved)
@@ -201,7 +214,7 @@ export function openSourceReadOwner(checkpoint: SourceCheckpoint): SourceReadOwn
   if (!context || !retain(context)) return null
   if (!access.capture(access.endpoint)) { release(context); return null }
   const owner: SourceReadOwner = Object.freeze({ kind: 'source-read-owner' })
-  owners.set(owner, { context, access, closed: false, requests: 0, idle: [] })
+  owners.set(owner, { checkpoint, issuer: createConsumer(context.copyIssuer).issuer, context, access, closed: false, requests: 0, idle: [] })
   return owner
 }
 function begin(value: SourceReadOwner): Owner | null {
@@ -218,10 +231,10 @@ function final(owner: Owner, endpoint: SyncedWorkingEndpointReceipt, fence: Sync
   accepted?: AcceptedSourceCheckpoint): boolean {
   return !owner.closed && owner.access.finalize(endpoint, fence, () => !owner.closed, accepted) && !owner.closed
 }
-function adopted(owner: Owner, facts: AdoptedSourceSideFacts): SourceSideAdoptionResult {
+function adopted(value: SourceReadOwner, owner: Owner, facts: AdoptedSourceSideFacts, accepted: AcceptedSourceCheckpoint | null): SourceSideAdoptionResult {
   if (owner.closed) return refused('closed')
   const side: AdoptedSourceSide = Object.freeze({ kind: 'adopted-source-side' })
-  sides.set(side, Object.freeze(facts))
+  sides.set(side, { facts: Object.freeze(facts), owner: value, accepted })
   return Object.freeze({ status: 'adopted', side })
 }
 export async function adoptSourceBaseline(value: SourceReadOwner): Promise<SourceSideAdoptionResult> {
@@ -239,7 +252,7 @@ export async function adoptSourceBaseline(value: SourceReadOwner): Promise<Sourc
     fields(raw, ['status', 'workspaceScope'])
     if (raw.status !== 'ready' || raw.workspaceScope !== context.workspaceScope || !isSyncedUuid(raw.workspaceScope)) return refused('workspace-mismatch')
     if (!final(owner, access.endpoint, fence)) return refused('stale-local-context')
-    return adopted(owner, { kind: 'baseline', snapshot: context.snapshot, bindingSource: context.source, endpoint: access.endpoint, committed: null })
+    return adopted(value, owner, { kind: 'baseline', snapshot: context.snapshot, bindingSource: context.source, endpoint: access.endpoint, committed: null }, null)
   } catch { return refused('invalid-or-failed-read') } finally { finish(owner) }
 }
 export async function adoptAcceptedSource(value: SourceReadOwner, accepted: AcceptedSourceCheckpoint): Promise<SourceSideAdoptionResult> {
@@ -267,15 +280,43 @@ export async function adoptAcceptedSource(value: SourceReadOwner, accepted: Acce
     if (!equal(snapshot, committed.ack.snapshot)) return refused('ack-snapshot-mismatch')
     const bindingSource = sourceFor(snapshot, raw.bindingSource)
     if (owner.access.accepted(accepted)?.committed !== facts.committed || !final(owner, facts.endpoint, fence, accepted)) return refused('stale-local-context')
-    return adopted(owner, { kind: 'accepted', snapshot, bindingSource, endpoint: facts.endpoint, committed: facts.committed })
+    return adopted(value, owner, { kind: 'accepted', snapshot, bindingSource, endpoint: facts.endpoint, committed: facts.committed }, accepted)
   } catch { return refused('invalid-or-failed-read') } finally { finish(owner) }
 }
 export async function closeSourceReadOwner(value: SourceReadOwner): Promise<void> {
   const owner = owners.get(value)
   if (!owner) return
-  if (!owner.closed) { owner.closed = true; release(owner.context) }
+  if (!owner.closed) { owner.closed = true; revokeConsumer(owner.issuer); revokeSourceHistoryOwner(value); release(owner.context) }
   if (owner.requests) await new Promise<void>(resolve => owner.idle.push(resolve))
-  await owner.context.cleanup
+  if (domainDrained(owner.context.copyIssuer)) await owner.context.cleanup
 }
 /** Frozen facts describe the successful read instant, not a permanent writer lease. */
-export function readAdoptedSourceSide(side: AdoptedSourceSide): AdoptedSourceSideFacts | null { return sides.get(side) ?? null }
+export function readAdoptedSourceSide(side: AdoptedSourceSide): AdoptedSourceSideFacts | null { return sides.get(side)?.facts ?? null }
+
+const historyKey = (key: Readonly<SyncedBindingKey>) => JSON.stringify([key.blockId, key.from, key.to, key.raw, key.syntax])
+export async function registerHistorySide(checkpoint: SourceCheckpoint, side: AdoptedSourceSide): Promise<SourceHistoryRegistrationResult> {
+  const record = sides.get(side), value = record?.owner, owner = value && begin(value)
+  if (!record || !value || !owner) return { status: 'unavailable' }
+  try {
+    if (owner.checkpoint !== checkpoint) return { status: 'unavailable' }
+    const fence = owner.access.capture(record.facts.endpoint)
+    if (!fence) return { status: 'unavailable' }
+    const raw = copyData(await owner.context.port.validate({ readOwnerId: owner.context.readOwnerId })) as Record<string, unknown>
+    if (raw.status === 'owner-unavailable') { fields(raw, ['status']); return ownerUnavailable }
+    fields(raw, ['status', 'workspaceScope'])
+    if (raw.status !== 'ready' || raw.workspaceScope !== owner.context.workspaceScope
+      || !final(owner, record.facts.endpoint, fence, record.accepted ?? undefined)) return { status: 'unavailable' }
+    const permit: SourceHistoryRegistrationPermit = Object.freeze({ kind: 'source-history-registration-permit' })
+    historyEntryIndices.set(permit, new Map(record.facts.bindingSource.entries.map(entry => [historyKey(entry.key), entry.entryId])))
+    historyPermits.set(permit, { checkpoint, owner: value, side, accepted: record.accepted, facts: record.facts })
+    try { return { status: installSourceHistorySide(permit) ? 'registered' : 'unavailable' } }
+    finally { historyPermits.delete(permit); historyEntryIndices.delete(permit) }
+  } catch { return { status: 'unavailable' } } finally { finish(owner) }
+}
+export function readHistoryRegistration(permit: SourceHistoryRegistrationPermit) { return historyPermits.get(permit) ?? null }
+export function issueHistoryWitness(permit: SourceHistoryRegistrationPermit, key: Readonly<SyncedBindingKey>): WitnessLease | null {
+  const record = historyPermits.get(permit), owner = record && owners.get(record.owner)
+  if (!record || !owner || owner.closed) return null
+  const entryId = historyEntryIndices.get(permit)?.get(historyKey(key))
+  return entryId ? issueWitness(owner.issuer, { ticketId: record.facts.bindingSource.ticketId, entryId }) : null
+}

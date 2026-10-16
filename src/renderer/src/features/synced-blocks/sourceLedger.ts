@@ -17,6 +17,10 @@ import { applySyncedSourceGroupWithEndpoint, captureSyncedSourceEndpoint, finali
 import type { SourceReadOwner, SourceReadOwnerAccess, AdoptedSourceSide, SourceSideAdoptionResult, AdoptedSourceSideFacts } from './sourceReadOwner'
 export type { SourceReadOwner, AdoptedSourceSide, SourceSideAdoptionResult, AdoptedSourceSideFacts } from './sourceReadOwner'
 import { syncedBindingClaimsAreIdentity } from './bindingClaims'
+import { readWitnessSource, dropWitness, sealPreparedBatch, preparedBatchLive, preparedBatchAccepted, discardPrepared,
+  type WitnessLease, type PreparedBatch } from './sourceCopyResources'
+import type { SourceHistoryRegistrationPermit, SourceHistoryRegistrationResult } from './sourceReadOwner'
+export type { SourceHistoryRegistrationResult } from './sourceReadOwner'
 import type { SyncedGroupBinding, SyncedScopeBookmark } from './types'
 import { allocateCanonicalSourceDraft, createCanonicalSourceAllocationBasis, readCanonicalSourceAllocation,
   canonicalSourceDraftToBlocksWithManifest, createCanonicalSourceDraftWithManifest, projectOpeningContentRange, projectOpeningSourceRange,
@@ -782,17 +786,20 @@ export type SourceCheckpointApplyResult = Readonly<{ status: 'accepted'; accepte
   | Readonly<{ status: 'unavailable' }>
 type CheckpointState = {
   binding: SyncedGroupBinding; root: Root; opening: SyncedSourceEndpointOpening; openingDraft: SourceLedgerDraft; endpoint: SyncedWorkingEndpointReceipt;
-  current: ReadonlyMap<Lineage, Readonly<SyncedBindingKey>>; seen: Set<Lineage>;
+  openingTokens: ReadonlyMap<Lineage, Readonly<SyncedBindingKey>>; current: ReadonlyMap<Lineage, Readonly<SyncedBindingKey>>; seen: Set<Lineage>;
   staged: PreparedSourceCheckpoint | null; preparing: boolean; applying: boolean
 }
 type CheckpointPreparation = {
   state: CheckpointState; facts: PreparedSourceCheckpointFacts; tokens: ReadonlyMap<Lineage, Readonly<SyncedBindingKey>>;
+  historyOwner?: SourceReadOwner; batch?: PreparedBatch
   result?: SourceCheckpointApplyResult
 }
 const checkpoints = new WeakMap<SourceCheckpoint, CheckpointState>()
 const checkpointPreparations = new WeakMap<PreparedSourceCheckpoint, CheckpointPreparation>()
 const acceptedCheckpoints = new WeakMap<AcceptedSourceCheckpoint, AcceptedSourceCheckpointFacts>()
 const acceptedOwners = new WeakMap<AcceptedSourceCheckpoint, CheckpointState>()
+const acceptedTokens = new WeakMap<AcceptedSourceCheckpoint, ReadonlyMap<Lineage, Readonly<SyncedBindingKey>>>()
+const historyWitnesses = new WeakMap<SourceReadOwner, { state: CheckpointState; values: Map<Lineage, WitnessLease>; sides: Map<Lineage, AdoptedSourceSide> }>()
 const unavailableCheckpoint = Object.freeze({ status: 'unavailable' as const })
 const noopCheckpoint = Object.freeze({ status: 'noop' as const })
 const historyCheckpoint = Object.freeze({ status: 'needs-history-source' as const })
@@ -804,10 +811,16 @@ function orderedCheckpoint(value: unknown): unknown {
 }
 const sameCheckpointBlocks = (left: readonly Readonly<SyncedCanonicalEdit>[], right: readonly Readonly<SyncedCanonicalEdit>[]) =>
   JSON.stringify(orderedCheckpoint(left)) === JSON.stringify(orderedCheckpoint(right))
-function checkpointEndpoint(state: CheckpointState, draft: SourceLedgerDraft, saved: Data) {
+function checkpointEndpoint(state: CheckpointState, draft: SourceLedgerDraft, saved: Data, history = false) {
   let receiptError: unknown
   const context = captureSyncedSourceEndpoint(state.binding, { expected: state.endpoint, validate: () => {
-    try { return data(draft) === saved } catch (error) {
+    try {
+      if (data(draft) !== saved) return false
+      if (!history) return true
+      const currentGrammar = ownDataGrammar()
+      return !!currentGrammar && sameArray(state.root.grammar, currentGrammar)
+        && readMarkdownSourceDraftReceipt(draft) === saved.facts.receipt
+    } catch (error) {
       try { readMarkdownSourceDraftReceipt(draft) } catch { receiptError = error }
       return false
     }
@@ -829,7 +842,7 @@ export function openSyncedSourceCheckpoint(binding: SyncedGroupBinding): {
   const opened = openCanonicalSourceLedger({ blocks: context.working, origin: context.origin, lease: context.lease })
   const saved = data(opened.draft), tokens = new Map<Lineage, Readonly<SyncedBindingKey>>()
   for (const lineage of saved.lineage.values()) if (lineage.source) tokens.set(lineage, lineage.source)
-  const state: CheckpointState = { binding, root: saved.root, opening: context, openingDraft: opened.draft, endpoint: context.endpoint, current: tokens,
+  const state: CheckpointState = { binding, root: saved.root, opening: context, openingDraft: opened.draft, endpoint: context.endpoint, openingTokens: tokens, current: tokens,
     seen: new Set(tokens.keys()), staged: null, preparing: false, applying: false }
   if (!checkpointEndpoint(state, opened.draft, saved)) return null
   const checkpoint: SourceCheckpoint = Object.freeze({ kind: 'source-checkpoint' })
@@ -846,9 +859,10 @@ function checkpointAllocation(draft: SourceLedgerDraft, saved: Data, freshId?: (
   return allocation
 }
 export function prepareSourceCheckpoint(input: {
-  checkpoint: SourceCheckpoint; draft: SourceLedgerDraft; freshId?: () => string
+  checkpoint: SourceCheckpoint; draft: SourceLedgerDraft; freshId?: () => string; historyOwner?: SourceReadOwner
 }): SourceCheckpointPreparationResult {
-  const parameters = plain(input, Object.hasOwn(input, 'freshId') ? ['checkpoint', 'draft', 'freshId'] : ['checkpoint', 'draft'])
+  const parameters = plain(input, ['checkpoint', 'draft', ...(Object.hasOwn(input, 'freshId') ? ['freshId'] : []),
+    ...(Object.hasOwn(input, 'historyOwner') ? ['historyOwner'] : [])])
   const state = checkpoints.get(parameters.checkpoint as SourceCheckpoint), draft = parameters.draft as SourceLedgerDraft
   if (!state || state.preparing || state.applying) return unavailableCheckpoint
   if (parameters.freshId !== undefined && typeof parameters.freshId !== 'function') fail('fresh ID 分配器不是实际函数')
@@ -857,9 +871,15 @@ export function prepareSourceCheckpoint(input: {
     const saved = data(draft)
     if (saved.root !== state.root) return unavailableCheckpoint
     if (state.staged) {
-      const staged = checkpointPreparations.get(state.staged)!
-      return staged.facts.draft === draft && checkpointEndpoint(state, draft, saved) && readMarkdownSourceDraftReceipt(draft) === saved.facts.receipt
-        ? Object.freeze({ status: 'prepared', preparation: state.staged }) : unavailableCheckpoint
+      const originalPreparation = state.staged, staged = checkpointPreparations.get(originalPreparation)!
+      if (staged.facts.draft !== draft || staged.historyOwner && staged.historyOwner !== parameters.historyOwner
+        || staged.batch && !preparedBatchLive(staged.batch)) return unavailableCheckpoint
+      const endpoint = checkpointEndpoint(state, draft, saved, !!staged.batch)
+      return state.staged === originalPreparation
+        && (!staged.batch || preparedBatchLive(staged.batch) && !!endpoint?.context.readOwner
+          && endpoint.context.readOwner === state.opening.readOwner)
+        && endpoint && readMarkdownSourceDraftReceipt(draft) === saved.facts.receipt
+        ? Object.freeze({ status: 'prepared', preparation: originalPreparation }) : unavailableCheckpoint
     }
     if (!checkpointEndpoint(state, draft, saved)) return unavailableCheckpoint
     if (saved.facts.uncertainReason) fail(saved.facts.uncertainReason)
@@ -867,7 +887,7 @@ export function prepareSourceCheckpoint(input: {
     const allocated = readCanonicalSourceAllocation(allocation)
     const actual: Reconciled = { blocks: allocated.blocks as SyncedCanonicalEdit[], syntax: null, manifest: allocated.reconciliationManifest }
     const result = checkedGeometry(draft, saved, actual), tokens = new Map<Lineage, Readonly<SyncedBindingKey>>()
-    const continued = new Set<string>(), values: SyncedBindingClaim[] = []
+    const continued = new Set<string>(), values: SyncedBindingClaim[] = [], copies: WitnessLease[] = []
     for (const { key, fact } of result.rows) {
       const token = saved.lineage.get(fact)
       if (!token?.proven || !token.source && !token.birth) fail('实际目的地没有闭合的 raw 来源')
@@ -878,8 +898,13 @@ export function prepareSourceCheckpoint(input: {
         if (continued.has(keyId(source))) fail('同一来源没有显式 copy 事实却被重复使用')
         continued.add(keyId(source)); values.push({ kind: 'continue', source: { ...source }, destination: { ...key } })
       } else {
-        if (state.seen.has(token)) return historyCheckpoint
-        if (!token.birth) return historyCheckpoint
+        if (state.seen.has(token) || !token.birth) {
+          const registry = historyWitnesses.get(parameters.historyOwner as SourceReadOwner)
+          const witness = registry?.state === state ? registry.values.get(token) : undefined
+          const ticket = witness && readWitnessSource(witness)
+          if (!ticket || !witness) return historyCheckpoint
+          copies.push(witness); values.push({ kind: 'copy', source: { kind: 'ticket', ...ticket }, destination: { ...key } }); continue
+        }
         values.push({ kind: 'new', destination: { ...key } })
       }
     }
@@ -887,18 +912,24 @@ export function prepareSourceCheckpoint(input: {
     // Grammar/configuration may be caller-owned. Check the actual draft and
     // actual controller endpoint after the last parser/grammar callout.
     if (data(draft) !== saved) return unavailableCheckpoint
-    const endpoint = checkpointEndpoint(state, draft, saved)
+    const endpoint = checkpointEndpoint(state, draft, saved, copies.length > 0)
     if (!endpoint || readMarkdownSourceDraftReceipt(draft) !== saved.facts.receipt) return unavailableCheckpoint
+    if (copies.length && (!endpoint.context.readOwner || endpoint.context.readOwner !== state.opening.readOwner)) return unavailableCheckpoint
     if (sameCheckpointBlocks(result.blocks, endpoint.read.working) && syncedBindingClaimsAreIdentity(bindingClaims)) return noopCheckpoint
     saved.allocationBasis ??= createCanonicalSourceAllocationBasis(allocation)
-    if (data(draft) !== saved || !checkpointEndpoint(state, draft, saved) || readMarkdownSourceDraftReceipt(draft) !== saved.facts.receipt) return unavailableCheckpoint
+    if (data(draft) !== saved) return unavailableCheckpoint
+    const finalEndpoint = checkpointEndpoint(state, draft, saved, copies.length > 0)
+    if (!finalEndpoint || readMarkdownSourceDraftReceipt(draft) !== saved.facts.receipt
+      || copies.length && (!finalEndpoint.context.readOwner || finalEndpoint.context.readOwner !== state.opening.readOwner)) return unavailableCheckpoint
     const preparation: PreparedSourceCheckpoint = Object.freeze({ kind: 'prepared-source-checkpoint' })
     const facts: PreparedSourceCheckpointFacts = Object.freeze({ draft, draftReceipt: saved.facts.receipt, allocation,
       lease: lease(endpoint.context.lease), blocks: allocated.blocks,
       bindingClaims: Object.freeze(bindingClaims.map(claim => {
-        Object.freeze(claim.destination); if (claim.kind === 'continue') Object.freeze(claim.source); return Object.freeze(claim)
+        Object.freeze(claim.destination); if (claim.kind === 'continue' || claim.kind === 'copy') Object.freeze(claim.source); return Object.freeze(claim)
       })) })
-    checkpointPreparations.set(preparation, { state, facts, tokens })
+    const batch = copies.length ? sealPreparedBatch(preparation, copies, bindingClaims) : null
+    if (copies.length && !batch) return historyCheckpoint
+    checkpointPreparations.set(preparation, { state, facts, tokens, ...(batch ? { batch, historyOwner: parameters.historyOwner as SourceReadOwner } : {}) })
     state.staged = preparation
     return Object.freeze({ status: 'prepared', preparation })
   } finally { state.preparing = false }
@@ -921,18 +952,25 @@ export function applyPreparedSourceCheckpoint(input: {
   try {
     if (typeof parameters.transactionId !== 'string' || !parameters.transactionId || data(facts.draft).facts.receipt !== facts.draftReceipt)
       return unavailableCheckpoint
-    const endpoint = checkpointEndpoint(state, facts.draft, data(facts.draft))
+    const endpoint = checkpointEndpoint(state, facts.draft, data(facts.draft), !!saved.batch)
     if (!endpoint || !sameLease(facts.lease, lease(endpoint.context.lease))
       || readMarkdownSourceDraftReceipt(facts.draft) !== facts.draftReceipt) return unavailableCheckpoint
     const applied = applySyncedSourceGroupWithEndpoint(state.binding, { expectedEditSequence: facts.lease.expectedEditSequence,
       guards: { ...facts.lease.guards }, blocks: facts.blocks as SyncedCanonicalEdit[], bindingClaims: facts.bindingClaims as SyncedBindingClaim[],
       transactionId: parameters.transactionId, bookmark: parameters.bookmark as SyncedScopeBookmark | null ?? null },
-    () => data(facts.draft).facts.receipt === facts.draftReceipt)
+    () => {
+      if (state.staged !== parameters.preparation || saved.batch && !preparedBatchLive(saved.batch)
+        || data(facts.draft).facts.receipt !== facts.draftReceipt) return false
+      const currentGrammar = saved.batch ? ownDataGrammar() : state.root.grammar
+      return !!currentGrammar && sameArray(state.root.grammar, currentGrammar)
+        && readMarkdownSourceDraftReceipt(facts.draft) === facts.draftReceipt
+        && state.staged === parameters.preparation && (!saved.batch || preparedBatchLive(saved.batch))
+    }, saved.batch ? { preparation: parameters.preparation as PreparedSourceCheckpoint, batch: saved.batch } : undefined)
     if (!applied.accepted) return unavailableCheckpoint
     const accepted: AcceptedSourceCheckpoint = Object.freeze({ kind: 'accepted-source-checkpoint' })
     acceptedCheckpoints.set(accepted, Object.freeze({ draft: facts.draft, draftReceipt: facts.draftReceipt,
       allocation: facts.allocation, endpoint: applied.endpoint, committed: null }))
-    acceptedOwners.set(accepted, state)
+    acceptedOwners.set(accepted, state); acceptedTokens.set(accepted, saved.tokens)
     state.endpoint = applied.endpoint; state.current = saved.tokens
     for (const token of saved.tokens.keys()) state.seen.add(token)
     state.staged = null
@@ -994,4 +1032,45 @@ export function closeSyncedSourceReadOwner(owner: SourceReadOwner): Promise<void
 }
 export function readAdoptedSourceSide(side: AdoptedSourceSide): AdoptedSourceSideFacts | null {
   return sourceReadOwnerModule?.readAdoptedSourceSide(side) ?? null
+}
+
+export async function registerSyncedSourceHistorySide(input: { checkpoint: SourceCheckpoint; side: AdoptedSourceSide }): Promise<SourceHistoryRegistrationResult> {
+  const parameters = plain(input, ['checkpoint', 'side'])
+  return sourceReadOwnerModule ? sourceReadOwnerModule.registerHistorySide(parameters.checkpoint as SourceCheckpoint, parameters.side as AdoptedSourceSide)
+    : { status: 'unavailable' }
+}
+export function installSourceHistorySide(permit: SourceHistoryRegistrationPermit): boolean {
+  const record = sourceReadOwnerModule?.readHistoryRegistration(permit), state = record && checkpoints.get(record.checkpoint)
+  if (!record || !state || record.accepted && acceptedOwners.get(record.accepted) !== state) return false
+  const tokens = record.accepted ? acceptedTokens.get(record.accepted) : state.openingTokens
+  if (!tokens || tokens.size !== record.facts.bindingSource.entries.length) return false
+  const old = historyWitnesses.get(record.owner)
+  if (old && old.state !== state) return false
+  if (old && [...tokens.keys()].every(token => old.sides.get(token) === record.side)) return true
+  const values = new Map<Lineage, WitnessLease>(), claimed = new Set<string>()
+  for (const [token, key] of tokens) {
+    if (claimed.has(keyId(key))) { for (const lease of values.values()) dropWitness(lease); return false }
+    claimed.add(keyId(key))
+    const witness = sourceReadOwnerModule!.issueHistoryWitness(permit, key)
+    if (!witness) { for (const lease of values.values()) dropWitness(lease); return false }
+    values.set(token, witness)
+  }
+  const registry = old ?? { state, values: new Map<Lineage, WitnessLease>(), sides: new Map<Lineage, AdoptedSourceSide>() }
+  for (const [token, witness] of values) { const previous = registry.values.get(token); registry.values.set(token, witness); registry.sides.set(token, record.side); if (previous) dropWitness(previous) }
+  historyWitnesses.set(record.owner, registry); return true
+}
+function discardCheckpointPreparation(preparation: PreparedSourceCheckpoint, closing = false): boolean {
+  const saved = checkpointPreparations.get(preparation)
+  if (!saved || saved.result || saved.batch && preparedBatchAccepted(saved.batch) || saved.state.staged !== preparation
+    || saved.state.applying && !closing) return false
+  saved.state.staged = null; if (saved.batch) discardPrepared(saved.batch); return true
+}
+export function discardPreparedSourceCheckpoint(preparation: PreparedSourceCheckpoint): boolean { return discardCheckpointPreparation(preparation) }
+export function revokeSourceHistoryOwner(owner: SourceReadOwner): void {
+  const registry = historyWitnesses.get(owner)
+  if (!registry) return
+  const staged = registry.state.staged, prepared = staged && checkpointPreparations.get(staged)
+  if (staged && prepared?.historyOwner === owner) discardCheckpointPreparation(staged, true)
+  for (const witness of registry.values.values()) dropWitness(witness)
+  historyWitnesses.delete(owner)
 }

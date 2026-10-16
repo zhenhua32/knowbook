@@ -98,12 +98,28 @@ async function withMedia(run: (api: {
 }
 
 async function ready(dom: JSDOM) {
-  await act(async () => {
-    await import('../src/renderer/src/components/BlockImagePresentations')
-    await import('../src/renderer/src/components/ImagePresentationEditor')
-    await new Promise<void>(resolve => setImmediate(resolve))
-  })
-  assert.ok(dom.window.document.querySelector('.rich-text-source-media .image-presentation-frame'), dom.window.document.body.innerHTML)
+  const selector = '.rich-text-source-media .image-presentation-frame'
+  let disconnectMedia = noop
+  try {
+    const mediaReady = new Promise<void>(resolve => {
+      const check = () => {
+        if (dom.window.document.querySelector(selector)) { observer.disconnect(); resolve() }
+      }
+      const observer = new dom.window.MutationObserver(check)
+      disconnectMedia = () => observer.disconnect()
+      observer.observe(dom.window.document.getElementById('mount')!, { childList: true, subtree: true })
+      check()
+    })
+    await act(async () => { await Promise.all([
+      import('../src/renderer/src/components/BlockImagePresentations'),
+      import('../src/renderer/src/components/ImagePresentationEditor')
+    ]) })
+    // Leave act before waiting: React must be free to commit its private lazy
+    // resource before this real DOM observer can resolve.
+    await mediaReady
+    await act(async () => {})
+    assert.ok(dom.window.document.querySelector(selector), dom.window.document.body.innerHTML)
+  } finally { disconnectMedia() }
 }
 
 test('rich media portal inherits document and navigation contexts while the real image controls keep stable block content and focus', async () => {

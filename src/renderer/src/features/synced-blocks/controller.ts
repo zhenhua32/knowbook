@@ -11,6 +11,9 @@ import { syncedScopeInstanceGuard, syncedSnapshotGuard } from './types'
 import { composeSyncedBindingClaims, syncedBindingClaimsAreIdentity, validateSyncedWorkingClaims } from './bindingClaims'
 
 import type { SyncedReadSourcesPort, ControllerReadOwnerContext } from './sourceReadOwner'
+import { reserveApply, planFrameUpdate, commitFramePlan, cancelPlan, cancelReservation, dropFrame, pinPending, dropPending, pendingMatches,
+  type PreparedBatch, type ApplyReservation, type FramePlan, type FrameLease, type PendingLease } from './sourceCopyResources'
+interface SourceCopyApply { readonly preparation: object; readonly batch: PreparedBatch }
 
 /** Local read capabilities only. Public fields cannot reconstruct ownership. */
 export interface SyncedWorkingEndpointReceipt { readonly kind: 'synced-working-endpoint' }
@@ -32,7 +35,7 @@ type EndpointPort = { capture: () => SyncedWorkingEndpointReceipt | null;
   source: (validation?: SyncedSourceEndpointValidation) => SyncedSourceEndpointOpening | null;
   adopt: (context: ControllerReadOwnerContext, endpoint: SyncedWorkingEndpointReceipt, validate: () => boolean,
     fence?: SyncedSourceReadOwnerFence) => SyncedSourceReadOwnerFence | null;
-  apply: (input: Omit<SyncedGroupApply, 'scope'>, validateSource?: () => boolean) => SyncedEndpointApplyResult }
+  apply: (input: Omit<SyncedGroupApply, 'scope'>, validateSource?: () => boolean, copy?: SourceCopyApply) => SyncedEndpointApplyResult }
 interface SyncedSourceEndpointValidation {
   readonly expected: SyncedWorkingEndpointReceipt
   readonly validate: () => boolean
@@ -89,8 +92,8 @@ export function applySyncedGroupWithEndpoint(binding: SyncedGroupBinding, input:
 /** Source's actual grammar/draft validator runs after the shared apply core's
  * caller-owned scope/budget callbacks, immediately before pure final checks. */
 export function applySyncedSourceGroupWithEndpoint(binding: SyncedGroupBinding, input: Omit<SyncedGroupApply, 'scope'>,
-  validateSource: () => boolean): SyncedEndpointApplyResult {
-  return typeof validateSource === 'function' ? endpointPorts.get(binding)?.apply(input, validateSource) ?? refusedEndpointApply : refusedEndpointApply
+  validateSource: () => boolean, copy?: SourceCopyApply): SyncedEndpointApplyResult {
+  return typeof validateSource === 'function' ? endpointPorts.get(binding)?.apply(input, validateSource, copy) ?? refusedEndpointApply : refusedEndpointApply
 }
 
 function immutable<T>(value: T): T {
@@ -172,13 +175,14 @@ function sourceScopeMatches(mount: Mount, callback: () => boolean): boolean {
   } catch { return false }
 }
 type Frame = {
+  copyLease: FrameLease | null
   before: SyncedCanonicalEdit[]; after: SyncedCanonicalEdit[]; sequence: number
   bindingClaims?: SyncedBindingClaim[]
   mount: Mount; instance: SyncedInstanceGuard; transactionId: string; sealed: boolean
   beforeBookmark: SyncedScopeBookmark | null; afterBookmark: SyncedScopeBookmark | null
 }
 type FrameVersion = {
-  frame: Frame | null; unavailable: boolean;
+  frame: Frame | null; unavailable: boolean; copyLease: FrameLease | null;
   committed: Readonly<{ submittedSequence: number; ack: Readonly<SyncedGroupSaved> }> | null
 }
 type Endpoint = {
@@ -191,7 +195,7 @@ type ServerRedo = {
   revision: string; cursor: string; token: string; before: string; after: string
 }
 type Pending = {
-  kind: 'content'; input: SyncedUpdateGroupInput; frame: Frame; sequence: number; uncertain: boolean; endpointVersion: FrameVersion | null
+  kind: 'content'; input: SyncedUpdateGroupInput; frame: Frame; sequence: number; uncertain: boolean; endpointVersion: FrameVersion | null; copyLease: PendingLease | null
 } | {
   kind: 'history'; input: SyncedRestoreGroupInput; sequence: number; uncertain: boolean; mount: Mount; bookmarkSequence: number
   before: SyncedGroupSnapshot; redo: ServerRedo | null
@@ -258,7 +262,7 @@ class GroupController implements SyncedGroupController {
     let version = this.frameVersions.get(frame)
     if (!version || version.unavailable || changed) {
       if (version && !version.committed) { version.unavailable = true; version.frame = null }
-      version = { frame, unavailable: false, committed: null }
+      version = { frame, unavailable: false, committed: null, copyLease: frame.copyLease }
       this.frameVersions.set(frame, version)
     }
     const endpoint: Endpoint = { epoch: this.endpointEpoch, version,
@@ -409,10 +413,10 @@ class GroupController implements SyncedGroupController {
         adoptionFences.set(captured, { state, current: currentEndpoint, endpoint, callback })
         return captured
       },
-      apply: (input, validateSource) => {
+      apply: (input, validateSource, copy) => {
         const callback = validateSource ? sourceScopeCallback(mount) : null
         if (validateSource ? !callback || disposed || !this.sourceLive(mount, callback) || disposed : !current()) return refusedEndpointApply
-        const result = this.applyCore(input, current, scope, validateSource, callback ? { mount, callback } : undefined)
+        const result = this.applyCore(input, current, scope, validateSource, callback ? { mount, callback } : undefined, copy)
         return result.endpoint ? Object.freeze({ accepted: true, endpoint: result.endpoint }) : refusedEndpointApply
       }
     })
@@ -435,7 +439,7 @@ class GroupController implements SyncedGroupController {
   private hasPendingHistory(): boolean { return this.pending?.kind === 'history' }
   private applyCore(rawInput: SyncedGroupApply | Omit<SyncedGroupApply, 'scope'>, endpointReader?: () => boolean,
     scope?: SyncedGroupScope, validateSource?: () => boolean,
-    sourceLease?: { mount: Mount; callback: () => boolean }): { accepted: boolean; endpoint?: SyncedWorkingEndpointReceipt } {
+    sourceLease?: { mount: Mount; callback: () => boolean }, copy?: SourceCopyApply): { accepted: boolean; endpoint?: SyncedWorkingEndpointReceipt } {
     const before = this.state
     let input: SyncedGroupApply
     try { input = snapshotApplyInput(rawInput, scope) } catch { return { accepted: false } }
@@ -454,6 +458,28 @@ class GroupController implements SyncedGroupController {
       bookmark = keepBookmark(input.bookmark)
     } catch (error) { this.rejected(error); return { accepted: false } }
     if (equal(next, before.working) && (!claims || syncedBindingClaimsAreIdentity(claims))) return { accepted: false }
+    const capturedTail = this.frames.at(-1), capturedVersion = capturedTail && this.frameVersions.get(capturedTail), capturedPending = this.pending
+    const merge = !!capturedTail && !capturedTail.sealed && capturedTail.mount === mount && capturedTail.transactionId === input.transactionId
+      && (capturedTail.bindingClaims === undefined) === (claims === undefined)
+    const resourcePath = !!copy || !!(merge && capturedTail?.copyLease)
+    const captured = capturedTail && { sealed: capturedTail.sealed, sequence: capturedTail.sequence,
+      claims: capturedTail.bindingClaims, after: capturedTail.after }
+    let reservation: ApplyReservation | null = null, resourcePlan: FramePlan | null = null, resourceCommitted = false
+    let plannedClaims: SyncedBindingClaim[] | undefined, pop = false
+    if (resourcePath) {
+      try { plannedClaims = merge && claims ? immutable(composeSyncedBindingClaims(capturedTail!.bindingClaims!, claims)) : claims }
+      catch (error) { this.rejected(error); return { accepted: false } }
+      pop = merge && equal(capturedTail!.before, next) && (!plannedClaims || syncedBindingClaimsAreIdentity(plannedClaims))
+      if (copy) {
+        let permit: SourceCopyApply
+        try { permit = ownDataSnapshot(copy, ['preparation', 'batch']) } catch { return { accepted: false } }
+        if (!this.readOwner || !(reservation = reserveApply(this.readOwner.copyDomain, permit.batch, permit.preparation, claims ?? []))) return { accepted: false }
+      }
+      resourcePlan = planFrameUpdate({ action: pop ? 'pop-tail' : merge ? 'replace-tail' : 'push',
+        old: merge ? capturedTail!.copyLease : null, incoming: reservation, finalClaims: plannedClaims ?? [] })
+      if (!resourcePlan) { if (reservation) cancelReservation(reservation); return { accepted: false } }
+    }
+    try {
     // Run every caller-owned lease/property callback before the final state
     // comparison. A nested accepted edit cannot make the outer candidate fresh.
     const stillFits = sourceLease ? this.sourceBookmarkFits(sourceLease.mount, bookmark) : this.bookmarkFits(input.scope, bookmark)
@@ -469,28 +495,43 @@ class GroupController implements SyncedGroupController {
       || input.guards.expectedTopologyRevision !== this.state.snapshot.topologyRevision
       || this.mounts.get(instance.instanceId) !== mount || !sameInstance(instance, mount.lease)
       || [...this.compositions].some(other => other !== mount)) return { accepted: false }
+    if (resourcePath && (this.frames.at(-1) !== capturedTail || this.pending !== capturedPending
+      || capturedTail && (capturedTail.sealed !== captured!.sealed || capturedTail.sequence !== captured!.sequence
+        || capturedTail.bindingClaims !== captured!.claims || capturedTail.after !== captured!.after
+        || this.frameVersions.get(capturedTail) !== capturedVersion))) return { accepted: false }
+    let frameCopyLease: FrameLease | null = null
+    if (resourcePlan) {
+      const committed = commitFramePlan(resourcePlan)
+      if (committed.status !== 'committed') return { accepted: false }
+      frameCopyLease = committed.lease; resourceCommitted = true
+    }
     const previous = before.working, sequence = before.editSequence + 1
-    const tail = this.frames.at(-1)
+    const tail = resourcePath ? capturedTail : this.frames.at(-1)
     let changedFrame: Frame | null = null
     if (tail && !tail.sealed && tail.mount === mount && tail.transactionId === input.transactionId
       && (tail.bindingClaims === undefined) === (claims === undefined)) {
       let composed: SyncedBindingClaim[] | undefined
-      try { composed = claims && immutable(composeSyncedBindingClaims(tail.bindingClaims!, claims)) }
+      try { composed = resourcePath ? plannedClaims : claims && immutable(composeSyncedBindingClaims(tail.bindingClaims!, claims)) }
       catch (error) { this.rejected(error); return { accepted: false } }
       tail.after = next; tail.sequence = sequence; tail.afterBookmark = bookmark; tail.bindingClaims = composed
+      if (resourcePath) tail.copyLease = frameCopyLease
       if (equal(tail.before, next) && (!composed || syncedBindingClaimsAreIdentity(composed))) {
         this.frames.pop()
         const old = this.frameVersions.get(tail)
         if (old) { old.unavailable = true; old.frame = null }
       } else changedFrame = tail
-    } else this.frames.push({ before: previous, after: next, bindingClaims: claims, sequence, mount, instance,
+    } else this.frames.push({ copyLease: frameCopyLease, before: previous, after: next, bindingClaims: claims, sequence, mount, instance,
       transactionId: input.transactionId, sealed: false, beforeBookmark: mount.bookmark, afterBookmark: bookmark })
+    for (const frame of this.redoFrames) if (frame.copyLease) dropFrame(frame.copyLease)
     this.redoFrames = []; this.serverRedo = []; this.cutServerRedo = true
     mount.bookmark = bookmark; mount.bookmarkSequence++
     this.adoptEndpoint(next, sequence, snapshot, changedFrame)
     const endpoint = endpointReader && this.mintEndpoint(this.currentEndpoint, endpointReader)
     this.publish({ working: next, editSequence: sequence, failure: null, error: this.pending?.uncertain ? this.state.error : null })
     return { accepted: true, ...(endpoint ? { endpoint } : {}) }
+    } finally {
+      if (!resourceCommitted) { if (resourcePlan) cancelPlan(resourcePlan); else if (reservation) cancelReservation(reservation) }
+    }
   }
 
   checkpoint = () => { const tail = this.frames.at(-1); if (tail) tail.sealed = true }
@@ -552,6 +593,8 @@ class GroupController implements SyncedGroupController {
       }
       if (result.status === 'saved' && snapshot.history.undoToken) this.historyBookmarks.set(snapshot.history.undoToken,
         { before: pending.frame.beforeBookmark, after: pending.frame.afterBookmark })
+      if (pending.frame.copyLease) dropFrame(pending.frame.copyLease)
+      if (pending.copyLease) dropPending(pending.copyLease)
       this.frames.shift()
     } else if (result.status === 'saved') {
       const bookmarks = this.historyBookmarks.get(pending.input.historyToken)
@@ -591,6 +634,8 @@ class GroupController implements SyncedGroupController {
     const pending = this.pending
     if (!pending) return true
     try {
+      if (pending.kind === 'content' && pending.copyLease && (!pending.endpointVersion || !pendingMatches(pending.copyLease,
+        { version: pending.endpointVersion, input: pending.input, operationId: pending.input.clientOperationId }))) throw new Error('Synced pending source resource identity mismatch.')
       let result: SyncedGroupMutationResult
       if (pending.uncertain) {
         const known = await this.api.getSyncedOperation({ clientOperationId: pending.input.clientOperationId })
@@ -606,7 +651,7 @@ class GroupController implements SyncedGroupController {
       result = pending.kind === 'content' ? await this.api.updateSyncedBlockGroup(pending.input)
         : await this.api.restoreSyncedGroupOperation(pending.input)
       if (result.status === 'saved' || result.status === 'noop') { this.acknowledge(pending, result); return true }
-      this.pending = null; this.failure(result)
+      this.pending = null; if (pending.kind === 'content' && pending.copyLease) dropPending(pending.copyLease); this.failure(result)
       return false
     } catch (error) {
       pending.uncertain = true
@@ -636,8 +681,12 @@ class GroupController implements SyncedGroupController {
         const input: SyncedUpdateGroupInput = immutable({ ...syncedSnapshotGuard(snapshot), clientOperationId: this.operationId(),
           expectedInstanceBinding: { ...frame.instance }, blocks: structuredClone(frame.after),
           ...(frame.bindingClaims === undefined ? {} : { bindingClaims: structuredClone(frame.bindingClaims) }) })
-        this.pending = { kind: 'content', input, frame, sequence: frame.sequence, uncertain: false,
-          endpointVersion: this.frameVersions.get(frame) ?? null }
+        const endpointVersion = this.frameVersions.get(frame) ?? null
+        if (frame.copyLease && endpointVersion?.copyLease !== frame.copyLease) throw new Error('Synced queued frame version source mismatch.')
+        const copyLease = frame.copyLease && endpointVersion ? pinPending(frame.copyLease,
+          { version: endpointVersion, input, operationId: input.clientOperationId }) : null
+        if (frame.copyLease && !copyLease) throw new Error('Synced queued source resource is unavailable.')
+        this.pending = { kind: 'content', input, frame, sequence: frame.sequence, uncertain: false, endpointVersion, copyLease }
         this.markOperation(input.clientOperationId); this.publish({ error: null, failure: null })
         if (!await this.writePending()) return false
         if (this.state.incoming || options.shouldContinue?.() === false) return false
@@ -713,6 +762,7 @@ class GroupController implements SyncedGroupController {
     if (this.frames.length || this.pending || this.hasComposition() || this.state.incoming) {
       this.publish({ incoming }); return
     }
+    for (const frame of this.redoFrames) if (frame.copyLease) dropFrame(frame.copyLease)
     this.redoFrames = []
     this.serverRedo = []; this.cutServerRedo = true
     this.historyBookmarks.clear()
