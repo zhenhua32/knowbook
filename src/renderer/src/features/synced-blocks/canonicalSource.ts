@@ -24,6 +24,13 @@ export interface MarkdownSourceReconciliationOptions {
   freshId?: () => string
   references?: ReadonlyMap<string, SyncedStableBlockDraft>
   observation?: MarkdownSourceReconciliationPort
+  /** Arithmetic input only, not a provenance receipt. The cold manifest wrapper
+   * supplies this view only after verifying its own opaque allocation basis. */
+  identityView?: MarkdownSourceIdentityView
+}
+export interface MarkdownSourceIdentityView {
+  readonly blocks: MarkdownSourceDraft['initialBlocks']
+  readonly anchors: MarkdownSourceDraft['anchors']
 }
 
 function invalid(message: string, code: 'forest' | 'identity' = 'forest'): never {
@@ -63,15 +70,17 @@ export function createCanonicalSourceDraft(blocks: readonly SyncedCanonicalEdit[
  * Syntax owns depth/parent positions; the final validator never repairs them. */
 export function reconcileMarkdownSourceDraft(draft: MarkdownSourceDraft, parsed: MarkdownSourceStrictResult, options: MarkdownSourceReconciliationOptions = {}): SyncedStableBlockDraft[] {
   if (typeof draft.source !== 'string' || typeof draft.initialSource !== 'string' || !Array.isArray(draft.anchors)) invalid('Invalid canonical source draft.')
+  const identity = options.identityView
+  const identityBlocks = identity?.blocks ?? draft.initialBlocks, identityAnchors = identity?.anchors ?? draft.anchors
   const openingById = new Map<string, SyncedStableBlockDraft>()
-  for (const raw of draft.initialBlocks) {
+  for (const raw of identityBlocks) {
     const { id, parentBlockId, ...block } = raw
     if (!isSyncedBlockId(id) || openingById.has(id) || parentBlockId !== null && !isSyncedBlockId(parentBlockId))
       invalid('Invalid opening source identity.', 'identity')
     openingById.set(id, { ...block, id, parentBlockId })
   }
-  const originalBlocks = new Set(draft.initialBlocks)
-  const anchors = Array.from(draft.anchors, anchor => {
+  const originalBlocks = new Set(identityBlocks)
+  const anchors = Array.from(identityAnchors, anchor => {
     if (!anchor || !originalBlocks.has(anchor.block) || typeof anchor.block.id !== 'string' || !openingById.has(anchor.block.id)
       || !Number.isSafeInteger(anchor.from) || !Number.isSafeInteger(anchor.to) || anchor.from < 0 || anchor.to < anchor.from
       || anchor.to > draft.source.length || typeof anchor.original !== 'string') invalid('Invalid canonical source identity anchor.')
@@ -214,15 +223,15 @@ export function reconcileMarkdownSourceDraft(draft: MarkdownSourceDraft, parsed:
 }
 
 export function canonicalSourceDraftToBlocks(draft: MarkdownSourceDraft, freshId: () => string = () => crypto.randomUUID(),
-  observation?: MarkdownSourceReconciliationPort): SyncedCanonicalEdit[] {
-  const opening = validateSyncedCanonicalEdit(draft.initialBlocks)
-  if (draft.source === draft.initialSource && draft.anchors.length === draft.initialBlocks.length
+  observation?: MarkdownSourceReconciliationPort, identityView?: MarkdownSourceIdentityView): SyncedCanonicalEdit[] {
+  const opening = validateSyncedCanonicalEdit(identityView?.blocks ?? draft.initialBlocks)
+  if (!identityView && draft.source === draft.initialSource && draft.anchors.length === draft.initialBlocks.length
     && draft.anchors.every((anchor, index) => anchor.block === draft.initialBlocks[index])) {
     observation?.unchanged(draft, opening)
     return opening
   }
   const syntax = observation?.parseCanonical ? observation.parseCanonical(draft.source) : parseMarkdownSourceStrict(draft.source, { mode: 'canonical' })
-  const blocks = reconcileMarkdownSourceDraft(draft, syntax, { freshId, observation })
+  const blocks = reconcileMarkdownSourceDraft(draft, syntax, { freshId, observation, ...(identityView ? { identityView } : {}) })
   // Explicit front-end handling for deleting the entire group. No persistence
   // normalizer or empty-column rule invents this real replacement paragraph.
   if (!blocks.length) {
