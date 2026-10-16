@@ -1,6 +1,6 @@
 import type {
   SyncedBindingClaim, SyncedBlocksApi, SyncedCanonicalEdit, SyncedGroupMutationResult, SyncedGroupSaved, SyncedGroupSnapshot,
-  SyncedInstanceGuard, SyncedRestoreGroupInput, SyncedUpdateGroupInput
+  SyncedInstanceGuard, SyncedOriginV1, SyncedRestoreGroupInput, SyncedUpdateGroupInput
 } from '@shared/synced-blocks'
 import { SyncedValidationError, syncedCanonicalEdits, validateSyncedCanonicalEdit, validateSyncedCanonicalProjection,
   validateSyncedGroupSnapshot } from '@shared/syncedBlockValidation'
@@ -26,14 +26,36 @@ export type SyncedCommittedEndpointFacts = Readonly<{
 export type SyncedEndpointApplyResult = Readonly<{ accepted: false }>
   | Readonly<{ accepted: true; endpoint: SyncedWorkingEndpointReceipt }>;
 type EndpointPort = { capture: () => SyncedWorkingEndpointReceipt | null;
-  apply: (input: Omit<SyncedGroupApply, 'scope'>) => SyncedEndpointApplyResult }
+  source: (validation?: SyncedSourceEndpointValidation) => SyncedSourceEndpointOpening | null;
+  apply: (input: Omit<SyncedGroupApply, 'scope'>, validateSource?: () => boolean) => SyncedEndpointApplyResult }
+interface SyncedSourceEndpointValidation {
+  readonly expected: SyncedWorkingEndpointReceipt
+  readonly validate: () => boolean
+}
+export interface SyncedSourceEndpointOpening {
+  readonly endpoint: SyncedWorkingEndpointReceipt
+  readonly working: readonly Readonly<SyncedCanonicalEdit>[]
+  readonly origin: Readonly<SyncedOriginV1>
+  readonly lease: Readonly<{
+    scope: Readonly<{ groupId: string; hostDocumentId: string; windowSessionId: string; hostSession: object;
+      mountEpoch: object; bindingEpoch: object; instanceId: string; bindingVersion: string }>
+    expectedEditSequence: number
+    guards: Readonly<{ groupId: string; expectedRevision: string; expectedTopologyRevision: string }>
+  }>
+}
 const endpointPorts = new WeakMap<SyncedGroupBinding, EndpointPort>()
 const endpointReaders = new WeakMap<SyncedWorkingEndpointReceipt, () => SyncedWorkingEndpointRead>()
+const endpointIdentities = new WeakMap<SyncedWorkingEndpointReceipt, Endpoint>()
 const committedEndpoints = new WeakMap<SyncedCommittedEndpointReceipt, SyncedCommittedEndpointFacts>()
 const unavailableEndpoint = Object.freeze({ status: 'unavailable' as const })
 const refusedEndpointApply = Object.freeze({ accepted: false as const })
 export function captureSyncedWorkingEndpoint(binding: SyncedGroupBinding): SyncedWorkingEndpointReceipt | null {
   try { return endpointPorts.get(binding)?.capture() ?? null } catch { return null }
+}
+/** Cold Source opening authority comes from this registered port, never the
+ * binding's public methods or a caller-supplied snapshot/lease. No flush. */
+export function captureSyncedSourceEndpoint(binding: SyncedGroupBinding, validation?: SyncedSourceEndpointValidation): SyncedSourceEndpointOpening | null {
+  try { return endpointPorts.get(binding)?.source(validation) ?? null } catch { return null }
 }
 export function readSyncedWorkingEndpoint(receipt: SyncedWorkingEndpointReceipt): SyncedWorkingEndpointRead {
   try { return endpointReaders.get(receipt)?.() ?? unavailableEndpoint } catch { return unavailableEndpoint }
@@ -45,6 +67,12 @@ export function readSyncedCommittedEndpoint(receipt: SyncedCommittedEndpointRece
  * In particular synchronous publication/reentry cannot change the returned handle. */
 export function applySyncedGroupWithEndpoint(binding: SyncedGroupBinding, input: Omit<SyncedGroupApply, 'scope'>): SyncedEndpointApplyResult {
   return endpointPorts.get(binding)?.apply(input) ?? refusedEndpointApply
+}
+/** Source's actual grammar/draft validator runs after the shared apply core's
+ * caller-owned scope/budget callbacks, immediately before pure final checks. */
+export function applySyncedSourceGroupWithEndpoint(binding: SyncedGroupBinding, input: Omit<SyncedGroupApply, 'scope'>,
+  validateSource: () => boolean): SyncedEndpointApplyResult {
+  return typeof validateSource === 'function' ? endpointPorts.get(binding)?.apply(input, validateSource) ?? refusedEndpointApply : refusedEndpointApply
 }
 
 function immutable<T>(value: T): T {
@@ -102,6 +130,28 @@ type Mount = {
   lease: Pick<SyncedGroupScope, 'hostDocumentId' | 'windowSessionId' | 'hostSession' | 'mountEpoch' | 'bindingEpoch' | 'instanceId' | 'bindingVersion'> & { groupId: string }
   bookmark: SyncedScopeBookmark | null
   bookmarkSequence: number
+}
+function sourceScopeCallback(mount: Mount): (() => boolean) | null {
+  const descriptor = Object.getOwnPropertyDescriptor(mount.scope, 'isCurrent')
+  return descriptor && Object.hasOwn(descriptor, 'value') && typeof descriptor.value === 'function' ? descriptor.value : null
+}
+/** Inspect own data only. A Source grammar callback cannot replace a lease
+ * value or install an accessor and thereby add another callback after validation. */
+function sourceScopeMatches(mount: Mount, callback: () => boolean): boolean {
+  try {
+    const descriptors = Object.getOwnPropertyDescriptors(mount.scope)
+    const value = (fields: PropertyDescriptorMap, key: string): unknown => {
+      const descriptor = fields[key]
+      return descriptor && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined
+    }
+    if (value(descriptors, 'isCurrent') !== callback) return false
+    for (const [key, expected] of Object.entries(mount.lease))
+      if (key !== 'groupId' && value(descriptors, key) !== expected) return false
+    const owner = value(descriptors, 'owner')
+    if (!owner || typeof owner !== 'object') return false
+    const ownerDescriptors = Object.getOwnPropertyDescriptors(owner)
+    return value(ownerDescriptors, 'kind') === 'synced-group' && value(ownerDescriptors, 'groupId') === mount.lease.groupId
+  } catch { return false }
 }
 type Frame = {
   before: SyncedCanonicalEdit[]; after: SyncedCanonicalEdit[]; sequence: number
@@ -218,6 +268,7 @@ class GroupController implements SyncedGroupController {
   }
   private mintEndpoint(endpoint: Endpoint, isCurrent: () => boolean): SyncedWorkingEndpointReceipt {
     const receipt: SyncedWorkingEndpointReceipt = Object.freeze({ kind: 'synced-working-endpoint' })
+    endpointIdentities.set(receipt, endpoint)
     endpointReaders.set(receipt, () => {
       if (!isCurrent() || !this.endpointAvailable(endpoint)) return unavailableEndpoint
       const common = { status: 'available' as const, current: endpoint === this.currentEndpoint, editSequence: endpoint.sequence,
@@ -251,17 +302,29 @@ class GroupController implements SyncedGroupController {
   private live(scope: SyncedGroupScope): Mount | undefined {
     const mount = this.mounts.get(scope.instanceId)
     const lease = mount?.lease
-    return mount?.scope === scope && lease && scope.isCurrent() && scope.owner.groupId === lease.groupId
+    return mount?.scope === scope && lease && scope.isCurrent() && this.mounts.get(lease.instanceId) === mount
+      && scope.owner.groupId === lease.groupId
       && scope.owner.groupId === this.state.snapshot.groupId && scope.hostDocumentId === lease.hostDocumentId
       && scope.windowSessionId === lease.windowSessionId && scope.hostSession === lease.hostSession
       && scope.mountEpoch === lease.mountEpoch && scope.bindingEpoch === lease.bindingEpoch
       && scope.instanceId === lease.instanceId && scope.bindingVersion === lease.bindingVersion
       && this.state.snapshot.instances.some(instance => sameInstance(instance, syncedScopeInstanceGuard(scope))) ? mount : undefined
   }
+  private sourceLive(mount: Mount, callback: () => boolean): Mount | undefined {
+    if (!sourceScopeMatches(mount, callback) || !Reflect.apply(callback, mount.scope, []) || !sourceScopeMatches(mount, callback)) return undefined
+    const lease = mount.lease
+    return this.mounts.get(lease.instanceId) === mount && lease.groupId === this.state.snapshot.groupId
+      && this.state.snapshot.instances.some(instance => sameInstance(instance, lease)) ? mount : undefined
+  }
   private hasComposition() { return this.compositions.size > 0 }
   private bookmarkFits(scope: SyncedGroupScope, bookmark: SyncedScopeBookmark | null) {
     return !bookmark || bookmark.owner.kind === 'synced-group' && bookmark.owner.groupId === scope.owner.groupId
       && bookmark.instanceId === scope.instanceId && bookmark.mountEpoch === scope.mountEpoch && bookmark.bindingEpoch === scope.bindingEpoch
+  }
+  private sourceBookmarkFits(mount: Mount, bookmark: SyncedScopeBookmark | null) {
+    const lease = mount.lease
+    return !bookmark || bookmark.owner.kind === 'synced-group' && bookmark.owner.groupId === lease.groupId
+      && bookmark.instanceId === lease.instanceId && bookmark.mountEpoch === lease.mountEpoch && bookmark.bindingEpoch === lease.bindingEpoch
   }
 
   bind = (scope: SyncedGroupScope): SyncedGroupBinding => {
@@ -270,7 +333,7 @@ class GroupController implements SyncedGroupController {
       instanceId: scope.instanceId, bindingVersion: scope.bindingVersion, groupId: scope.owner.groupId }, bookmark: null, bookmarkSequence: 0 }
     this.mounts.set(scope.instanceId, mount)
     let disposed = false
-    const current = () => !disposed && this.live(scope) === mount
+    const current = () => !disposed && this.live(scope) === mount && !disposed && this.mounts.get(mount.lease.instanceId) === mount
     const binding: SyncedGroupBinding = {
       scope, getCurrent: this.getSnapshot, subscribe: this.subscribe, isCurrent: current,
       apply: input => current() && this.applyCore(input, undefined, scope).accepted,
@@ -295,9 +358,24 @@ class GroupController implements SyncedGroupController {
     }
     endpointPorts.set(binding, {
       capture: () => current() && this.endpointAvailable(this.currentEndpoint) ? this.mintEndpoint(this.currentEndpoint, current) : null,
-      apply: input => {
-        if (!current()) return refusedEndpointApply
-        const result = this.applyCore(input, current, scope)
+      source: validation => {
+        const state = this.state, endpoint = this.currentEndpoint
+        const callback = sourceScopeCallback(mount)
+        if (!callback || disposed || !this.sourceLive(mount, callback) || disposed || this.state !== state
+          || this.currentEndpoint !== endpoint || !this.endpointAvailable(endpoint)) return null
+        if (validation && (endpointIdentities.get(validation.expected) !== endpoint || validation.validate() !== true)) return null
+        // No scope/parser callbacks after the validator: its grammar getters
+        // may themselves dispose/rebind the occurrence or accept another edit.
+        if (!sourceScopeMatches(mount, callback) || disposed || this.mounts.get(mount.lease.instanceId) !== mount || this.state !== state
+          || this.currentEndpoint !== endpoint || !this.endpointAvailable(endpoint)) return null
+        return Object.freeze({ endpoint: this.mintEndpoint(endpoint, current), working: endpoint.working, origin: state.snapshot.origin,
+          lease: Object.freeze({ scope: Object.freeze({ ...mount.lease }), expectedEditSequence: state.editSequence,
+            guards: Object.freeze(syncedSnapshotGuard(state.snapshot)) }) })
+      },
+      apply: (input, validateSource) => {
+        const callback = validateSource ? sourceScopeCallback(mount) : null
+        if (validateSource ? !callback || disposed || !this.sourceLive(mount, callback) || disposed : !current()) return refusedEndpointApply
+        const result = this.applyCore(input, current, scope, validateSource, callback ? { mount, callback } : undefined)
         return result.endpoint ? Object.freeze({ accepted: true, endpoint: result.endpoint }) : refusedEndpointApply
       }
     })
@@ -319,11 +397,14 @@ class GroupController implements SyncedGroupController {
   apply = (input: SyncedGroupApply): boolean => this.applyCore(input).accepted
   private hasPendingHistory(): boolean { return this.pending?.kind === 'history' }
   private applyCore(rawInput: SyncedGroupApply | Omit<SyncedGroupApply, 'scope'>, endpointReader?: () => boolean,
-    scope?: SyncedGroupScope): { accepted: boolean; endpoint?: SyncedWorkingEndpointReceipt } {
+    scope?: SyncedGroupScope, validateSource?: () => boolean,
+    sourceLease?: { mount: Mount; callback: () => boolean }): { accepted: boolean; endpoint?: SyncedWorkingEndpointReceipt } {
     const before = this.state
     let input: SyncedGroupApply
     try { input = snapshotApplyInput(rawInput, scope) } catch { return { accepted: false } }
-    const mount = this.live(input.scope), fits = this.bookmarkFits(input.scope, input.bookmark), snapshot = before.snapshot
+    const mount = sourceLease ? this.sourceLive(sourceLease.mount, sourceLease.callback) : this.live(input.scope)
+    if (sourceLease && !mount) return { accepted: false }
+    const fits = sourceLease ? this.sourceBookmarkFits(sourceLease.mount, input.bookmark) : this.bookmarkFits(input.scope, input.bookmark), snapshot = before.snapshot
     if (!mount || !fits || this.state !== before || this.workspaceInvalid || this.historyBusy || this.hasPendingHistory()
       || typeof input.transactionId !== 'string' || !input.transactionId || input.expectedEditSequence !== before.editSequence
       || input.guards.groupId !== snapshot.groupId || input.guards.expectedRevision !== snapshot.revision
@@ -338,8 +419,13 @@ class GroupController implements SyncedGroupController {
     if (equal(next, before.working) && (!claims || syncedBindingClaimsAreIdentity(claims))) return { accepted: false }
     // Run every caller-owned lease/property callback before the final state
     // comparison. A nested accepted edit cannot make the outer candidate fresh.
-    const stillFits = this.bookmarkFits(input.scope, bookmark), instance = syncedScopeInstanceGuard(input.scope)
-    const stillMounted = this.live(input.scope) === mount
+    const stillFits = sourceLease ? this.sourceBookmarkFits(sourceLease.mount, bookmark) : this.bookmarkFits(input.scope, bookmark)
+    const instance = sourceLease ? { instanceId: sourceLease.mount.lease.instanceId, hostDocumentId: sourceLease.mount.lease.hostDocumentId,
+      bindingVersion: sourceLease.mount.lease.bindingVersion } : syncedScopeInstanceGuard(input.scope)
+    const stillMounted = (sourceLease ? this.sourceLive(sourceLease.mount, sourceLease.callback) : this.live(input.scope)) === mount
+    try { if (validateSource && validateSource() !== true) return { accepted: false } } catch { return { accepted: false } }
+    // Only immutable data/internal registry checks remain before acceptance.
+    if (sourceLease && !sourceScopeMatches(sourceLease.mount, sourceLease.callback)) return { accepted: false }
     if (!stillMounted || !stillFits || this.state !== before || this.workspaceInvalid || this.historyBusy
       || this.hasPendingHistory() || input.expectedEditSequence !== before.editSequence
       || input.guards.groupId !== this.state.snapshot.groupId || input.guards.expectedRevision !== this.state.snapshot.revision

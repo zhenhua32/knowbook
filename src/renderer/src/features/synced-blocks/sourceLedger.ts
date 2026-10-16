@@ -6,15 +6,22 @@ import { type MarkdownSourceOccurrenceObservation,
 import { observeMarkdownSourceCarriers, type MarkdownSourceCarrierFact, type MarkdownSourceCarrierFragment,
   type MarkdownSourceCarrierObservation } from '@shared/markdownSourceCarriers'
 import { serializeMarkdownWithEmissionTrace, projectMarkdownEmissionContentRange, projectMarkdownEmissionSourceRange } from '@shared/markdownEmissionTrace'
-import { projectMarkdownSourceContentRange, projectMarkdownSourceRawRange, type MarkdownSourceRawSpan } from '@shared/markdownSourceTrace'
+import { type MarkdownSourceRawSpan } from '@shared/markdownSourceTrace'
 import { validateSyncedBindingClaims } from '@shared/syncedBlockInputs'
 import { SyncedValidationError, validateSyncedCanonicalEdit, validateSyncedOrigin } from '@shared/syncedBlockValidation'
 import type { SyncedBindingClaim, SyncedBindingKey, SyncedCanonicalEdit, SyncedGroupGuard, SyncedOriginV1 } from '@shared/synced-blocks'
 import { replaceMarkdownSourceChanges, type MarkdownSourceChange, type MarkdownSourceDraft } from '../../utils/markdownSourceDraft'
 import { createMarkdownSourceSession } from '../../utils/markdownSourceSession'
-import { canonicalSourceDraftToBlocksWithManifest, createCanonicalSourceDraftWithManifest, projectOpeningContentRange, projectOpeningSourceRange,
+import { applySyncedSourceGroupWithEndpoint, captureSyncedSourceEndpoint, readSyncedWorkingEndpoint,
+  type SyncedCommittedEndpointReceipt, type SyncedWorkingEndpointReceipt } from './controller'
+import { syncedBindingClaimsAreIdentity } from './bindingClaims'
+import type { SyncedGroupBinding, SyncedScopeBookmark } from './types'
+import { allocateCanonicalSourceDraft, createCanonicalSourceAllocationBasis, readCanonicalSourceAllocation,
+  canonicalSourceDraftToBlocksWithManifest, createCanonicalSourceDraftWithManifest, projectOpeningContentRange, projectOpeningSourceRange,
+  projectSourceReconciliationContentRange, projectSourceReconciliationRawRange,
   readMarkdownSourceDraftReceipt, readMarkdownSourceOpeningManifest, readMarkdownSourceReconciliationManifest,
-  type MarkdownSourceDraftReceipt, type MarkdownSourceOpeningManifest, type MarkdownSourceReconciliationManifest } from './sourceManifest'
+  type CanonicalSourceAllocation, type MarkdownSourceAllocationBasis, type MarkdownSourceDraftReceipt,
+  type MarkdownSourceOpeningManifest, type MarkdownSourceReconciliationManifest } from './sourceManifest'
 
 type Span = Readonly<{ from: number; to: number }>
 type Physical = MarkdownSourcePhysicalDestination
@@ -68,7 +75,9 @@ type Root = { opening: SourceLedgerOpening; manifest: MarkdownSourceOpeningManif
   lease: SourceFirstApplyLease; grammar: readonly unknown[] }
 type ReconcileMemo = { kind: 'ready'; value: ReturnType<typeof canonicalSourceDraftToBlocksWithManifest> } | { kind: 'error'; error: unknown }
 type Data = { root: Root; facts: SourceLedgerCandidateFacts; observation: Observation | null; roles: MarkdownSourceCarrierObservation | null;
-  lineage: ReadonlyMap<Physical, Lineage>; reconcileMemo?: ReconcileMemo; prepared?: PreparedSourceFirstApply }
+  lineage: ReadonlyMap<Physical, Lineage>; parent?: Data; reconcileMemo?: ReconcileMemo; prepared?: PreparedSourceFirstApply;
+  allocation?: CanonicalSourceAllocation; allocationBasis?: MarkdownSourceAllocationBasis;
+  geometryMemo?: { manifest: MarkdownSourceReconciliationManifest; result: ReturnType<typeof geometry> } }
 type ContentSpan = Span & { index: number }
 type LocatedPhysical = { fact: Physical; destination: ContentSpan; use: ContentSpan }
 const drafts = new WeakMap<SourceLedgerDraft, Data>()
@@ -139,6 +148,7 @@ function data(draft: SourceLedgerDraft): Data {
   const value = drafts.get(draft)
   if (!value || !openings.has(value.root.opening) || readMarkdownSourceDraftReceipt(draft) !== value.facts.receipt) return fail('草稿没有本次来源账本')
   if (!sameArray(value.root.grammar, grammar())) return fail('Markdown 语法上下文已变化')
+  if (readMarkdownSourceDraftReceipt(draft) !== value.facts.receipt) return fail('语法回调期间实际草稿已变化')
   return value
 }
 function observe(source: string): { observation: Observation | null; roles: MarkdownSourceCarrierObservation | null; reason: string | null } {
@@ -534,57 +544,29 @@ export function forkCanonicalSourceLedger(before: SourceLedgerDraft, rawChanges:
       reason ??= 'reference display slot 逸出或语法消失，不能自动降为新生'
   }
   if (!sameArray(previous.root.grammar, grammar())) fail('实际解析期间 Markdown 语法上下文已变化')
-  drafts.set(next, { root: previous.root, observation: observed.observation, roles: observed.roles, lineage, facts: Object.freeze({ opening: previous.root.opening,
+  drafts.set(next, { root: previous.root, parent: previous, observation: observed.observation, roles: observed.roles, lineage, facts: Object.freeze({ opening: previous.root.opening,
     receipt, beforeReceipt: previous.facts.receipt, fragments: fragments.fragments, uncertainReason: reason }) })
   return next
 }
 
 type Reconciled = ReturnType<typeof canonicalSourceDraftToBlocksWithManifest>
 function bridge(draft: SourceLedgerDraft, saved: Data, actual: Reconciled) {
-  const manifest = readMarkdownSourceReconciliationManifest(actual.manifest), opening = readMarkdownSourceOpeningManifest(saved.root.manifest)
+  const manifest = readMarkdownSourceReconciliationManifest(actual.manifest)
   if (manifest.draftReceipt !== saved.facts.receipt || manifest.opening !== saved.root.manifest || manifest.source !== draft.source
     || manifest.outputs.length !== actual.blocks.length) fail('reconcile receipt 不是当前候选')
   const blocks = validateSyncedCanonicalEdit(actual.blocks)
-  const anchors = new Map(opening.anchors.map(anchor => [anchor.openingIndex, anchor]))
-  if (anchors.size !== opening.anchors.length) fail('opening anchor 不唯一')
   const rawDomains = domains(manifest.outputs.flatMap((row, index) => row.sourceRange ? [{ span: row.sourceRange, value: index }] : []))
   const toSource = (index: number, span: Span): Span | null => {
     const row = manifest.outputs[index], block = blocks[index]
     if (!row || !block || row.outputIndex !== index || row.block.id !== block.id || row.block.content !== block.content
       || row.block.parentBlockId !== block.parentBlockId || row.kind === 'ref' || !row.sourceRange) return null
-    if (row.kind === 'syntax') {
-      if (row.syntaxIndices.length !== 1) return null
-      const syntaxIndex = row.syntaxIndices[0], trace = actual.syntax?.contentTraces[syntaxIndex]
-      if (!trace || trace.index !== syntaxIndex || trace.content !== block.content || manifest.syntaxToOutput[syntaxIndex] !== index) return null
-      const raw = projectMarkdownSourceContentRange(trace, span.from, span.to)
-      return raw && contains(row.sourceRange, raw) && sameSpan(projectMarkdownSourceRawRange(trace, raw.from, raw.to), span) ? raw : null
-    }
-    if (row.kind !== 'retained' && row.kind !== 'empty-retained' || !row.anchor) return null
-    const anchor = anchors.get(row.anchor.openingIndex)
-    if (!anchor) return null
-    const old = opening.blocks[anchor.openingIndex]
-    if (old?.content !== block.content || !sameSpan(row.sourceRange, row.anchor)
-      || draft.source.slice(row.anchor.from, row.anchor.to) !== row.anchor.original || row.anchor.original !== anchor.original) return null
-    const raw = projectOpeningContentRange(saved.root.manifest, anchor.openingIndex, span.from, span.to)
-    if (!raw || !contains(anchor, raw) || !sameSpan(projectOpeningSourceRange(saved.root.manifest, anchor.openingIndex, raw.from, raw.to), span)) return null
-    const shift = row.anchor.from - anchor.from, result = { from: raw.from + shift, to: raw.to + shift }
-    return contains(row.sourceRange, result) ? result : null
+    const raw = projectSourceReconciliationContentRange(actual.manifest, index, span.from, span.to)
+    return raw && sameSpan(projectSourceReconciliationRawRange(actual.manifest, index, raw.from, raw.to), span) ? raw : null
   }
   const fromSource = (span: Span): ContentSpan => {
     const candidates: ContentSpan[] = []
     for (const index of rawDomains(span)) {
-      const row = manifest.outputs[index]
-      let content: Span | null = null
-      if (row.kind === 'syntax' && row.syntaxIndices.length === 1) {
-        const trace = actual.syntax?.contentTraces[row.syntaxIndices[0]]
-        if (trace) content = projectMarkdownSourceRawRange(trace, span.from, span.to)
-      } else if ((row.kind === 'retained' || row.kind === 'empty-retained') && row.anchor) {
-        const anchor = anchors.get(row.anchor.openingIndex)
-        if (anchor) {
-          const shift = row.anchor.from - anchor.from
-          content = projectOpeningSourceRange(saved.root.manifest, anchor.openingIndex, span.from - shift, span.to - shift)
-        }
-      }
+      const content = projectSourceReconciliationRawRange(actual.manifest, index, span.from, span.to)
       if (content && sameSpan(toSource(index, content), span)) candidates.push({ index, ...content })
     }
     return unique(candidates, 'raw 到实际输出 payload 的路径不唯一')
@@ -651,6 +633,14 @@ function geometry(draft: SourceLedgerDraft, saved: Data, actual: Reconciled) {
   if (eligibleRows.length !== rows.length || eligibleRows.some(row => !claimed.has(row.fact))) fail('Main Key 未覆盖全部 eligible physical')
   return { blocks: current.blocks, rows }
 }
+function checkedGeometry(draft: SourceLedgerDraft, saved: Data, actual: Reconciled) {
+  if (saved.geometryMemo?.manifest === actual.manifest) return saved.geometryMemo.result
+  const result = geometry(draft, saved, actual)
+  // Refused geometry may depend on a caller parser callout; only positive
+  // observations are reusable. Allocation itself retains its original memo.
+  saved.geometryMemo = { manifest: actual.manifest, result }
+  return result
+}
 export function prepareCanonicalSourceFirstApply(input: { draft: SourceLedgerDraft; lease: SourceFirstApplyLease; freshId?: () => string }): PreparedSourceFirstApply {
   const parameters = plain(input, Object.hasOwn(input, 'freshId') ? ['draft', 'lease', 'freshId'] : ['draft', 'lease'])
   const draft = parameters.draft as SourceLedgerDraft, saved = data(draft), currentLease = lease(parameters.lease as SourceFirstApplyLease)
@@ -667,7 +657,7 @@ export function prepareCanonicalSourceFirstApply(input: { draft: SourceLedgerDra
   }
   if (saved.reconcileMemo.kind === 'error') throw saved.reconcileMemo.error
   const actual = saved.reconcileMemo.value
-  const result = geometry(draft, saved, actual)
+  const result = checkedGeometry(draft, saved, actual)
   const continued = new Set<string>()
   const claims = validateSyncedBindingClaims(result.rows.map(({ key, fact }) => {
     const origin = saved.lineage.get(fact)
@@ -678,6 +668,7 @@ export function prepareCanonicalSourceFirstApply(input: { draft: SourceLedgerDra
     return { kind: 'continue', source: { ...origin.source }, destination: key }
   }))
   if (!sameArray(saved.root.grammar, grammar())) fail('prepare 期间 Markdown 语法上下文已变化')
+  if (data(draft) !== saved) fail('prepare 期间实际草稿已变化')
   const value: PreparedSourceFirstApply = Object.freeze({ kind: 'source-first-apply' })
   const blocks = Object.freeze(result.blocks.map(block => {
     if (block.tags) Object.freeze(block.tags)
@@ -701,5 +692,199 @@ export function readPreparedSourceFirstApply(value: PreparedSourceFirstApply): P
   const current = data(facts.draft)
   if (facts.draftReceipt !== current.facts.receipt || facts.opening !== current.root.opening || facts.lease !== current.root.lease)
     return fail('preparation 与实际草稿 receipt 错挂')
+  return facts
+}
+
+export interface SourceCheckpoint { readonly kind: 'source-checkpoint' }
+export interface PreparedSourceCheckpoint { readonly kind: 'prepared-source-checkpoint' }
+export interface AcceptedSourceCheckpoint { readonly kind: 'accepted-source-checkpoint' }
+export interface PreparedSourceCheckpointFacts {
+  readonly draft: SourceLedgerDraft
+  readonly draftReceipt: MarkdownSourceDraftReceipt
+  readonly allocation: CanonicalSourceAllocation
+  readonly lease: SourceFirstApplyLease
+  readonly blocks: readonly Readonly<SyncedCanonicalEdit>[]
+  readonly bindingClaims: readonly Readonly<SyncedBindingClaim>[]
+}
+export interface AcceptedSourceCheckpointFacts {
+  readonly draft: SourceLedgerDraft
+  readonly draftReceipt: MarkdownSourceDraftReceipt
+  readonly allocation: CanonicalSourceAllocation
+  readonly endpoint: SyncedWorkingEndpointReceipt
+  readonly committed: SyncedCommittedEndpointReceipt | null
+}
+export type SourceCheckpointPreparationResult = Readonly<{ status: 'prepared'; preparation: PreparedSourceCheckpoint }>
+  | Readonly<{ status: 'noop' | 'needs-history-source' | 'unavailable' }>
+export type SourceCheckpointApplyResult = Readonly<{ status: 'accepted'; accepted: AcceptedSourceCheckpoint }>
+  | Readonly<{ status: 'unavailable' }>
+type CheckpointState = {
+  binding: SyncedGroupBinding; root: Root; endpoint: SyncedWorkingEndpointReceipt;
+  current: ReadonlyMap<Lineage, Readonly<SyncedBindingKey>>; seen: Set<Lineage>;
+  staged: PreparedSourceCheckpoint | null; preparing: boolean; applying: boolean
+}
+type CheckpointPreparation = {
+  state: CheckpointState; facts: PreparedSourceCheckpointFacts; tokens: ReadonlyMap<Lineage, Readonly<SyncedBindingKey>>;
+  result?: SourceCheckpointApplyResult
+}
+const checkpoints = new WeakMap<SourceCheckpoint, CheckpointState>()
+const checkpointPreparations = new WeakMap<PreparedSourceCheckpoint, CheckpointPreparation>()
+const acceptedCheckpoints = new WeakMap<AcceptedSourceCheckpoint, AcceptedSourceCheckpointFacts>()
+const unavailableCheckpoint = Object.freeze({ status: 'unavailable' as const })
+const noopCheckpoint = Object.freeze({ status: 'noop' as const })
+const historyCheckpoint = Object.freeze({ status: 'needs-history-source' as const })
+function orderedCheckpoint(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(orderedCheckpoint)
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => [key, orderedCheckpoint(item)]))
+  return value
+}
+const sameCheckpointBlocks = (left: readonly Readonly<SyncedCanonicalEdit>[], right: readonly Readonly<SyncedCanonicalEdit>[]) =>
+  JSON.stringify(orderedCheckpoint(left)) === JSON.stringify(orderedCheckpoint(right))
+function checkpointEndpoint(state: CheckpointState, draft: SourceLedgerDraft, saved: Data) {
+  let receiptError: unknown
+  const context = captureSyncedSourceEndpoint(state.binding, { expected: state.endpoint, validate: () => {
+    try { return data(draft) === saved } catch (error) {
+      try { readMarkdownSourceDraftReceipt(draft) } catch { receiptError = error }
+      return false
+    }
+  } })
+  if (receiptError !== undefined) throw receiptError
+  if (!context || !Object.keys(state.root.lease.scope).every(key =>
+    state.root.lease.scope[key as keyof SourceScopeLease] === context.lease.scope[key as keyof SourceScopeLease])) return null
+  // The private port closes expected Endpoint identity after the validator.
+  // Reading the public live endpoint again here would call scope once more.
+  return { read: { working: context.working }, context }
+}
+/** A real registered working endpoint is the sole Source opening authority.
+ * In particular dirty W is allowed without checkpointing or flushing it. */
+export function openSyncedSourceCheckpoint(binding: SyncedGroupBinding): {
+  checkpoint: SourceCheckpoint; draft: SourceLedgerDraft; opening: SourceLedgerOpening
+} | null {
+  const context = captureSyncedSourceEndpoint(binding)
+  if (!context) return null
+  const opened = openCanonicalSourceLedger({ blocks: context.working, origin: context.origin, lease: context.lease })
+  const saved = data(opened.draft), tokens = new Map<Lineage, Readonly<SyncedBindingKey>>()
+  for (const lineage of saved.lineage.values()) if (lineage.source) tokens.set(lineage, lineage.source)
+  const state: CheckpointState = { binding, root: saved.root, endpoint: context.endpoint, current: tokens,
+    seen: new Set(tokens.keys()), staged: null, preparing: false, applying: false }
+  if (!checkpointEndpoint(state, opened.draft, saved)) return null
+  const checkpoint: SourceCheckpoint = Object.freeze({ kind: 'source-checkpoint' })
+  checkpoints.set(checkpoint, state)
+  return { checkpoint, ...opened }
+}
+function checkpointAllocation(draft: SourceLedgerDraft, saved: Data, freshId?: () => string): CanonicalSourceAllocation {
+  if (saved.allocation) return saved.allocation
+  let ancestor = saved.parent
+  while (ancestor && !ancestor.allocationBasis) ancestor = ancestor.parent
+  const allocation = allocateCanonicalSourceDraft(draft, { ...(ancestor?.allocationBasis ? { basis: ancestor.allocationBasis } : {}),
+    ...(freshId ? { freshId } : {}) })
+  saved.allocation = allocation
+  return allocation
+}
+export function prepareSourceCheckpoint(input: {
+  checkpoint: SourceCheckpoint; draft: SourceLedgerDraft; freshId?: () => string
+}): SourceCheckpointPreparationResult {
+  const parameters = plain(input, Object.hasOwn(input, 'freshId') ? ['checkpoint', 'draft', 'freshId'] : ['checkpoint', 'draft'])
+  const state = checkpoints.get(parameters.checkpoint as SourceCheckpoint), draft = parameters.draft as SourceLedgerDraft
+  if (!state || state.preparing || state.applying) return unavailableCheckpoint
+  if (parameters.freshId !== undefined && typeof parameters.freshId !== 'function') fail('fresh ID 分配器不是实际函数')
+  state.preparing = true
+  try {
+    const saved = data(draft)
+    if (saved.root !== state.root) return unavailableCheckpoint
+    if (state.staged) {
+      const staged = checkpointPreparations.get(state.staged)!
+      return staged.facts.draft === draft && checkpointEndpoint(state, draft, saved) && readMarkdownSourceDraftReceipt(draft) === saved.facts.receipt
+        ? Object.freeze({ status: 'prepared', preparation: state.staged }) : unavailableCheckpoint
+    }
+    if (!checkpointEndpoint(state, draft, saved)) return unavailableCheckpoint
+    if (saved.facts.uncertainReason) fail(saved.facts.uncertainReason)
+    const allocation = checkpointAllocation(draft, saved, parameters.freshId as (() => string) | undefined)
+    const allocated = readCanonicalSourceAllocation(allocation)
+    const actual: Reconciled = { blocks: allocated.blocks as SyncedCanonicalEdit[], syntax: null, manifest: allocated.reconciliationManifest }
+    const result = checkedGeometry(draft, saved, actual), tokens = new Map<Lineage, Readonly<SyncedBindingKey>>()
+    const continued = new Set<string>(), values: SyncedBindingClaim[] = []
+    for (const { key, fact } of result.rows) {
+      const token = saved.lineage.get(fact)
+      if (!token?.proven || !token.source && !token.birth) fail('实际目的地没有闭合的 raw 来源')
+      if (tokens.has(token)) fail('同一来源没有显式 copy 事实却被重复使用')
+      tokens.set(token, key)
+      const source = state.current.get(token)
+      if (source) {
+        if (continued.has(keyId(source))) fail('同一来源没有显式 copy 事实却被重复使用')
+        continued.add(keyId(source)); values.push({ kind: 'continue', source: { ...source }, destination: { ...key } })
+      } else {
+        if (state.seen.has(token)) return historyCheckpoint
+        if (!token.birth) return historyCheckpoint
+        values.push({ kind: 'new', destination: { ...key } })
+      }
+    }
+    const bindingClaims = validateSyncedBindingClaims(values)
+    // Grammar/configuration may be caller-owned. Check the actual draft and
+    // actual controller endpoint after the last parser/grammar callout.
+    if (data(draft) !== saved) return unavailableCheckpoint
+    const endpoint = checkpointEndpoint(state, draft, saved)
+    if (!endpoint || readMarkdownSourceDraftReceipt(draft) !== saved.facts.receipt) return unavailableCheckpoint
+    if (sameCheckpointBlocks(result.blocks, endpoint.read.working) && syncedBindingClaimsAreIdentity(bindingClaims)) return noopCheckpoint
+    saved.allocationBasis ??= createCanonicalSourceAllocationBasis(allocation)
+    if (data(draft) !== saved || !checkpointEndpoint(state, draft, saved) || readMarkdownSourceDraftReceipt(draft) !== saved.facts.receipt) return unavailableCheckpoint
+    const preparation: PreparedSourceCheckpoint = Object.freeze({ kind: 'prepared-source-checkpoint' })
+    const facts: PreparedSourceCheckpointFacts = Object.freeze({ draft, draftReceipt: saved.facts.receipt, allocation,
+      lease: lease(endpoint.context.lease), blocks: allocated.blocks,
+      bindingClaims: Object.freeze(bindingClaims.map(claim => {
+        Object.freeze(claim.destination); if (claim.kind === 'continue') Object.freeze(claim.source); return Object.freeze(claim)
+      })) })
+    checkpointPreparations.set(preparation, { state, facts, tokens })
+    state.staged = preparation
+    return Object.freeze({ status: 'prepared', preparation })
+  } finally { state.preparing = false }
+}
+export function readPreparedSourceCheckpoint(preparation: PreparedSourceCheckpoint): PreparedSourceCheckpointFacts {
+  const saved = checkpointPreparations.get(preparation)
+  if (!saved || data(saved.facts.draft).facts.receipt !== saved.facts.draftReceipt) fail('未知 checkpoint preparation')
+  return saved.facts
+}
+export function applyPreparedSourceCheckpoint(input: {
+  preparation: PreparedSourceCheckpoint; transactionId: string; bookmark?: SyncedScopeBookmark | null
+}): SourceCheckpointApplyResult {
+  const parameters = plain(input, Object.hasOwn(input, 'bookmark') ? ['preparation', 'transactionId', 'bookmark'] : ['preparation', 'transactionId'])
+  const saved = checkpointPreparations.get(parameters.preparation as PreparedSourceCheckpoint)
+  if (!saved) return unavailableCheckpoint
+  if (saved.result) return saved.result
+  const { state, facts } = saved
+  if (state.preparing || state.applying || state.staged !== parameters.preparation) return unavailableCheckpoint
+  state.applying = true
+  try {
+    if (typeof parameters.transactionId !== 'string' || !parameters.transactionId || data(facts.draft).facts.receipt !== facts.draftReceipt)
+      return unavailableCheckpoint
+    const endpoint = checkpointEndpoint(state, facts.draft, data(facts.draft))
+    if (!endpoint || !sameLease(facts.lease, lease(endpoint.context.lease))
+      || readMarkdownSourceDraftReceipt(facts.draft) !== facts.draftReceipt) return unavailableCheckpoint
+    const applied = applySyncedSourceGroupWithEndpoint(state.binding, { expectedEditSequence: facts.lease.expectedEditSequence,
+      guards: { ...facts.lease.guards }, blocks: facts.blocks as SyncedCanonicalEdit[], bindingClaims: facts.bindingClaims as SyncedBindingClaim[],
+      transactionId: parameters.transactionId, bookmark: parameters.bookmark as SyncedScopeBookmark | null ?? null },
+    () => data(facts.draft).facts.receipt === facts.draftReceipt)
+    if (!applied.accepted) return unavailableCheckpoint
+    const accepted: AcceptedSourceCheckpoint = Object.freeze({ kind: 'accepted-source-checkpoint' })
+    acceptedCheckpoints.set(accepted, Object.freeze({ draft: facts.draft, draftReceipt: facts.draftReceipt,
+      allocation: facts.allocation, endpoint: applied.endpoint, committed: null }))
+    state.endpoint = applied.endpoint; state.current = saved.tokens
+    for (const token of saved.tokens.keys()) state.seen.add(token)
+    state.staged = null
+    saved.result = Object.freeze({ status: 'accepted', accepted })
+    return saved.result
+  } finally { state.applying = false }
+}
+/** This reader retains the exact original local acceptance. A committed
+ * receipt already observed remains available after the live scope expires. */
+export function readAcceptedSourceCheckpoint(accepted: AcceptedSourceCheckpoint): AcceptedSourceCheckpointFacts | null {
+  const facts = acceptedCheckpoints.get(accepted)
+  if (!facts || facts.committed) return facts ?? null
+  const read = readSyncedWorkingEndpoint(facts.endpoint)
+  if (read.status === 'available' && read.kind === 'content' && read.committed) {
+    const committed = Object.freeze({ ...facts, committed: read.committed })
+    acceptedCheckpoints.set(accepted, committed)
+    return committed
+  }
   return facts
 }

@@ -104,6 +104,8 @@ const allocationMemos = new WeakMap<MarkdownSourceDraft, AllocationMemo>()
 const allocations = new WeakMap<CanonicalSourceAllocation, CanonicalSourceAllocationFacts>()
 const bases = new WeakMap<MarkdownSourceAllocationBasis, BasisRecord>()
 const basisByAllocation = new WeakMap<CanonicalSourceAllocation, MarkdownSourceAllocationBasis>()
+const outputProjections = new WeakMap<MarkdownSourceReconciliationManifest, Map<number, Projection>>()
+const openingAnchorIndices = new WeakMap<MarkdownSourceOpeningManifest, ReadonlyMap<number, MarkdownSourceAnchorFact>>()
 function invalid(message: string): never { throw new SyncedValidationError('forest', message) }
 function freeze<T>(value: T): T {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
@@ -401,12 +403,12 @@ function mappedOverlay(draft: MarkdownSourceDraft, basis: MarkdownSourceAllocati
   freeze(anchors)
   return { basis, view: { blocks: saved.blocks, anchors }, facts }
 }
-function canonicalOnce(draft: MarkdownSourceDraft, basis: MarkdownSourceAllocationBasis | null, freshId: () => string): CanonicalResult {
+function canonicalOnce(draft: MarkdownSourceDraft, basis: MarkdownSourceAllocationBasis | null, freshId: () => string, exactBasis = false): CanonicalResult {
   const current = record(draft), memo = allocationMemos.get(draft)
   if (memo) {
     if (memo.kind === 'running') invalid('This actual draft is already being allocated.')
     if (memo.kind === 'error') throw memo.error
-    if (basis && memo.basis !== basis) invalid('The first allocation basis of an actual draft cannot be replaced.')
+    if ((exactBasis || basis !== null) && memo.basis !== basis) invalid('The first allocation basis of an actual draft cannot be replaced.')
     return memo.value
   }
   if (typeof freshId !== 'function') invalid('The actual fresh identity allocator must be a function.')
@@ -441,7 +443,15 @@ export function allocateCanonicalSourceDraft(draft: MarkdownSourceDraft, options
   const freshId = descriptors.freshId?.value as (() => string) | undefined
   if (basis !== undefined) basisRecord(basis)
   if (freshId !== undefined && typeof freshId !== 'function') invalid('The actual fresh identity allocator must be a function.')
-  const value = canonicalOnce(draft, basis ?? null, freshId ?? (() => crypto.randomUUID()))
+  const existing = allocationMemos.get(draft)
+  // Reading an already-issued allocation without a basis is idempotent. The
+  // first registration below must still match the C's exact null/non-null
+  // basis, and an explicit alternative basis can never replace that choice.
+  if (basis === undefined && existing?.kind === 'ready' && existing.allocation) {
+    record(draft)
+    return existing.allocation
+  }
+  const value = canonicalOnce(draft, basis ?? null, freshId ?? (() => crypto.randomUUID()), true)
   const memo = allocationMemos.get(draft)
   if (!memo || memo.kind !== 'ready') invalid('The actual allocation result was not registered.')
   const facts = readMarkdownSourceReconciliationManifest(value.manifest)
@@ -461,6 +471,15 @@ export function readCanonicalSourceAllocation(allocation: CanonicalSourceAllocat
 const sameRange = (left: Span | null, right: Span) => !!left && left.from === right.from && left.to === right.to
 const within = (outer: Span, inner: Span) => outer.from <= inner.from && inner.to <= outer.to
 function outputProjection(manifest: MarkdownSourceReconciliationManifest, index: number): Projection {
+  const cached = outputProjections.get(manifest)?.get(index)
+  if (cached) return cached
+  const projection = buildOutputProjection(manifest, index)
+  let entries = outputProjections.get(manifest)
+  if (!entries) { entries = new Map(); outputProjections.set(manifest, entries) }
+  entries.set(index, projection)
+  return projection
+}
+function buildOutputProjection(manifest: MarkdownSourceReconciliationManifest, index: number): Projection {
   const facts = readMarkdownSourceReconciliationManifest(manifest), row = facts.outputs[index]
   const runtime = runtimes.get(manifest) ?? invalid('Missing actual reconciliation runtime.')
   const range = row.sourceRange
@@ -490,7 +509,13 @@ function outputProjection(manifest: MarkdownSourceReconciliationManifest, index:
     projection = prior.projections[at]
   } else if (row.anchor) {
     const opening = readMarkdownSourceOpeningManifest(facts.opening), at = row.anchor.openingIndex
-    original = opening.anchors.find(anchor => anchor.openingIndex === at) ?? invalid('Missing original opening anchor.')
+    let anchors = openingAnchorIndices.get(facts.opening)
+    if (!anchors) {
+      anchors = new Map(opening.anchors.map(anchor => [anchor.openingIndex, anchor]))
+      if (anchors.size !== opening.anchors.length) invalid('The actual opening anchor index is not unique.')
+      openingAnchorIndices.set(facts.opening, anchors)
+    }
+    original = anchors.get(at) ?? invalid('Missing original opening anchor.')
     if (opening.blocks[at].content !== row.block.content || row.anchor.original !== original.original) invalid('The original opening payload changed.')
     projection = { toRaw: span => projectOpeningContentRange(facts.opening, at, span.from, span.to),
       fromRaw: span => projectOpeningSourceRange(facts.opening, at, span.from, span.to) }
@@ -504,6 +529,18 @@ function outputProjection(manifest: MarkdownSourceReconciliationManifest, index:
     fromRaw(span) { const old = { from: span.from - shift, to: span.to - shift }, content = within(range, span) && projection.fromRaw(old)
       return content && sameRange(projection.toRaw(content), old) ? content : null }
   }
+}
+/** Actual C geometry, including retained rows whose carrier came from a real
+ * ancestor allocation rather than the cold opening. */
+export function projectSourceReconciliationContentRange(manifest: MarkdownSourceReconciliationManifest, index: number, from: number, to: number): Span | null {
+  const facts = readMarkdownSourceReconciliationManifest(manifest)
+  return Number.isSafeInteger(index) && index >= 0 && index < facts.outputs.length && Number.isSafeInteger(from)
+    && Number.isSafeInteger(to) && from >= 0 && to >= from ? outputProjection(manifest, index).toRaw({ from, to }) : null
+}
+export function projectSourceReconciliationRawRange(manifest: MarkdownSourceReconciliationManifest, index: number, from: number, to: number): Span | null {
+  const facts = readMarkdownSourceReconciliationManifest(manifest)
+  return Number.isSafeInteger(index) && index >= 0 && index < facts.outputs.length && Number.isSafeInteger(from)
+    && Number.isSafeInteger(to) && from >= 0 && to >= from ? outputProjection(manifest, index).fromRaw({ from, to }) : null
 }
 /** The handle proves a real C allocation, not that a controller accepted it. */
 export function createCanonicalSourceAllocationBasis(allocation: CanonicalSourceAllocation): MarkdownSourceAllocationBasis {

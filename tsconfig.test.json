@@ -13,6 +13,7 @@
     "scripts/performance-benchmark.ts",
     "scripts/markdown-quality-benchmark.ts",
     "scripts/markdown-link-benchmark.ts",
-    "scripts/markdown-spec-report.ts"
+    "scripts/markdown-spec-report.ts",
+    "scripts/synced-source-checkpoint-benchmark.ts"
   ]
 }

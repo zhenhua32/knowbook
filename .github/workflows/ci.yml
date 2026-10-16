@@ -57,6 +57,18 @@ jobs:
       - name: Check full Markdown source editing regression ceilings
         run: npm run benchmark:markdown-source
 
+      - name: Verify consecutive synced source Apply lineage
+        run: npm run benchmark:synced-source -- --output-dir test-results/synced-source-checkpoint-ci
+
+      - name: Upload synced source checkpoint benchmark
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: synced-source-checkpoint-report
+          path: test-results/synced-source-checkpoint-ci/**
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Upload Markdown performance report
         if: always()
         uses: actions/upload-artifact@v4
