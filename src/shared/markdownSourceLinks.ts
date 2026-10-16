@@ -21,6 +21,9 @@ export type MarkdownRawRuleReads = Readonly<{
 }>
 export interface MarkdownRawOccurrenceObserver {
   captureRule?: (run: () => boolean) => { accepted: boolean; reads: MarkdownRawRuleReads }
+  /** Optional cold role observation. The normal parser and the original raw
+   * observer do not allocate this channel or change their capture behaviour. */
+  captureInlineRule?: (state: StateInline, rule: 'link' | 'image', start: number, run: () => boolean) => { accepted: boolean; reads: MarkdownRawRuleReads }
   definition(state: StateBlock, token: Token, startLine: number, read: MarkdownRawDestinationRead | null, reference: object | undefined): void
   link(state: StateInline, token: Token, use: { start: number; end: number }, destination: MarkdownSourceLink | undefined, reference?: object): void
   unknownInline(state: StateInline, start: number, end: number, reason: string): void
@@ -224,7 +227,9 @@ export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>):
       }
       let accepted: boolean, reads: MarkdownRawRuleReads | undefined
       try {
-        if (data.raw?.captureRule && (name === 'link' || name === 'image')) {
+        if (data.raw?.captureInlineRule && (name === 'link' || name === 'image')) {
+          const observed = data.raw.captureInlineRule(state, name, start, () => fn(state, false)); accepted = observed.accepted; reads = observed.reads
+        } else if (data.raw?.captureRule && (name === 'link' || name === 'image')) {
           const observed = data.raw.captureRule(() => fn(state, false)); accepted = observed.accepted; reads = observed.reads
         } else accepted = fn(state, false)
       }

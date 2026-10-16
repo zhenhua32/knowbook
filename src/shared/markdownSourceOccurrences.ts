@@ -1,7 +1,7 @@
 import type { StateInline, Token } from 'markdown-it'
 import { assertNativeContainerParse } from './markdownContainers'
 import { decodeNativeLiteralText } from './markdownNativeText'
-import { createMarkdownSourceRawTrace, type MarkdownSourceRawSpan } from './markdownSourceTrace'
+import { createMarkdownSourceRawTrace, type MarkdownSourceRawSpan, type MarkdownSourceRawTrace } from './markdownSourceTrace'
 import type { MarkdownRawOccurrenceObserver, MarkdownRawRuleReads } from './markdownSourceLinks'
 import { markdownEngine } from './markdownEngine'
 export type { MarkdownSourceRawSpan } from './markdownSourceTrace'
@@ -74,10 +74,23 @@ export interface MarkdownSourceOccurrenceObservation {
   readonly complete: boolean
 }
 
+/** @internal Same-parse cold observation port. It cannot replace an actual raw
+ * fact, final token check or source projection. Ordinary calls pass no port. */
+export interface MarkdownSourceOccurrencePort {
+  readonly captureInlineRule: NonNullable<MarkdownRawOccurrenceObserver['captureInlineRule']>
+  link(trace: MarkdownSourceRawTrace, state: StateInline, fact: MarkdownSourceUseOccurrence): void
+}
+
 /** Cold source facts only: no target lookup, provenance claims, ledger or UI.
  * Normal parser calls do not opt in, allocate this inventory or change shape.
  * A false complete value is significant even when both inventories are empty. */
 export function observeMarkdownSourceOccurrences(source: string, options: { documentTitle?: string } = {}): MarkdownSourceOccurrenceObservation {
+  return observeMarkdownSourceOccurrencesWithPort(source, options)
+}
+
+/** @internal The carrier observer supplies its private port here instead of
+ * parsing a second time and pairing tokens from equivalent source. */
+export function observeMarkdownSourceOccurrencesWithPort(source: string, options: { documentTitle?: string }, port?: MarkdownSourceOccurrencePort): MarkdownSourceOccurrenceObservation {
   if (typeof source !== 'string' || !options || typeof options !== 'object'
     || options.documentTitle !== undefined && typeof options.documentTitle !== 'string') throw new Error('Invalid Markdown occurrence source')
   const trace = createMarkdownSourceRawTrace(source)
@@ -130,9 +143,11 @@ export function observeMarkdownSourceOccurrences(source: string, options: { docu
       observed.set(token, { use: fact, url, tokenType: token.type, owner })
       if (!owner) barrier(token, use, 'unmapped-inline-owner')
       if (!fact.complete) barrier(token, use, isReference ? 'unproven-reference-use' : 'unmapped-direct-use')
+      port?.link(trace, state, fact)
     },
     unknownInline(state, start, end, reason) { barrier(state.tokens, trace.inlineRange(state, start, end), reason) }
   }
+  if (port) observer.captureInlineRule = port.captureInlineRule
   const environment = {
     documentTitle: options.documentTitle ?? '', markdownRawOccurrences: observer,
     // Enable the existing HTML creation-point trace. Its legacy global spans
