@@ -280,3 +280,8 @@ export function applySyncedGroupBindingClaims(db: Database.Database, before: Syn
   assertSyncedStoredBindings(db, before.origin, checked, bindings, before.groupId)
   return bindings
 }
+
+/** Pure original-Key parser closure only; no target lookup or Main source authority. */
+export function collectSyncedBindingOccurrences(origin: SyncedOriginV1, blocks: readonly SyncedCanonicalWire[]): Array<Omit<SyncedLinkBinding, 'target'> & { url: string }> {
+  return occurrences(validateSyncedOrigin(origin), validateSyncedCanonicalWire(blocks))
+}

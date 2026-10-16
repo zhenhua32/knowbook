@@ -301,3 +301,8 @@ export function projectSyncedHostBudget(host: SyncedPortableHostRecord, groups: 
   }
   return measureHost(projected, required)
 }
+
+/** The same typed asset visitor used by real Main snapshot publication and its strict reader. */
+export function rewriteSyncedPortableHostAssets(host: SyncedPortableHostRecord, map: SyncedAssetMapper): SyncedPortableHostRecord {
+  return rewrittenHost(host, map)
+}
