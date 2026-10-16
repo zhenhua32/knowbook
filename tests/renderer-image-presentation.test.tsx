@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test, { type TestContext } from 'node:test'
 import { register } from 'node:module'
-import { act, createElement, useState } from 'react'
+import { act, createElement, useLayoutEffect, useState } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { JSDOM } from 'jsdom'
 import type { ImagePresentation } from '../src/shared/markdownMedia'
@@ -226,4 +226,146 @@ test('unsupported HTML images remain visible beside editable linked images of th
     assert.ok(api.nextContents[0].includes('[<figure'))
     assert.ok(api.nextContents[0].endsWith('](https://example.test)'))
   }, source)
+})
+
+type LoadLifecycleApi = {
+  image: HTMLImageElement
+  commits: ImagePresentation[]
+  loadEvents: () => number
+  find: <T extends Element = HTMLElement>(selector: string) => T
+  select: () => Promise<void>
+  load: (width: number, height: number) => Promise<void>
+  changeSource: (src: string) => Promise<void>
+  pointer: (type: string, x: number, y: number) => Promise<void>
+}
+
+/** Exercise the real component's commit/effect ordering. The parent layout
+ * effect dispatches an actual DOM load before the child's passive effects;
+ * no React hook, event callback, scheduler, timer or production code is mocked. */
+async function withImageLoadLifecycle(run: (api: LoadLifecycleApi) => Promise<void>, loadBeforePassive = false) {
+  const dom = new JSDOM('<div id="load-lifecycle-mount"></div>', { url: 'https://fixture.local', pretendToBeVisual: true })
+  const originals = new Map<string, PropertyDescriptor | undefined>()
+  for (const [name, value] of Object.entries({ window: dom.window, document: dom.window.document, navigator: dom.window.navigator,
+    HTMLElement: dom.window.HTMLElement, HTMLInputElement: dom.window.HTMLInputElement, HTMLTextAreaElement: dom.window.HTMLTextAreaElement,
+    Node: dom.window.Node, Event: dom.window.Event, MouseEvent: dom.window.MouseEvent, KeyboardEvent: dom.window.KeyboardEvent,
+    IS_REACT_ACT_ENVIRONMENT: true })) {
+    originals.set(name, Object.getOwnPropertyDescriptor(globalThis, name))
+    Object.defineProperty(globalThis, name, { configurable: true, value })
+  }
+  const { createRoot } = await import('react-dom/client')
+  const root = createRoot(dom.window.document.getElementById('load-lifecycle-mount')!)
+  const commits: ImagePresentation[] = [], captured = new WeakMap<HTMLElement, number>()
+  const decoded = { width: 0, height: 0, complete: false, currentSrc: '' }
+  let loadEvents = 0, current = initial, setPresentation: (next: ImagePresentation) => void = () => {}
+  const find = <T extends Element = HTMLElement>(selector: string): T => {
+    const element = dom.window.document.querySelector<T>(selector)
+    assert.ok(element, `The load lifecycle fixture requires ${selector}`)
+    return element
+  }
+  const recordLoad = () => { loadEvents++ }
+  const decodeAndLoad = (image: HTMLImageElement, width: number, height: number) => {
+    Object.assign(decoded, { width, height, complete: true, currentSrc: image.src })
+    image.dispatchEvent(new dom.window.Event('load'))
+  }
+  function Harness() {
+    const [value, setValue] = useState(initial)
+    current = value; setPresentation = setValue
+    useLayoutEffect(() => {
+      const image = find<HTMLImageElement>('.image-presentation-image')
+      Object.defineProperties(image, {
+        naturalWidth: { configurable: true, get: () => decoded.width },
+        naturalHeight: { configurable: true, get: () => decoded.height },
+        complete: { configurable: true, get: () => decoded.complete },
+        currentSrc: { configurable: true, get: () => decoded.currentSrc }
+      })
+      image.addEventListener('load', recordLoad)
+      if (loadBeforePassive) decodeAndLoad(image, 400, 200)
+      return () => image.removeEventListener('load', recordLoad)
+    }, [])
+    return createElement(ImagePresentationEditor, { value, isZh: false, editable: true,
+      onCommit: next => { commits.push(structuredClone(next)); setValue(next) } })
+  }
+  try {
+    await act(async () => root.render(createElement(Harness)))
+    const image = find<HTMLImageElement>('.image-presentation-image')
+    if (!loadBeforePassive) await act(async () => decodeAndLoad(image, 400, 200))
+    Object.defineProperty(find('[data-image-presentation]'), 'clientWidth', { value: 600 })
+    const frame = find('.image-presentation-frame')
+    frame.getBoundingClientRect = () => bounds(Number.parseFloat(frame.style.width),
+      Number.parseFloat(frame.style.width) / (Number(frame.style.aspectRatio) || 2))
+    await run({ image, commits, loadEvents: () => loadEvents, find,
+      select: async () => { await act(async () => frame.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))) },
+      load: async (width, height) => { await act(async () => decodeAndLoad(image, width, height)) },
+      changeSource: async src => {
+        // A pending replacement may still expose the prior decoded dimensions;
+        // only a subsequent actual load event makes the new resource ready.
+        decoded.complete = false
+        await act(async () => setPresentation({ ...current, src }))
+        assert.equal(find<HTMLImageElement>('.image-presentation-image'), image, 'The src-switch case retains the actual same image DOM node')
+      },
+      pointer: async (type, x, y) => {
+        const handle = find<HTMLButtonElement>('[data-image-resize]')
+        assert.equal(handle.disabled, false, 'Only an enabled real resize handle receives the test gesture')
+        handle.setPointerCapture = id => { captured.set(handle, id) }
+        handle.hasPointerCapture = id => captured.get(handle) === id
+        handle.releasePointerCapture = () => { captured.delete(handle) }
+        const event = new dom.window.MouseEvent(type, { bubbles: true, cancelable: true, button: 0,
+          buttons: type === 'pointerup' ? 0 : 1, clientX: x, clientY: y })
+        Object.defineProperty(event, 'pointerId', { value: 7 })
+        await act(async () => handle.dispatchEvent(event))
+      } })
+  } finally {
+    await act(async () => root.unmount())
+    dom.window.close()
+    for (const [name, descriptor] of originals) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor)
+      else Reflect.deleteProperty(globalThis, name)
+    }
+  }
+}
+
+test('a real image load during the parent layout effect remains ready after the child passive effects and accepts one full resize gesture', async () => {
+  await withImageLoadLifecycle(async api => {
+    assert.equal(api.loadEvents(), 1, 'The first commit delivered exactly one real DOM load before the passive effects')
+    assert.equal(api.image.complete, true)
+    assert.equal(api.image.naturalWidth, 400); assert.equal(api.image.naturalHeight, 200)
+    await api.select()
+    assert.equal(api.find<HTMLButtonElement>('[data-image-resize]').disabled, false,
+      'An already decoded image must remain resize-ready after its initial src effect')
+    await api.pointer('pointerdown', 200, 100)
+    await api.pointer('pointermove', 250, 125)
+    assert.equal(api.commits.length, 0, 'Pointer movement is a preview before release')
+    assert.equal(api.find('.image-presentation-frame').style.width, '250px')
+    await api.pointer('pointerup', 250, 125)
+    assert.equal(api.commits.length, 1, 'One completed actual DOM pointer gesture commits once')
+    assert.equal(api.commits[0].width, 250); assert.equal(api.commits[0].height, 125)
+    assert.equal(api.loadEvents(), 1, 'A second load event was not used to rescue initial readiness')
+  }, true)
+})
+
+test('a changed image src cannot reuse old decoded dimensions and resizes with the new ratio only after the new resource loads', async () => {
+  await withImageLoadLifecycle(async api => {
+    await api.select()
+    assert.equal(api.find<HTMLButtonElement>('[data-image-resize]').disabled, false)
+    const oldSrc = api.image.src
+    await api.changeSource('file:///new-lifecycle-resource.svg')
+    assert.notEqual(api.image.src, oldSrc)
+    assert.equal(api.image.currentSrc, oldSrc, 'The fixture still exposes only the previously decoded resource')
+    assert.equal(api.image.naturalWidth, 400); assert.equal(api.image.naturalHeight, 200)
+    assert.equal(api.image.complete, false)
+    assert.equal(api.find<HTMLButtonElement>('[data-image-resize]').disabled, true,
+      'Old decoded dimensions do not authorize a gesture for the pending replacement src')
+    assert.equal(api.commits.length, 0)
+    await api.load(200, 400)
+    assert.equal(api.loadEvents(), 2)
+    assert.equal(api.image.currentSrc, api.image.src)
+    assert.equal(api.find<HTMLButtonElement>('[data-image-resize]').disabled, false)
+    await api.pointer('pointerdown', 200, 400)
+    await api.pointer('pointermove', 250, 500)
+    await api.pointer('pointerup', 250, 500)
+    assert.equal(api.commits.length, 1)
+    assert.equal(api.commits[0].src, 'file:///new-lifecycle-resource.svg')
+    assert.equal(api.commits[0].width, 250); assert.equal(api.commits[0].height, 500,
+      'The new decoded resource ratio is used instead of the old 2:1 ratio')
+  })
 })

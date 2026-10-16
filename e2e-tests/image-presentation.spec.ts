@@ -89,16 +89,102 @@ async function selectImage(image: Locator) {
 }
 
 async function drag(page: Page, handle: Locator, delta: { x: number; y: number }, cancel = false, interior = { x: .5, y: .5 }) {
-  await handle.scrollIntoViewIfNeeded()
+  let precondition = 'visible'
+  try {
+    await expect(handle).toBeVisible()
+    precondition = 'enabled'
+    await expect(handle).toBeEnabled()
+    precondition = 'scroll'
+    await handle.scrollIntoViewIfNeeded()
+    precondition = 'hover'
+    // Use the requested visible quadrant even for crop handles clipped at an
+    // image edge. Playwright positions are relative to the padding box.
+    const position = await handle.evaluate((node, interior) => {
+      const bounds = node.getBoundingClientRect(), style = getComputedStyle(node)
+      return { x: bounds.width * interior.x - Number.parseFloat(style.borderLeftWidth),
+        y: bounds.height * interior.y - Number.parseFloat(style.borderTopWidth) }
+    }, interior)
+    await handle.hover({ position })
+  } catch (error) {
+    try {
+      // Page evaluation has no locator auto-wait; a missing/disabled handle
+      // remains evidence rather than triggering another actionability wait.
+      const snapshot = await page.evaluate(interior => Array.from(document.querySelectorAll<HTMLElement>('.preview-panel [data-image-presentation]'))
+        .map((image, index) => {
+          const bitmap = image.querySelector('img')
+          return { index, connected: image.isConnected, availableWidth: image.clientWidth,
+            frame: image.querySelector('.image-presentation-frame')?.getBoundingClientRect().toJSON(),
+            image: bitmap ? { connected: bitmap.isConnected, currentSrc: bitmap.currentSrc, complete: bitmap.complete,
+              naturalWidth: bitmap.naturalWidth, naturalHeight: bitmap.naturalHeight } : null,
+            handles: Array.from(image.querySelectorAll<HTMLButtonElement>('[data-image-resize],[data-image-crop-handle],[data-image-crop-area]'))
+              .map(button => {
+                const bounds = button.getBoundingClientRect(), style = getComputedStyle(button)
+                const point = { x: bounds.x + bounds.width * interior.x, y: bounds.y + bounds.height * interior.y }
+                const hit = document.elementFromPoint(point.x, point.y)
+                return { connected: button.isConnected, disabled: button.disabled, resize: button.hasAttribute('data-image-resize'),
+                  crop: button.getAttribute('data-image-crop-handle'), cropArea: button.hasAttribute('data-image-crop-area'),
+                  visible: bounds.width > 0 && bounds.height > 0 && !['hidden', 'collapse'].includes(style.visibility) && style.display !== 'none',
+                  bounds: bounds.toJSON(), intendedPoint: point, hitIsHandle: hit === button || Boolean(hit && button.contains(hit)),
+                  hit: hit ? { tag: hit.tagName, className: hit.getAttribute('class') } : null }
+              }) }
+        }), interior)
+      await test.info().attach('image-gesture-precondition', { body: JSON.stringify({ precondition, handle: handle.toString(),
+        delta, cancel, interior, snapshot }, null, 2), contentType: 'application/json' })
+    } catch { /* Diagnostic failure must not replace the original precondition error. */ }
+    throw error
+  }
   const bounds = await handle.boundingBox()
   expect(bounds).not.toBeNull()
   const start = { x: bounds!.x + bounds!.width * interior.x, y: bounds!.y + bounds!.height * interior.y }
   await page.mouse.move(start.x, start.y)
-  await page.mouse.down()
+  const gesture = await handle.evaluateHandle((node, point) => {
+    const target = node as HTMLButtonElement, types = ['pointerdown', 'pointermove', 'pointerup', 'pointercancel', 'gotpointercapture', 'lostpointercapture']
+    const describe = (node: EventTarget | null) => node instanceof Element
+      ? { tag: node.tagName, className: node.getAttribute('class'), resize: node.hasAttribute('data-image-resize'),
+        crop: node.getAttribute('data-image-crop-handle'), cropArea: node.hasAttribute('data-image-crop-area') } : null
+    const events: Array<{ type: string; pointerId: number; trusted: boolean; button: number; x: number; y: number; targetIsHandle: boolean;
+      target: ReturnType<typeof describe>; captured: boolean }> = []
+    const record = (event: Event) => {
+      if (!(event instanceof PointerEvent)) return
+      events.push({ type: event.type, pointerId: event.pointerId, trusted: event.isTrusted, button: event.button,
+        x: event.clientX, y: event.clientY, targetIsHandle: event.target === target,
+        target: describe(event.target), captured: target.hasPointerCapture(event.pointerId) })
+    }
+    const read = () => {
+      const down = events.find(event => event.type === 'pointerdown'), hit = document.elementFromPoint(point.x, point.y)
+      const image = target.closest('[data-image-presentation]'), bitmap = image?.querySelector('img')
+      return { down, captured: down ? target.hasPointerCapture(down.pointerId) : false, connected: target.isConnected,
+        disabled: target.disabled, hitIsHandle: hit === target || Boolean(hit && target.contains(hit)), hit: describe(hit),
+        frameWidth: image?.querySelector('.image-presentation-frame')?.getBoundingClientRect().width,
+        availableWidth: (image as HTMLElement | null)?.clientWidth,
+        image: bitmap ? { complete: bitmap.complete, naturalWidth: bitmap.naturalWidth, naturalHeight: bitmap.naturalHeight } : null }
+    }
+    for (const type of types) window.addEventListener(type, record, true)
+    return { read, finish() {
+      for (const type of types) window.removeEventListener(type, record, true)
+      return { ...read(), start: point, events }
+    } }
+  }, start)
   try {
+    const before = await gesture.evaluate(audit => audit.read())
+    expect(before.connected).toBe(true); expect(before.disabled).toBe(false); expect(before.hitIsHandle).toBe(true)
+    await page.mouse.down()
+    const down = await gesture.evaluate(audit => audit.read())
+    expect(down.down?.trusted).toBe(true); expect(down.down?.targetIsHandle).toBe(true)
+    expect(down.down?.button).toBe(0)
+    expect(Number.isInteger(down.down?.pointerId)).toBe(true)
+    expect(down.captured).toBe(true)
     await page.mouse.move(start.x + delta.x, start.y + delta.y, { steps: 12 })
     if (cancel) await page.keyboard.press('Escape')
-  } finally { await page.mouse.up() }
+  } finally {
+    try { await page.mouse.up() }
+    finally {
+      try {
+        const audit = await gesture.evaluate(value => value.finish())
+        await test.info().attach('image-gesture', { body: JSON.stringify({ delta, cancel, interior, ...audit }, null, 2), contentType: 'application/json' })
+      } finally { await gesture.dispose() }
+    }
+  }
 }
 
 for (const mode of ['rich', 'markdown'] as const) {

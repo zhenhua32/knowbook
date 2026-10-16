@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from 'react'
 import { computeImageCropLayout, FULL_IMAGE_CROP, normalizeImageCrop, normalizeImagePresentation,
   type ImageCrop, type ImagePresentation } from '@shared/markdownMedia'
 import { toBlockRichMediaPreviewUrl } from '../utils/blockRichMedia'
@@ -68,7 +68,7 @@ export function ImagePresentationEditor(props: ImagePresentationEditorProps) {
     const next = copy(latest.current.value)
     draftRef.current = next; setDraft(next)
   }, [incoming])
-  useEffect(() => { setNatural(null); setFailed(false) }, [presentation.src])
+  useLayoutEffect(() => { setNatural(null); setFailed(false) }, [presentation.src])
   useEffect(() => () => { release(drag.current); drag.current = null }, [])
   useEffect(() => {
     if (!props.editable || !selected) return
