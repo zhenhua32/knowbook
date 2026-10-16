@@ -18,8 +18,10 @@ import { pruneSyncedHostRedoBranches, type SyncedHostHistoryBranchRow } from './
 import { MarkdownLinkIndex } from './markdown-link-index'
 import { hasSyncedInsertWorkingStructure, isHostInsertInput, planSyncedHostInsert, type HostInsertInput } from './synced-host-insert-plan'
 
+import { isHostMoveInput, planSyncedHostMove, assertSyncedHostMoveContext, UnsupportedSyncedHostMove, type HostMoveInput } from './synced-host-move-plan'
+
 export { getSyncedHostHistory }
-export type SyncedHostFinalResult = SyncedStructureResult | { status: 'unsupported'; reason: 'command' | 'title-change' | 'owner-transfer' | 'journal-kind' | 'heading-rewrite' | 'working-structure' }
+export type SyncedHostFinalResult = SyncedStructureResult | { status: 'unsupported'; reason: 'command' | 'title-change' | 'owner-transfer' | 'journal-kind' | 'heading-rewrite' | 'working-structure' | 'move-selection' | 'semantic-binding' }
 type Groups = Map<string, SyncedGroupSnapshot>
 type Hosts = Map<string, StrictHostDocument>
 type Guards = Pick<SyncedRestoreHostInput, 'groups' | 'expectedInstances'>
@@ -36,6 +38,7 @@ function mutation(db: Database.Database, run: () => SyncedStructureApplied): Syn
   try { return db.transaction(run).immediate() }
   catch (error) {
     if (error instanceof Refused) return error.result
+    if (error instanceof UnsupportedSyncedHostMove) return { status: 'unsupported', reason: error.reason }
     if (error instanceof SyncedValidationError) return { status: 'invalid', code: error.code, blockingInstances: error.blockingInstances }
     throw error
   }
@@ -296,18 +299,19 @@ function checkUpdatedAt(expected: Array<{ documentId: string; expectedUpdatedAt:
 }
 
 type HostApplyMethod = 'applySyncedHostFinal' | 'applySyncedHostCommand'
-function acceptedInput(input: SyncedStructureInput, method: HostApplyMethod): HostFinalInput | HostInsertInput {
+function acceptedInput(input: SyncedStructureInput, method: HostApplyMethod): HostFinalInput | HostInsertInput | HostMoveInput {
   if (method === 'applySyncedHostFinal') {
     if (input.mode !== 'host-final') unsupported('command')
     return input
   }
-  if (!isHostInsertInput(input) || input.hostsWorkingBefore.length !== 1
-    || input.hostsWorkingBefore[0].documentId !== input.action.target.documentId) unsupported('command')
+  if ((!isHostInsertInput(input) && !isHostMoveInput(input)) || input.hostsWorkingBefore.length !== 1
+    || input.hostsWorkingBefore[0].documentId !== input.action.target.documentId
+    || isHostMoveInput(input) && input.action.selection.documentId !== input.action.target.documentId) unsupported('command')
   return input
 }
-function plannedSides(input: HostFinalInput | HostInsertInput): HostSide[] {
+function plannedSides(input: HostFinalInput | HostInsertInput | HostMoveInput): HostSide[] {
   return input.mode === 'host-final' ? input.finalAfter.map(({ documentId, ...content }) => ({ documentId, content }))
-    : [{ documentId: input.action.target.documentId, content: planSyncedHostInsert(input) }]
+    : [{ documentId: input.action.target.documentId, content: isHostInsertInput(input) ? planSyncedHostInsert(input) : planSyncedHostMove(input) }]
 }
 /** Both public methods keep their original validated request namespace. The
  * only persistence path is this private, owned transaction, never a DTO rewrite. */
@@ -340,7 +344,8 @@ function applyHostMutation(db: Database.Database, value: unknown, method: HostAp
     const workspace = new BlockIdentityRepository(db).getWorkspaceIdentity()
     if (!isSyncedUuid(workspace.workspaceScope) || !isSyncedUuid(workspace.recoveryEpoch)) invalid('identity', '真实工作区身份无效。')
     if (input.mode === 'host-final') checkReferenceAuthority(db, input, persisted, before, after, groups, workspace.workspaceScope)
-    else checkInsertAuthority(db, input, groups)
+    else if (isHostInsertInput(input)) checkInsertAuthority(db, input, groups)
+    else assertSyncedHostMoveContext(before[0].content, after[0].content)
     const now = time(hosts), acceptedBirths = births(db, [...before, ...after], hosts, now), graph = finalGraph(all, groups, after)
     const physicalChange = after.some(side => !sameHostContent(hosts.get(side.documentId)!.content, side.content))
     const afterById = new Map(after.map(side => [side.documentId, side]))
@@ -416,6 +421,7 @@ export function restoreSyncedHostOperation(db: Database.Database, value: unknown
       if (!db.prepare("SELECT 1 FROM synced_group_pins WHERE group_id=? AND kind='host-history' AND pin_id=?").get(dependency.groupId, input.historyToken)) throw new Error('逆操作所需的原 incarnation pin 缺失。')
     }
     nonempty(to); checkTitlesAndHeadings(hosts, persisted, to)
+    if (isHostMoveInput(journal.input)) assertSyncedHostMoveContext(persisted[0].content, to[0].content)
     const required = guards(input, persisted, to, groups, hosts, journal.groups.map(item => item.groupId))
     const now = time(hosts), acceptedBirths = births(db, [...from, ...to], hosts, now, journal.births), graph = finalGraph(all, groups, to)
     if (to.every(side => sameHostContent(hosts.get(side.documentId)!.content, side.content))) return receipt(db,

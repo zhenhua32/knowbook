@@ -7,12 +7,14 @@ import type { SyncedHostHistoryBranchRow } from './synced-host-history-branch'
 import { hostJson, hostTime, type HostContent } from './synced-host-document-read'
 import { hasSyncedInsertWorkingStructure, isHostInsertInput, planSyncedHostInsert, type HostInsertInput } from './synced-host-insert-plan'
 
+import { isHostMoveInput, planSyncedHostMove, assertSyncedHostMoveContext, type HostMoveInput } from './synced-host-move-plan'
+
 export type HostFinalInput = Extract<SyncedStructureInput, { mode: 'host-final' }>
 export interface HostSide { documentId: string; content: HostContent }
 export interface HostBirth { documentId: string; blockId: string; createdAt: string }
 export interface HostGroupDependency { groupId: string; creationId: string; createdAt: string; origin: SyncedOriginV1 }
 export interface HostJournal {
-  input: HostFinalInput | HostInsertInput; persisted: Array<HostSide & { updatedAt: string }>; births: HostBirth[]; groups: HostGroupDependency[]
+  input: HostFinalInput | HostInsertInput | HostMoveInput; persisted: Array<HostSide & { updatedAt: string }>; births: HostBirth[]; groups: HostGroupDependency[]
   before: HostSide[]; after: HostSide[]
 }
 export type HostFinalJournal = HostJournal & { input: HostFinalInput }
@@ -76,15 +78,15 @@ export function decodeHostJournal(row: Readonly<SyncedHostHistoryBranchRow>): Ho
     assertSyncedShape(action, ['kind', 'version', 'input', 'persisted', 'births', 'groups'])
     if (action.version !== 1) return bad()
     const parsed = validateSyncedStructureInput(action.input)
-    let input: HostFinalInput | HostInsertInput
+    let input: HostFinalInput | HostInsertInput | HostMoveInput
     if (action.kind === 'host-final' && parsed.mode === 'host-final') input = parsed
-    else if (action.kind === 'host-command' && isHostInsertInput(parsed)) input = parsed
+    else if (action.kind === 'host-command' && (isHostInsertInput(parsed) || isHostMoveInput(parsed))) input = parsed
     else return bad()
     const before = validateHostSides(hostJson(row.before_json)), after = validateHostSides(hostJson(row.after_json))
     if (!before.length || !matchingHosts(before, after) || !/^[a-f0-9]{64}$/.test(row.before_hash)
       || !/^[a-f0-9]{64}$/.test(row.after_hash) || hostHash(before) !== row.before_hash || hostHash(after) !== row.after_hash) return bad()
     const plannedAfter = input.mode === 'host-final' ? input.finalAfter.map(({ documentId, ...content }) => ({ documentId, content }))
-      : [{ documentId: input.action.target.documentId, content: planSyncedHostInsert(input) }]
+      : [{ documentId: input.action.target.documentId, content: isHostInsertInput(input) ? planSyncedHostInsert(input) : planSyncedHostMove(input) }]
     if (!hostEqual(before, input.hostsWorkingBefore.map(host => ({ documentId: host.documentId, content: host.workingBefore })))
       || !hostEqual(after, plannedAfter)) return bad()
     const persisted = list(action.persisted, raw => {
@@ -94,6 +96,7 @@ export function decodeHostJournal(row: Readonly<SyncedHostHistoryBranchRow>): Ho
     const persistedById = new Map(persisted.map(item => [item.documentId, item]))
     if (!matchingHosts(before, persisted) || input.hostsWorkingBefore.some(host => persistedById.get(host.documentId)?.updatedAt !== host.expectedPersistedUpdatedAt)) return bad()
     if (input.mode === 'command' && !hasSyncedInsertWorkingStructure(persisted[0].content, before[0].content)) return bad()
+    if (isHostMoveInput(input)) assertSyncedHostMoveContext(before[0].content, after[0].content)
     const births = list(action.births, raw => {
       assertSyncedShape(raw, ['documentId', 'blockId', 'createdAt'])
       return { documentId: opaque(raw.documentId), blockId: opaque(raw.blockId), createdAt: hostTime(raw.createdAt) }
