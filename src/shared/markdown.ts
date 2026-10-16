@@ -1,4 +1,4 @@
-import { encodeNativeLiteralText, decodedNativeSourceLines, type NativeTextProjection } from './markdownNativeText'
+import { encodeNativeLiteralText, decodedNativeSourceLines, type NativeTextProjection, type NativeLiteralEdit } from './markdownNativeText'
 import { getHeadingLevel, markdownEngine, markdownTokenTree, type MarkdownNode } from './markdownEngine'
 import { isTaskBlockType, isOrderedListBlockType, isContainerBlockType, isNativeStructureBlockType, canBlockNestUnder, isListBlockType } from './blockTypes'
 import { assertColumnStructure } from './columns'
@@ -177,49 +177,84 @@ function renderMarkdownBlock(
   block: MarkdownRenderableBlock,
   indent: string,
   fallbackCodeLanguage = '',
-  orderedDelimiter = '.'
+  orderedDelimiter = '.',
+  emission?: { segments: MarkdownEmissionSegment[]; reason?: string }
 ): string {
   const type = block.type.trim() || 'paragraph'
   const heading = getHeadingLevel(type)
   if (heading) {
     if (heading <= 2 && (block.content.includes('\n') || /[ \t]#+$/.test(block.content))) {
+      emission?.segments.push({ from: 0, to: block.content.length, sourceFrom: 0, sourceTo: block.content.length })
       return block.content + '\n' + (heading === 1 ? '===' : '---')
     }
+    emission?.segments.push({ from: 0, to: block.content.length, sourceFrom: heading + 1, sourceTo: heading + 1 + block.content.length })
     return '#'.repeat(heading) + ' ' + block.content
   }
-  const listItem = (marker: string, content = block.content) => indent + marker + content.split('\n').map((line, index) => index === 0 ? line : '\n' + indent + ' '.repeat(marker.length) + line).join('')
+  const listItem = (marker: string, content = block.content, contentPrefix = 0) => {
+    let contentAt = 0, sourceAt = indent.length + marker.length
+    return indent + marker + content.split('\n').map((line, index) => {
+      const prefix = index === 0 ? '' : '\n' + indent + ' '.repeat(marker.length)
+      if (emission) {
+        if (index && contentAt > contentPrefix) emission.segments.push({ from: contentAt - contentPrefix - 1, to: contentAt - contentPrefix,
+          sourceFrom: sourceAt, sourceTo: sourceAt + 1 })
+        const from = Math.max(contentPrefix, contentAt), to = contentAt + line.length
+        if (to >= from) emission.segments.push({ from: from - contentPrefix, to: to - contentPrefix,
+          sourceFrom: sourceAt + prefix.length + from - contentAt, sourceTo: sourceAt + prefix.length + line.length })
+      }
+      contentAt += line.length + 1; sourceAt += prefix.length + line.length
+      return prefix + line
+    }).join('')
+  }
 
   switch (type) {
     case 'database-view':
       validateDatabaseViewBlock(block)
+      if (emission) emission.reason = 'opaque-generated'
       return renderDatabaseViewFence(block.content)
     case 'todo':
-      return listItem(`${block.markdownFormat?.listMarker ?? '-'} `, `[${block.checked ? 'x' : ' '}] ${block.content}`)
+      return listItem(`${block.markdownFormat?.listMarker ?? '-'} `, `[${block.checked ? 'x' : ' '}] ${block.content}`, 4)
     case 'numbered-todo':
-      return listItem(`${block.listStart ?? 1}${orderedDelimiter} `, `[${block.checked ? 'x' : ' '}] ${block.content}`)
-    case 'quote':
+      return listItem(`${block.listStart ?? 1}${orderedDelimiter} `, `[${block.checked ? 'x' : ' '}] ${block.content}`, 4)
+    case 'quote': {
+      let contentAt = 0, sourceAt = 0
       return block.content
         .split('\n')
-        .map((line) => `> ${line}`)
+        .map((line, index) => {
+          if (emission) {
+            if (index) emission.segments.push({ from: contentAt - 1, to: contentAt, sourceFrom: sourceAt, sourceTo: sourceAt + 1 })
+            emission.segments.push({ from: contentAt, to: contentAt + line.length,
+              sourceFrom: sourceAt + (index ? 1 : 0) + 2, sourceTo: sourceAt + (index ? 1 : 0) + 2 + line.length })
+          }
+          contentAt += line.length + 1; sourceAt += (index ? 1 : 0) + 2 + line.length
+          return `> ${line}`
+        })
         .join('\n')
+    }
     case 'bulleted-list':
       return listItem(`${block.markdownFormat?.listMarker ?? '-'} `)
     case 'numbered-list':
       return listItem(`${block.listStart ?? 1}${orderedDelimiter} `)
     case 'divider':
+      if (emission) emission.reason = 'no-content-emission'
       return '---'
     case 'math':
+      emission?.segments.push({ from: 0, to: block.content.length, sourceFrom: 3, sourceTo: 3 + block.content.length })
       return ['$$', block.content, '$$'].join('\n')
     case 'code': {
       const language = block.markdownFormat?.codeInfo ?? block.language ?? fallbackCodeLanguage
       const marker = language.includes('`') ? '~' : '`'
       const runs = block.content.match(marker === '`' ? /`+/g : /~+/g) ?? []
       const fence = marker.repeat(Math.max(3, ...runs.map((run) => run.length + 1)))
+      if (emission) {
+        if (block.markdownFormat?.emptyCode && !block.content) emission.reason = 'no-content-emission'
+        else emission.segments.push({ from: 0, to: block.content.length, sourceFrom: fence.length + language.length + 1,
+          sourceTo: fence.length + language.length + 1 + block.content.length })
+      }
       return (block.markdownFormat?.emptyCode && !block.content ? [fence + language, fence] : [fence + language, block.content, fence]).join('\n')
     }
     case 'table':
-      return block.content
     default:
+      emission?.segments.push({ from: 0, to: block.content.length, sourceFrom: 0, sourceTo: block.content.length })
       return block.content
   }
 }
@@ -680,6 +715,17 @@ export function parseMarkdownBlocksCore(markdownBody: string, sourceRanges?: Mar
   return strict ? blocks : finalizeParsedMarkdownBlocks(blocks)
 }
 type MarkdownSerializationOptions = { fallbackCodeLanguage?: string; includeBlockMetadata?: boolean }
+/** Cold facts from the actual append branches. Coordinates are UTF-16; source
+ * positions are absolute in this one serialization, content in projection.source. */
+export type MarkdownEmissionSegment = { from: number; to: number; sourceFrom: number; sourceTo: number }
+export interface MarkdownEmissionEvent {
+  index: number; content: string; from: number; to: number
+  projection?: NativeTextProjection
+  atomicEdits?: readonly NativeLiteralEdit[]
+  segments: readonly MarkdownEmissionSegment[]
+  reason?: string
+}
+export interface MarkdownEmissionObserver { emit(event: MarkdownEmissionEvent): void }
 export type MarkdownBlockSourceRange = { index: number; startLine: number; endLine: number }
 export interface MarkdownSourceSerializationPolicy {
   depths: (blocks: readonly MarkdownRenderableBlock[]) => number[]
@@ -703,17 +749,21 @@ export type MarkdownContainerClosingRange = MarkdownBlockSourceRange
 
 /** Native forest envelopes are independent of relative list indentation. */
 function serializeContainerForest(
-  blocks: MarkdownRenderableBlock[], options: MarkdownSerializationOptions, policy?: MarkdownSourceSerializationPolicy
+  blocks: MarkdownRenderableBlock[], options: MarkdownSerializationOptions, policy?: MarkdownSourceSerializationPolicy, observer?: MarkdownEmissionObserver
 ): MarkdownSerializationCoreResult {
   const depths = policy ? policy.depths(blocks) : resolveContainerMarkdownDepths(blocks)
   const nativeAncestors: boolean[] = []
+  const atomicEdits: NativeLiteralEdit[][] | undefined = observer ? [] : undefined
   const contentProjections = blocks.map((block, index) => {
     const depth = depths[index]
     nativeAncestors.length = depth
     const native = isNativeStructureBlockType(block.type)
     const scoped = native || nativeAncestors.some(Boolean)
     nativeAncestors[depth] = native
-    return encodeNativeLiteralText(block.content, !scoped || ['code', 'math', 'frontmatter', 'database-view'].includes(block.type) ? 'opaque' : isContainerBlockType(block.type) ? 'title' : 'body')
+    const edits: NativeLiteralEdit[] | undefined = observer ? [] : undefined
+    if (edits) atomicEdits![index] = edits
+    return encodeNativeLiteralText(block.content, !scoped || ['code', 'math', 'frontmatter', 'database-view'].includes(block.type) ? 'opaque' : isContainerBlockType(block.type) ? 'title' : 'body',
+      edits ? edit => edits.push(edit) : undefined)
   })
   const parts: string[] = [], ranges: MarkdownBlockSourceRange[] = [], closingRanges: MarkdownContainerClosingRange[] = []
   const references: Array<{ index: number; from: number; to: number }> = []
@@ -736,8 +786,15 @@ function serializeContainerForest(
         let subtreeEnd = index + 1
         while (subtreeEnd < end && depths[subtreeEnd] > depths[index]) subtreeEnd++
         const metadata = options.includeBlockMetadata ? renderMarkdownBlockMetadata(block) : null
-        const header = (metadata ? metadata + '\n' : '') + renderNativeContainerHeader(block)
+        let title: { from: number; projection: NativeTextProjection; edits: readonly NativeLiteralEdit[] } | undefined
+        const header = (metadata ? metadata + '\n' : '') + renderNativeContainerHeader(block, observer ? (from, projection, edits) => { title = { from, projection, edits } } : undefined)
         const startLine = emit(header)
+        if (observer) {
+          const from = emittedFrom, point = from + (metadata ? metadata.length + 1 : 0) + (title?.from ?? 0)
+          observer.emit({ index, content: block.content, from, to: from + header.length,
+            ...(title ? { projection: title.projection, atomicEdits: title.edits } : { reason: 'no-content-emission' }),
+            segments: title ? [{ from: 0, to: title.projection.source.length, sourceFrom: point, sourceTo: point + title.projection.source.length }] : [] })
+        }
         ranges.push({ index, startLine, endLine: startLine + (header.match(/\n/g)?.length ?? 0) + 1 })
         scope(index + 1, subtreeEnd, depths[index] + 1)
         const closeLine = emit(nativeContainerClosingTag(block.type))
@@ -749,8 +806,13 @@ function serializeContainerForest(
       while (index < end && !isNativeStructureBlockType(blocks[index].type)) index++
       const originals = blocks.slice(chunkStart, index)
       const relative = originals.map((value, offset) => ({ ...value, content: contentProjections[chunkStart + offset].source, depth: depths[chunkStart + offset] - baseDepth }))
-      const rendered = serializeFlatMarkdownWithBlockRanges(relative, options, originals, true, policy)
+      const emissions: MarkdownEmissionEvent[] | undefined = observer ? [] : undefined
+      const rendered = serializeFlatMarkdownWithBlockRanges(relative, options, originals, true, policy,
+        emissions ? { emit: event => emissions.push(event) } : undefined)
       const offset = emit(rendered.markdown)
+      if (observer && emissions) for (const event of emissions) observer.emit({ ...event, index: chunkStart + event.index,
+        from: emittedFrom + event.from, to: emittedFrom + event.to, projection: contentProjections[chunkStart + event.index], atomicEdits: atomicEdits?.[chunkStart + event.index],
+        segments: event.segments.map(segment => ({ ...segment, sourceFrom: emittedFrom + segment.sourceFrom, sourceTo: emittedFrom + segment.sourceTo })) })
       for (const range of rendered.ranges) ranges.push({ ...range, index: chunkStart + range.index,
         startLine: offset + range.startLine, endLine: offset + range.endLine })
       for (const ref of rendered.references ?? []) references.push({ index: chunkStart + ref.index, from: emittedFrom + ref.from, to: emittedFrom + ref.to })
@@ -768,12 +830,12 @@ export function serializeMarkdownWithBlockRanges(
 /** Shared renderer; a cold internal Source adapter supplies already-validated
  * exact depths and reference emission. Public callers retain legacy policy. */
 export function serializeMarkdownWithBlockRangesCore(
-  blocks: MarkdownRenderableBlock[], options: MarkdownSerializationOptions = {}, policy?: MarkdownSourceSerializationPolicy
+  blocks: MarkdownRenderableBlock[], options: MarkdownSerializationOptions = {}, policy?: MarkdownSourceSerializationPolicy, observer?: MarkdownEmissionObserver
 ): MarkdownSerializationCoreResult {
   if (!policy) assertMarkdownColumnStructure(blocks)
   assertDatabaseViewStructure(blocks)
-  if (blocks.some(block => isNativeStructureBlockType(block.type))) return serializeContainerForest(blocks, options, policy)
-  return { ...serializeFlatMarkdownWithBlockRanges(blocks, options, blocks, false, policy), closingRanges: [] }
+  if (blocks.some(block => isNativeStructureBlockType(block.type))) return serializeContainerForest(blocks, options, policy, observer)
+  return { ...serializeFlatMarkdownWithBlockRanges(blocks, options, blocks, false, policy, observer), closingRanges: [] }
 }
 /** Source ranges use the exact same separators and indentation as file export. */
 function serializeFlatMarkdownWithBlockRanges(
@@ -781,7 +843,8 @@ function serializeFlatMarkdownWithBlockRanges(
   options: MarkdownSerializationOptions = {},
   metadataBlocks = blocks,
   nativeScope = false,
-  policy?: MarkdownSourceSerializationPolicy
+  policy?: MarkdownSourceSerializationPolicy,
+  observer?: MarkdownEmissionObserver
 ): { markdown: string; ranges: MarkdownBlockSourceRange[]; references?: Array<{ index: number; from: number; to: number }> } {
   const effectiveDepths = policy ? policy.depths(blocks) : resolveMarkdownBlockDepths(blocks)
   const indents: string[] = []
@@ -790,6 +853,7 @@ function serializeFlatMarkdownWithBlockRanges(
   const numbers = getMarkdownListNumbers(blocks)
   const parentTypes: string[] = [], listMembers: boolean[] = []
   const coreReferences = new Map<number, { from: number; to: number }>()
+  const emissions = observer ? new Map<number, { segments: MarkdownEmissionSegment[]; reason?: string; metadata: number }>() : undefined
 
   const rendered = blocks
     .map((block, index) => {
@@ -813,12 +877,15 @@ function serializeFlatMarkdownWithBlockRanges(
       else orderedDelimiters.delete(depth)
       const custom = policy?.render(block, indent, parentType)
       if (custom) coreReferences.set(index, { from: custom.from, to: custom.to })
-      const renderedBlock = custom?.markdown ?? renderMarkdownBlock(isOrderedListBlockType(block.type) ? { ...block, listStart: number } : block, indent, options.fallbackCodeLanguage ?? '', delimiter)
+      const emission = emissions ? { segments: [] as MarkdownEmissionSegment[], metadata: 0, ...(custom ? { reason: 'custom-render' } : {}) } : undefined
+      if (emission) emissions!.set(index, emission)
+      const renderedBlock = custom?.markdown ?? renderMarkdownBlock(isOrderedListBlockType(block.type) ? { ...block, listStart: number } : block, indent, options.fallbackCodeLanguage ?? '', delimiter, emission)
       if (!options.includeBlockMetadata) {
         return renderedBlock
       }
 
       const metadata = renderMarkdownBlockMetadata(metadataBlocks[index])
+      if (emission && metadata) emission.metadata = metadata.length + 1
       return metadata ? `${metadata}\n${renderedBlock}` : renderedBlock
     })
   const ranges: MarkdownBlockSourceRange[] = []
@@ -841,6 +908,11 @@ function serializeFlatMarkdownWithBlockRanges(
     }
     line += separator.length
     const reference = coreReferences.get(index), from = characters + separator.length
+    const emission = emissions?.get(index)
+    if (observer && emission) observer.emit({ index, content: metadataBlocks[index].content, from, to: from + text.length,
+      ...(emission.reason ? { reason: emission.reason } : {}),
+      segments: emission.segments.map(segment => ({ ...segment, sourceFrom: from + emission.metadata + segment.sourceFrom,
+        sourceTo: from + emission.metadata + segment.sourceTo })) })
     if (reference) references.push({ index, from: from + reference.from, to: from + reference.to })
     characters = from + text.length
     const newlines = text.match(/\n/g)?.length ?? 0

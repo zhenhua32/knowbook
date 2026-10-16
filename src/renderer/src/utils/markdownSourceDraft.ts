@@ -7,8 +7,38 @@ import { assertColumnStructure } from '@shared/columns'
 export type MarkdownSourceChange = { from: number; to: number; insert: string }
 type SourceAnchor = { block: DocumentBlockDraft; from: number; to: number; original: string }
 export type MarkdownSourceDraft = { source: string; anchors: SourceAnchor[]; initialSource: string; initialBlocks: DocumentBlockDraft[] }
+export type MarkdownSourceDraftSerializer = (originalBlocks: DocumentBlockDraft[]) => {
+  markdown: string; ranges: readonly MarkdownBlockSourceRange[]
+}
+/** Cold source-fact consumers opt in without adding fields to ordinary drafts. */
+export interface MarkdownSourceDraftObservationPort {
+  check(draft: MarkdownSourceDraft): void
+  prepareChange(before: MarkdownSourceDraft, change: MarkdownSourceChange): Readonly<MarkdownSourceChange>
+  prepareChanges(before: MarkdownSourceDraft, changes: readonly MarkdownSourceChange[]): readonly Readonly<MarkdownSourceChange>[]
+  changed(before: MarkdownSourceDraft, after: MarkdownSourceDraft, changes: MarkdownSourceChange | readonly MarkdownSourceChange[]): void
+}
+let observations: WeakMap<MarkdownSourceDraft, MarkdownSourceDraftObservationPort> | undefined
+export function observeMarkdownSourceDraft(draft: MarkdownSourceDraft, port: MarkdownSourceDraftObservationPort): void {
+  port.check(draft)
+  observations ??= new WeakMap()
+  if (observations.has(draft)) throw new Error('Markdown source draft already has an observer')
+  observations.set(draft, port)
+}
+function observeChange(before: MarkdownSourceDraft, after: MarkdownSourceDraft,
+  changes: MarkdownSourceChange | readonly MarkdownSourceChange[], port: MarkdownSourceDraftObservationPort | undefined): MarkdownSourceDraft {
+  if (port) {
+    const list = (value: MarkdownSourceChange | readonly MarkdownSourceChange[]): value is readonly MarkdownSourceChange[] => Array.isArray(value)
+    const empty = (change: MarkdownSourceChange) => change.from === change.to && change.insert === ''
+    if (after === before && (list(changes) ? changes.every(empty) : empty(changes))) return before
+    // A same-text accepted transaction can carry intent. Its candidate receipt
+    // must not overwrite the immutable before receipt during a CM filter.
+    if (after === before) after = { ...after }
+    port.changed(before, after, changes); observations!.set(after, port)
+  }
+  return after
+}
 
-function sourceOffsets(source: string, ranges: MarkdownBlockSourceRange[]) {
+function sourceOffsets(source: string, ranges: readonly MarkdownBlockSourceRange[]) {
   const lines = [0]
   for (let i = 0; i < source.length; i++) if (source[i] === '\n') lines.push(i + 1)
   return ranges.map((range) => {
@@ -19,8 +49,11 @@ function sourceOffsets(source: string, ranges: MarkdownBlockSourceRange[]) {
   })
 }
 
-export function createMarkdownSourceDraft(blocks: DocumentBlockDraft[]): MarkdownSourceDraft {
-  const { markdown: source, ranges } = serializeMarkdownWithBlockRanges(blocks.map((block) => ({ ...block, content: block.content.replace(/\r\n?/g, '\n') })))
+export function createMarkdownSourceDraft(blocks: DocumentBlockDraft[], serializer?: MarkdownSourceDraftSerializer): MarkdownSourceDraft {
+  // The opt-in serializer must see the original raw content, before CRLF is
+  // normalized. The default branch retains the existing allocation/behavior.
+  const { markdown: source, ranges } = serializer ? serializer(blocks)
+    : serializeMarkdownWithBlockRanges(blocks.map((block) => ({ ...block, content: block.content.replace(/\r\n?/g, '\n') })))
   const anchors = sourceOffsets(source, ranges).map((range, index) => ({
     ...range, block: blocks[index], original: source.slice(range.from, range.to)
   }))
@@ -40,9 +73,12 @@ export function markdownSourceChange(before: string, after: string, selectionSta
 /** Keep identities attached to surviving source through each input transaction,
  * rather than guessing identities from duplicate paragraph contents on save. */
 export function replaceMarkdownSource(draft: MarkdownSourceDraft, change: MarkdownSourceChange): MarkdownSourceDraft {
-  const { from, to, insert } = change
+  const observation = observations?.get(draft)
+  observation?.check(draft)
+  const actualChange = observation ? observation.prepareChange(draft, change) : change
+  const { from, to, insert } = actualChange
   if (from < 0 || to < from || to > draft.source.length) throw new Error('Invalid Markdown source change')
-  if (draft.source.slice(from, to) === insert) return draft
+  if (draft.source.slice(from, to) === insert) return observeChange(draft, draft, actualChange, observation)
   const delta = insert.length - (to - from)
   let replacementClaimed = false
   const anchors = draft.anchors.flatMap((anchor) => {
@@ -60,14 +96,17 @@ export function replaceMarkdownSource(draft: MarkdownSourceDraft, change: Markdo
       to: anchor.to > to ? anchor.to + delta : from + insert.length
     }]
   })
-  return { ...draft, source: draft.source.slice(0, from) + insert + draft.source.slice(to), anchors }
+  return observeChange(draft, { ...draft, source: draft.source.slice(0, from) + insert + draft.source.slice(to), anchors }, actualChange, observation)
 }
 
 /** Apply disjoint edits expressed in the original source coordinates. Formatting
  * emits them from right to left; mapping each anchor only through nearby edits
  * avoids rebuilding every block position for every formatted paragraph. */
 export function replaceMarkdownSourceChanges(draft: MarkdownSourceDraft, changes: MarkdownSourceChange[]): MarkdownSourceDraft {
-  const ordered = changes.toSorted((a, b) => a.from - b.from || a.to - b.to)
+  const observation = observations?.get(draft)
+  observation?.check(draft)
+  const actualChanges = observation ? observation.prepareChanges(draft, changes) : changes
+  const ordered = actualChanges.toSorted((a, b) => a.from - b.from || a.to - b.to)
   let cursor = 0, shift = 0
   const parts: string[] = []
   const edits: Array<MarkdownSourceChange & { shift: number; claimed: boolean }> = []
@@ -80,7 +119,7 @@ export function replaceMarkdownSourceChanges(draft: MarkdownSourceDraft, changes
     cursor = change.to
     shift += change.insert.length - (change.to - change.from)
   }
-  if (!edits.length) return draft
+  if (!edits.length) return observeChange(draft, draft, actualChanges, observation)
   parts.push(draft.source.slice(cursor))
   const anchors = draft.anchors.flatMap((anchor) => {
     let low = 0, high = edits.length
@@ -110,7 +149,7 @@ export function replaceMarkdownSourceChanges(draft: MarkdownSourceDraft, changes
     }
     return [{ ...anchor, from, to }]
   })
-  return { ...draft, source: parts.join(''), anchors }
+  return observeChange(draft, { ...draft, source: parts.join(''), anchors }, actualChanges, observation)
 }
 
 /** Reparse syntax only when the user applies the source draft. Metadata and

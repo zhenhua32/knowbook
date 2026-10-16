@@ -4,11 +4,27 @@ import type { MarkdownBlockSourceRange, MarkdownSourceStrictResult, MarkdownSour
 import { parseMarkdownSourceStrict } from '@shared/markdownSource'
 import type { SyncedCanonicalEdit, SyncedStableBlockDraft } from '@shared/synced-blocks'
 import { isSyncedBlockId, isSyncedUuid, SyncedValidationError, validateSyncedCanonicalEdit } from '@shared/syncedBlockValidation'
-import { createMarkdownSourceDraft, type MarkdownSourceDraft } from '../../utils/markdownSourceDraft'
+import { createMarkdownSourceDraft, type MarkdownSourceDraft, type MarkdownSourceDraftSerializer } from '../../utils/markdownSourceDraft'
 
 type Anchor = MarkdownSourceDraft['anchors'][number]
 type Span = { from: number; to: number }
-type Output = { block: SyncedStableBlockDraft; parentIndex: number | null; range: Span }
+export type MarkdownSourceReconcileOutput = { block: SyncedStableBlockDraft; parentIndex: number | null; range: Span }
+type Output = MarkdownSourceReconcileOutput
+export interface MarkdownSourceReconciliationPort {
+  /** Cold caller owns this actual parser invocation; ordinary callers omit it. */
+  parseCanonical?(source: string): MarkdownSourceStrictResult
+  emitted(output: Readonly<Output>, fact: Readonly<{ kind: 'syntax' | 'retained' | 'ref'; syntaxFrom: number; syntaxTo: number;
+    anchor: Anchor | undefined; referenceKey: string | null }>): void
+  emptyRetained(output: Readonly<Output>, anchor: Anchor): void
+  sorted(outputs: readonly Readonly<Output>[], syntaxOutputs: ReadonlyMap<number, Readonly<Output>>): void
+  unchanged(draft: MarkdownSourceDraft, blocks: readonly SyncedCanonicalEdit[]): void
+  emptyCreated(block: Readonly<SyncedStableBlockDraft>): void
+}
+export interface MarkdownSourceReconciliationOptions {
+  freshId?: () => string
+  references?: ReadonlyMap<string, SyncedStableBlockDraft>
+  observation?: MarkdownSourceReconciliationPort
+}
 
 function invalid(message: string, code: 'forest' | 'identity' = 'forest'): never {
   throw new SyncedValidationError(code, message)
@@ -39,16 +55,13 @@ function lowerBound<T>(values: readonly T[], before: (value: T) => boolean): num
   return low
 }
 
-export function createCanonicalSourceDraft(blocks: readonly SyncedCanonicalEdit[]): MarkdownSourceDraft {
-  return createMarkdownSourceDraft(validateSyncedCanonicalEdit(blocks))
+export function createCanonicalSourceDraft(blocks: readonly SyncedCanonicalEdit[], serializer?: MarkdownSourceDraftSerializer): MarkdownSourceDraft {
+  return createMarkdownSourceDraft(validateSyncedCanonicalEdit(blocks), serializer)
 }
 
 /** Identity comes from surviving local edit anchors, never pasted metadata.
  * Syntax owns depth/parent positions; the final validator never repairs them. */
-export function reconcileMarkdownSourceDraft(draft: MarkdownSourceDraft, parsed: MarkdownSourceStrictResult, options: {
-  freshId?: () => string
-  references?: ReadonlyMap<string, SyncedStableBlockDraft>
-} = {}): SyncedStableBlockDraft[] {
+export function reconcileMarkdownSourceDraft(draft: MarkdownSourceDraft, parsed: MarkdownSourceStrictResult, options: MarkdownSourceReconciliationOptions = {}): SyncedStableBlockDraft[] {
   if (typeof draft.source !== 'string' || typeof draft.initialSource !== 'string' || !Array.isArray(draft.anchors)) invalid('Invalid canonical source draft.')
   const openingById = new Map<string, SyncedStableBlockDraft>()
   for (const raw of draft.initialBlocks) {
@@ -129,17 +142,21 @@ export function reconcileMarkdownSourceDraft(draft: MarkdownSourceDraft, parsed:
     const syntax = parsed.blocks[index], retainedBlock = retained.get(index)
     let output: Output
     let last = index
+    let kind: 'syntax' | 'retained' | 'ref' = 'syntax'
+    let claimedAnchor: Anchor | undefined
     if (syntax.refKey !== null) {
       const reference = options.references?.get(syntax.refKey)
       if (!reference || syntax.type !== 'synced-block' || reference.content !== syntax.content || used.has(reference.id))
         invalid('A source reference is missing, repeated or changed.', 'identity')
       used.add(reference.id)
       output = { block: { ...reference, depth: syntax.depth, parentBlockId: null }, parentIndex: syntax.parentIndex, range: ranges[index] }
+      kind = 'ref'
     } else if (retainedBlock && !used.has(oldBlock(retainedBlock.anchor).id)) {
       const previous = claim(retainedBlock.anchor)!
       last = retainedBlock.last
       output = { block: { ...previous, depth: syntax.depth, parentBlockId: null }, parentIndex: syntax.parentIndex,
         range: { from: ranges[index].from, to: ranges[last].to } }
+      kind = 'retained'; claimedAnchor = retainedBlock.anchor
     } else {
       while (anchorCursor < anchors.length && anchors[anchorCursor].to <= ranges[index].from) anchorCursor++
       let anchor: Anchor | undefined
@@ -147,9 +164,12 @@ export function reconcileMarkdownSourceDraft(draft: MarkdownSourceDraft, parsed:
         const candidate = anchors[cursor], block = oldBlock(candidate)
         if (block.type !== 'synced-block' && !used.has(block.id) && intersects(candidate, ranges[index])) { anchor = candidate; break }
       }
-      output = { block: annotated(syntax, claim(anchor)), parentIndex: syntax.parentIndex, range: ranges[index] }
+      const previous = claim(anchor)
+      output = { block: annotated(syntax, previous), parentIndex: syntax.parentIndex, range: ranges[index] }
+      claimedAnchor = previous ? anchor : undefined
     }
     outputs.push(output)
+    options.observation?.emitted(output, { kind, syntaxFrom: index, syntaxTo: last, anchor: claimedAnchor, referenceKey: syntax.refKey })
     for (let child = index; child <= last; child++) syntaxOutputs.set(child, output)
     index = last
   }
@@ -178,8 +198,10 @@ export function reconcileMarkdownSourceDraft(draft: MarkdownSourceDraft, parsed:
       owner = parentIndex === null ? undefined : scopeByIndex.get(parentIndex)
     }
     const previous = claim(anchor)!
-    outputs.push({ block: { ...previous, depth: owner ? parsed.blocks[owner.index].depth + 1 : 0, parentBlockId: null },
-      parentIndex: owner?.index ?? null, range: { from: point, to: point } })
+    const output = { block: { ...previous, depth: owner ? parsed.blocks[owner.index].depth + 1 : 0, parentBlockId: null },
+      parentIndex: owner?.index ?? null, range: { from: point, to: point } }
+    outputs.push(output)
+    options.observation?.emptyRetained(output, anchor)
   }
   outputs.sort((left, right) => left.range.from - right.range.from || left.range.to - right.range.to)
   for (const output of outputs) {
@@ -187,20 +209,28 @@ export function reconcileMarkdownSourceDraft(draft: MarkdownSourceDraft, parsed:
     if (output.parentIndex !== null && (!parent || parent === output)) invalid('A canonical source parent was removed by grouping.')
     output.block.parentBlockId = parent?.block.id ?? null
   }
+  options.observation?.sorted(outputs, syntaxOutputs)
   return outputs.map(output => output.block)
 }
 
-export function canonicalSourceDraftToBlocks(draft: MarkdownSourceDraft, freshId: () => string = () => crypto.randomUUID()): SyncedCanonicalEdit[] {
+export function canonicalSourceDraftToBlocks(draft: MarkdownSourceDraft, freshId: () => string = () => crypto.randomUUID(),
+  observation?: MarkdownSourceReconciliationPort): SyncedCanonicalEdit[] {
   const opening = validateSyncedCanonicalEdit(draft.initialBlocks)
   if (draft.source === draft.initialSource && draft.anchors.length === draft.initialBlocks.length
-    && draft.anchors.every((anchor, index) => anchor.block === draft.initialBlocks[index])) return opening
-  const blocks = reconcileMarkdownSourceDraft(draft, parseMarkdownSourceStrict(draft.source, { mode: 'canonical' }), { freshId })
+    && draft.anchors.every((anchor, index) => anchor.block === draft.initialBlocks[index])) {
+    observation?.unchanged(draft, opening)
+    return opening
+  }
+  const syntax = observation?.parseCanonical ? observation.parseCanonical(draft.source) : parseMarkdownSourceStrict(draft.source, { mode: 'canonical' })
+  const blocks = reconcileMarkdownSourceDraft(draft, syntax, { freshId, observation })
   // Explicit front-end handling for deleting the entire group. No persistence
   // normalizer or empty-column rule invents this real replacement paragraph.
   if (!blocks.length) {
     const id = freshId()
     if (!isSyncedUuid(id) || opening.some(block => block.id === id)) invalid('A replacement paragraph identity must be fresh.', 'identity')
-    blocks.push({ id, type: 'paragraph', content: '', checked: false, depth: 0, parentBlockId: null })
+    const replacement = { id, type: 'paragraph', content: '', checked: false, depth: 0, parentBlockId: null }
+    blocks.push(replacement)
+    observation?.emptyCreated(replacement)
   }
   return validateSyncedCanonicalEdit(blocks)
 }

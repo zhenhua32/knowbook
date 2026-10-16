@@ -1,5 +1,5 @@
 import type MarkdownIt from 'markdown-it'
-import type { Env, StateBlock, Token } from 'markdown-it'
+import type { Env, StateBlock, StateInline, Token } from 'markdown-it'
 import { parseWikiReference } from './markdownWiki'
 
 export type MarkdownDestination = { start: number; end: number; url: string; kind: 'link' | 'image' | 'definition' | 'autolink'; syntax?: 'html' | 'bare' | 'wiki' }
@@ -12,12 +12,35 @@ export type MarkdownLinkProvenanceObserver = {
   definition: (token: Token, destination: MarkdownDestination, reference: object | undefined) => void
   link: (token: Token, use: { start: number; end: number }, destination?: MarkdownSourceLink, reference?: object) => void
 }
-type Capture = { links: MarkdownSourceLink[]; diagnostics: MarkdownCompatibilityFinding[]; maps: WeakMap<Token[], number[]>; endMaps?: WeakMap<Token[], number[]>; ranges?: Array<{ start: number; end: number }>; images?: MarkdownSourceImage[]; provenance?: MarkdownLinkProvenanceObserver; context?: { positions: number[]; ends?: number[]; offset: number }; inAlt?: boolean }
+/** Unprojected facts from the actual successful rule. Unlike the legacy source
+ * capture, this channel never uses mapLines, sourceMap or Capture.context. */
+export type MarkdownRawDestinationRead = Readonly<{ source: string; start: number; end: number; url: string }>
+export type MarkdownRawRuleReads = Readonly<{
+  destinations: readonly Readonly<{ source: string; start: number; end: number; ok: boolean; value: string }>[]
+  labels: readonly Readonly<{ state: StateInline; start: number; end: number }>[]
+}>
+export interface MarkdownRawOccurrenceObserver {
+  captureRule?: (run: () => boolean) => { accepted: boolean; reads: MarkdownRawRuleReads }
+  definition(state: StateBlock, token: Token, startLine: number, read: MarkdownRawDestinationRead | null, reference: object | undefined): void
+  link(state: StateInline, token: Token, use: { start: number; end: number }, destination: MarkdownSourceLink | undefined, reference?: object): void
+  unknownInline(state: StateInline, start: number, end: number, reason: string): void
+}
+type Capture = { links: MarkdownSourceLink[]; diagnostics: MarkdownCompatibilityFinding[]; maps: WeakMap<Token[], number[]>; endMaps?: WeakMap<Token[], number[]>; ranges?: Array<{ start: number; end: number }>; images?: MarkdownSourceImage[]; provenance?: MarkdownLinkProvenanceObserver; raw?: MarkdownRawOccurrenceObserver; context?: { positions: number[]; ends?: number[]; offset: number }; inAlt?: boolean }
 const capture = (env: Env) => env.markdownSourceLinks as Capture | undefined
 const sourceMap = (token: Token) => token.meta?.sourceMap as number[] | undefined
+export function isMarkdownSourceImageAlt(env: Env): boolean { return capture(env)?.inAlt === true }
+let sourceSliceObserver: ((token: Token, start: number, end: number | undefined, target: Token) => void) | undefined
+/** Only a synchronous cold parse installs this hook; ordinary parses allocate
+ * no additional maps or token metadata. */
+export function withMarkdownSourceSliceObserver<T>(observer: NonNullable<typeof sourceSliceObserver>, run: () => T): T {
+  const previous = sourceSliceObserver
+  sourceSliceObserver = observer
+  try { return run() } finally { sourceSliceObserver = previous }
+}
 
 /** Keep the source map alongside transformations made before inline parsing. */
 export function sliceMarkdownSourceMap(token: Token, start: number, end?: number, target = token): void {
+  sourceSliceObserver?.(token, start, end, target)
   const map = sourceMap(token)
   if (map) target.meta = { ...target.meta, sourceMap: map.slice(start, end), ...(Array.isArray(token.meta?.sourceEndMap) ? { sourceEndMap: token.meta.sourceEndMap.slice(start, end) } : {}) }
 }
@@ -113,16 +136,18 @@ export function capturedMarkdownCompatibility(env: Env): MarkdownCompatibilityFi
  * Source maps are allocated only for source operations, never normal rendering. */
 export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>): void {
   md.core.ruler.after('normalize', 'source_links_initialize', (state) => {
-    if (state.env.captureSourceLinks || state.env.markdownLinkProvenance) state.env.markdownSourceLinks = {
+    if (state.env.captureSourceLinks || state.env.markdownLinkProvenance || state.env.markdownRawOccurrences) state.env.markdownSourceLinks = {
       links: [], diagnostics: [], maps: new WeakMap(), endMaps: new WeakMap(), ranges: state.env.captureInlineRanges ? [] : undefined,
-      images: state.env.captureImageOccurrences ? [] : undefined, provenance: state.env.markdownLinkProvenance as MarkdownLinkProvenanceObserver | undefined
+      images: state.env.captureImageOccurrences ? [] : undefined, provenance: state.env.markdownLinkProvenance as MarkdownLinkProvenanceObserver | undefined,
+      raw: state.env.markdownRawOccurrences as MarkdownRawOccurrenceObserver | undefined
     } satisfies Capture
   })
   for (const name of ['paragraph', 'heading', 'lheading', 'table', 'reference']) {
     const { fn, alt } = md.block.ruler.__rules__.find((entry) => entry.name === name)!
     md.block.ruler.at(name, (state, start, end, silent) => {
       const data = capture(state.env), first = state.tokens.length
-      const accepted = fn(state, start, end, silent)
+      const observed = data?.raw?.captureRule && name === 'reference' && !silent ? data.raw.captureRule(() => fn(state, start, end, silent)) : undefined
+      const accepted = observed ? observed.accepted : fn(state, start, end, silent)
       if (!accepted || silent || !data) return accepted
       let cells: ReturnType<typeof mapCells> = [], cell = 0
       for (const token of state.tokens.slice(first)) {
@@ -132,6 +157,13 @@ export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>):
           if (map) token.meta = { ...token.meta, sourceMap: map }
         }
         if (token.type === 'reference_definition') {
+          if (data.raw) {
+            const read = observed?.reads.destinations.length === 1 ? observed.reads.destinations[0] : undefined
+            const angled = read?.source[read.start] === '<'
+            data.raw.definition(state, token, start, read?.ok ? { source: read.source,
+              start: read.start + (angled ? 1 : 0), end: read.end - (angled ? 1 : 0), url: md.normalizeLink(read.value) } : null,
+            typeof token.meta?.label === 'string' ? state.env.references?.[token.meta.label] : undefined)
+          }
           let source = '', map: number[] = []
           for (let line = token.map![0]; line < token.map![1]; line++) {
             const from = state.bMarks[line] + state.tShift[line], to = state.eMarks[line]
@@ -190,8 +222,12 @@ export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>):
         data.context = previous && { positions: previous.positions, ends: previous.ends, offset: previous.offset + start + 2 }
         data.inAlt = name === 'image'
       }
-      let accepted: boolean
-      try { accepted = fn(state, false) }
+      let accepted: boolean, reads: MarkdownRawRuleReads | undefined
+      try {
+        if (data.raw?.captureRule && (name === 'link' || name === 'image')) {
+          const observed = data.raw.captureRule(() => fn(state, false)); accepted = observed.accepted; reads = observed.reads
+        } else accepted = fn(state, false)
+      }
       finally { data.context = previous; data.inAlt = previousAlt }
       if (!accepted) return false
       if (name === 'safe_html') {
@@ -202,9 +238,18 @@ export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>):
           if (token.type === 'link_open' && trace) traceLink(data, token, start + trace.use.start, start + trace.use.end,
             { ...trace.destination, start: start + trace.destination.start, end: start + trace.destination.end })
         }
+        if (data.raw && !data.inAlt) for (const token of state.tokens.slice(first)) {
+          const trace = token.meta?.sourceLinkProvenance as { destination: MarkdownDestination; use: { start: number; end: number } } | undefined
+          if (token.type === 'link_open' && trace) data.raw.link(state, token,
+            { start: start + trace.use.start, end: start + trace.use.end },
+            { ...trace.destination, start: start + trace.destination.start, end: start + trace.destination.end })
+        }
         return true
       }
-      if (name === 'footnote_inline') return true
+      if (name === 'footnote_inline') {
+        if (!data.inAlt) data.raw?.unknownInline(state, start, state.pos, 'inline-footnote-subparse')
+        return true
+      }
       if (name === 'wiki_embed') {
         const token = state.tokens.slice(first).find((item) => item.meta?.wiki)!
         if (token.type !== 'image') recordMarkdownCompatibility(state.env, { start, end: state.pos, reason: 'wiki-syntax' })
@@ -222,6 +267,10 @@ export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>):
           recordMarkdownCompatibility(state.env, { start, end: state.pos, reason: 'wiki-syntax' })
         }
         record(data, { start: start + 2 + label.length - label.trimStart().length,
+          end: state.pos - 2 - (label.length - label.trimEnd().length), url: label.trim(), kind: 'wiki' })
+        const token = state.tokens.slice(first).find(item => item.type === 'wiki_link')
+        if (token && !data.inAlt) data.raw?.link(state, token, { start, end: state.pos }, {
+          start: start + 2 + label.length - label.trimStart().length,
           end: state.pos - 2 - (label.length - label.trimEnd().length), url: label.trim(), kind: 'wiki' })
         return true
       }
@@ -256,6 +305,29 @@ export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>):
       }
       if (data.provenance && token.type === 'link_open') traceLink(data, token, name === 'linkify' ? start - schemeLength : start, state.pos,
         tracedDestination, typeof token.meta?.label === 'string' ? state.env.references?.[token.meta.label] : undefined)
+      if (data.raw && !data.inAlt && token.type === 'link_open') {
+        if (name === 'linkify') {
+          // The upstream rule consumes pending scheme text before state.pos.
+          // Its legacy regex offset is not a new raw occurrence proof.
+          data.raw.unknownInline(state, start, state.pos, 'inline-linkify-prefix')
+          return true
+        }
+        let actual = name === 'link' ? undefined : tracedDestination
+        if (name === 'link' && typeof token.meta?.label !== 'string') {
+          const read = reads?.destinations.length === 1 ? reads.destinations[0] : undefined
+          if (read && read.source === state.src) {
+            const angled = read.source[read.start] === '<'
+            if (read.ok) actual = { start: read.start + (angled ? 1 : 0), end: read.end - (angled ? 1 : 0), url, kind: 'link' }
+            else if (url === '') {
+              const labels = reads!.labels.filter(value => value.state === state && value.start === start && value.end >= 0)
+              if (labels.length === 1 && state.src[labels[0].end + 1] === '(') actual = {
+                start: labels[0].end + 2, end: labels[0].end + 2, url, kind: 'link' }
+            }
+          }
+        }
+        data.raw.link(state, token, { start: name === 'linkify' ? start - schemeLength : start, end: state.pos }, actual,
+          typeof token.meta?.label === 'string' ? state.env.references?.[token.meta.label] : undefined)
+      }
       return true
     })
   }

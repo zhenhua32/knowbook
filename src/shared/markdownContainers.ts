@@ -1,6 +1,6 @@
 import { parseFragment, type DefaultTreeAdapterTypes as Html } from 'parse5'
 import type { Token } from 'markdown-it'
-import { NATIVE_LITERAL_ATTRIBUTE, NATIVE_LITERAL_VERSION, encodeNativeLiteralText } from './markdownNativeText'
+import { NATIVE_LITERAL_ATTRIBUTE, NATIVE_LITERAL_VERSION, encodeNativeLiteralText, type NativeLiteralEdit } from './markdownNativeText'
 import { NATIVE_CALLOUT_KINDS, NATIVE_CALLOUT_ICONS, NATIVE_CONTAINER_TONES, normalizeMarkdownFormat, type MarkdownBlockFormat } from './markdownFormat'
 
 export const NATIVE_CONTAINER_ATTRIBUTE = 'data-knowbook-container'
@@ -230,19 +230,27 @@ export function shiftNativeContainerRanges(token: Token, lineOffset: number): vo
     bodyRange: value.bodyRange.map(line => line + lineOffset),
     closingRange: value.closingRange.map(line => line + lineOffset) } }
 }
-export function renderNativeContainerHeader(block: { type: string; content: string; markdownFormat?: MarkdownBlockFormat }): string {
-  const content = encodeNativeLiteralText(block.content, 'title').source
+export function renderNativeContainerHeader(block: { type: string; content: string; markdownFormat?: MarkdownBlockFormat },
+  observeContent?: (from: number, projection: ReturnType<typeof encodeNativeLiteralText>, edits: readonly NativeLiteralEdit[]) => void): string {
+  const edits: NativeLiteralEdit[] | undefined = observeContent ? [] : undefined
+  const projection = encodeNativeLiteralText(block.content, 'title', edits ? edit => edits.push(edit) : undefined), content = projection.source
   const escape = ' ' + NATIVE_LITERAL_ATTRIBUTE + '="' + NATIVE_LITERAL_VERSION + '"'
   if (block.type === 'columns') return '<section data-knowbook-container="columns-v1"' + escape + '>'
   if (block.type === 'column') return '<div data-knowbook-container="column-v1" data-knowbook-weight="' + block.markdownFormat?.columnWeight + '"' + escape + '>'
   // A title remains Markdown source. Closing shell-looking text is safe because
   // only an entire dedicated body line can close a native container.
-  if (block.type === 'toggle') return '<details data-knowbook-container="toggle-v1"'
-    + escape + (block.markdownFormat?.toggleDefaultOpen !== false ? ' open' : '') + '>\n<summary>' + content + '</summary>'
+  if (block.type === 'toggle') {
+    const prefix = '<details data-knowbook-container="toggle-v1"'
+      + escape + (block.markdownFormat?.toggleDefaultOpen !== false ? ' open' : '') + '>\n<summary>'
+    observeContent?.(prefix.length, projection, edits!)
+    return prefix + content + '</summary>'
+  }
   const format = normalizeMarkdownFormat('callout', block.markdownFormat)
   const attrs = [['data-knowbook-kind', format?.calloutKind], ['data-knowbook-icon', format?.calloutIcon], ['data-knowbook-tone', format?.calloutTone]]
     .filter((entry): entry is [string, string] => typeof entry[1] === 'string').map(([name, value]) => ' ' + name + '="' + value + '"').join('')
-  return '<aside data-knowbook-container="callout-v1"' + attrs + escape + '>\n<div data-knowbook-title="true">' + content + '</div>'
+  const prefix = '<aside data-knowbook-container="callout-v1"' + attrs + escape + '>\n<div data-knowbook-title="true">'
+  observeContent?.(prefix.length, projection, edits!)
+  return prefix + content + '</div>'
 }
 export function nativeContainerClosingTag(type: string): string {
   return type === 'toggle' ? '</details>' : type === 'columns' ? '</section>' : type === 'column' ? '</div>' : '</aside>'

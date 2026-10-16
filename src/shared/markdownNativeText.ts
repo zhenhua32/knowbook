@@ -4,6 +4,7 @@ export const NATIVE_LITERAL_MARKER = '<!-- knowbook:literal-close:v1 -->'
 export const NATIVE_LITERAL_ATTRIBUTE = 'data-knowbook-escape'
 export const NATIVE_LITERAL_VERSION = 'literal-v1'
 export type NativeTextProjection = { content: string; source: string; starts?: number[]; ends?: number[] }
+export type NativeLiteralEdit = { from: number; to: number; sourceFrom: number; sourceTo: number }
 const closer = /^<\/(?:aside|details|summary|div|section)[\t ]*>/i
 const entityCloser = /^&lt;(\/(?:aside|details|summary|div|section)[\t ]*)&gt;/i
 
@@ -46,7 +47,7 @@ function protectedTextRanges(content: string, inlineCode: boolean, legacy: boole
   return ranges.sort((a, b) => a[0] - b[0])
 }
 
-export function encodeNativeLiteralText(content: string, mode: 'title' | 'body' | 'opaque' = 'body'): NativeTextProjection {
+export function encodeNativeLiteralText(content: string, mode: 'title' | 'body' | 'opaque' = 'body', observeEdit?: (edit: NativeLiteralEdit) => void): NativeTextProjection {
   if (mode === 'opaque' || !content.includes(NATIVE_LITERAL_MARKER) && !/<\/(?:aside|details|summary|div)[\t ]*>/i.test(content)) return { content, source: content }
   const protectedRanges = protectedTextRanges(content, mode === 'title', mode === 'body')
   const edits: Array<{ from: number; to: number; source: string; starts: number[]; ends: number[] }> = []
@@ -79,6 +80,7 @@ export function encodeNativeLiteralText(content: string, mode: 'title' | 'body' 
     const before = content.slice(cursor, edit.from); parts.push(before)
     for (let index = 0; index < before.length; index++) { starts.push(offset + index); ends.push(offset + index + 1) }
     offset += before.length; parts.push(edit.source)
+    observeEdit?.({ from: edit.from, to: edit.to, sourceFrom: offset, sourceTo: offset + edit.source.length })
     starts.push(...edit.starts.map(position => offset + position)); ends.push(...edit.ends.map(position => offset + position))
     offset += edit.source.length; cursor = edit.to
   }
