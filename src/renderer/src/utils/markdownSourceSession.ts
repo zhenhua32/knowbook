@@ -5,6 +5,9 @@ export type MarkdownSourceSessionDraft = { source: string }
 export interface MarkdownSourceSessionOptions<Draft extends MarkdownSourceSessionDraft> {
   draft: Draft
   replaceChanges: (draft: Draft, changes: readonly MarkdownSourceChange[]) => Draft
+  /** A cold producer may reject foreign opening/replay receipts. Ordinary
+   * sessions omit this port and retain their existing behavior and shape. */
+  validateDraft?: (draft: Draft) => void
   isCurrent?: () => boolean
   onError?: (error: unknown) => void
 }
@@ -43,6 +46,7 @@ export function createMarkdownSourceSession<Draft extends MarkdownSourceSessionD
     if (!next || typeof next.source !== 'string' || markdownSourceEditorText(next.source) !== transaction.newDoc.toString()) {
       throw new Error('Markdown source draft and editor text disagree')
     }
+    options.validateDraft?.(next)
     candidates.set(transaction, next)
     return next
   }
@@ -51,6 +55,7 @@ export function createMarkdownSourceSession<Draft extends MarkdownSourceSessionD
       if (typeof options.draft?.source !== 'string' || markdownSourceEditorText(options.draft.source) !== state.doc.toString()) {
         throw new Error('Markdown source opening draft and editor text disagree')
       }
+      options.validateDraft?.(options.draft)
       return options.draft
     },
     update(value, transaction) {
