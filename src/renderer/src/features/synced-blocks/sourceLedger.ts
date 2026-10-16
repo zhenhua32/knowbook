@@ -1027,6 +1027,9 @@ export async function adoptSyncedSourceBaseline(owner: SourceReadOwner): Promise
 export async function adoptSyncedAcceptedSource(owner: SourceReadOwner, accepted: AcceptedSourceCheckpoint): Promise<SourceSideAdoptionResult> {
   return sourceReadOwnerModule ? sourceReadOwnerModule.adoptAcceptedSource(owner, accepted) : { status: 'unavailable', reason: 'unknown-owner' }
 }
+export async function adoptSyncedSourceOpening(owner: SourceReadOwner): Promise<SourceSideAdoptionResult> {
+  return sourceReadOwnerModule ? sourceReadOwnerModule.adoptSourceOpening(owner) : { status: 'unavailable', reason: 'unknown-owner' }
+}
 export function closeSyncedSourceReadOwner(owner: SourceReadOwner): Promise<void> {
   return sourceReadOwnerModule?.closeSourceReadOwner(owner) ?? Promise.resolve()
 }
