@@ -289,12 +289,13 @@ test('accepted allocation and receipt remain immutable and reader memo keeps an 
   assert.equal(committed.draftReceipt, accepted.facts.draftReceipt)
 })
 
-test('disposed late first read retains local acceptance without inventing an unseen committed ACK', async () => {
+test('disposed late first read obtains the exact original ACK through its read-only mailbox', async () => {
   const value = await setup(), accepted = accept(prepare(value.checkpoint, value.edit(0, 0, 'source ')))
   assert.equal(await value.binding.flush(), true)
   value.binding.dispose()
   const late = readAcceptedSourceCheckpoint(accepted.accepted)!
-  assert.equal(late.endpoint, accepted.facts.endpoint); assert.equal(late.committed, null)
+  assert.equal(late.endpoint, accepted.facts.endpoint); assert.ok(late.committed)
+  assert.equal(readSyncedCommittedEndpoint(late.committed)!.ack.operationId, value.api.updates[0].clientOperationId)
 })
 
 test('after original ACK the next Source prepare refreshes the real revision guard without a flush of its own', async () => {
@@ -479,4 +480,45 @@ test('Apply rejects a scope bindingEpoch changed by its final grammar validator 
     assert.equal(changed, true)
     assert.equal(value.binding.getCurrent().editSequence, 0)
   } finally { delete options[field] }
+})
+
+test('Source ACK mailbox can be read after disposal before and after its delayed original ACK', async () => {
+  const value = await setup(), preparation = prepare(value.checkpoint, value.edit(0, 0, 'prefix ')), accepted = accept(preparation)
+  let started!: () => void, finish!: () => void
+  const startedPromise = new Promise<void>(resolve => { started = resolve }), gate = new Promise<void>(resolve => { finish = resolve })
+  value.api.update = async input => { started(); await gate; return value.api.saved(input) }
+  const saving = value.binding.flush()
+  await startedPromise; value.binding.dispose()
+  assert.equal(readAcceptedSourceCheckpoint(accepted.accepted)!.committed, null)
+  finish(); assert.equal(await saving, true)
+  const read = readAcceptedSourceCheckpoint(accepted.accepted)!
+  assert.ok(read.committed, 'The original accepted endpoint must retain its validated ACK')
+  assert.equal(readSyncedCommittedEndpoint(read.committed)!.ack.operationId, value.api.updates[0].clientOperationId)
+  assert.equal(applyPreparedSourceCheckpoint({ preparation, transactionId: 'late-original-retry' }), accepted.result)
+})
+
+test('Source accepted mailbox reading never invokes a stale scope callback or changes its original accepted result', async () => {
+  const value = await setup(), preparation = prepare(value.checkpoint, value.edit(0, 0, 'prefix ')), accepted = accept(preparation)
+  assert.equal(await value.binding.flush(), true)
+  let calls = 0
+  value.owner.isCurrent = () => { calls++; throw new Error('Source read-only mailbox must not call scope') }
+  const read = readAcceptedSourceCheckpoint(accepted.accepted)!
+  assert.ok(read.committed, 'The original accepted endpoint must retain its validated ACK'); assert.equal(calls, 0)
+  assert.equal(applyPreparedSourceCheckpoint({ preparation, transactionId: 'different-late-retry' }), accepted.result)
+  assert.equal(readAcceptedSourceCheckpoint(accepted.accepted), read); assert.equal(calls, 0)
+})
+
+test('Source mailbox does not infer a lost ACK until its original operation query is validated', async () => {
+  const value = await setup(), accepted = accept(prepare(value.checkpoint, value.edit(0, 0, 'prefix ')))
+  value.api.update = async input => { value.api.saved(input); throw new Error('Lost Source ACK') }
+  assert.equal(await value.binding.flush(), false)
+  value.binding.dispose()
+  assert.equal(readAcceptedSourceCheckpoint(accepted.accepted)!.committed, null)
+  assert.equal(await value.controller.flush(), true)
+  const read = readAcceptedSourceCheckpoint(accepted.accepted)!
+  assert.ok(read.committed, 'The original accepted endpoint must retain its validated ACK')
+  const facts = readSyncedCommittedEndpoint(read.committed)!
+  assert.equal(facts.ack.operationId, value.api.updates[0].clientOperationId)
+  assert.equal(facts.ack.replayed, true); assert.notEqual(facts.transactionId, facts.ack.operationId)
+  assert.equal(value.api.updates.length, 1)
 })

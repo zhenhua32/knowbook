@@ -60,6 +60,12 @@ export function captureSyncedSourceEndpoint(binding: SyncedGroupBinding, validat
 export function readSyncedWorkingEndpoint(receipt: SyncedWorkingEndpointReceipt): SyncedWorkingEndpointRead {
   try { return endpointReaders.get(receipt)?.() ?? unavailableEndpoint } catch { return unavailableEndpoint }
 }
+/** Read-only acknowledgement mailbox for the exact minted working view.
+ * This never calls scope/live/getCurrent and grants no write or adoption lease. */
+export function readSyncedWorkingEndpointCommitted(receipt: SyncedWorkingEndpointReceipt): SyncedCommittedEndpointReceipt | null {
+  const endpoint = endpointIdentities.get(receipt)
+  return endpoint ? committedEndpointReceipt(endpoint) : null
+}
 export function readSyncedCommittedEndpoint(receipt: SyncedCommittedEndpointReceipt): SyncedCommittedEndpointFacts | null {
   return committedEndpoints.get(receipt) ?? null
 }
@@ -178,6 +184,16 @@ type Pending = {
   kind: 'history'; input: SyncedRestoreGroupInput; sequence: number; uncertain: boolean; mount: Mount; bookmarkSequence: number
   before: SyncedGroupSnapshot; redo: ServerRedo | null
 }
+function committedEndpointReceipt(endpoint: Endpoint): SyncedCommittedEndpointReceipt | null {
+  const committed = endpoint.version?.committed
+  if (!endpoint.committed && committed) {
+    const receipt: SyncedCommittedEndpointReceipt = Object.freeze({ kind: 'synced-committed-endpoint' })
+    committedEndpoints.set(receipt, Object.freeze({ submittedEditSequence: committed.submittedSequence,
+      acceptedEditSequence: endpoint.sequence, transactionId: endpoint.transactionId!, ack: committed.ack }))
+    endpoint.committed = receipt
+  }
+  return endpoint.committed
+}
 
 export interface SyncedControllerOptions {
   operationId?: () => string
@@ -256,16 +272,6 @@ class GroupController implements SyncedGroupController {
       && endpoint.topologyRevision === this.state.snapshot.topologyRevision
       && (!endpoint.version?.frame || this.frameVersions.get(endpoint.version.frame) === endpoint.version)
   }
-  private committedReceipt(endpoint: Endpoint): SyncedCommittedEndpointReceipt | null {
-    const committed = endpoint.version?.committed
-    if (!endpoint.committed && committed) {
-      const receipt: SyncedCommittedEndpointReceipt = Object.freeze({ kind: 'synced-committed-endpoint' })
-      committedEndpoints.set(receipt, Object.freeze({ submittedEditSequence: committed.submittedSequence,
-        acceptedEditSequence: endpoint.sequence, transactionId: endpoint.transactionId!, ack: committed.ack }))
-      endpoint.committed = receipt
-    }
-    return endpoint.committed
-  }
   private mintEndpoint(endpoint: Endpoint, isCurrent: () => boolean): SyncedWorkingEndpointReceipt {
     const receipt: SyncedWorkingEndpointReceipt = Object.freeze({ kind: 'synced-working-endpoint' })
     endpointIdentities.set(receipt, endpoint)
@@ -275,7 +281,7 @@ class GroupController implements SyncedGroupController {
         groupId: endpoint.groupId, creationId: endpoint.creationId, working: endpoint.working }
       return endpoint.baseline ? Object.freeze({ ...common, kind: 'baseline' as const, transactionId: null,
         baseline: endpoint.baseline, committed: null }) : Object.freeze({ ...common, kind: 'content' as const,
-        transactionId: endpoint.transactionId!, baseline: null, committed: this.committedReceipt(endpoint) })
+        transactionId: endpoint.transactionId!, baseline: null, committed: committedEndpointReceipt(endpoint) })
     })
     return receipt
   }
@@ -481,6 +487,7 @@ class GroupController implements SyncedGroupController {
   }
 
   private acknowledge(pending: Pending, result: SyncedGroupSaved) {
+    if (this.pending !== pending) throw new Error('Synced operation acknowledgement is not the actual pending operation.')
     if (result.operationId !== pending.input.clientOperationId || result.snapshot.groupId !== this.state.snapshot.groupId
       || result.snapshot.creationId !== this.state.snapshot.creationId) throw new Error('Synced operation acknowledgement identity mismatch.')
     const snapshot = immutable(structuredClone(validateSyncedGroupSnapshot(result.snapshot)))
@@ -503,14 +510,17 @@ class GroupController implements SyncedGroupController {
     }
     if (pending.kind === 'content') {
       if (this.frames[0] !== pending.frame) throw new Error('Synced operation acknowledgement is outside the pending history tail.')
-      if (result.status === 'saved' && snapshot.history.undoToken) this.historyBookmarks.set(snapshot.history.undoToken,
-        { before: pending.frame.beforeBookmark, after: pending.frame.afterBookmark })
-      this.frames.shift()
       const endpoint = pending.endpointVersion
-      if (endpoint && this.frameVersions.get(pending.frame) === endpoint && endpoint.frame === pending.frame && !endpoint.unavailable) {
+      if (endpoint) {
+        if (endpoint.committed) throw new Error('Synced operation endpoint version already has an acknowledgement.')
+        // The pending operation captured this exact immutable frame version.
+        // Scope/epoch expiry retires write authority, never the original ACK.
         const ack = Object.freeze({ status: result.status, operationId: result.operationId, snapshot, replayed: result.replayed })
         endpoint.committed = Object.freeze({ submittedSequence: pending.sequence, ack }); endpoint.frame = null
       }
+      if (result.status === 'saved' && snapshot.history.undoToken) this.historyBookmarks.set(snapshot.history.undoToken,
+        { before: pending.frame.beforeBookmark, after: pending.frame.afterBookmark })
+      this.frames.shift()
     } else if (result.status === 'saved') {
       const bookmarks = this.historyBookmarks.get(pending.input.historyToken)
       const bookmark = pending.input.direction === 'undo' ? bookmarks?.before : bookmarks?.after
@@ -558,6 +568,9 @@ class GroupController implements SyncedGroupController {
           return true
         }
       }
+      // A completed lookup may settle its original ACK after expiry, but an
+      // unknown result cannot authorize a fresh request in that workspace.
+      if (this.workspaceInvalid) return false
       result = pending.kind === 'content' ? await this.api.updateSyncedBlockGroup(pending.input)
         : await this.api.restoreSyncedGroupOperation(pending.input)
       if (result.status === 'saved' || result.status === 'noop') { this.acknowledge(pending, result); return true }
@@ -580,7 +593,9 @@ class GroupController implements SyncedGroupController {
       for (;;) {
         const frame = this.frames[0]
         if (!frame || frame.sequence > throughSequence) return true
-        if (options.shouldContinue?.() === false || this.hasComposition()) return false
+        // An ACK may settle the original in-flight operation after expiry.
+        // Recheck before starting another queued write in that same flush.
+        if (this.workspaceInvalid || options.shouldContinue?.() === false || this.hasComposition()) return false
         const snapshot = this.state.snapshot
         if (!snapshot.instances.some(instance => sameInstance(instance, frame.instance))) {
           this.publish({ failure: { status: 'missing', kind: 'instance', id: frame.instance.instanceId } }); return false
@@ -606,7 +621,7 @@ class GroupController implements SyncedGroupController {
       if (!mount || this.workspaceInvalid || this.hasComposition() || sequence !== this.state.editSequence || this.state.incoming
         || this.state.failure?.status === 'conflict') return false
       if (this.pending && !await this.writePending()) return false
-      if (!this.live(scope) || sequence !== this.state.editSequence) return false
+      if (this.workspaceInvalid || !this.live(scope) || sequence !== this.state.editSequence) return false
       const serverRedo = direction === 'redo' ? this.serverRedo.at(-1) : undefined
       if (serverRedo && (this.state.snapshot.revision !== serverRedo.revision
         || this.state.snapshot.history.cursor !== serverRedo.cursor || this.state.snapshot.history.redoToken !== serverRedo.token

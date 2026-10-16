@@ -12,7 +12,7 @@ import { SyncedValidationError, validateSyncedCanonicalEdit, validateSyncedOrigi
 import type { SyncedBindingClaim, SyncedBindingKey, SyncedCanonicalEdit, SyncedGroupGuard, SyncedOriginV1 } from '@shared/synced-blocks'
 import { replaceMarkdownSourceChanges, type MarkdownSourceChange, type MarkdownSourceDraft } from '../../utils/markdownSourceDraft'
 import { createMarkdownSourceSession } from '../../utils/markdownSourceSession'
-import { applySyncedSourceGroupWithEndpoint, captureSyncedSourceEndpoint, readSyncedWorkingEndpoint,
+import { applySyncedSourceGroupWithEndpoint, captureSyncedSourceEndpoint, readSyncedWorkingEndpointCommitted,
   type SyncedCommittedEndpointReceipt, type SyncedWorkingEndpointReceipt } from './controller'
 import { syncedBindingClaimsAreIdentity } from './bindingClaims'
 import type { SyncedGroupBinding, SyncedScopeBookmark } from './types'
@@ -875,14 +875,14 @@ export function applyPreparedSourceCheckpoint(input: {
     return saved.result
   } finally { state.applying = false }
 }
-/** This reader retains the exact original local acceptance. A committed
- * receipt already observed remains available after the live scope expires. */
+/** The exact original local acceptance has an independent read-only ACK
+ * mailbox, including a first read after the live scope has expired. */
 export function readAcceptedSourceCheckpoint(accepted: AcceptedSourceCheckpoint): AcceptedSourceCheckpointFacts | null {
   const facts = acceptedCheckpoints.get(accepted)
   if (!facts || facts.committed) return facts ?? null
-  const read = readSyncedWorkingEndpoint(facts.endpoint)
-  if (read.status === 'available' && read.kind === 'content' && read.committed) {
-    const committed = Object.freeze({ ...facts, committed: read.committed })
+  const receipt = readSyncedWorkingEndpointCommitted(facts.endpoint)
+  if (receipt) {
+    const committed = Object.freeze({ ...facts, committed: receipt })
     acceptedCheckpoints.set(accepted, committed)
     return committed
   }
