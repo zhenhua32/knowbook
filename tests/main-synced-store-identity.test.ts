@@ -11,6 +11,8 @@ import { KnowbookStore } from '../src/main/database/store'
 import { BlockIdentityRepository } from '../src/main/database/block-identities'
 import { getSyncedGroupSnapshots } from '../src/main/database/synced-blocks-read'
 import type { DocumentBlockDraft } from '../src/shared/contracts'
+import { unknownGroup27 } from './helpers/synced-lifecycle-fixture'
+import { syncedLifecycleSemanticHash } from '../src/main/database/synced-lifecycle-state'
 
 const paragraph = (id: string, content = 'Text'): DocumentBlockDraft => ({ id, type: 'paragraph', content,
   checked: false, depth: 0, parentBlockId: null })
@@ -103,7 +105,7 @@ test('ordinary document IPC storage cannot fabricate a synchronized reference wi
   assert.deepEqual(store.documentRecovery.listHistory(id), history)
 }))
 
-test('reopening schema26 with a missing identity guard rejects without silently repairing its authority', () => fixture((store, databasePath) => {
+test('reopening the current schema with a missing identity guard rejects without silently repairing its authority', () => fixture((store, databasePath) => {
   const db = store.getUnsafeDatabaseHandle()
   db.exec('DROP TRIGGER trg_synced_identity_delete')
   const schema = db.prepare('SELECT type,name,sql FROM sqlite_master ORDER BY type,name').all()
@@ -122,6 +124,8 @@ test('this foundation rejects a valid same-schema orphan canonical body before W
     db.prepare(`INSERT INTO synced_groups(id,creation_id,created_at,origin_json,revision,topology_revision,history_cursor)
       VALUES(?,?,?,?,?,?,?)`).run(groupId, randomUUID(), createdAt, JSON.stringify({ version: 1, documentId,
         pathAtCreation: store.getDocumentDetail(documentId)!.path, firstInstanceId: randomUUID() }), randomUUID(), randomUUID(), randomUUID())
+    unknownGroup27(db, groupId, [{ id: 'future-canonical', type: 'paragraph', content: 'Future canonical body',
+      checked: false, depth: 0, parentBlockId: null, createdAt }])
     db.prepare(`INSERT INTO synced_group_blocks(id,group_id,sort_order,type,content,created_at)
       VALUES(?,?,0,'paragraph','Future canonical body',?)`).run('future-canonical', groupId, createdAt)
     const snapshot = getSyncedGroupSnapshots(db, { groupIds: [groupId] }).items[0]
@@ -148,6 +152,11 @@ test('rejecting unsupported canonical content committed only in a crashed writer
     const digest = (path: string) => createHash('sha256').update(readFileSync(path)).digest('hex')
     const beforeWal = digest(databasePath)
     const groupId = randomUUID(), createdAt = new Date().toISOString()
+    const group = [groupId, randomUUID(), createdAt, JSON.stringify(origin), randomUUID(), randomUUID(), randomUUID()]
+    const blockId = randomUUID()
+    const activationHash = syncedLifecycleSemanticHash({ kind: 'synced-group', id: groupId, creationId: group[1], createdAt,
+      origin, bindings: [], blocks: [{ id: blockId, type: 'paragraph', content: 'Only in committed WAL',
+        checked: false, depth: 0, parentBlockId: null, createdAt }] })
     // process.exit deliberately skips SQLite close: the committed group must
     // remain exclusively in a real WAL, with no live connection holding it.
     const result = spawnSync(process.execPath, ['-e', `
@@ -157,12 +166,13 @@ test('rejecting unsupported canonical content committed only in a crashed writer
       db.pragma('journal_mode=WAL'); db.pragma('wal_autocheckpoint=0'); db.pragma('foreign_keys=ON');
       db.transaction(() => {
         db.prepare('INSERT INTO synced_groups(id,creation_id,created_at,origin_json,revision,topology_revision,history_cursor) VALUES(?,?,?,?,?,?,?)').run(...value.group);
+        db.prepare("INSERT INTO synced_group_lifecycle(group_id,creation_id,state,state_version,exposure_state,create_history_id,activation_revision,activation_topology_revision,activation_hash,activation_instances_json,created_at,updated_at) VALUES(?,?,'active',1,'unknown',NULL,?,?,?,'[]',?,?)").run(value.group[0],value.group[1],value.group[4],value.group[5],value.activationHash,value.group[2],value.group[2]);
         db.prepare("INSERT INTO synced_group_blocks(id,group_id,sort_order,type,content,created_at) VALUES(?,?,0,'paragraph','Only in committed WAL',?)").run(value.blockId,value.group[0],value.group[2]);
       })();
       process.stdout.write(String(db.prepare('SELECT count(*) AS count FROM synced_groups').get().count));
       process.exit(0);
     `, createRequire(import.meta.url).resolve('better-sqlite3'), databasePath,
-    JSON.stringify({ group: [groupId, randomUUID(), createdAt, JSON.stringify(origin), randomUUID(), randomUUID(), randomUUID()], blockId: randomUUID() })],
+    JSON.stringify({ group, blockId, activationHash })],
     { windowsHide: true, encoding: 'utf8', timeout: 30_000, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } })
     assert.equal(result.error, undefined)
     assert.equal(result.status, 0, result.stderr)

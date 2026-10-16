@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { KnowbookStore } from '../src/main/database/store.ts'
 import { CURRENT_DATABASE_SCHEMA_VERSION } from '../src/main/database/schema-version.ts'
+import { removeSchema27ForLegacyFixture } from './helpers/schema27-legacy-fixture.ts'
 
 const require = createRequire(import.meta.url)
 const Database = require('better-sqlite3') as typeof import('better-sqlite3')
@@ -133,6 +134,7 @@ test('KnowbookStore v10 migration extends legacy system plugin requests without 
 
   const legacyDatabase = new Database(databasePath)
   try {
+    removeSchema27ForLegacyFixture(legacyDatabase)
     for (const column of [
       'staged_artifact_path',
       'computed_artifact_sha256',
@@ -174,6 +176,7 @@ test('KnowbookStore v12 migration preserves pending uninstall and persists the d
   original.pluginPlatform.createSystemPluginInstallation({ pluginId: 'system.retention', status: 'uninstall-pending' })
   original.destroy()
   const legacy = new Database(databasePath)
+  removeSchema27ForLegacyFixture(legacy)
   legacy.exec('ALTER TABLE system_plugin_installations DROP COLUMN preserve_data_on_uninstall')
   legacy.pragma('user_version = 11')
   legacy.close()
@@ -212,6 +215,7 @@ test('KnowbookStore v4 migration backfills full view config and readable record 
 
   const legacyDatabase = new Database(databasePath)
   try {
+    removeSchema27ForLegacyFixture(legacyDatabase)
     legacyDatabase.exec(`
       DROP INDEX IF EXISTS idx_database_saved_views_database_sort;
       DROP INDEX IF EXISTS idx_database_entities_database_title;

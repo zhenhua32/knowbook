@@ -9,6 +9,7 @@ import { spawn } from 'node:child_process'
 import { KnowbookStore } from '../src/main/database/store'
 import { parseDatabaseRestoreArgument, recoverInterruptedDatabaseRestore, restoreKnowbookDatabase } from '../src/main/database/restore-maintenance'
 import { listWindowsRestoreProcesses, stopDatabaseRestoreProcesses, type RestoreProcessIdentity, type RestoreObservedProcess } from '../src/main/database/restore-process-guard'
+import { unknownGroup27 } from './helpers/synced-lifecycle-fixture'
 
 const require = createRequire(import.meta.url)
 const Database = require('better-sqlite3') as typeof import('better-sqlite3')
@@ -79,8 +80,10 @@ test('invalid backup content, future schema, missing KnowBook tables, and active
         db.prepare(`INSERT INTO synced_groups(id,creation_id,created_at,origin_json,revision,topology_revision,history_cursor)
           VALUES(?,?,?,?,?,?,?)`).run(id, randomUUID(), now, JSON.stringify({ version: 1, documentId: document.id,
             pathAtCreation: document.path, firstInstanceId: randomUUID() }), randomUUID(), randomUUID(), randomUUID())
+        unknownGroup27(db, id, [{ id: 'future-restore-canonical', type: 'paragraph', content: 'Future canonical body',
+          checked: false, depth: 0, parentBlockId: null, createdAt: now }])
         db.prepare(`INSERT INTO synced_group_blocks(id,group_id,sort_order,type,content,created_at)
-          VALUES(?,?,0,'paragraph','Future canonical body',?)`).run(randomUUID(), id, now)
+          VALUES(?,?,0,'paragraph','Future canonical body',?)`).run('future-restore-canonical', id, now)
       }
       else db.exec('DROP TABLE app_settings')
       db.close()

@@ -12,6 +12,7 @@ import { buildDraftMarkdownExport } from '../src/renderer/src/utils/documentMark
 import { collectDocumentMarkdownLinks } from '../src/shared/markdownLinkMaintenance'
 import { parseMarkdownBlocks, serializeBlocksToMarkdown } from '../src/shared/markdown'
 import { CURRENT_DATABASE_SCHEMA_VERSION } from '../src/main/database/schema-version'
+import { removeSchema27ForLegacyFixture } from './helpers/schema27-legacy-fixture'
 
 const drafts = (source: string) => parseMarkdownBlocks(source).map((block) => ({ ...block, checked: block.checked ?? false, depth: block.depth ?? 0, language: block.language ?? undefined }))
 const create = (store: KnowbookStore, title: string, source = '', parent: string | null = null) => {
@@ -73,6 +74,7 @@ test('newly resolvable aliases and sections reindex, and migration backfills exi
     store.updateDocument(target, { ...detail, blocks: detail.blocks.map((block) => ({ ...block, content: 'Changed' })) })
     assert.ok(body(store, source).includes('#changed|Soon'))
     const before = store.getDocumentDetail(source)!.blocks
+    removeSchema27ForLegacyFixture(store.getUnsafeDatabaseHandle())
     store.getUnsafeDatabaseHandle().exec('DELETE FROM markdown_link_sources; DELETE FROM links; PRAGMA user_version = 18;')
     store.destroy(); store = new KnowbookStore(path)
     assert.equal(store.getUnsafeDatabaseHandle().pragma('user_version', { simple: true }), CURRENT_DATABASE_SCHEMA_VERSION)

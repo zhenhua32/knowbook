@@ -4,6 +4,7 @@ import type { SyncedGroupListResult, SyncedGroupSnapshot, SyncedGroupSnapshotsRe
 import { assertSyncedShape, isSyncedBlockId, isSyncedUuid, parseSyncedBlockPayload, SYNCED_MAX_BLOCKS,
   SyncedValidationError, validateSyncedGroupSnapshot, validateSyncedHistoryState } from '../../shared/syncedBlockValidation'
 import { parseStrictJson } from '../../shared/strictJson'
+import { assertSyncedLifecycleCoverage, readSyncedGroupLifecycles } from './synced-lifecycle-state'
 
 type GroupRow = {
   id: string; creation_id: string; created_at: string; origin_json: string; bindings_json: string
@@ -61,12 +62,15 @@ function workspaceScope(db: Database.Database): string {
 function readGroups(db: Database.Database, ids: readonly string[]): Map<string, SyncedGroupSnapshot> {
   if (!ids.length) return new Map()
   const encoded = JSON.stringify(ids)
-  const groups = db.prepare(`SELECT g.*,undo.id AS undo_token,redo.id AS redo_token,redo.position AS redo_position
+  const lifecycle = (db.pragma('user_version', { simple: true }) as number) >= 27
+    ? readSyncedGroupLifecycles(db, ids) : null
+  const groups = (db.prepare(`SELECT g.*,undo.id AS undo_token,redo.id AS redo_token,redo.position AS redo_position
     FROM synced_groups g
     LEFT JOIN synced_group_history undo ON undo.group_id=g.id AND undo.position=g.history_position
     LEFT JOIN synced_group_history redo ON redo.group_id=g.id AND redo.position=(
       SELECT min(next.position) FROM synced_group_history next WHERE next.group_id=g.id AND next.position>g.history_position)
-    WHERE g.id IN (SELECT value FROM json_each(?))`).all(encoded) as GroupRow[]
+    WHERE g.id IN (SELECT value FROM json_each(?))`).all(encoded) as GroupRow[])
+    .filter(group => lifecycle === null || lifecycle.get(group.id)?.state === 'active')
   const existing = new Set(groups.map(group => group.id)), groupIds = JSON.stringify([...existing])
   // Forward joins alone cannot expose an extra live identity whose physical
   // canonical row disappeared or belongs to another group. Retained identities
@@ -175,7 +179,12 @@ export function listSyncedGroups(db: Database.Database, input: unknown): SyncedG
   const { query, offset, limit } = input
   return db.transaction(() => {
     workspaceScope(db)
-    const where = `(?='' OR instr(lower(json_extract(g.origin_json,'$.pathAtCreation')),lower(?))>0
+    const lifecycle = (db.pragma('user_version', { simple: true }) as number) >= 27
+    if (lifecycle) assertSyncedLifecycleCoverage(db)
+    // Use the same active predicate before count and pagination; filtering the
+    // returned page afterward would leak totals and create short/empty pages.
+    const active = lifecycle ? `EXISTS(SELECT 1 FROM synced_group_lifecycle l WHERE l.group_id=g.id AND l.state='active') AND ` : ''
+    const where = active + `(?='' OR instr(lower(json_extract(g.origin_json,'$.pathAtCreation')),lower(?))>0
       OR EXISTS(SELECT 1 FROM synced_group_blocks b WHERE b.group_id=g.id AND instr(lower(b.content),lower(?))>0))`
     const total = (db.prepare(`SELECT count(*) AS count FROM synced_groups g WHERE ${where}`).get(query, query, query) as { count: number }).count
     const page = db.prepare(`SELECT g.id FROM synced_groups g WHERE ${where} ORDER BY g.created_at DESC,g.id LIMIT ? OFFSET ?`)

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import Database from 'better-sqlite3'
 import { KnowbookStore } from '../src/main/database/store'
 import { CURRENT_DATABASE_SCHEMA_VERSION } from '../src/main/database/schema-version'
+import { removeSchema27ForLegacyFixture } from './helpers/schema27-legacy-fixture'
 import type { DocumentBlockDraft } from '../src/shared/contracts'
 import { canonicalJson, parseManifest, validSyncBlockTree, validateRecord, type SyncDocument } from '../src/main/sync/model'
 import { mergeSyncDocument } from '../src/main/sync/merge'
@@ -108,6 +109,7 @@ test('v22 semantic migration creates one complete safety copy and leaves prior c
   let store = h.store
   const id = create(store, 'Legacy lists', [block('legacy-root', 'todo'), block('legacy-child', 'bulleted-list', 1, 'legacy-root')])
   const before = store.documentRecovery.readContent(id)
+  removeSchema27ForLegacyFixture(store.getUnsafeDatabaseHandle())
   store.getUnsafeDatabaseHandle().pragma('user_version = 22')
   store = h.restart()
   assert.equal(store.getUnsafeDatabaseHandle().pragma('user_version', { simple: true }), CURRENT_DATABASE_SCHEMA_VERSION)

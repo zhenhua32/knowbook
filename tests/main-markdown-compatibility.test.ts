@@ -9,6 +9,7 @@ import { MarkdownRestoreService } from '../src/main/backup/importer.ts'
 import { parsePastedMarkdown } from '../src/renderer/src/utils/markdownInput.ts'
 import { serializeBlocksToMarkdown } from '../src/shared/markdown.ts'
 import { CURRENT_DATABASE_SCHEMA_VERSION } from '../src/main/database/schema-version.ts'
+import { removeSchema27ForLegacyFixture } from './helpers/schema27-legacy-fixture.ts'
 
 test('paste, SQLite, backup and restore preserve headings, list starts, identities and content', async () => {
   const root = mkdtempSync(join(tmpdir(), 'knowbook-markdown-roundtrip-'))
@@ -50,6 +51,7 @@ test('schema 13 migrates existing notes and keeps a migration safety copy', () =
     const doc = store.getAllDocumentSnapshots()[0]
     const before = store.getDocumentDetail(doc.id)!.blocks
     const db = store.getUnsafeDatabaseHandle()
+    removeSchema27ForLegacyFixture(db)
     db.exec('ALTER TABLE blocks DROP COLUMN list_start')
     db.pragma('user_version = 12')
     store.destroy()

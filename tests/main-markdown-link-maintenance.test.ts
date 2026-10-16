@@ -7,6 +7,7 @@ import { KnowbookStore } from '../src/main/database/store.ts'
 import { collectDocumentMarkdownLinks } from '../src/shared/markdownLinkMaintenance.ts'
 import { parseLocalMarkdownUrl, resolveMarkdownDocumentPath } from '../src/shared/markdownLinks.ts'
 import { CURRENT_DATABASE_SCHEMA_VERSION } from '../src/main/database/schema-version.ts'
+import { removeSchema27ForLegacyFixture } from './helpers/schema27-legacy-fixture.ts'
 import { parseMarkdownBlocks } from '../src/shared/markdown.ts'
 import { pathToFileURL } from 'node:url'
 import { checkMarkdownAttachment } from '../src/main/markdown-attachment-check.ts'
@@ -188,6 +189,7 @@ test('link index migration backfills the index and preserves a backup before rew
   let store = new KnowbookStore(path)
   try {
     const target = create(store, 'Target', '## Old'), source = create(store, 'Source', '[Go](Target.md#old)')
+    removeSchema27ForLegacyFixture(store.getUnsafeDatabaseHandle())
     store.getUnsafeDatabaseHandle().exec('DROP TABLE markdown_link_sources; PRAGMA user_version = 14;')
     store.destroy(); store = new KnowbookStore(path)
     assert.equal(store.getUnsafeDatabaseHandle().pragma('user_version', { simple: true }), CURRENT_DATABASE_SCHEMA_VERSION)
@@ -204,6 +206,7 @@ test('schema 16 rebuilds stale table link positions before a target is renamed',
     const target = create(store, 'Target')
     const source = create(store, 'Source', '| A | B |\n| - | - |\n| $unfinished | [real](Target.md)$ |\n| literal | ` [code](Target.md) ` |')
     // Simulate v15's missed entry; migration must not depend on editing Source.
+    removeSchema27ForLegacyFixture(store.getUnsafeDatabaseHandle())
     store.getUnsafeDatabaseHandle().exec('DELETE FROM markdown_link_sources; DELETE FROM links; PRAGMA user_version = 15;')
     store.destroy(); store = new KnowbookStore(path)
     assert.ok(readdirSync(root).some((name) => name.includes(`pre-migration-v15-to-v${CURRENT_DATABASE_SCHEMA_VERSION}-`)))
@@ -286,6 +289,7 @@ test('schema 17 refreshes old Wiki relations and case-variant bindings with a mi
     const literal = create(store, 'Literal', '`[[Target]]`')
     store.getUnsafeDatabaseHandle().prepare('INSERT INTO links (id, source_document_id, target_document_id, label, created_at) VALUES (?, ?, ?, ?, ?)')
       .run('stale', literal, target, 'Target', new Date().toISOString())
+    removeSchema27ForLegacyFixture(store.getUnsafeDatabaseHandle())
     store.getUnsafeDatabaseHandle().exec("UPDATE markdown_link_sources SET target_path = NULL WHERE kind = 'wiki'; PRAGMA user_version = 16;")
     store.destroy(); store = new KnowbookStore(path)
     assert.ok(readdirSync(root).some((name) => name.includes(`pre-migration-v16-to-v${CURRENT_DATABASE_SCHEMA_VERSION}-`)))

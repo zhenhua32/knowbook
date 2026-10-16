@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { KnowbookStore } from '../src/main/database/store.ts'
 import { CURRENT_DATABASE_SCHEMA_VERSION } from '../src/main/database/schema-version.ts'
+import { removeSchema27ForLegacyFixture } from './helpers/schema27-legacy-fixture.ts'
 
 function create(store: KnowbookStore, title: string, content: string, parent: string | null = null) {
   const id = store.createDocument(parent)
@@ -60,6 +61,7 @@ test('version 16 search triggers and displaced FTS rows migrate with a safety co
   try {
     const id = create(store, 'Migration title', 'Migration original')
     const db = store.getUnsafeDatabaseHandle()
+    removeSchema27ForLegacyFixture(db)
     for (const table of ['document', 'block']) for (const operation of ['insert', 'update', 'delete']) {
       db.exec(`DROP TRIGGER trg_${table}_search_${operation}`)
     }

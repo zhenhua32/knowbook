@@ -48,6 +48,23 @@ jobs:
       - name: Run unit and integration tests
         run: npm test
 
+      - name: Fetch pinned schema26 reader source
+        run: git fetch --no-tags --depth=1 origin 6d61134b917d88753bdbc72a5cafe6e3d81fc216
+
+      - name: Verify schema27 migration and actual legacy readers
+        run: npm run test:schema27-legacy-readers
+
+      - name: Upload schema27 compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: schema27-legacy-reader-evidence
+          path: |
+            test-results/schema27-legacy-readers/**
+            !test-results/schema27-legacy-readers/**/legacy-6d61134/**
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Check Markdown performance regression ceilings
         run: npm run benchmark:markdown
 

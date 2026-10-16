@@ -12,6 +12,7 @@ import { checkMarkdownAttachment } from '../src/main/markdown-attachment-check'
 import { KNOWBOOK_BACKUP_MARKER } from '../src/shared/markdownFrontmatter'
 import { documentYaml, commonHtml } from './fixtures/markdown-frontmatter-html'
 import { CURRENT_DATABASE_SCHEMA_VERSION } from '../src/main/database/schema-version'
+import { removeSchema27ForLegacyFixture } from './helpers/schema27-legacy-fixture'
 import { collectDocumentMarkdownLinks } from '../src/shared/markdownLinkMaintenance'
 
 test('schema 18 backfills HTML links before an existing target is renamed and keeps a safety copy', () => {
@@ -22,6 +23,7 @@ test('schema 18 backfills HTML links before an existing target is renamed and ke
     store.updateDocument(target, { title: 'Target', summary: '', blocks: [{ type: 'paragraph', content: '<a id="target"></a>', checked: false, depth: 0 }] })
     store.updateDocument(source, { title: 'Source', summary: '', blocks: [{ type: 'paragraph', content: '<a href="Target.md#target">Go</a>', checked: false, depth: 0 }] })
     const before = store.getDocumentDetail(source)!
+    removeSchema27ForLegacyFixture(store.getUnsafeDatabaseHandle())
     store.getUnsafeDatabaseHandle().exec('DELETE FROM markdown_link_sources; DELETE FROM links; PRAGMA user_version = 17;')
     store.destroy(); store = new KnowbookStore(path)
     assert.equal(store.getUnsafeDatabaseHandle().pragma('user_version', { simple: true }), CURRENT_DATABASE_SCHEMA_VERSION)

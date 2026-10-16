@@ -6,6 +6,7 @@ import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { KnowbookStore } from '../src/main/database/store'
 import { CURRENT_DATABASE_SCHEMA_VERSION } from '../src/main/database/schema-version'
+import { removeSchema27ForLegacyFixture } from './helpers/schema27-legacy-fixture'
 import { createWorkspaceEventRecord } from '../src/main/event-bus'
 import { parseWorkspaceEventDetails } from '../src/shared/workspaceEventDetails'
 
@@ -51,6 +52,7 @@ test('v20 activity migration preserves legacy records and adds details without r
     finally { initial.destroy() }
     const legacy = new Database(path)
     try {
+      removeSchema27ForLegacyFixture(legacy)
       legacy.exec('ALTER TABLE workspace_events DROP COLUMN details_json')
       legacy.pragma('user_version = 20')
     } finally { legacy.close() }

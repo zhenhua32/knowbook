@@ -13,6 +13,7 @@ import { DEFAULT_WEBDAV_SYNC_CONFIG } from '../src/shared/webdav-sync'
 import { createDefaultDatabaseViewConfig } from '../src/shared/database-workspace'
 import { parseDatabaseViewPayload, serializeDatabaseViewPayload } from '../src/shared/databaseViewBlock'
 import { CURRENT_DATABASE_SCHEMA_VERSION } from '../src/main/database/schema-version'
+import { removeSchema27ForLegacyFixture } from './helpers/schema27-legacy-fixture'
 import { parseManifest, type SyncDocument, type SyncDatabases } from '../src/main/sync/model'
 import { syncAssetReferences } from '../src/main/sync/assets'
 import { createWebDavServer } from './helpers/webdav-server'
@@ -104,11 +105,13 @@ test('document templates clone database host identities while keeping configurat
 
 test('schema24 upgrade first preserves an exact safety copy before the current semantic gate', () => fixture((store, _other, root) => {
   const id = insert(store, 'missing-source'), before = store.getDocumentDetail(id)!
-  const path = store.getDatabasePath(); store.getUnsafeDatabaseHandle().pragma('user_version = 24'); store.destroy()
+  const path = store.getDatabasePath()
+  removeSchema27ForLegacyFixture(store.getUnsafeDatabaseHandle())
+  store.getUnsafeDatabaseHandle().pragma('user_version = 24'); store.destroy()
   const reopened = new KnowbookStore(path)
   try {
     assert.equal(reopened.getUnsafeDatabaseHandle().pragma('user_version', { simple: true }), CURRENT_DATABASE_SCHEMA_VERSION)
-    assert.equal(CURRENT_DATABASE_SCHEMA_VERSION, 26); assert.deepEqual(reopened.getDocumentDetail(id), before)
+    assert.equal(CURRENT_DATABASE_SCHEMA_VERSION, 27); assert.deepEqual(reopened.getDocumentDetail(id), before)
     const copies = readdirSync(root).filter(name => name.includes(`pre-migration-v24-to-v${CURRENT_DATABASE_SCHEMA_VERSION}-`))
     assert.equal(copies.length, 1)
     const copy = new Database(join(root, copies[0]), { readonly: true })

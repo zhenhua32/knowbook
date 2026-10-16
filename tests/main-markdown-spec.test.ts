@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { KnowbookStore } from '../src/main/database/store.ts'
 import { CURRENT_DATABASE_SCHEMA_VERSION } from '../src/main/database/schema-version.ts'
+import { removeSchema27ForLegacyFixture } from './helpers/schema27-legacy-fixture.ts'
 import { MarkdownBackupService } from '../src/main/backup/exporter.ts'
 import { MarkdownRestoreService } from '../src/main/backup/importer.ts'
 import { markdownEngine } from '../src/shared/markdownEngine.ts'
@@ -78,6 +79,7 @@ test('schema 14 adds format storage without rewriting existing notes and creates
   try {
     const doc = store.getAllDocumentSnapshots()[0]
     const before = store.getDocumentDetail(doc.id)!.blocks
+    removeSchema27ForLegacyFixture(store.getUnsafeDatabaseHandle())
     store.getUnsafeDatabaseHandle().exec('ALTER TABLE blocks DROP COLUMN markdown_format_json')
     store.getUnsafeDatabaseHandle().pragma('user_version = 13')
     store.destroy()

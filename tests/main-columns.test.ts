@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import Database from 'better-sqlite3'
 import { KnowbookStore } from '../src/main/database/store'
 import { CURRENT_DATABASE_SCHEMA_VERSION } from '../src/main/database/schema-version'
+import { removeSchema27ForLegacyFixture } from './helpers/schema27-legacy-fixture'
 import { assertColumnStructure, validColumnStructure } from '../src/shared/columns'
 import { planDocumentBlockTransfer } from '../src/shared/documentBlockTransfer'
 import type { DocumentBlockDraft } from '../src/shared/contracts'
@@ -123,6 +124,7 @@ test('v23 migration creates one complete safety copy before introducing column o
   let store = h.store
   const id = create(store, 'Legacy', [{ id: 'legacy', type: 'paragraph', depth: 0, parentBlockId: null, content: 'Prior content', checked: false }])
   const before = store.documentRecovery.readContent(id)
+  removeSchema27ForLegacyFixture(store.getUnsafeDatabaseHandle())
   store.getUnsafeDatabaseHandle().pragma('user_version = 23'); store = h.restart()
   assert.equal(store.getUnsafeDatabaseHandle().pragma('user_version', { simple: true }), CURRENT_DATABASE_SCHEMA_VERSION)
   assert.deepEqual(store.documentRecovery.readContent(id), before)

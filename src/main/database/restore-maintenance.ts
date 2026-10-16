@@ -5,6 +5,7 @@ import { createRequire } from 'node:module'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { CURRENT_DATABASE_SCHEMA_VERSION } from './schema-version'
 import { assertNoUnsupportedSyncedContent, assertSyncedBlockSchema } from './synced-schema'
+import { assertSyncedLifecycleSchema } from './synced-lifecycle-schema'
 import { stopDatabaseRestoreProcesses, type RestoreProcessIdentity } from './restore-process-guard'
 import { isSystemPluginManagedPath, resolveSystemPluginPhysicalPath } from '../system-plugin/managed-paths'
 
@@ -71,6 +72,7 @@ function verifyDatabase(path: string): number {
     }
     if (version >= 26) {
       assertSyncedBlockSchema(db)
+      if (version >= 27) assertSyncedLifecycleSchema(db)
       assertNoUnsupportedSyncedContent(db)
     }
     const required: Record<string, string[]> = {

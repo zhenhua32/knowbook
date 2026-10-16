@@ -68,10 +68,30 @@ async function withRich(run: (api: { dom: JSDOM; blocks: () => DocumentBlockDraf
       onUndo: useHistory ? history.undoEdit : noop, onRedo: useHistory ? history.redoEdit : noop,
       onRevealBlock: noop, onEditSource: noop }) : null
   }
+  let disconnectControls = noop
   try {
+    const mount = dom.window.document.getElementById('mount')!
+    const controlsReady = new Promise<void>(resolve => {
+      const check = () => {
+        const ready = Array.from(mount.querySelectorAll<HTMLButtonElement>('.columns-group-tools[aria-label="Column layout actions"] button'))
+          .some(button => button.textContent === 'Add column')
+        if (ready) { observer.disconnect(); resolve() }
+      }
+      const observer = new dom.window.MutationObserver(check)
+      disconnectControls = () => observer.disconnect()
+      observer.observe(mount, { childList: true, subtree: true, characterData: true })
+      check()
+    })
     await act(async () => root.render(createElement(Harness)))
     if (useHistory) await act(async () => history.loadDocumentIntoEditor({ id: 'columns-ui', title: 'Columns', summary: '', blocks: initial() } as DocumentDetail))
-    await act(async () => { await new Promise<void>(resolve => setImmediate(resolve)) })
+    await act(async () => { await Promise.all([
+      import('../src/renderer/src/components/ColumnsControls'),
+      import('../src/renderer/src/rich-text/ColumnContentControls')
+    ]) })
+    // Await the real portal commit outside act: an unresolved DOM observer
+    // inside the act callback would prevent React from flushing that commit.
+    await controlsReady
+    await act(async () => {})
     const editor = dom.window.document.querySelector<HTMLElement>('.knowbook-rich-text-editor')!
     await run({ dom, blocks: () => current, changes: () => changes, editor, history: () => history, selectionWrites,
       key: async (key, options = {}) => { await act(async () => editor.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...options }))) },
@@ -81,6 +101,7 @@ async function withRich(run: (api: { dom: JSDOM; blocks: () => DocumentBlockDraf
           richText: { anchor: { blockId: id, index, offset }, head: { blockId: endId, index: endIndex, offset: endOffset } } }))
       } })
   } finally {
+    disconnectControls()
     await act(async () => root.unmount()); dom.window.close()
     for (const [key, descriptor] of originals) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else Reflect.deleteProperty(globalThis, key) }
   }

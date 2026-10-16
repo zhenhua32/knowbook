@@ -79,6 +79,7 @@ import type {
 import { appSchema, searchIndexSchema } from './schema'
 import { CURRENT_DATABASE_SCHEMA_VERSION } from './schema-version'
 import { assertNoUnsupportedSyncedContent, assertSyncedBlockSchema, installSyncedBlockSchema } from './synced-schema'
+import { assertSyncedLifecycleSchema, installSyncedLifecycleSchema } from './synced-lifecycle-schema'
 import { BlockIdentityRepository } from './block-identities'
 import { DatabaseSavedViewNameError } from './saved-view-form'
 import { parseWorkspaceEventDetails } from '@shared/workspaceEventDetails'
@@ -368,8 +369,12 @@ function assertSupportedDatabase(db: SqliteDatabase): number {
     if (schemaVersion > CURRENT_DATABASE_SCHEMA_VERSION) {
       throw new Error(`Database schema version ${schemaVersion} is newer than supported version ${CURRENT_DATABASE_SCHEMA_VERSION}.`)
     }
-    if (schemaVersion === CURRENT_DATABASE_SCHEMA_VERSION) {
+    // Validate the original authority before a safety copy, WAL or appSchema.
+    // Comparing only with CURRENT would silently skip a damaged schema26 as
+    // soon as the current version becomes 27.
+    if (schemaVersion >= 26) {
       assertSyncedBlockSchema(db)
+      if (schemaVersion >= 27) assertSyncedLifecycleSchema(db)
       assertNoUnsupportedSyncedContent(db)
     }
     return schemaVersion
@@ -564,6 +569,13 @@ export class KnowbookStore {
         installSyncedBlockSchema(this.db)
         assertSyncedBlockSchema(this.db)
         this.db.pragma('user_version = 26')
+      }
+      if (schemaVersion < 27) {
+        // The constructor owns the pre-migration safety copy. Keep the entire
+        // lifecycle install and final version boundary inside this transaction.
+        installSyncedLifecycleSchema(this.db)
+        assertSyncedLifecycleSchema(this.db)
+        this.db.pragma('user_version = 27')
       }
     })
   }

@@ -9,6 +9,7 @@ import { assertSyncedStoredBindings, captureSyncedGroupBindings, maintainSyncedG
 import { validateSyncedGroupSnapshot, SyncedValidationError } from '../src/shared/syncedBlockValidation'
 import type { DocumentBlockDraft } from '../src/shared/contracts'
 import type { SyncedCanonicalWire, SyncedGroupSnapshot, SyncedLinkBinding, SyncedOriginV1 } from '../src/shared/synced-blocks'
+import { unknownGroup27 } from './helpers/synced-lifecycle-fixture'
 
 const born = '2020-01-02T03:04:05+08:00'
 const paragraph = (id: string, content = 'Body'): DocumentBlockDraft => ({ id, type: 'paragraph', content, checked: false, depth: 0, parentBlockId: null })
@@ -39,6 +40,7 @@ function canonicalGroup(value: Fixture, blockId: string, createdAt: string, reta
   value.db.transaction(() => {
     value.db.prepare(`INSERT INTO synced_groups(id,creation_id,created_at,origin_json,revision,topology_revision,history_cursor)
       VALUES(?,?,?,?,?,?,?)`).run(id, randomUUID(), born, JSON.stringify(value.origin), randomUUID(), randomUUID(), randomUUID())
+    unknownGroup27(value.db, id, [wire(blockId, 'Canonical body')].map(block => ({ ...block, createdAt })))
     if (retained) value.db.prepare("UPDATE block_identities SET last_owner_kind='group',last_owner_id=? WHERE id=? AND state='retained'").run(id, blockId)
     value.db.prepare("INSERT INTO synced_group_blocks(id,group_id,sort_order,type,content,created_at) VALUES(?,?,0,'paragraph','Canonical body',?)")
       .run(blockId, id, createdAt)

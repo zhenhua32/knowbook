@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import Database from 'better-sqlite3'
 import { KnowbookStore } from '../src/main/database/store'
 import { CURRENT_DATABASE_SCHEMA_VERSION } from '../src/main/database/schema-version'
+import { removeSchema27ForLegacyFixture } from './helpers/schema27-legacy-fixture'
 import type { DocumentBlock, DocumentBlockDraft } from '../src/shared/contracts'
 import type { MoveDocumentBlocksInput } from '../src/shared/document-block-moves'
 
@@ -337,6 +338,7 @@ test('v21 migration copies the complete old database once and preserves every do
     { ...block('migration-code', 'const preserved = true', 'code'), language: 'typescript',
       tags: ['code'], highlight: 'purple', markdownFormat: { codeInfo: 'ts title=example' } }] })
   const db = store.getUnsafeDatabaseHandle()
+  removeSchema27ForLegacyFixture(db)
   db.exec('DROP TABLE document_block_routes; DROP TABLE document_block_moves; PRAGMA user_version = 21')
   const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
     .all() as Array<{ name: string }>).map(value => value.name)
