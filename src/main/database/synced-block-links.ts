@@ -1,16 +1,19 @@
 import type Database from 'better-sqlite3'
-import type { SyncedCanonicalWire, SyncedGroupSnapshot, SyncedLinkBinding, SyncedLinkTarget, SyncedOriginV1 } from '../../shared/synced-blocks'
+import type { SyncedBindingClaim, SyncedBindingKey, SyncedCanonicalWire, SyncedGroupSnapshot, SyncedLinkBinding, SyncedLinkTarget, SyncedOriginV1 } from '../../shared/synced-blocks'
 import { collectDocumentMarkdownLinks, getMarkdownHeadingTargets } from '../../shared/markdownLinkMaintenance'
 import { parseLocalMarkdownUrl, resolveMarkdownDocumentPath } from '../../shared/markdownLinks'
 import { findWikiHeading, parseWikiReference, resolveWikiDocument, wikiDocumentPaths } from '../../shared/markdownWiki'
 import { isSyncedUuid, SyncedValidationError, validateSyncedBindings, validateSyncedCanonicalWire, validateSyncedOrigin } from '../../shared/syncedBlockValidation'
 import { BlockIdentityRepository } from './block-identities'
 import { decodeMarkdownFormat } from '../../shared/markdownFormat'
+import { validateSyncedBindingClaims } from '../../shared/syncedBlockInputs'
 
 type Occurrence = Omit<SyncedLinkBinding, 'target'> & { url: string }
 type DocumentRow = { id: string; path: string; title: string }
 function fail(message: string): never { throw new SyncedValidationError('binding', message) }
 const key = (value: Omit<SyncedLinkBinding, 'target'>) => JSON.stringify([value.blockId, value.from, value.to, value.raw, value.syntax])
+export interface SyncedVerifiedBindingSource { key: SyncedBindingKey; url: string; target: SyncedLinkTarget }
+export type SyncedBindingTicketResolver = (ticketId: string, entryId: string) => SyncedVerifiedBindingSource
 
 /** Definitions are captured at their actual destination, never at each use.
  * The whole forest parser decides which references are active. */
@@ -52,18 +55,27 @@ function checkStoredTarget(db: Database.Database, target: SyncedLinkTarget, plan
  * against today's paths. Historical state hints are not executable resolution. */
 export function assertSyncedStoredBindings(db: Database.Database, origin: SyncedOriginV1,
   blocks: readonly SyncedCanonicalWire[], bindings: readonly SyncedLinkBinding[], plannedGroupId?: string): void {
+  readSyncedBindingSources(db, origin, blocks, bindings, plannedGroupId)
+}
+
+/** Only actual whole-forest parser destinations can become copy sources.
+ * Source tickets call this without the candidate-only plannedGroupId exception. */
+export function readSyncedBindingSources(db: Database.Database, origin: SyncedOriginV1,
+  blocks: readonly SyncedCanonicalWire[], bindings: readonly SyncedLinkBinding[], plannedGroupId?: string): SyncedVerifiedBindingSource[] {
   const checkedOrigin = validateSyncedOrigin(origin), checkedBlocks = validateSyncedCanonicalWire(blocks)
   const checked = validateSyncedBindings(bindings, checkedBlocks), parsed = occurrences(checkedOrigin, checkedBlocks)
   const actual = new Map(parsed.map(item => [key(item), item]))
   const candidateIds = new Set(checkedBlocks.map(block => block.id))
   if (actual.size !== parsed.length || checked.length !== actual.size) fail('链接绑定未准确覆盖实际 Markdown 目的地。')
   const seen = new Set<string>()
-  for (const binding of checked) {
+  return checked.map(binding => {
     const identity = key(binding)
     if (!actual.has(identity) || seen.has(identity)) fail('链接绑定范围与实际语法不一致。')
     seen.add(identity)
     checkStoredTarget(db, binding.target, plannedGroupId && binding.target.kind === 'block' && candidateIds.has(binding.target.id) ? plannedGroupId : undefined)
-  }
+    const { target, ...range } = binding
+    return { key: range, target, url: actual.get(identity)!.url }
+  })
 }
 
 function targetFor(db: Database.Database, origin: SyncedOriginV1, occurrence: Occurrence,
@@ -164,7 +176,8 @@ function changedSpan(before: string, after: string): Change {
 /** Conservative old/new-only fallback. No URL map can prove split/join/copy
  * provenance; ambiguous edits are refused until a real editor trace is wired. */
 export function maintainSyncedGroupBindings(db: Database.Database, before: SyncedGroupSnapshot,
-  blocks: readonly SyncedCanonicalWire[]): SyncedLinkBinding[] {
+  blocks: readonly SyncedCanonicalWire[], claims?: readonly SyncedBindingClaim[], resolveTicket?: SyncedBindingTicketResolver): SyncedLinkBinding[] {
+  if (claims !== undefined) return applySyncedGroupBindingClaims(db, before, blocks, claims, resolveTicket)
   assertSyncedStoredBindings(db, before.origin, before.blocks, before.bindings)
   const checked = validateSyncedCanonicalWire(blocks), oldBlocks = new Map(before.blocks.map(block => [block.id, block]))
   const newBlocks = new Map(checked.map(block => [block.id, block])), oldParsed = occurrences(before.origin, before.blocks)
@@ -199,6 +212,39 @@ export function maintainSyncedGroupBindings(db: Database.Database, before: Synce
     mapped.set(key(occurrence), { ...range, target: targetFor(db, before.origin, occurrence, candidateScope) })
   }
   const bindings = newParsed.map(item => mapped.get(key(item))!)
+  assertSyncedStoredBindings(db, before.origin, checked, bindings, before.groupId)
+  return bindings
+}
+
+/** Claims express editor intent, not trusted targets or proof of keyboard events.
+ * Every final local destination must be covered once by its exact parser key. */
+export function applySyncedGroupBindingClaims(db: Database.Database, before: SyncedGroupSnapshot,
+  blocks: readonly SyncedCanonicalWire[], value: readonly SyncedBindingClaim[], resolveTicket?: SyncedBindingTicketResolver): SyncedLinkBinding[] {
+  const claims = validateSyncedBindingClaims(value)
+  const sources = readSyncedBindingSources(db, before.origin, before.blocks, before.bindings)
+  const current = new Map(sources.map(source => [key(source.key), source]))
+  const checked = validateSyncedCanonicalWire(blocks), actual = occurrences(before.origin, checked)
+  const destinations = new Map(actual.map(item => [key(item), item]))
+  if (destinations.size !== actual.length || claims.length !== actual.length) fail('链接声明未准确覆盖全部实际目的地。')
+  const candidateScope = { groupId: before.groupId, ids: new Set(checked.map(block => block.id)) }
+  const claimed = new Map<string, SyncedLinkBinding>()
+  for (const claim of claims) {
+    const identity = key(claim.destination), destination = destinations.get(identity)
+    if (!destination || claimed.has(identity)) fail('链接声明的目的地不是唯一的实际语法范围。')
+    let target: SyncedLinkTarget
+    if (claim.kind === 'new') target = targetFor(db, before.origin, destination, candidateScope)
+    else {
+      const source = claim.kind === 'continue' ? current.get(key(claim.source))
+        : claim.source.kind === 'current' ? current.get(key(claim.source.key))
+          : resolveTicket?.(claim.source.ticketId, claim.source.entryId)
+      if (!source) fail('链接来源已失效或未被 Main 捕获；保留草稿，不会按 URL 重新绑定。')
+      if (source.key.syntax !== destination.syntax || source.url !== destination.url) fail('链接目的地址或语法已改变，必须明确声明新链接。')
+      target = source.target
+    }
+    const { url: _url, ...range } = destination
+    claimed.set(identity, { ...range, target })
+  }
+  const bindings = actual.map(item => claimed.get(key(item))!)
   assertSyncedStoredBindings(db, before.origin, checked, bindings, before.groupId)
   return bindings
 }

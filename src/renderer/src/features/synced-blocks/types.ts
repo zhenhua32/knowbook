@@ -1,5 +1,5 @@
 import type {
-  SyncedCanonicalEdit, SyncedFailure, SyncedGroupGuard, SyncedGroupSnapshot, SyncedInstanceGuard
+  SyncedBindingClaim, SyncedCanonicalEdit, SyncedFailure, SyncedGroupGuard, SyncedGroupSnapshot, SyncedInstanceGuard
 } from '@shared/synced-blocks'
 import type { EditorHistoryBookmark } from '../../utils/editorHistoryFocus'
 
@@ -57,6 +57,8 @@ export interface SyncedGroupApply {
   expectedEditSequence: number
   guards: SyncedGroupGuard
   blocks: SyncedCanonicalEdit[]
+  /** Complete destination claims for this working-before -> candidate step. */
+  bindingClaims?: SyncedBindingClaim[]
   bookmark: SyncedScopeBookmark | null
   transactionId: string
 }

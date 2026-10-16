@@ -23,13 +23,26 @@ export type SyncedLinkTarget =
   | { kind: 'heading'; documentId: string; slug: string; state: 'live' | 'missing' }
   | { kind: 'unresolved-url'; path: string; fragment: string | null }
 
-export interface SyncedLinkBinding {
+export interface SyncedBindingKey {
   blockId: string
   from: number
   to: number
   raw: string
   syntax: 'markdown' | 'wiki'
+}
+/** Editing intent only; Main proves the exact parsed source and destination. */
+export type SyncedBindingClaim =
+  | { kind: 'continue'; source: SyncedBindingKey; destination: SyncedBindingKey }
+  | { kind: 'copy'; source: { kind: 'current'; key: SyncedBindingKey }
+      | { kind: 'ticket'; ticketId: string; entryId: string }; destination: SyncedBindingKey }
+  | { kind: 'new'; destination: SyncedBindingKey }
+export interface SyncedLinkBinding extends SyncedBindingKey {
   target: SyncedLinkTarget
+}
+/** Main-process lifetime only. Tickets never enter portable semantics or executable history. */
+export interface SyncedBindingSource {
+  ticketId: string
+  entries: Array<{ entryId: string; key: SyncedBindingKey }>
 }
 
 export interface SyncedInstanceGuard {
@@ -161,6 +174,7 @@ export type SyncedUpdateGroupInput = SyncedGroupGuard & {
   clientOperationId: string
   expectedInstanceBinding: SyncedInstanceGuard
   blocks: SyncedCanonicalEdit[]
+  bindingClaims?: SyncedBindingClaim[]
 }
 export type SyncedRestoreGroupInput = SyncedGroupGuard & {
   clientOperationId: string
@@ -185,6 +199,12 @@ export interface SyncedBlocksChangedEvent {
 export interface SyncedGroupSnapshotsResult {
   workspaceScope: string
   items: Array<{ status: 'ready'; snapshot: SyncedGroupSnapshot } | { status: 'missing'; groupId: string }>
+}
+/** Explicit read extension; the existing snapshot API and closed snapshot shape stay unchanged. */
+export interface SyncedGroupSnapshotsWithLinkSourcesResult {
+  workspaceScope: string
+  items: Array<{ status: 'ready'; snapshot: SyncedGroupSnapshot; bindingSource: SyncedBindingSource }
+    | { status: 'missing'; groupId: string }>
 }
 export interface SyncedGroupListResult {
   items: Array<{ groupId: string; preview: string; originPath: string; liveInstances: number }>

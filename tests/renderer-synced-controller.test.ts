@@ -3,7 +3,7 @@ import test from 'node:test'
 import { randomUUID } from 'node:crypto'
 import { setImmediate } from 'node:timers/promises'
 import type {
-  SyncedBlocksApi, SyncedBlocksChangedEvent, SyncedCanonicalEdit, SyncedGroupMutationResult,
+  SyncedBindingClaim, SyncedBindingKey, SyncedBlocksApi, SyncedBlocksChangedEvent, SyncedCanonicalEdit, SyncedGroupMutationResult,
   SyncedGroupSaved, SyncedGroupSnapshot, SyncedGroupSnapshotsResult, SyncedOperationResult,
   SyncedRestoreGroupInput, SyncedUpdateGroupInput
 } from '../src/shared/synced-blocks'
@@ -118,6 +118,90 @@ function singleCommittedHistory(api: Api, before: SyncedGroupSnapshot, after: Sy
     return result
   }
 }
+
+function linkKey(block: SyncedCanonicalEdit): SyncedBindingKey {
+  const raw = 'Target.md', from = block.content.indexOf(raw)
+  assert.ok(from >= 0)
+  return { blockId: block.id, from, to: from + raw.length, raw, syntax: 'markdown' }
+}
+function tracedApi() {
+  const initial = paragraph('[old](Target.md)'), current = snapshot([initial])
+  current.bindings = [{ ...linkKey(initial), target: { kind: 'document', id: 'original-target', state: 'live' } }]
+  const api = new Api(current)
+  api.update = async input => {
+    const old = api.current.bindings
+    api.current = { ...api.current, bindings: input.bindingClaims!.map(claim => {
+      const source = claim.kind === 'continue' ? claim.source : claim.kind === 'copy' && claim.source.kind === 'current' ? claim.source.key : null
+      const previous = source && old.find(binding => binding.blockId === source.blockId && binding.from === source.from && binding.to === source.to
+        && binding.raw === source.raw && binding.syntax === source.syntax)
+      if (source) assert.ok(previous)
+      return { ...claim.destination, target: previous ? previous.target : { kind: 'document' as const, id: 'new-target', state: 'live' as const } }
+    }) }
+    return api.saved(input)
+  }
+  return api
+}
+function applyClaims(binding: SyncedGroupBinding, blocks: SyncedCanonicalEdit[], bindingClaims: SyncedBindingClaim[], transactionId: string) {
+  const state = binding.getCurrent()
+  return binding.apply({ blocks, bindingClaims, transactionId, bookmark: null, expectedEditSequence: state.editSequence,
+    guards: syncedSnapshotGuard(state.snapshot) })
+}
+
+test('coalesced link traces compose exact keys, mirror across instances and survive local Undo Redo before one submission', async () => {
+  const { api, first, second } = await setup(tracedApi()), original = first.getCurrent().working[0]
+  const middle = paragraph('prefix ' + original.content), final = paragraph(middle.content + ' suffix')
+  assert.equal(applyClaims(first, [middle], [{ kind: 'continue', source: linkKey(original), destination: linkKey(middle) }], 'trace-action'), true)
+  assert.equal(second.getCurrent(), first.getCurrent())
+  assert.equal(applyClaims(first, [final], [{ kind: 'continue', source: linkKey(middle), destination: linkKey(final) }], 'trace-action'), true)
+  assert.equal(await second.undo(), true); assert.deepEqual(first.getCurrent().working, [original])
+  assert.equal(await first.redo(), true); assert.deepEqual(second.getCurrent().working, [final])
+  assert.equal(await first.flush(), true); assert.equal(api.updates.length, 1)
+  assert.deepEqual(api.updates[0].bindingClaims, [{ kind: 'continue', source: linkKey(original), destination: linkKey(final) }])
+  assert.deepEqual(first.getCurrent().snapshot.bindings[0].target, { kind: 'document', id: 'original-target', state: 'live' })
+})
+
+test('same-text new-link intent and a coalesced return to original text remain dirty and submit their provenance', async () => {
+  for (const returnToOriginal of [false, true]) {
+    const { api, first } = await setup(tracedApi()), original = first.getCurrent().working[0]
+    let source = original
+    if (returnToOriginal) {
+      source = paragraph('prefix ' + original.content)
+      assert.equal(applyClaims(first, [source], [{ kind: 'continue', source: linkKey(original), destination: linkKey(source) }], 'replace-link'), true)
+    }
+    assert.equal(applyClaims(first, [original], [{ kind: 'new', destination: linkKey(original) }], 'replace-link'), true)
+    assert.equal(first.getCurrent().dirty, true)
+    assert.equal(await first.flush(), true)
+    assert.deepEqual(api.updates[0].bindingClaims, [{ kind: 'new', destination: linkKey(original) }])
+    assert.deepEqual(first.getCurrent().snapshot.bindings[0].target, { kind: 'document', id: 'new-target', state: 'live' })
+  }
+})
+
+test('late ACK keeps the next frame trace relative to its exact submitted predecessor and preserves the source across occurrences', async () => {
+  const { api, first, second } = await setup(tracedApi()), original = first.getCurrent().working[0]
+  const middle = paragraph('prefix ' + original.content), final = paragraph(middle.content + ' suffix')
+  const gate = deferred<void>(), writer = api.update
+  api.update = async input => { if (api.updates.length === 1) await gate.promise; return writer(input) }
+  assert.equal(applyClaims(first, [middle], [{ kind: 'continue', source: linkKey(original), destination: linkKey(middle) }], 'first-action'), true)
+  const firstFlush = first.flush()
+  await setImmediate()
+  assert.equal(api.updates.length, 1)
+  assert.equal(applyClaims(second, [final], [{ kind: 'continue', source: linkKey(middle), destination: linkKey(final) }], 'later-action'), true)
+  gate.resolve(); assert.equal(await firstFlush, true)
+  assert.deepEqual(first.getCurrent().working, [final]); assert.equal(first.getCurrent().dirty, true)
+  assert.equal(await second.flush(), true)
+  assert.deepEqual(api.updates[1].bindingClaims, [{ kind: 'continue', source: linkKey(middle), destination: linkKey(final) }])
+  assert.equal(first.getCurrent().dirty, false)
+})
+
+test('invalid local trace leaves working content, sequence and Undo intact', async () => {
+  const { first } = await setup(tracedApi()), before = first.getCurrent(), block = before.working[0]
+  const next = paragraph('prefix ' + block.content)
+  assert.equal(applyClaims(first, [next], [{ kind: 'continue', source: { ...linkKey(block), blockId: 'foreign' }, destination: linkKey(next) }], 'invalid'), false)
+  assert.deepEqual(first.getCurrent().working, before.working)
+  assert.equal(first.getCurrent().editSequence, before.editSequence)
+  assert.equal(first.getCurrent().canUndo, before.canUndo)
+  assert.equal(first.getCurrent().failure?.status, 'invalid')
+})
 
 test('one injected workspace shares its group controller, request and subscriptions across occurrences', async () => {
   const api = new Api(), workspace = getSyncedWorkspaceController(api)

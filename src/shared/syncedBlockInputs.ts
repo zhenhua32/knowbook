@@ -1,5 +1,5 @@
 import type {
-  SyncedGroupGuard, SyncedHostWorkingBefore, SyncedInstanceGuard, SyncedNewRefSource,
+  SyncedBindingClaim, SyncedBindingKey, SyncedGroupGuard, SyncedHostWorkingBefore, SyncedInstanceGuard, SyncedNewRefSource,
   SyncedPlacement, SyncedReferenceIdentity, SyncedRestoreGroupInput, SyncedRestoreHostInput,
   SyncedRootSelection, SyncedStructureAction, SyncedStructureInput, SyncedUpdateGroupInput
 } from './synced-blocks'
@@ -45,10 +45,47 @@ export function validateSyncedInstanceGuard(value: unknown): SyncedInstanceGuard
   assertSyncedShape(value, instanceKeys)
   return { instanceId: uuid(value.instanceId), hostDocumentId: opaque(value.hostDocumentId), bindingVersion: uuid(value.bindingVersion) }
 }
+export function validateSyncedBindingKey(value: unknown): SyncedBindingKey {
+  assertSyncedShape(value, ['blockId', 'from', 'to', 'raw', 'syntax'])
+  if (typeof value.from !== 'number' || typeof value.to !== 'number' || !Number.isSafeInteger(value.from)
+    || !Number.isSafeInteger(value.to) || value.from < 0 || value.to < value.from || typeof value.raw !== 'string'
+    || value.raw.length !== value.to - value.from || value.syntax !== 'markdown' && value.syntax !== 'wiki'
+    || value.from === value.to && value.syntax !== 'markdown') return invalid('binding')
+  return { blockId: opaque(value.blockId), from: value.from, to: value.to, raw: value.raw, syntax: value.syntax }
+}
+/** Closed intent DTO only. Exact parser coverage and source targets belong to Main. */
+export function validateSyncedBindingClaims(value: unknown): SyncedBindingClaim[] {
+  const destinations = new Set<string>(), continued = new Set<string>()
+  const key = (item: SyncedBindingKey) => JSON.stringify([item.blockId, item.from, item.to, item.raw, item.syntax])
+  return array<SyncedBindingClaim>(value, raw => {
+    if (!syncedPlainRecord(raw)) return invalid('binding')
+    if (raw.kind !== 'continue' && raw.kind !== 'copy' && raw.kind !== 'new') return invalid('binding')
+    assertSyncedShape(raw, raw.kind === 'new' ? ['kind', 'destination'] : ['kind', 'source', 'destination'])
+    const destination = validateSyncedBindingKey(raw.destination), id = key(destination)
+    if (destinations.has(id)) return invalid('binding')
+    destinations.add(id)
+    if (raw.kind === 'new') return { kind: 'new', destination }
+    if (raw.kind === 'continue') {
+      const source = validateSyncedBindingKey(raw.source), id = key(source)
+      if (continued.has(id)) return invalid('binding')
+      continued.add(id)
+      return { kind: 'continue', source, destination }
+    }
+    if (!syncedPlainRecord(raw.source)) return invalid('binding')
+    if (raw.source.kind === 'current') {
+      assertSyncedShape(raw.source, ['kind', 'key'])
+      return { kind: 'copy', source: { kind: 'current', key: validateSyncedBindingKey(raw.source.key) }, destination }
+    }
+    assertSyncedShape(raw.source, ['kind', 'ticketId', 'entryId'])
+    if (raw.source.kind !== 'ticket') return invalid('binding')
+    return { kind: 'copy', source: { kind: 'ticket', ticketId: uuid(raw.source.ticketId), entryId: uuid(raw.source.entryId) }, destination }
+  })
+}
 export function validateSyncedUpdateGroupInput(value: unknown): SyncedUpdateGroupInput {
-  assertSyncedShape(value, [...groupKeys, 'clientOperationId', 'expectedInstanceBinding', 'blocks'])
+  assertSyncedShape(value, [...groupKeys, 'clientOperationId', 'expectedInstanceBinding', 'blocks'], ['bindingClaims'])
   return { ...groupFields(value), clientOperationId: uuid(value.clientOperationId),
-    expectedInstanceBinding: validateSyncedInstanceGuard(value.expectedInstanceBinding), blocks: validateSyncedCanonicalEdit(value.blocks) }
+    expectedInstanceBinding: validateSyncedInstanceGuard(value.expectedInstanceBinding), blocks: validateSyncedCanonicalEdit(value.blocks),
+    ...(Object.hasOwn(value, 'bindingClaims') ? { bindingClaims: validateSyncedBindingClaims(value.bindingClaims) } : {}) }
 }
 export function validateSyncedRestoreGroupInput(value: unknown): SyncedRestoreGroupInput {
   assertSyncedShape(value, [...groupKeys, 'clientOperationId', 'expectedInstanceBinding', 'historyToken', 'expectedHistoryCursor', 'direction'])

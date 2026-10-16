@@ -12,6 +12,7 @@ import { parseStrictJson } from '../../shared/strictJson'
 import { BlockIdentityRepository } from './block-identities'
 import { getSyncedGroupSnapshots } from './synced-blocks-read'
 import { assertSyncedStoredBindings, maintainSyncedGroupBindings } from './synced-block-links'
+import { resolveSyncedBindingSource } from './synced-binding-sources'
 
 type Input = SyncedUpdateGroupInput | SyncedRestoreGroupInput
 type OperationRow = { client_operation_id: string; request_hash: string; result_json: string }
@@ -229,7 +230,9 @@ export function updateSyncedBlockGroup(db: Database.Database, value: unknown): S
     const before = guarded(db, input), now = new Date().toISOString()
     assertHistoryTailSide(db, before)
     const blocks = births(db, before.groupId, input.blocks, now)
-    const candidate = validateSyncedGroupWire({ ...wire(before), blocks, bindings: maintainSyncedGroupBindings(db, before, blocks) })
+    const candidate = validateSyncedGroupWire({ ...wire(before), blocks,
+      bindings: maintainSyncedGroupBindings(db, before, blocks, input.bindingClaims,
+        (ticketId, entryId) => resolveSyncedBindingSource(db, ticketId, entryId)) })
     finalBudget(db, before, candidate)
     if (encode(candidate) === encode(wire(before))) return receipt(db, input, requestHash,
       { status: 'noop', operationId: input.clientOperationId, snapshot: before, replayed: false }, now)

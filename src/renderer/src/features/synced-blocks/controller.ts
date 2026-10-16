@@ -1,5 +1,5 @@
 import type {
-  SyncedBlocksApi, SyncedCanonicalEdit, SyncedGroupMutationResult, SyncedGroupSaved, SyncedGroupSnapshot,
+  SyncedBindingClaim, SyncedBlocksApi, SyncedCanonicalEdit, SyncedGroupMutationResult, SyncedGroupSaved, SyncedGroupSnapshot,
   SyncedInstanceGuard, SyncedRestoreGroupInput, SyncedUpdateGroupInput
 } from '@shared/synced-blocks'
 import { SyncedValidationError, syncedCanonicalEdits, validateSyncedCanonicalEdit, validateSyncedCanonicalProjection,
@@ -8,6 +8,7 @@ import type {
   SyncedGroupApply, SyncedGroupBinding, SyncedGroupController, SyncedGroupDraftState, SyncedGroupScope, SyncedScopeBookmark
 } from './types'
 import { syncedScopeInstanceGuard, syncedSnapshotGuard } from './types'
+import { composeSyncedBindingClaims, syncedBindingClaimsAreIdentity, validateSyncedWorkingClaims } from './bindingClaims'
 
 function immutable<T>(value: T): T {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
@@ -43,6 +44,7 @@ type Mount = {
 }
 type Frame = {
   before: SyncedCanonicalEdit[]; after: SyncedCanonicalEdit[]; sequence: number
+  bindingClaims?: SyncedBindingClaim[]
   mount: Mount; instance: SyncedInstanceGuard; transactionId: string; sealed: boolean
   beforeBookmark: SyncedScopeBookmark | null; afterBookmark: SyncedScopeBookmark | null
 }
@@ -176,15 +178,22 @@ class GroupController implements SyncedGroupController {
       || input.guards.groupId !== snapshot.groupId || input.guards.expectedRevision !== snapshot.revision
       || input.guards.expectedTopologyRevision !== snapshot.topologyRevision
       || [...this.compositions].some(other => other !== mount)) return false
-    let next: SyncedCanonicalEdit[]
-    try { next = this.validated(input.blocks) } catch (error) { this.rejected(error); return false }
-    if (equal(next, this.state.working)) return false
+    let next: SyncedCanonicalEdit[], claims: SyncedBindingClaim[] | undefined
+    try {
+      next = this.validated(input.blocks)
+      if (Object.hasOwn(input, 'bindingClaims')) claims = immutable(validateSyncedWorkingClaims(input.bindingClaims, this.state.working, next))
+    } catch (error) { this.rejected(error); return false }
+    if (equal(next, this.state.working) && (!claims || syncedBindingClaimsAreIdentity(claims))) return false
     const previous = this.state.working, sequence = this.state.editSequence + 1, bookmark = keepBookmark(input.bookmark)
     const tail = this.frames.at(-1)
-    if (tail && !tail.sealed && tail.mount === mount && tail.transactionId === input.transactionId) {
-      tail.after = next; tail.sequence = sequence; tail.afterBookmark = bookmark
-      if (equal(tail.before, next)) this.frames.pop()
-    } else this.frames.push({ before: previous, after: next, sequence, mount, instance: syncedScopeInstanceGuard(input.scope),
+    if (tail && !tail.sealed && tail.mount === mount && tail.transactionId === input.transactionId
+      && (tail.bindingClaims === undefined) === (claims === undefined)) {
+      let composed: SyncedBindingClaim[] | undefined
+      try { composed = claims && immutable(composeSyncedBindingClaims(tail.bindingClaims!, claims)) }
+      catch (error) { this.rejected(error); return false }
+      tail.after = next; tail.sequence = sequence; tail.afterBookmark = bookmark; tail.bindingClaims = composed
+      if (equal(tail.before, next) && (!composed || syncedBindingClaimsAreIdentity(composed))) this.frames.pop()
+    } else this.frames.push({ before: previous, after: next, bindingClaims: claims, sequence, mount, instance: syncedScopeInstanceGuard(input.scope),
       transactionId: input.transactionId, sealed: false, beforeBookmark: mount.bookmark, afterBookmark: bookmark })
     this.redoFrames = []; this.serverRedo = []; this.cutServerRedo = true
     mount.bookmark = bookmark; mount.bookmarkSequence++
@@ -313,7 +322,8 @@ class GroupController implements SyncedGroupController {
         }
         try { this.validated(frame.after) } catch (error) { this.rejected(error); return false }
         const input: SyncedUpdateGroupInput = immutable({ ...syncedSnapshotGuard(snapshot), clientOperationId: this.operationId(),
-          expectedInstanceBinding: { ...frame.instance }, blocks: structuredClone(frame.after) })
+          expectedInstanceBinding: { ...frame.instance }, blocks: structuredClone(frame.after),
+          ...(frame.bindingClaims === undefined ? {} : { bindingClaims: structuredClone(frame.bindingClaims) }) })
         this.pending = { kind: 'content', input, frame, sequence: frame.sequence, uncertain: false }
         this.markOperation(input.clientOperationId); this.publish({ error: null, failure: null })
         if (!await this.writePending()) return false
