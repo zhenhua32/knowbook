@@ -1,7 +1,7 @@
 import { serializeMarkdownWithBlockRanges, type MarkdownRenderableBlock } from './markdown'
 import { markdownEngine, markdownTokenTree, type MarkdownEnvironment, type MarkdownNode, type MarkdownToken } from './markdownEngine'
 import { projectedMarkdownContentPosition } from './markdownNativeText'
-import type { MarkdownDestination, MarkdownLinkProvenanceObserver, MarkdownSourceLink } from './markdownSourceLinks'
+import { capturedMarkdownSourceLinks, type MarkdownDestination, type MarkdownLinkProvenanceObserver, type MarkdownSourceLink } from './markdownSourceLinks'
 import { assertNativeContainerParse } from './markdownContainers'
 
 export type MarkdownLinkProvenanceDestination = Readonly<{
@@ -25,6 +25,8 @@ export type MarkdownInlineWithLinkProvenance = {
   provenance: WeakMap<MarkdownToken, MarkdownInlineLinkProvenance>
 }
 export type MarkdownLinkProvenanceContext = {
+  /** Physical parser destinations, including inactive definitions. No targets. */
+  sourceDestinations: readonly Readonly<{ key: MarkdownLinkProvenanceDestination; url: string; kind: MarkdownSourceLink['kind'] }>[]
   parseInline: (blockIndex: number, externalReferences?: MarkdownEnvironment['references']) => MarkdownInlineWithLinkProvenance
 }
 
@@ -81,7 +83,10 @@ export function createMarkdownLinkProvenanceContext(blocks: readonly MarkdownRen
     const key = project(destination)
     if (key) definitionKeys.set(reference, key)
   }
+  const sourceDestinations = Object.freeze([...capturedMarkdownSourceLinks(environment)].sort((left, right) => left.start - right.start)
+    .flatMap(destination => { const key = project(destination); return key ? [Object.freeze({ key, url: destination.url, kind: destination.kind })] : [] }))
   return {
+    sourceDestinations,
     parseInline(blockIndex, externalReferences) {
       if (!Number.isInteger(blockIndex) || !snapshot[blockIndex]) throw new Error('Invalid Markdown provenance block index')
       const block = snapshot[blockIndex], rawBoundaries = normalizedBoundaries(block.content)

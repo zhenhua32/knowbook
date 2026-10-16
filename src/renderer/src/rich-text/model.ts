@@ -1,7 +1,8 @@
 import { Fragment, type Mark, type Node } from 'prosemirror-model'
 import { defaultMarkdownSerializer, MarkdownSerializer, type MarkdownSerializerState } from 'prosemirror-markdown'
 import type { DocumentBlockDraft } from '@shared/contracts'
-import { markdownEngine, parseMarkdownInline, type MarkdownEnvironment, type MarkdownNode } from '@shared/markdownEngine'
+import { markdownEngine, parseMarkdownInline, type MarkdownEnvironment, type MarkdownNode, type MarkdownToken } from '@shared/markdownEngine'
+import type { MarkdownInlineLinkProvenance, MarkdownInlineWithLinkProvenance } from '@shared/markdownLinkProvenance'
 import { capturedMarkdownCompatibility } from '@shared/markdownSourceLinks'
 import { parseInlineTextPresentationAttributes, INLINE_TEXT_COLOR_ATTRIBUTE, INLINE_BACKGROUND_COLOR_ATTRIBUTE, INLINE_TEXT_SHELL_ATTRIBUTE } from '@shared/inlineTextPresentation'
 import { hasAdvancedMarkdown, parseMarkdownDocumentBlocks } from '@shared/markdownDocument'
@@ -12,11 +13,22 @@ import { resolveDraftBlockRelationship } from '../utils/draftTreePlacement'
 import { richTextSchema } from './schema'
 import { validateDatabaseViewBlock } from '@shared/databaseViewBlock'
 import { RICH_LINK_OCCURRENCE_ATTR, RichLinkTraceCollector, withRichLinkOccurrence, type RichInlineLinkSerialization } from './linkProvenance'
+import { renderObservedRichInline } from './observedInlineWriter'
 
 const textBlockTypes = new Set(['paragraph', 'quote', 'heading-1', 'heading-2', 'heading-3',
   'heading-4', 'heading-5', 'heading-6', 'callout', 'toggle', 'todo', 'numbered-todo', 'bulleted-list', 'numbered-list'])
 const inlineMarks: Record<string, string> = { strong_open: 'strong', em_open: 'em', s_open: 'strike', mark_open: 'highlight' }
 const htmlMarks: Record<string, string> = { strong: 'strong', em: 'em', s: 'strike', del: 'strike', mark: 'highlight', code: 'code' }
+
+/** Supplied only by the cold synced editor adapter. Ordinary model calls do
+ * not allocate provenance or import its whole-forest implementation. */
+export interface RichProvenanceSeedPort {
+  parseInline(index: number, block: DocumentBlockDraft, references?: MarkdownEnvironment['references']): MarkdownInlineWithLinkProvenance & { sourceOnly?: boolean }
+  link(index: number, token: MarkdownToken, proof: MarkdownInlineLinkProvenance | undefined):
+    { kind: 'tracked'; token: string } | { kind: 'external' } | { kind: 'source-only' }
+  piece(index: number, token: string, from: number, to: number): void
+}
+type InlineSeed = { port: RichProvenanceSeedPort; index: number; provenance: MarkdownInlineWithLinkProvenance['provenance']; offset: number }
 
 export function cloneRichTextBlock(block: DocumentBlockDraft): DocumentBlockDraft {
   return { ...block,
@@ -43,29 +55,38 @@ export function richTextInlineFingerprint(node: Node): string {
   })
 }
 
-function inlineContent(nodes: MarkdownNode[], marks: readonly Mark[] = []): Node[] | null {
+function inlineContent(nodes: MarkdownNode[], marks: readonly Mark[] = [], seed?: InlineSeed): Node[] | null {
   const output: Node[] = []
+  const push = (node: Node) => { output.push(node); if (seed) seed.offset += node.nodeSize }
   for (const { token, children } of nodes) {
     if (token.meta?.unsupportedHtml) return null
     if (token.type === 'text') {
       if (token.meta?.html && !marks.some(mark => mark.type === richTextSchema.marks.code)) {
         const lines = token.content.split('\n')
         lines.forEach((line, index) => {
-          if (index) output.push(richTextSchema.nodes.soft_break.create(null, null, marks))
-          if (line) output.push(richTextSchema.text(line, marks))
+          if (index) push(richTextSchema.nodes.soft_break.create(null, null, marks))
+          if (line) push(richTextSchema.text(line, marks))
         })
-      } else if (token.content) output.push(richTextSchema.text(token.content, marks))
+      } else if (token.content) push(richTextSchema.text(token.content, marks))
     } else if (token.type === 'softbreak' || token.type === 'hardbreak') {
-      output.push(richTextSchema.nodes[token.type === 'softbreak' ? 'soft_break' : 'hard_break'].create(null, null, marks))
+      push(richTextSchema.nodes[token.type === 'softbreak' ? 'soft_break' : 'hard_break'].create(null, null, marks))
     } else if (token.type === 'code_inline') {
       if (!token.content) return null
-      output.push(richTextSchema.text(token.content, richTextSchema.marks.code.create().addToSet(marks)))
+      push(richTextSchema.text(token.content, richTextSchema.marks.code.create().addToSet(marks)))
     } else if (inlineMarks[token.type] || token.type === 'link_open') {
-      const mark = token.type === 'link_open'
+      let mark = token.type === 'link_open'
         ? richTextSchema.marks.link.create({ href: token.attrGet('href') ?? '', title: token.attrGet('title') })
         : richTextSchema.marks[inlineMarks[token.type]].create()
-      const inner = inlineContent(children, mark.addToSet(marks))
+      const decision = token.type === 'link_open' && seed ? seed.port.link(seed.index, token, seed.provenance.get(token)) : undefined
+      if (decision?.kind === 'source-only') return null
+      if (decision?.kind === 'tracked') mark = withRichLinkOccurrence(mark, decision.token)
+      const from = seed?.offset ?? 0
+      const inner = inlineContent(children, mark.addToSet(marks), seed)
       if (!inner) return null
+      if (decision?.kind === 'tracked' && seed) {
+        if (seed.offset === from) return null // A local destination with no PM content must remain an opaque source block.
+        seed.port.piece(seed.index, decision.token, from, seed.offset)
+      }
       output.push(...inner)
     } else if (token.type === 'html_element_open' && ['u', 'span', ...Object.keys(htmlMarks)].includes(token.tag)) {
       let nextMarks = marks
@@ -77,7 +98,7 @@ function inlineContent(nodes: MarkdownNode[], marks: readonly Mark[] = []): Node
         if (presentation.textColor) nextMarks = richTextSchema.marks.textColor.create({ color: presentation.textColor }).addToSet(nextMarks)
         if (presentation.backgroundColor) nextMarks = richTextSchema.marks.backgroundColor.create({ color: presentation.backgroundColor }).addToSet(nextMarks)
       }
-      const inner = inlineContent(children, nextMarks)
+      const inner = inlineContent(children, nextMarks, seed)
       if (!inner) return null
       output.push(...inner)
     } else {
@@ -102,7 +123,8 @@ function hasUnsupportedBlockSyntax(nodes: MarkdownNode[]): boolean {
   return visit(nodes) || inlineGroups > 1
 }
 
-function blockToNode(block: DocumentBlockDraft, environment: MarkdownEnvironment, blockNodes: MarkdownNode[], listNumber?: number): Node {
+function blockToNode(block: DocumentBlockDraft, environment: MarkdownEnvironment, blockNodes: MarkdownNode[], listNumber?: number,
+  seed?: { port: RichProvenanceSeedPort; index: number; references?: MarkdownEnvironment['references'] }): Node {
   const stored = cloneRichTextBlock(block)
   if (block.type === 'database-view') {
     validateDatabaseViewBlock(block)
@@ -114,21 +136,23 @@ function blockToNode(block: DocumentBlockDraft, environment: MarkdownEnvironment
   // The full block parser supplies diagnostic source maps; inline-only parsing
   // has no block offsets. Observation retains code and escape exclusions.
   if (block.content.includes('<')) markdownEngine.parse(block.content, inlineEnvironment)
-  const inline = textBlockTypes.has(block.type) && !hasDefinition && (isContainerBlockType(block.type) || !hasUnsupportedBlockSyntax(blockNodes))
-    ? parseMarkdownInline(block.content, environment) : null
-  const content = inline && !capturedMarkdownCompatibility(inlineEnvironment).some(finding => ['unsupported-html', 'html-attributes'].includes(finding.reason))
-    ? inlineContent(inline) : null
+  const canInline = textBlockTypes.has(block.type) && !hasDefinition && (isContainerBlockType(block.type) || !hasUnsupportedBlockSyntax(blockNodes))
+  const traced = canInline && seed ? seed.port.parseInline(seed.index, block, seed.references) : null
+  const inline = canInline ? traced?.nodes ?? parseMarkdownInline(block.content, environment) : null
+  const content = inline && !traced?.sourceOnly && !capturedMarkdownCompatibility(inlineEnvironment).some(finding => ['unsupported-html', 'html-attributes'].includes(finding.reason))
+    ? inlineContent(inline, [], traced && seed ? { port: seed.port, index: seed.index, provenance: traced.provenance, offset: 0 } : undefined) : null
   if (!content) return richTextSchema.nodes.source_block.create({ block: stored, listNumber })
   const node = richTextSchema.nodes.text_block.create({ block: stored, listNumber }, Fragment.fromArray(content))
   return node.type.create({ ...node.attrs, originalInline: richTextInlineFingerprint(node) }, node.content)
 }
 
-export function draftBlocksToRichDoc(blocks: DocumentBlockDraft[], references?: MarkdownEnvironment['references']): Node {
+export function draftBlocksToRichDoc(blocks: DocumentBlockDraft[], references?: MarkdownEnvironment['references'], provenance?: RichProvenanceSeedPort): Node {
   const source = blocks.length ? blocks : [defaultBlock()]
   const model = parseMarkdownDocumentBlocks(source)
   if (references) model.environment.references = { ...references, ...model.environment.references }
   const numbers = getMarkdownListNumbers(source)
-  const leaves = source.map((block, index) => blockToNode(block, model.environment, model.blockNodes[index], numbers[index]))
+  const leaves = source.map((block, index) => blockToNode(block, model.environment, model.blockNodes[index], numbers[index],
+    provenance ? { port: provenance, index, references } : undefined))
   const scope = (start: number, end: number): Node[] => {
     const children: Node[] = []
     for (let index = start; index < end;) {
@@ -297,6 +321,9 @@ function serializeRichTextInlineHtmlCore(node: Node, trace?: RichLinkTraceCollec
     let content = `<span ${INLINE_TEXT_SHELL_ATTRIBUTE}="true">`
     const startOffsets: number[] = [], endOffsets: number[] = []
     node.forEach((child, offset) => {
+      if (trace && !child.isText && !['soft_break', 'hard_break'].includes(child.type.name)) {
+        throw new Error('富文本 HTML 实际发射分支无法证明 PM 来源范围，未生成来源声明。')
+      }
       let closing = ''
       for (const mark of child.marks) {
         const name = mark.type.name
@@ -305,7 +332,7 @@ function serializeRichTextInlineHtmlCore(node: Node, trace?: RichLinkTraceCollec
           content += '<a href="'
           const raw = attribute(mark.attrs.href), from = content.length
           content += raw
-          trace?.record(mark, from, raw, 'html')
+          trace?.record(mark, from, raw, 'html', [{ from: offset, to: offset + child.nodeSize }])
           content += `"${mark.attrs.title === null ? '' : ` title="${attribute(mark.attrs.title)}"`}>`
           closing = '</a>' + closing
           continue
@@ -339,7 +366,7 @@ export function serializeRichTextInlineHtml(node: Node): { content: string; star
 }
 
 export function serializeRichTextInlineHtmlWithLinkTrace(node: Node): RichInlineLinkSerialization & { startOffsets: number[]; endOffsets: number[] } {
-  const trace = new RichLinkTraceCollector(), result = serializeRichTextInlineHtmlCore(node, trace)
+  const trace = new RichLinkTraceCollector(node.content.size), result = serializeRichTextInlineHtmlCore(node, trace)
   return { ...result, linkDestinations: trace.finish(result.content) }
 }
 
@@ -353,22 +380,31 @@ function emittedMarkdownLength(state: MarkdownSerializerState): number {
 }
 
 function serializeRichTextInlineMarkdownWithLinkTrace(node: Node): RichInlineLinkSerialization {
-  const trace = new RichLinkTraceCollector(), original = inlineSerializer.marks.link
+  const trace = new RichLinkTraceCollector(node.content.size), original = inlineSerializer.marks.link
   let autolinkFrom: number | null = null
-  const serializer = new MarkdownSerializer(inlineSerializer.nodes, { ...inlineSerializer.marks, link: {
+  let run: { mark: Mark; spans: Array<{ from: number; to: number }> } | null = null
+  const serializer: MarkdownSerializer = new MarkdownSerializer({ ...inlineSerializer.nodes,
+    text_block(state, parent) {
+      renderObservedRichInline(state, parent, serializer.marks, spans => { if (run) run.spans.push(...spans) })
+      state.closeBlock(parent)
+    }
+  }, { ...inlineSerializer.marks, link: {
     ...original,
     open(state, mark, parent, index) {
       const value = typeof original.open === 'function' ? original.open(state, mark, parent, index) : original.open
       // Use the same actual writer as the ordinary mark emitter, including its
       // preceding-! escape. Returning '' prevents a second emission by PM.
       state.text(value, false)
+      if (run) throw new Error('富文本链接实际发射发生重叠，未生成来源声明。')
+      run = { mark, spans: [] }
       autolinkFrom = value === '<' ? emittedMarkdownLength(state) : null
       return ''
     },
     close(state, mark, parent, index) {
       const value = typeof original.close === 'function' ? original.close(state, mark, parent, index) : original.close
+      if (!run || !run.mark.eq(mark)) throw new Error('富文本链接实际发射边界不匹配，未生成来源声明。')
       if (autolinkFrom !== null) {
-        trace.record(mark, autolinkFrom, mark.attrs.href as string, 'autolink')
+        trace.record(mark, autolinkFrom, mark.attrs.href as string, 'autolink', run.spans)
         autolinkFrom = null
         state.text(value, false)
       } else {
@@ -377,15 +413,17 @@ function serializeRichTextInlineMarkdownWithLinkTrace(node: Node): RichInlineLin
         state.text(prefix, false)
         const from = emittedMarkdownLength(state)
         state.text(raw, false)
-        trace.record(mark, from, raw, 'markdown')
+        trace.record(mark, from, raw, 'markdown', run.spans)
         // The title and closing punctuation come from the unchanged upstream
         // emitter. The split point is the href's construction length, not a match.
         state.text(value.slice(prefix.length + raw.length), false)
       }
+      run = null
       return ''
     }
   } }, inlineSerializer.options)
   const content = serializer.serialize(richTextSchema.nodes.doc.create(null, node))
+  if (run) throw new Error('富文本链接实际发射未正常闭合，未生成来源声明。')
   return { content, linkDestinations: trace.finish(content) }
 }
 
