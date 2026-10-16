@@ -28,6 +28,25 @@ await import('../src/renderer/src/components/NativeContainerControls')
 
 const block = (id: string, type: string, content: string, depth = 0, parentBlockId: string | null = null): DocumentBlockDraft => ({ id, type, content, depth, parentBlockId, checked: false })
 const noop = () => {}
+async function nativeControlReady(dom: JSDOM, label: string) {
+  const selector = `select[aria-label="${label}"]`
+  let disconnectControl = noop
+  try {
+    const controlReady = new Promise<void>(resolve => {
+      const check = () => {
+        if (dom.window.document.querySelector(selector)) { observer.disconnect(); resolve() }
+      }
+      const observer = new dom.window.MutationObserver(check)
+      disconnectControl = () => observer.disconnect()
+      observer.observe(dom.window.document.getElementById('mount')!, { childList: true, subtree: true })
+      check()
+    })
+    await act(async () => { await import('../src/renderer/src/components/NativeContainerControls') })
+    // Wait outside act so React can commit the real private lazy boundary.
+    await controlReady
+    await act(async () => {})
+  } finally { disconnectControl() }
+}
 async function withDom(run: (context: { dom: JSDOM; root: import('react-dom/client').Root; select: (label: string, value: string) => Promise<void> }) => Promise<void>) {
   const dom = new JSDOM('<!doctype html><div id="mount"></div>', { pretendToBeVisual: true, url: 'http://localhost' })
   const originals = new Map<string, PropertyDescriptor | undefined>()
@@ -47,6 +66,7 @@ async function withDom(run: (context: { dom: JSDOM; root: import('react-dom/clie
   ;({ BlockEditorRow } = await import('../src/renderer/src/components/BlockEditorRow'))
   const { createRoot } = await import('react-dom/client'), root = createRoot(dom.window.document.getElementById('mount')!)
   try { await run({ dom, root, select: async (label, value) => {
+    await nativeControlReady(dom, label)
     const select = dom.window.document.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`)
     assert.ok(select, label)
     await act(async () => { select.value = value; select.dispatchEvent(new dom.window.Event('change', { bubbles: true })) })
