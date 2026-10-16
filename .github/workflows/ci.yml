@@ -80,7 +80,7 @@ jobs:
           retention-days: 1
 
   electron-e2e:
-    name: Electron E2E (shard ${{ matrix.shard }}/3)
+    name: Electron E2E (shard ${{ matrix.shard }}/4)
     needs: validate
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -88,7 +88,7 @@ jobs:
       # Keep every shard's diagnostics when another shard fails.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -116,7 +116,7 @@ jobs:
       - name: Run Electron E2E tests
         # One worker per runner preserves the isolated performance measurements.
         # Failures still fail the job, but stop before exhausting its time budget.
-        run: xvfb-run --auto-servernum npx playwright test --grep @electron --workers=1 --shard=${{ matrix.shard }}/3 --max-failures=5
+        run: xvfb-run --auto-servernum npx playwright test --grep @electron --workers=1 --shard=${{ matrix.shard }}/4 --max-failures=5
 
       - name: Upload Markdown input frame report
         if: always()
