@@ -1,10 +1,12 @@
 import { markdownEngine } from '@shared/markdownEngine'
 import { collectDocumentMarkdownLinks, type MarkdownDocumentLink } from '@shared/markdownLinkMaintenance'
 import { resolveMarkdownDocumentPath } from '@shared/markdownLinks'
-import { observeMarkdownSourceOccurrences, type MarkdownSourceOccurrenceObservation,
+import { type MarkdownSourceOccurrenceObservation,
   type MarkdownSourcePhysicalDestination, type MarkdownSourceUseOccurrence } from '@shared/markdownSourceOccurrences'
+import { observeMarkdownSourceCarriers, type MarkdownSourceCarrierFact, type MarkdownSourceCarrierFragment,
+  type MarkdownSourceCarrierObservation } from '@shared/markdownSourceCarriers'
 import { serializeMarkdownWithEmissionTrace, projectMarkdownEmissionContentRange, projectMarkdownEmissionSourceRange } from '@shared/markdownEmissionTrace'
-import { projectMarkdownSourceContentRange, projectMarkdownSourceRawRange } from '@shared/markdownSourceTrace'
+import { projectMarkdownSourceContentRange, projectMarkdownSourceRawRange, type MarkdownSourceRawSpan } from '@shared/markdownSourceTrace'
 import { validateSyncedBindingClaims } from '@shared/syncedBlockInputs'
 import { SyncedValidationError, validateSyncedCanonicalEdit, validateSyncedOrigin } from '@shared/syncedBlockValidation'
 import type { SyncedBindingClaim, SyncedBindingKey, SyncedCanonicalEdit, SyncedGroupGuard, SyncedOriginV1 } from '@shared/synced-blocks'
@@ -59,11 +61,13 @@ export interface PreparedSourceFirstApplyFacts {
 }
 
 type Birth = Readonly<{ receipt: MarkdownSourceDraftReceipt; inserted: Span; via: 'use' | 'destination' }>
+  | Readonly<{ receipt: MarkdownSourceDraftReceipt; beforeReceipt: MarkdownSourceDraftReceipt;
+      generation: object; destination: Span; via: 'carrier-destination' }>
 type Lineage = Readonly<{ source: Readonly<SyncedBindingKey> | null; birth: Birth | null; proven: boolean }>
 type Root = { opening: SourceLedgerOpening; manifest: MarkdownSourceOpeningManifest; origin: Readonly<SyncedOriginV1>;
   lease: SourceFirstApplyLease; grammar: readonly unknown[] }
 type ReconcileMemo = { kind: 'ready'; value: ReturnType<typeof canonicalSourceDraftToBlocksWithManifest> } | { kind: 'error'; error: unknown }
-type Data = { root: Root; facts: SourceLedgerCandidateFacts; observation: Observation | null;
+type Data = { root: Root; facts: SourceLedgerCandidateFacts; observation: Observation | null; roles: MarkdownSourceCarrierObservation | null;
   lineage: ReadonlyMap<Physical, Lineage>; reconcileMemo?: ReconcileMemo; prepared?: PreparedSourceFirstApply }
 type ContentSpan = Span & { index: number }
 type LocatedPhysical = { fact: Physical; destination: ContentSpan; use: ContentSpan }
@@ -83,7 +87,10 @@ const eligible = (origin: Readonly<SyncedOriginV1>, fact: Pick<Physical, 'syntax
 function grammar(): readonly unknown[] {
   const values: unknown[] = [markdownEngine.parse, markdownEngine.parseInline, markdownEngine.block.parse, markdownEngine.block.State,
     markdownEngine.inline.parse, markdownEngine.core.process, markdownEngine.normalizeLink, markdownEngine.validateLink,
-    markdownEngine.helpers.parseLinkLabel, markdownEngine.helpers.parseLinkDestination]
+    markdownEngine.helpers.parseLinkLabel, markdownEngine.helpers.parseLinkDestination, markdownEngine.helpers.parseLinkTitle,
+    markdownEngine.inline.State, observeMarkdownSourceCarriers]
+  const push = Object.getOwnPropertyDescriptor(markdownEngine.inline.State.prototype, 'push')
+  values.push(push?.value, push?.get, push?.set, push?.configurable, push?.enumerable, push?.writable)
   for (const [key, value] of Object.entries(markdownEngine.options)) values.push(key, value)
   for (const ruler of [markdownEngine.core.ruler, markdownEngine.block.ruler, markdownEngine.inline.ruler, markdownEngine.inline.ruler2])
     for (const rule of ruler.__rules__) values.push(rule.name, rule.enabled, rule.fn, ...(rule.alt ?? []), null)
@@ -134,11 +141,13 @@ function data(draft: SourceLedgerDraft): Data {
   if (!sameArray(value.root.grammar, grammar())) return fail('Markdown 语法上下文已变化')
   return value
 }
-function observe(source: string): { observation: Observation | null; reason: string | null } {
+function observe(source: string): { observation: Observation | null; roles: MarkdownSourceCarrierObservation | null; reason: string | null } {
   try {
-    const observation = observeMarkdownSourceOccurrences(source)
-    return { observation, reason: observation.complete ? null : '存在尚未证明的实际解析范围' }
-  } catch { return { observation: null, reason: '当前源码的实际解析未闭合' } }
+    const roles = observeMarkdownSourceCarriers(source), observation = roles.observation
+    // Unsupported roles do not invalidate an unchanged whole-use witness.
+    // Fine edits below must positively prove their particular role instead.
+    return { observation, roles, reason: observation.complete ? null : '存在尚未证明的实际解析范围' }
+  } catch { return { observation: null, roles: null, reason: '当前源码的实际解析未闭合' } }
 }
 function links(blocks: readonly SyncedCanonicalEdit[], origin: Readonly<SyncedOriginV1>): MarkdownDocumentLink[] {
   return collectDocumentMarkdownLinks([...blocks]).filter(link => link.kind !== 'image'
@@ -213,7 +222,7 @@ export function openCanonicalSourceLedger(input: { blocks: readonly SyncedCanoni
   }
   const receipt = readMarkdownSourceDraftReceipt(created.draft)
   openings.add(opening)
-  drafts.set(created.draft, { root, observation: observed.observation, lineage, facts: Object.freeze({ opening, receipt, beforeReceipt: null,
+  drafts.set(created.draft, { root, observation: observed.observation, roles: observed.roles, lineage, facts: Object.freeze({ opening, receipt, beforeReceipt: null,
     fragments: Object.freeze(created.draft.source ? [Object.freeze({ from: 0, to: created.draft.source.length, openingFrom: 0, generation: receipt.token })] : []),
     uncertainReason: reason }) })
   return { draft: created.draft, opening }
@@ -283,6 +292,130 @@ function projectionShape(fact: Physical): string {
     span.projection.ends.map(at => at - span.from), span.projection.boundaries.map(points => points.map(at => at - span.from))]
   return JSON.stringify([part(fact.use), part(fact.destination)])
 }
+type SlotName = 'display' | 'title' | 'destination'
+type EditSlot = { name: SlotName; span: MarkdownSourceRawSpan; coverage: readonly Span[]; cuts: ReadonlySet<number> }
+type Layout = { form: 'direct' | 'reference-full' | 'definition'; whole: MarkdownSourceRawSpan;
+  slots: readonly EditSlot[]; shell: readonly MarkdownSourceCarrierFragment[] }
+type PlannedLayout = { whole: Span; slots: readonly { name: SlotName; span: Span; coverage: readonly Span[] }[];
+  shell: readonly Span[]; edited: boolean; destinationChanged: boolean }
+function coverage(span: MarkdownSourceRawSpan): Span[] {
+  const result: Array<{ from: number; to: number }> = []
+  for (let index = 0; index < span.projection.starts.length; index++) {
+    const from = span.projection.starts[index], to = span.projection.ends[index], previous = result.at(-1)
+    if (previous && from <= previous.to) previous.to = Math.max(previous.to, to)
+    else result.push({ from, to })
+  }
+  return result
+}
+function editSlot(name: SlotName, span: MarkdownSourceRawSpan): EditSlot {
+  // A normalized CRLF or codec group cannot be cut in half. Multiple raw
+  // candidates at a removed structural gap do not confer an insertion affinity.
+  const counts = new Map<number, number>()
+  for (const points of span.projection.boundaries) if (points.length === 1) counts.set(points[0], (counts.get(points[0]) ?? 0) + 1)
+  return { name, span, coverage: coverage(span), cuts: new Set([...counts].filter(([, count]) => count === 1).map(([at]) => at)) }
+}
+function carrierIndex(roles: MarkdownSourceCarrierObservation | null): Map<MarkdownSourceUseOccurrence, MarkdownSourceCarrierFact> {
+  const result = new Map<MarkdownSourceUseOccurrence, MarkdownSourceCarrierFact>()
+  const blocked = new Set(roles?.barriers.map(value => value.scope) ?? [])
+  for (const role of roles?.carriers ?? []) if (role.complete && !blocked.has(role.use.token)) result.set(role.use, role)
+  return result
+}
+function roleLayout(role: MarkdownSourceCarrierFact | undefined): Layout | null {
+  if (!role?.complete || !role.use.use || !role.display || role.form !== 'direct' && role.form !== 'reference-full') return null
+  const slots = [editSlot('display', role.display.span)]
+  if (role.form === 'direct') {
+    if (!role.destination?.destination) return null
+    slots.push(editSlot('destination', role.destination.destination))
+    if (role.title) slots.push(editSlot('title', role.title.span))
+    else if (role.titleConsumed) return null
+  }
+  return { form: role.form, whole: role.use.use, slots, shell: role.shell }
+}
+/** A definition has one allowed slot from the actual destination helper. Its
+ * label/title/whitespace and every source gap remain positively protected. */
+function definitionLayout(fact: Physical, source: string): Layout | null {
+  if (fact.kind !== 'definition' || !fact.complete || !fact.use || !fact.destination) return null
+  const destination = editSlot('destination', fact.destination), parts: MarkdownSourceCarrierFragment[] = []
+  let from = fact.use.from
+  const add = (to: number) => { if (to > from) parts.push(Object.freeze({ from, to, raw: source.slice(from, to) })); from = to }
+  for (const span of destination.coverage) { add(span.from); from = span.to }
+  if (!destination.coverage.length) add(destination.span.from)
+  add(fact.use.to)
+  return { form: 'definition', whole: fact.use, slots: [destination], shell: parts }
+}
+function relevant(span: Span, changes: readonly Readonly<MarkdownSourceChange>[]): number[] {
+  let low = 0, high = changes.length
+  while (low < high) { const middle = (low + high) >>> 1; if (changes[middle].to < span.from) low = middle + 1; else high = middle }
+  const result: number[] = []
+  for (let index = low; index < changes.length && changes[index].from <= span.to; index++) {
+    const change = changes[index]
+    if (change.from === change.to ? change.from >= span.from && change.from <= span.to : change.from < span.to && change.to > span.from) result.push(index)
+  }
+  return result
+}
+function owningRange(change: Readonly<MarkdownSourceChange>, slot: EditSlot): number | null {
+  if (!slot.cuts.has(change.from) || !slot.cuts.has(change.to)) return null
+  const ranges = slot.coverage.length ? slot.coverage : [slot.span]
+  let low = 0, high = ranges.length
+  while (low < high) { const middle = (low + high) >>> 1; if (ranges[middle].to < change.from) low = middle + 1; else high = middle }
+  return low < ranges.length && contains(ranges[low], change) ? low : null
+}
+/** Inclusion is a candidate for one actual slot, subsequently verified against
+ * both the actual after slot and all surviving shell bytes. It is not a default
+ * CM assoc for arbitrary zero-width ranges. */
+function changedArea(span: Span, owned: readonly number[], changes: readonly Readonly<MarkdownSourceChange>[], shifts: readonly number[]): Span {
+  let low = 0, high = changes.length
+  while (low < high) { const middle = (low + high) >>> 1; if (changes[middle].to <= span.from) low = middle + 1; else high = middle }
+  let prefix = shifts[low], change = 0
+  for (const index of owned) {
+    const item = changes[index], delta = item.insert.length - (item.to - item.from)
+    change += delta
+    if (item.to <= span.from) prefix -= delta
+  }
+  return { from: span.from + prefix, to: span.to + prefix + change }
+}
+function planLayout(layout: Layout, changes: readonly Readonly<MarkdownSourceChange>[], shifts: readonly number[]): PlannedLayout | null {
+  const relevantChanges = relevant(layout.whole, changes), assigned = new Map<EditSlot, Map<number, number[]>>()
+  for (const index of relevantChanges) {
+    const change = changes[index], owners = layout.slots.flatMap(slot => {
+      const range = owningRange(change, slot)
+      return range === null ? [] : [{ slot, range }]
+    })
+    // Boundary insertions outside the whole use belong to neither its shell nor
+    // a slot. Interior/cross-boundary edits require exactly one positive owner.
+    if (!owners.length && change.from === change.to && (change.from === layout.whole.from || change.from === layout.whole.to)) continue
+    if (owners.length !== 1) return null
+    const owner = owners[0], ranges = assigned.get(owner.slot) ?? new Map<number, number[]>()
+    const values = ranges.get(owner.range) ?? []; values.push(index); ranges.set(owner.range, values); assigned.set(owner.slot, ranges)
+  }
+  const owned = [...assigned.values()].flatMap(ranges => [...ranges.values()].flat()), shell: Span[] = []
+  for (const part of layout.shell) { const next = mapped(part, changes, shifts); if (!next) return null; shell.push(next) }
+  const slots: PlannedLayout['slots'][number][] = []
+  for (const slot of layout.slots) {
+    const indices = assigned.get(slot), ranges = slot.coverage.length ? slot.coverage : [slot.span], moved: Span[] = []
+    for (let index = 0; index < ranges.length; index++) moved.push(changedArea(ranges[index], indices?.get(index) ?? [], changes, shifts))
+    const actualCoverage: Array<{ from: number; to: number }> = []
+    for (const span of moved) if (span.to > span.from) {
+      const previous = actualCoverage.at(-1)
+      if (previous && span.from <= previous.to) previous.to = Math.max(previous.to, span.to)
+      else actualCoverage.push({ ...span })
+    }
+    slots.push({ name: slot.name, span: { from: moved[0].from, to: moved.at(-1)!.to }, coverage: actualCoverage })
+  }
+  return { whole: changedArea(layout.whole, owned, changes, shifts), slots, shell, edited: owned.length > 0,
+    destinationChanged: layout.slots.some(slot => slot.name === 'destination' && (assigned.get(slot)?.size ?? 0) > 0) }
+}
+function matchesLayout(before: Layout, plan: PlannedLayout, after: Layout, source: string): boolean {
+  if (before.form !== after.form || !sameSpan(plan.whole, after.whole) || plan.slots.length !== after.slots.length
+    || plan.shell.length !== after.shell.length) return false
+  for (let index = 0; index < plan.slots.length; index++) {
+    const one = plan.slots[index], two = after.slots[index]
+    if (one.name !== two.name || !sameSpan(one.span, two.span) || one.coverage.length !== two.coverage.length
+      || one.coverage.some((part, at) => !sameSpan(part, two.coverage[at]))) return false
+  }
+  return plan.shell.every((span, index) => sameSpan(span, after.shell[index])
+    && before.shell[index].raw === source.slice(span.from, span.to) && after.shell[index].raw === before.shell[index].raw)
+}
 export function forkCanonicalSourceLedger(before: SourceLedgerDraft, rawChanges: readonly MarkdownSourceChange[]): SourceLedgerDraft {
   const previous = data(before)
   // Keep the original caller array intact; the actual cold draft port validates
@@ -311,6 +444,33 @@ export function forkCanonicalSourceLedger(before: SourceLedgerDraft, rawChanges:
   }
   const oldByGeometry = indexBy(oldPaths, value => JSON.stringify([rawId(value.use), rawId(value.destination)]))
   const insertions = domains(fragments.inserted.map(span => ({ span, value: span })))
+  const oldRoles = carrierIndex(previous.roles), nextRoles = carrierIndex(observed.roles)
+  const oldDirect = new Map<Physical, MarkdownSourceCarrierFact>(), nextDirect = new Map<Physical, MarkdownSourceCarrierFact>()
+  for (const role of oldRoles.values()) if (role.use.kind === 'direct' && role.destination) oldDirect.set(role.destination, role)
+  for (const role of nextRoles.values()) if (role.use.kind === 'direct' && role.destination) nextDirect.set(role.destination, role)
+  const fine = new Map<Physical, Array<{ old: Physical; plan: PlannedLayout }>>()
+  const editedPhysical = new Set<Physical>(), matchedPhysical = new Set<Physical>()
+  const physicalForward = new Map<Physical, Physical>()
+  if (observed.observation?.complete) {
+    const nextByGeometry = indexBy(observed.observation.physicalDestinations.filter(fact => fact.use && fact.destination),
+      fact => JSON.stringify([rawId(fact.use!), rawId(fact.destination!)]))
+    for (const old of previous.observation?.physicalDestinations ?? []) {
+      const layout = definitionLayout(old, before.source) ?? roleLayout(oldDirect.get(old))
+      const plan = layout && planLayout(layout, changes, shifts), destination = plan?.slots.find(slot => slot.name === 'destination')
+      if (!layout || !plan || !destination) continue
+      if (plan.edited) editedPhysical.add(old)
+      for (const next of nextByGeometry.get(JSON.stringify([rawId(plan.whole), rawId(destination.span)])) ?? []) {
+        // Physical facts do not own the source string: definition protection
+        // must use this exact actual candidate, never a reconstructed source.
+        const actual = next.kind === 'definition' ? definitionLayout(next, observed.observation.source) : roleLayout(nextDirect.get(next))
+        if (!actual || !matchesLayout(layout, plan, actual, observed.observation.source)
+          || old.kind !== next.kind || old.format !== next.format || old.syntax !== next.syntax) continue
+        matchedPhysical.add(old)
+        const values = fine.get(next) ?? []; values.push({ old, plan }); fine.set(next, values)
+      }
+    }
+  }
+  if ([...editedPhysical].some(old => !matchedPhysical.has(old))) reason ??= '实际 role slot 逸出或语法消失，不能自动降为新生'
   if (observed.observation?.complete) {
     for (const fact of observed.observation.physicalDestinations) {
       const candidates = fact.use && fact.destination ? oldByGeometry.get(JSON.stringify([rawId(fact.use), rawId(fact.destination)])) ?? [] : []
@@ -318,12 +478,25 @@ export function forkCanonicalSourceLedger(before: SourceLedgerDraft, rawChanges:
         const old = candidates[0].fact, inherited = previous.lineage.get(old)
         if (inherited?.proven && old.kind === fact.kind && old.format === fact.format && old.syntax === fact.syntax
           && old.url === fact.url && projectionShape(old) === projectionShape(fact)) {
-          consumed.add(old); lineage.set(fact, inherited); continue
+          consumed.add(old); physicalForward.set(old, fact); lineage.set(fact, inherited); continue
+        }
+      }
+      const proved = fine.get(fact) ?? []
+      if (proved.length === 1 && !consumed.has(proved[0].old)) {
+        const { old, plan } = proved[0], inherited = previous.lineage.get(old)
+        if (inherited?.proven && (plan.destinationChanged || old.url === fact.url)) {
+          consumed.add(old); physicalForward.set(old, fact)
+          const birth: Birth | null = plan.destinationChanged ? Object.freeze({ via: 'carrier-destination', receipt,
+            beforeReceipt: previous.facts.receipt, generation: Object.freeze({}),
+            destination: Object.freeze({ from: fact.destination!.from, to: fact.destination!.to }) }) : null
+          lineage.set(fact, birth ? Object.freeze({ source: null, birth, proven: true }) : inherited)
+          continue
         }
       }
       // Certified birth is deliberately narrower than text recognition: the
       // complete actual use, or its complete nonempty destination, was emitted
-      // by one real raw insertion. Partial href/label/shell edits lack carriers.
+      // by one real raw insertion. Edits lacking the positive fine-role proof
+      // above are never promoted merely because the resulting URL is known.
       const fullUses = fact.use ? insertions(fact.use) : []
       const fullDestinations = fact.destination && fact.destination.from < fact.destination.to
         ? insertions(fact.destination) : []
@@ -332,9 +505,36 @@ export function forkCanonicalSourceLedger(before: SourceLedgerDraft, rawChanges:
       lineage.set(fact, Object.freeze({ source: null, birth, proven: birth !== null }))
       if (!birth) reason ??= 'use 内编辑或新生缺少实际 carrier 证明'
     }
+    // References do not create physical Keys of their own. Still require a
+    // positive changed-use witness: an unchanged definition cannot silently
+    // authorize selector/combined-label/shell edits to its uses.
+    const oldUses = previous.observation?.uses ?? [], used = new Set<MarkdownSourceUseOccurrence>()
+    const wholeUses = indexBy(oldUses.flatMap(use => {
+      const span = use.use && mapped(use.use, changes, shifts)
+      return span ? [{ use, span }] : []
+    }), value => rawId(value.span))
+    const fineUses = new Map<string, Array<{ use: MarkdownSourceUseOccurrence; layout: Layout; plan: PlannedLayout }>>()
+    for (const use of oldUses) if (use.kind === 'reference') {
+      const layout = roleLayout(oldRoles.get(use)), plan = layout && planLayout(layout, changes, shifts)
+      if (!layout || !plan) continue
+      const key = rawId(plan.whole), values = fineUses.get(key) ?? []
+      values.push({ use, layout, plan }); fineUses.set(key, values)
+    }
+    for (const use of observed.observation.uses) if (use.kind === 'reference' && use.use) {
+      const old = (wholeUses.get(rawId(use.use)) ?? []).filter(row => row.use.kind === 'reference' && !used.has(row.use))
+      if (old.length === 1) { used.add(old[0].use); continue }
+      const after = roleLayout(nextRoles.get(use)), fine = (fineUses.get(rawId(use.use)) ?? []).filter(row => !used.has(row.use)
+        && after && matchesLayout(row.layout, row.plan, after, next.source)
+        && row.use.destination && physicalForward.get(row.use.destination) === use.destination)
+      if (fine.length === 1) { used.add(fine[0].use); continue }
+      if (insertions(use.use).length === 1) continue
+      reason ??= 'reference use 的 selector、combined label 或 shell 没有实际 carrier 证明'
+    }
+    if ([...fineUses.values()].flat().some(row => row.plan.edited && !used.has(row.use)))
+      reason ??= 'reference display slot 逸出或语法消失，不能自动降为新生'
   }
   if (!sameArray(previous.root.grammar, grammar())) fail('实际解析期间 Markdown 语法上下文已变化')
-  drafts.set(next, { root: previous.root, observation: observed.observation, lineage, facts: Object.freeze({ opening: previous.root.opening,
+  drafts.set(next, { root: previous.root, observation: observed.observation, roles: observed.roles, lineage, facts: Object.freeze({ opening: previous.root.opening,
     receipt, beforeReceipt: previous.facts.receipt, fragments: fragments.fragments, uncertainReason: reason }) })
   return next
 }
@@ -395,7 +595,7 @@ function physicalId(value: LocatedPhysical): string { return JSON.stringify([spa
 function useId(use: MarkdownSourceUseOccurrence, span: ContentSpan): string { return JSON.stringify([spanId(span), use.kind]) }
 function geometry(draft: SourceLedgerDraft, saved: Data, actual: Reconciled) {
   const a = checkedObservation(saved.observation), current = bridge(draft, saved, actual)
-  const emission = serializeMarkdownWithEmissionTrace(current.blocks, { normalizeLineEndings: false }), d = checkedObservation(observeMarkdownSourceOccurrences(emission.markdown))
+  const emission = serializeMarkdownWithEmissionTrace(current.blocks, { normalizeLineEndings: false }), d = checkedObservation(observe(emission.markdown).observation)
   const finalDomains = domains(emission.contentTraces.map((trace, index) => ({ span: { from: trace.sourceFrom, to: trace.sourceTo }, value: index })))
   const fromFinalSource = (span: Span): ContentSpan => {
     const candidates: ContentSpan[] = []

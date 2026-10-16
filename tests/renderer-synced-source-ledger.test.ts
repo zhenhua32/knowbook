@@ -128,20 +128,23 @@ test('a certified new use remains new through later outside typing without resee
   assert.equal(prepare(typed, value.base).bindingClaims[0].kind, 'new')
 })
 
-test('internal label edits keep a candidate but refuse claims without actual label/carrier facts', () => {
+test('internal direct label edits continue only through actual label/carrier facts', () => {
   const value = opening(), at = value.draft.source.indexOf('[x]') + 1
   for (const insert of ['edited', 'x']) {
     const changed = forkCanonicalSourceLedger(value.draft, [{ from: at, to: at + 1, insert }])
     assert.ok(changed.source.includes('[' + insert + ']'))
-    assert.throws(() => prepare(changed, value.base), /carrier.*未生成来源声明/)
+    const result = prepare(changed, value.base)
+    assert.equal(result.bindingClaims[0].kind, 'continue')
+    closure(result, value.immutableOrigin)
   }
   assert.ok(value.draft.source.includes('[x]'))
 })
 
-test('partial destination edits and shell rebuilding are explicit unknown rather than automatically new', () => {
+test('partial destination edits require a real carrier birth while shell rebuilding remains unknown', () => {
   const value = opening(), at = value.draft.source.indexOf('Target.md')
   const partial = forkCanonicalSourceLedger(value.draft, [{ from: at, to: at + 1, insert: 'N' }])
-  assert.throws(() => prepare(partial, value.base), /未生成来源声明/)
+  const result = prepare(partial, value.base)
+  assert.equal(result.bindingClaims[0].kind, 'new'); closure(result, value.immutableOrigin)
   const shell = value.draft.source.indexOf('[x]'), rebuilt = forkCanonicalSourceLedger(value.draft, [{ from: shell, to: shell + 1, insert: '[' }])
   assert.equal(rebuilt.source, value.draft.source)
   assert.throws(() => prepare(rebuilt, value.base), /未生成来源声明/)
@@ -207,7 +210,7 @@ test('empty hrefs use a full-use point witness and continue only through outside
   closure(result, value.immutableOrigin)
 })
 
-test('empty href birth requires a whole inserted use, not an empty range or merely deleted destination', () => {
+test('empty href birth uses a whole inserted use or an actual destination carrier, never an empty change', () => {
   const value = opening([block('canonical', 'plain')]), end = value.draft.source.length
   const inserted = forkCanonicalSourceLedger(value.draft, [{ from: end, to: end, insert: ' [empty]()' }])
   const result = prepare(inserted, value.base)
@@ -217,16 +220,20 @@ test('empty href birth requires a whole inserted use, not an empty range or mere
   const filled = forkCanonicalSourceLedger(inserted, [{ from: zero, to: zero, insert: 'Target.md' }])
   assert.equal(prepare(filled, value.base).bindingClaims[0].kind, 'new', 'Every new nonempty href byte is from the actual insertion')
   const deleted = forkCanonicalSourceLedger(filled, [{ from: zero, to: zero + 9, insert: '' }])
-  assert.throws(() => prepare(deleted, value.base), /未生成来源声明/, 'An empty point is not evidence for a new empty target')
+  const removed = prepare(deleted, value.base)
+  assert.equal(removed.bindingClaims[0].kind, 'new', 'The surviving actual carrier, not merely an empty point, proves this birth')
+  assert.equal(removed.bindingClaims[0].destination.raw, ''); closure(removed, value.immutableOrigin)
 })
 
-test('incremental href typing remains an explicit missing carrier case instead of treating mixed generations as new', () => {
+test('incremental href typing uses each exact before carrier and births a new generation at every step', () => {
   const value = opening([block('canonical', '[empty]()')]), point = value.draft.source.indexOf('()') + 1
   const first = forkCanonicalSourceLedger(value.draft, [{ from: point, to: point, insert: 'T.md' }])
   assert.equal(prepare(first, value.base).bindingClaims[0].kind, 'new')
   const second = forkCanonicalSourceLedger(first, [{ from: point + 1, to: point + 1, insert: 'a' }])
   assert.ok(second.source.includes('(Ta.md)'))
-  assert.throws(() => prepare(second, value.base), /未生成来源声明/)
+  const result = prepare(second, value.base)
+  assert.equal(result.bindingClaims[0].kind, 'new'); closure(result, value.immutableOrigin)
+  assert.notEqual(readCanonicalSourceLedgerCandidate(second).receipt.token, readCanonicalSourceLedgerCandidate(first).receipt.token)
 })
 
 test('unchanged excluded opaque code preserves original bytes without claiming literal links', () => {
