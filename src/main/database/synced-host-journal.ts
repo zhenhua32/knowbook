@@ -5,15 +5,17 @@ import { validateSyncedStructureInput } from '../../shared/syncedBlockInputs'
 import { assertSyncedShape, syncedPlainRecord, isSyncedBlockId, isSyncedUuid, parseSyncedBlockPayload, validateSyncedHostForest, validateSyncedOrigin } from '../../shared/syncedBlockValidation'
 import type { SyncedHostHistoryBranchRow } from './synced-host-history-branch'
 import { hostJson, hostTime, type HostContent } from './synced-host-document-read'
+import { hasSyncedInsertWorkingStructure, isHostInsertInput, planSyncedHostInsert, type HostInsertInput } from './synced-host-insert-plan'
 
 export type HostFinalInput = Extract<SyncedStructureInput, { mode: 'host-final' }>
 export interface HostSide { documentId: string; content: HostContent }
 export interface HostBirth { documentId: string; blockId: string; createdAt: string }
 export interface HostGroupDependency { groupId: string; creationId: string; createdAt: string; origin: SyncedOriginV1 }
-export interface HostFinalJournal {
-  input: HostFinalInput; persisted: Array<HostSide & { updatedAt: string }>; births: HostBirth[]; groups: HostGroupDependency[]
+export interface HostJournal {
+  input: HostFinalInput | HostInsertInput; persisted: Array<HostSide & { updatedAt: string }>; births: HostBirth[]; groups: HostGroupDependency[]
   before: HostSide[]; after: HostSide[]
 }
+export type HostFinalJournal = HostJournal & { input: HostFinalInput }
 export const hostEncode = canonicalSyncedPortableJson
 export const hostHash = (value: unknown): string => createHash('sha256').update(hostEncode(value)).digest('hex')
 export const hostEqual = (left: unknown, right: unknown): boolean => hostEncode(left) === hostEncode(right)
@@ -40,7 +42,7 @@ export function validateHostSides(value: unknown): HostSide[] {
 export function hostReferencedGroups(sides: readonly HostSide[]): Set<string> {
   return new Set(sides.flatMap(side => side.content.blocks.filter(block => block.type === 'synced-block').map(block => parseSyncedBlockPayload(block.content).groupId)))
 }
-export function hostJournalKind(row: Readonly<SyncedHostHistoryBranchRow>): 'host-final' | 'bare-create' {
+export function hostJournalKind(row: Readonly<SyncedHostHistoryBranchRow>): 'host-final' | 'host-command' | 'bare-create' {
   const action = hostJson(row.action_json)
   if (syncedPlainRecord(action) && action.kind === 'create') {
     assertSyncedShape(action, ['kind', 'documentId', 'selectedRootIds', 'groupId', 'instanceId'])
@@ -51,7 +53,7 @@ export function hostJournalKind(row: Readonly<SyncedHostHistoryBranchRow>): 'hos
   }
   // Full new-branch validation, including side/hash/participant closure, belongs
   // to the decoder. A legacy bare create is recognized but never reinterpreted.
-  return 'host-final'
+  return syncedPlainRecord(action) && action.kind === 'host-command' ? 'host-command' : 'host-final'
 }
 /** Storage has one explicit empty-tag representation; no authored text or
  * nonempty metadata is changed by this comparison. Hashes retain the exact DTO. */
@@ -64,28 +66,34 @@ const matchingHosts = (left: readonly HostSide[], right: readonly HostSide[]) =>
   return left.length === right.length && left.every(item => ids.has(item.documentId))
 }
 
-/** Deliberately a new finite branch. Existing bare-create action_json stays
- * untouched and is never mistaken for this executable host-final format. */
-export function decodeHostFinalJournal(row: Readonly<SyncedHostHistoryBranchRow>): HostFinalJournal {
+/** Finite executable branches share side/birth/incarnation validation. The
+ * original bare-create lifecycle action remains a separate, unsupported format. */
+export function decodeHostJournal(row: Readonly<SyncedHostHistoryBranchRow>): HostJournal {
   try {
     if (!isSyncedUuid(row.id)) return bad()
     hostTime(row.created_at)
     const action = hostJson(row.action_json)
     assertSyncedShape(action, ['kind', 'version', 'input', 'persisted', 'births', 'groups'])
-    if (action.kind !== 'host-final' || action.version !== 1) return bad()
-    const input = validateSyncedStructureInput(action.input)
-    if (input.mode !== 'host-final') return bad()
+    if (action.version !== 1) return bad()
+    const parsed = validateSyncedStructureInput(action.input)
+    let input: HostFinalInput | HostInsertInput
+    if (action.kind === 'host-final' && parsed.mode === 'host-final') input = parsed
+    else if (action.kind === 'host-command' && isHostInsertInput(parsed)) input = parsed
+    else return bad()
     const before = validateHostSides(hostJson(row.before_json)), after = validateHostSides(hostJson(row.after_json))
     if (!before.length || !matchingHosts(before, after) || !/^[a-f0-9]{64}$/.test(row.before_hash)
       || !/^[a-f0-9]{64}$/.test(row.after_hash) || hostHash(before) !== row.before_hash || hostHash(after) !== row.after_hash) return bad()
+    const plannedAfter = input.mode === 'host-final' ? input.finalAfter.map(({ documentId, ...content }) => ({ documentId, content }))
+      : [{ documentId: input.action.target.documentId, content: planSyncedHostInsert(input) }]
     if (!hostEqual(before, input.hostsWorkingBefore.map(host => ({ documentId: host.documentId, content: host.workingBefore })))
-      || !hostEqual(after, input.finalAfter.map(({ documentId, ...content }) => ({ documentId, content })))) return bad()
+      || !hostEqual(after, plannedAfter)) return bad()
     const persisted = list(action.persisted, raw => {
       assertSyncedShape(raw, ['documentId', 'updatedAt', 'content'])
       return { documentId: opaque(raw.documentId), updatedAt: hostTime(raw.updatedAt), content: validateHostContent(raw.content) }
     }, item => item.documentId)
     const persistedById = new Map(persisted.map(item => [item.documentId, item]))
     if (!matchingHosts(before, persisted) || input.hostsWorkingBefore.some(host => persistedById.get(host.documentId)?.updatedAt !== host.expectedPersistedUpdatedAt)) return bad()
+    if (input.mode === 'command' && !hasSyncedInsertWorkingStructure(persisted[0].content, before[0].content)) return bad()
     const births = list(action.births, raw => {
       assertSyncedShape(raw, ['documentId', 'blockId', 'createdAt'])
       return { documentId: opaque(raw.documentId), blockId: opaque(raw.blockId), createdAt: hostTime(raw.createdAt) }
@@ -104,9 +112,16 @@ export function decodeHostFinalJournal(row: Readonly<SyncedHostHistoryBranchRow>
     const required = hostReferencedGroups([...before, ...after])
     if (groups.length !== required.size || groups.some(item => !required.has(item.groupId))) return bad()
     return { input, persisted, births, groups, before, after }
-  } catch (cause) { throw new Error('宿主 host-final 日志损坏或是不受支持的日志格式，未执行或裁剪。', { cause }) }
+  } catch (cause) { throw new Error('宿主结构日志损坏或是不受支持的日志格式，未执行或裁剪。', { cause }) }
 }
-export function encodeHostFinalJournal(journal: HostFinalJournal): { action: string; before: string; after: string; beforeHash: string; afterHash: string } {
-  return { action: hostEncode({ kind: 'host-final', version: 1, input: journal.input, persisted: journal.persisted, births: journal.births, groups: journal.groups }),
+export function decodeHostFinalJournal(row: Readonly<SyncedHostHistoryBranchRow>): HostFinalJournal {
+  const journal = decodeHostJournal(row)
+  if (journal.input.mode !== 'host-final') return bad()
+  return { ...journal, input: journal.input }
+}
+export function encodeHostJournal(journal: HostJournal): { action: string; before: string; after: string; beforeHash: string; afterHash: string } {
+  return { action: hostEncode({ kind: journal.input.mode === 'host-final' ? 'host-final' : 'host-command', version: 1,
+    input: journal.input, persisted: journal.persisted, births: journal.births, groups: journal.groups }),
     before: hostEncode(journal.before), after: hostEncode(journal.after), beforeHash: hostHash(journal.before), afterHash: hostHash(journal.after) }
 }
+export function encodeHostFinalJournal(journal: HostFinalJournal): ReturnType<typeof encodeHostJournal> { return encodeHostJournal(journal) }
