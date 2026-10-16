@@ -4,6 +4,19 @@ import { collectMarkdownDestinations, collectMarkdownSourceLinks, parseLocalMark
 import { collectMarkdownAnchors } from '../src/shared/markdownAnchors.ts'
 import { markdownEngine } from '../src/shared/markdownEngine.ts'
 
+test('accepted empty hrefs expose zero-width destinations without consuming titles or literal code', () => {
+  const source = '[plain]() [angled](<>) [spaced](   ) [titled](<> "title")\r\n\r\n`[literal]()`\r\n\r\n[ref]: <>\r\n\r\n[use][ref]'
+  const empty = collectMarkdownDestinations(source).filter(link => link.url === '')
+  assert.equal(empty.length, 5)
+  for (const link of empty) assert.equal(link.start, link.end)
+  const rewritten = rewriteMarkdownDestinations(source, link => link.url === '' ? 'Self.md' : null)
+  assert.equal(rewritten, '[plain](Self.md) [angled](<Self.md>) [spaced](Self.md   ) [titled](<Self.md> "title")\r\n\r\n`[literal]()`\r\n\r\n[ref]: <Self.md>\r\n\r\n[use][ref]')
+  assert.equal((markdownEngine.render(rewritten).match(/href="Self.md"/g) ?? []).length, 5)
+  assert.ok(markdownEngine.render(rewritten).includes('title="title"'))
+  assert.equal(collectMarkdownDestinations('[quoted]( "title")')[0].url, '%22title%22', 'A quoted nonempty URL is not an empty destination')
+  assert.ok(markdownEngine.render(rewritten).includes('<code>[literal]()</code>'))
+})
+
 test('Markdown destination edits preserve code, labels, titles, references, escaped parentheses and linked images', () => {
   const source = [
     '[guide](../docs/Guide.md#安装 "title")',

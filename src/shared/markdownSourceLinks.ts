@@ -210,9 +210,15 @@ export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>):
       else if (!token.meta?.label) {
         const labelEnd = md.helpers.parseLinkLabel(state, start + (name === 'image' ? 1 : 0), name === 'link')
         let position = labelEnd + 2
+        const emptyPosition = position
         while (position < state.pos && /[ \t\n]/.test(state.src[position])) position++
         const destination = md.helpers.parseLinkDestination(state.src, position, state.pos)
-        if (destination.ok) {
+        if (url === '') {
+          // The accepted native rule also permits an empty destination before
+          // a title. Keep its leading whitespace outside the insertion range.
+          const from = state.src.slice(position, position + 2) === '<>' ? position + 1 : emptyPosition
+          record(data, { start: from, end: from, url, kind: name === 'image' ? 'image' : 'link' })
+        } else if (destination.ok) {
           const angled = state.src[position] === '<'
           record(data, { start: position + (angled ? 1 : 0), end: destination.pos - (angled ? 1 : 0), url, kind: name === 'image' ? 'image' : 'link' })
         }
