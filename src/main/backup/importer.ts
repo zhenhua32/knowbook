@@ -86,6 +86,17 @@ type PreparedRestoreSources = {
 
 type DocumentSnapshot = ReturnType<KnowbookStore['getAllDocumentSnapshots']>[number]
 
+type LegacyBlockIdentity = {
+  id: string
+  last_owner_kind: 'document' | 'group' | 'reserved'
+  last_owner_id: string
+  state: 'live' | 'retained'
+  created_at: string | null
+}
+type LegacyPhysicalBlock = { id: string; kind: 'document' | 'group'; owner_id: string; created_at: string }
+type LegacyBlockClaim = { expected: LegacyBlockIdentity | null; mayTransferRetained: boolean }
+type LegacyBlockIdentityPlan = { ids: string[]; fingerprint: string; claims: Map<string, LegacyBlockClaim> }
+
 type RestoreAssetCopy = {
   sourcePath: string
   destinationPath: string
@@ -203,6 +214,7 @@ export class MarkdownRestoreService {
       sourceStandaloneDatabaseManifest
     } = prepared
     const snapshots = this.store.getAllDocumentSnapshots()
+    this.planLegacyBlockIdentities(sourceDocuments, sourceStandaloneDatabaseManifest !== undefined, snapshots)
     const snapshotsById = new Map(snapshots.map((snapshot) => [snapshot.id, snapshot]))
     const snapshotsByPath = new Map(snapshots.map((snapshot) => [snapshot.path, snapshot]))
     const restoredDocumentIds = new Set<string>()
@@ -269,6 +281,8 @@ export class MarkdownRestoreService {
     } = await this.prepareRestoreSources(root, true)
 
     const v2Plan = archiveV2 ? planRestoreV2(this.store, archiveV2) : null
+    const legacyIdentityPlan = archiveV2 ? null
+      : this.planLegacyBlockIdentities(sourceDocuments, sourceStandaloneDatabaseManifest !== undefined)
 
     const stagedAssets = await this.stageRestoreAssets(assets)
     const publishedAssets: PublishedRestoreAsset[] = []
@@ -289,6 +303,7 @@ export class MarkdownRestoreService {
           })
           return { ...result, importReport: createMarkdownImportReport(this.store, importedFiles, root, this.assetRoot, wikiAssets) }
         })
+        this.assertLegacyBlockIdentityPlan(legacyIdentityPlan!)
         const importedFiles: ImportedMarkdownFile[] = []
         const result = this.store.runInBulkDocumentMutation(() => {
           let created = 0
@@ -308,7 +323,7 @@ export class MarkdownRestoreService {
           }
 
           for (const source of sourceDocuments) {
-            const result = this.restoreDocument(source, documentDatabaseColumnIdMap)
+            const result = this.restoreDocument(source, documentDatabaseColumnIdMap, legacyIdentityPlan!)
             importedFiles.push({ sourceFilePath: source.sourceFilePath, documentId: result.documentId, status: result.mode })
             placeholdersCreated += result.placeholdersCreated
             if (result.mode === 'created') {
@@ -941,7 +956,8 @@ export class MarkdownRestoreService {
 
   private restoreDocument(
     source: RestoreSourceDocument,
-    documentDatabaseColumnIdMap: Map<string, string>
+    documentDatabaseColumnIdMap: Map<string, string>,
+    identityPlan: LegacyBlockIdentityPlan
   ): {
     mode: 'created' | 'updated'
     documentId: string
@@ -958,6 +974,7 @@ export class MarkdownRestoreService {
     let mode: 'created' | 'updated'
 
     if (existing) {
+      this.adoptLegacyRetainedBlocks(source, existing.id, identityPlan)
       this.store.documentRecovery.checkpoint(existing.id, 'restore')
       if (existing.parentId !== ensuredParent.documentId) {
         this.store.moveDocument(existing.id, ensuredParent.documentId)
@@ -966,6 +983,7 @@ export class MarkdownRestoreService {
       mode = 'updated'
     } else {
       documentId = this.store.createDocument(ensuredParent.documentId)
+      this.adoptLegacyRetainedBlocks(source, documentId, identityPlan)
       mode = 'created'
     }
 
@@ -980,6 +998,93 @@ export class MarkdownRestoreService {
       mode,
       documentId,
       placeholdersCreated: ensuredParent.placeholdersCreated
+    }
+  }
+
+  private readLegacyBlockIdentityState(ids: string[]): {
+    identities: LegacyBlockIdentity[]; physical: LegacyPhysicalBlock[]; fingerprint: string
+  } {
+    const db = this.store.getUnsafeDatabaseHandle(), encoded = JSON.stringify(ids)
+    const identities = db.prepare(`SELECT id,last_owner_kind,last_owner_id,state,created_at FROM block_identities
+      WHERE id IN (SELECT value FROM json_each(?)) ORDER BY id`).all(encoded) as LegacyBlockIdentity[]
+    const physical = db.prepare(`WITH wanted AS (SELECT value AS id FROM json_each(?))
+      SELECT id,'document' AS kind,document_id AS owner_id,created_at FROM blocks WHERE id IN (SELECT id FROM wanted)
+      UNION ALL SELECT id,'group' AS kind,group_id AS owner_id,created_at FROM synced_group_blocks WHERE id IN (SELECT id FROM wanted)
+      ORDER BY id,kind`).all(encoded) as LegacyPhysicalBlock[]
+    return { identities, physical, fingerprint: JSON.stringify([identities, physical]) }
+  }
+
+  /** Legacy archives have no lineage journal. Preserve IDs only where the
+   * source owner or the verified complete archive proves the transfer; other
+   * collisions fail before assets/history/metadata change, rather than rebinding
+   * a canonical/reserved ID or partially renumbering its parents and links. */
+  private planLegacyBlockIdentities(sources: RestoreSourceDocument[], completeManifest: boolean,
+    snapshots = this.store.getAllDocumentSnapshots()): LegacyBlockIdentityPlan {
+    const owners = new Map<string, RestoreSourceDocument>()
+    for (const source of sources) for (const block of source.blocks) {
+      if (block.id === undefined) continue
+      if (typeof block.id !== 'string' || !block.id.trim()) throw new Error('旧备份中的块身份无效。')
+      if (owners.has(block.id)) throw new Error('Duplicate legacy backup block identity: ' + JSON.stringify(block.id))
+      owners.set(block.id, source)
+    }
+    const ids = [...owners.keys()], state = this.readLegacyBlockIdentityState(ids)
+    const identities = new Map(state.identities.map(identity => [identity.id, identity]))
+    const physical = new Map<string, LegacyPhysicalBlock[]>()
+    for (const row of state.physical) {
+      const rows = physical.get(row.id) ?? []
+      rows.push(row); physical.set(row.id, rows)
+    }
+    const sourceIds = new Set(sources.flatMap(source => source.sourceDocumentId ? [source.sourceDocumentId] : []))
+    const byId = new Map(snapshots.map(snapshot => [snapshot.id, snapshot]))
+    const byPath = new Map(snapshots.map(snapshot => [snapshot.path, snapshot]))
+    const claims = new Map<string, LegacyBlockClaim>()
+    for (const [id, source] of owners) {
+      const identity = identities.get(id) ?? null, rows = physical.get(id) ?? []
+      if (rows.length > 1 || identity?.state === 'live' && (rows.length !== 1
+        || rows[0].kind !== identity.last_owner_kind || rows[0].owner_id !== identity.last_owner_id
+        || rows[0].created_at !== identity.created_at) || rows.length && identity?.state !== 'live') {
+        throw new Error('旧备份恢复发现块身份与实际归属不一致：' + JSON.stringify(id))
+      }
+      const existing = (source.sourceDocumentId ? byId.get(source.sourceDocumentId) : undefined) ?? byPath.get(source.documentPath)
+      // completeManifest is supplied only after prepareRestoreSources has parsed
+      // the real reserved manifest file, never from an arbitrary note's YAML.
+      const mayTransferRetained = identity?.state === 'retained' && identity.last_owner_kind === 'document'
+        && (identity.last_owner_id === source.sourceDocumentId || completeManifest && sourceIds.has(identity.last_owner_id))
+      if (identity && (identity.last_owner_kind !== 'document'
+        || identity.last_owner_id !== existing?.id && !mayTransferRetained)) {
+        throw new Error('旧备份中的块身份已由其他文档或同步块保留，不能绑定到恢复目标：' + JSON.stringify(id))
+      }
+      claims.set(id, { expected: identity, mayTransferRetained })
+    }
+    return { ids, fingerprint: state.fingerprint, claims }
+  }
+
+  private assertLegacyBlockIdentityPlan(plan: LegacyBlockIdentityPlan): void {
+    if (this.readLegacyBlockIdentityState(plan.ids).fingerprint !== plan.fingerprint) {
+      throw new Error('准备恢复期间块身份或归属发生变化，请重新预览旧备份；原数据未修改。')
+    }
+  }
+
+  private adoptLegacyRetainedBlocks(source: RestoreSourceDocument, documentId: string, plan: LegacyBlockIdentityPlan): void {
+    const db = this.store.getUnsafeDatabaseHandle()
+    const read = db.prepare('SELECT id,last_owner_kind,last_owner_id,state,created_at FROM block_identities WHERE id=?')
+    const physical = db.prepare(`SELECT id FROM blocks WHERE id=? UNION ALL SELECT id FROM synced_group_blocks WHERE id=?`)
+    const adopt = db.prepare(`UPDATE block_identities SET last_owner_id=? WHERE id=? AND last_owner_kind='document'
+      AND state='retained' AND last_owner_id=? AND created_at IS ?`)
+    for (const block of source.blocks) {
+      if (block.id === undefined) continue
+      const claim = plan.claims.get(block.id)
+      if (!claim) throw new Error('旧备份恢复包含未规划的块身份。')
+      const identity = read.get(block.id) as LegacyBlockIdentity | undefined
+      if (JSON.stringify(identity ?? null) !== JSON.stringify(claim.expected)) {
+        throw new Error('旧备份恢复中的块身份已变化，已取消本次恢复。')
+      }
+      if (!identity || identity.last_owner_kind === 'document' && identity.last_owner_id === documentId) continue
+      if (!claim.mayTransferRetained || identity.last_owner_kind !== 'document' || identity.state !== 'retained'
+        || physical.get(block.id, block.id)
+        || adopt.run(documentId, block.id, identity.last_owner_id, identity.created_at).changes !== 1) {
+        throw new Error('旧备份中的保留块身份不能转移到该恢复目标。')
+      }
     }
   }
 

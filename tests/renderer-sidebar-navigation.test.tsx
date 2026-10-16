@@ -38,7 +38,7 @@ function sidebarProps(language: UiLanguage = 'en-US'): SidebarProps {
   }
 }
 
-async function withDom(run: (dom: JSDOM, root: ReturnType<typeof createRoot>, mount: HTMLElement) => Promise<void>) {
+async function withDom(run: (dom: JSDOM, root: ReturnType<typeof createRoot>, mount: HTMLElement) => Promise<void>, diagnosticLabel?: string) {
   const dom = new JSDOM('<!doctype html><html><body><div id="mount"></div></body></html>', { pretendToBeVisual: true })
   const keys = ['window', 'document', 'navigator', 'HTMLElement', 'Element', 'Node', 'IS_REACT_ACT_ENVIRONMENT'] as const
   const previous = new Map(keys.map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]))
@@ -49,7 +49,9 @@ async function withDom(run: (dom: JSDOM, root: ReturnType<typeof createRoot>, mo
   const root = createRoot(mount)
   try { await run(dom, root, mount) }
   finally {
+    if (diagnosticLabel) process.stderr.write(`[sidebar:${diagnosticLabel}] unmount:start\n`)
     await act(async () => root.unmount())
+    if (diagnosticLabel) process.stderr.write(`[sidebar:${diagnosticLabel}] unmount:end\n`)
     dom.window.close()
     for (const key of keys) {
       const descriptor = previous.get(key)
@@ -94,18 +96,24 @@ test('sidebar keeps every destination accessible in both languages and collapsed
 test('sidebar right click operates on its target without switching the open document', async () => {
   await withDom(async (dom, root, mount) => {
     const opened: string[] = [], copied: string[] = []
+    process.stderr.write('[sidebar:context-menu] render:start\n')
     await act(async () => { root.render(<PageNavWithWorkspaceTree {...sidebarProps()} onSelectDocument={(id) => opened.push(id)} onCopyDocumentMarkdown={(id) => copied.push(id)} />); await settleLazyViews() })
+    process.stderr.write('[sidebar:context-menu] render:end\n')
     const target = [...mount.querySelectorAll<HTMLButtonElement>('.tree-button')].find((button) => button.textContent?.includes('Document b'))!
+    process.stderr.write('[sidebar:context-menu] contextmenu:start\n')
     await act(async () => { target.dispatchEvent(new dom.window.MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 20, clientY: 20 })); await settleLazyViews() })
+    process.stderr.write('[sidebar:context-menu] contextmenu:end\n')
     assert.deepEqual(opened, [])
     assert.match(mount.querySelector('.tree-button-active')!.textContent!, /Document a/)
     const menu = dom.window.document.querySelector('.document-tree-context-menu')!
     assert.ok(menu)
     const copy = [...menu.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === getUiText('en-US').copyMarkdown)!
+    process.stderr.write('[sidebar:context-menu] copy:start\n')
     await act(async () => copy.click())
+    process.stderr.write('[sidebar:context-menu] copy:end\n')
     assert.deepEqual(copied, ['b'])
     assert.deepEqual(opened, [])
-  })
+  }, 'context-menu')
 })
 
 test('document drag reveals the root destination, follows hovered targets and clears after moving', async () => {

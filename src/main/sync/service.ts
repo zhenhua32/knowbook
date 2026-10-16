@@ -239,6 +239,9 @@ export class WebDavSyncService {
     const incoming = new Map<string, SyncRecord>()
     const writes = new Map<string, SyncRecord>()
     const accepted = new Map<string, { localHash: string | null; remoteHash: string }>()
+    // Exact selected versions can prove an old retained owner released an ID
+    // even when that already-matching document needs no local upsert.
+    const releaseProofs = new Map<string, SyncRecord>()
     const conflicts: SyncState['conflicts'] = {}
     const ownershipConflicts: SyncState['conflicts'] = {}
     const mergingKeys = new Set<string>()
@@ -291,6 +294,7 @@ export class WebDavSyncService {
       if (!remoteHash && baseline) throw new Error('远端清单缺少已同步的版本，请恢复远端清单后重试。')
       if (remoteHash === proposedHash) {
         validateRecord(proposed, key, manifest.version)
+        releaseProofs.set(key, proposed)
         accepted.set(key, { localHash, remoteHash }); continue
       }
       const localChanged = baseline ? localHash !== baseline.localHash : current !== undefined && !(key === 'databases' && emptyDatabases(current) && remoteHash)
@@ -359,7 +363,7 @@ export class WebDavSyncService {
       else if (remoteHash) {
         // Normalization can make localHash differ from the accepted wire hash.
         // Even unchanged versions must pass the current manifest's gate.
-        await remoteRecord(key, remoteHash)
+        releaseProofs.set(key, await remoteRecord(key, remoteHash))
         accepted.set(key, { localHash, remoteHash })
       }
     }
@@ -378,6 +382,7 @@ export class WebDavSyncService {
         this.uploadedObjects.add(hash)
       }
       next.entries[key] = hash
+      releaseProofs.set(key, record)
       accepted.set(key, { localHash: record.kind === 'deleted' ? null : hash, remoteHash: hash })
       this.progress!.completed++
     }
@@ -402,15 +407,20 @@ export class WebDavSyncService {
         incoming.delete(key)
         localized.delete(key)
         accepted.delete(key)
+        releaseProofs.delete(key)
       }
       mergedCount = 0
     }
+    // Applied records already carry the selected authority. Omit their wire
+    // duplicates: asset localization changes URLs without changing ownership.
+    const retainedReleaseProofs = [...releaseProofs].filter(([key]) => !localized.has(key)).map(([, record]) => record)
     // Reject incomplete ownership dependencies before publishing any manifest.
     // The apply transaction repeats this check after all asynchronous waits.
     try {
       if (canonicalJson([...this.store.getSyncRecords()]) === canonicalJson([...raw])) {
         preflightSyncBlockTransfers(this.store.getUnsafeDatabaseHandle(), [...localized.values()],
-          Object.entries(ownershipReports).flatMap(([key, conflict]) => !incoming.has(key) && conflict.remote.kind === 'document' ? [conflict.remote] : []))
+          Object.entries(ownershipReports).flatMap(([key, conflict]) => !incoming.has(key) && conflict.remote.kind === 'document' ? [conflict.remote] : []),
+          retainedReleaseProofs)
       }
     } catch (error) {
       this.preserveOwnershipConflict(error, ownershipReports, raw)
@@ -462,7 +472,7 @@ export class WebDavSyncService {
     this.stage('applying')
     try {
       this.store.runInTransaction(() => {
-        if (localUnchanged && localized.size) this.store.applySyncRecords([...localized.values()])
+        if (localUnchanged && localized.size) this.store.applySyncRecords([...localized.values()], retainedReleaseProofs)
         const after = this.store.getSyncRecords()
         for (const [key, baseline] of accepted) {
           if (localUnchanged || !incoming.has(key)) state.baseline[key] = baseline

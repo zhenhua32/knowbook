@@ -4,6 +4,7 @@ import { copyFile, lstat, mkdir, open, readFile, rename, rm } from 'node:fs/prom
 import { createRequire } from 'node:module'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { CURRENT_DATABASE_SCHEMA_VERSION } from './schema-version'
+import { assertNoUnsupportedSyncedContent, assertSyncedBlockSchema } from './synced-schema'
 import { stopDatabaseRestoreProcesses, type RestoreProcessIdentity } from './restore-process-guard'
 import { isSystemPluginManagedPath, resolveSystemPluginPhysicalPath } from '../system-plugin/managed-paths'
 
@@ -67,6 +68,10 @@ function verifyDatabase(path: string): number {
     const version = db.pragma('user_version', { simple: true }) as number
     if (!Number.isSafeInteger(version) || version < 1 || version > CURRENT_DATABASE_SCHEMA_VERSION) {
       throw new Error(`不支持的 KnowBook schema 版本 ${version}；支持 1–${CURRENT_DATABASE_SCHEMA_VERSION}。`)
+    }
+    if (version >= 26) {
+      assertSyncedBlockSchema(db)
+      assertNoUnsupportedSyncedContent(db)
     }
     const required: Record<string, string[]> = {
       documents: ['id', 'title', 'slug', 'parent_id', 'path', 'summary', 'created_at', 'updated_at'],

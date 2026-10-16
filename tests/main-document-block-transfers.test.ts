@@ -479,7 +479,17 @@ test('trash restoration refuses a later imported owner of the same block identit
   const source = create(store, 'Trash original', [{ ...block('trash-owned-id', 'Original trash body'), tags: ['original'], highlight: 'blue' }])
   store.deleteDocument(source)
   const archived = store.documentRecovery.getTrash(source)
-  const target = create(store, 'Imported owner', [{ ...block('trash-owned-id', 'Later imported body'), tags: ['later'], highlight: 'purple' }])
+  const target = store.createDocument(null)
+  const imported = { title: 'Imported owner', summary: '', blocks: [{ ...block('trash-owned-id', 'Later imported body'), tags: ['later'], highlight: 'purple' }] }
+  assert.throws(() => store.updateDocument(target, imported), /块身份.*保留/)
+  // Arrange the explicit retained-owner transition of a trusted import kernel;
+  // ordinary saves cannot perform it. This is not an import API acceptance.
+  store.getUnsafeDatabaseHandle().transaction(() => {
+    const changed = store.getUnsafeDatabaseHandle().prepare(`UPDATE block_identities SET last_owner_id=?
+      WHERE id=? AND state='retained' AND last_owner_kind='document' AND last_owner_id=?`).run(target, 'trash-owned-id', source)
+    assert.equal(changed.changes, 1)
+    store.updateDocument(target, imported)
+  })()
   store = harness.restart()
   const before = state(store), targetBefore = store.getDocumentDetail(target)
   const db = store.getUnsafeDatabaseHandle()

@@ -9,8 +9,9 @@ import { backupJson, failBackup, isSystemField, mapDatabaseViewConfigFieldIds, m
 type Kind = 'document' | 'database' | 'column' | 'view' | 'entity' | 'block'
 type Identity = { lineage: string; kind: Kind; source_database_id: string; source_id: string; state: 'live' | 'missing'; target_id: string }
 type Row = Record<string, string | number | null>
+type BlockIdentityRow = { id: string; last_owner_kind: string; last_owner_id: string; state: string; created_at: string | null }
 const tableByKind: Record<Kind, string> = { document: 'documents', database: 'databases', column: 'document_database_columns', view: 'database_saved_views', entity: 'database_entities', block: 'blocks' }
-const watchedTables = ['documents', 'blocks', 'databases', 'document_database_columns', 'database_saved_views', 'database_entities', 'database_entity_values', 'document_database_values', 'backup_restore_identities']
+const watchedTables = ['documents', 'blocks', 'block_identities', 'databases', 'document_database_columns', 'database_saved_views', 'database_entities', 'database_entity_values', 'document_database_values', 'backup_restore_identities']
 function fingerprint(store: KnowbookStore): string {
   const db = store.getUnsafeDatabaseHandle()
   return backupJson(watchedTables.map(table => db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()))
@@ -19,6 +20,7 @@ const identityKey = (kind: Kind, owner: string, id: string, state = 'live') => b
 export type RestorePlanV2 = {
   archive: ArchiveV2; expected: string; identities: Identity[]; maps: Map<string, string>; catalogId: string
   deleteDocuments: string[]; deleteDatabases: string[]; prune: { column: string[]; view: string[]; entity: string[] }
+  blockOwnerTransfers: Array<{ id: string; fromDocumentId: string; toDocumentId: string; createdAt: string | null }>
   preview: Omit<BackupRestorePreview, 'root'>
 }
 
@@ -31,6 +33,7 @@ export function planRestoreV2(store: KnowbookStore, archive: ArchiveV2): Restore
   const previous = db.prepare('SELECT * FROM backup_restore_identities WHERE lineage = ?').all(lineage) as Identity[]
   const prior = new Map(previous.map(row => [identityKey(row.kind, row.source_database_id, row.source_id, row.state), row]))
   const occupied = new Map<Kind, Map<string, Row>>()
+  const blockIdentities = new Map((db.prepare('SELECT * FROM block_identities').all() as BlockIdentityRow[]).map(row => [row.id, row]))
   const reserved = new Map<Kind, Set<string>>()
   for (const kind of Object.keys(tableByKind) as Kind[]) {
     occupied.set(kind, new Map((db.prepare(`SELECT * FROM ${tableByKind[kind]}`).all() as Row[]).map(row => [String(row.id), row])))
@@ -41,9 +44,25 @@ export function planRestoreV2(store: KnowbookStore, archive: ArchiveV2): Restore
     const key = identityKey(kind, owner, sourceId, state)
     if (maps.has(key)) return maps.get(key)!
     const old = prior.get(key), rows = occupied.get(kind)!, claimed = used.get(kind) ?? new Set<string>()
-    const available = (id: string) => !claimed.has(id) && (state === 'missing' ? !rows.has(id) : !rows.has(id) || compatible(rows.get(id)!))
+    const available = (id: string) => {
+      if (claimed.has(id) || (state === 'missing' ? rows.has(id) : rows.has(id) && !compatible(rows.get(id)!))) return false
+      if (kind !== 'block') return true
+      const identity = blockIdentities.get(id), physical = rows.get(id)
+      if (!identity) {
+        if (physical) return failBackup('persisted block has no stable identity')
+        return true
+      }
+      if (identity.last_owner_kind !== 'document') return false
+      if (identity.state === 'live' ? !physical || physical.document_id !== identity.last_owner_id : !!physical) {
+        return failBackup('stable block identity disagrees with its physical owner')
+      }
+      // A complete restore can reclaim a retained ID only from a document
+      // replaced/deleted by this same plan. Other domains remain occupied.
+      return state !== 'missing' && compatible({ document_id: identity.last_owner_id })
+    }
     let target = forced ?? (old && available(old.target_id) ? old.target_id : available(sourceId) && !reserved.get(kind)!.has(sourceId) ? sourceId : undefined)
-    if (!target || !available(target)) do { target = randomUUID() } while (rows.has(target) || reserved.get(kind)!.has(target) || claimed.has(target))
+    if (!target || !available(target)) do { target = randomUUID() } while (rows.has(target) || reserved.get(kind)!.has(target) || claimed.has(target)
+      || kind === 'block' && blockIdentities.has(target))
     claimed.add(target); used.set(kind, claimed); maps.set(key, target)
     identities.push({ lineage, kind, source_database_id: owner, source_id: sourceId, state, target_id: target })
     return target
@@ -63,10 +82,15 @@ export function planRestoreV2(store: KnowbookStore, archive: ArchiveV2): Restore
   const deleteDocuments = documentPolicy.mode === 'none' ? [] : snapshots.filter(row => !restoredDocuments.has(row.id)
     && documentPolicy.paths.some(scope => !scope || row.path === scope || row.path.startsWith(scope + '/'))).map(row => row.id)
   const deleted = new Set(deleteDocuments)
+  const blockOwnerTransfers: RestorePlanV2['blockOwnerTransfers'] = []
   for (const source of archive.documents) for (const block of source.blocks) {
     if (!block.id) return failBackup('persisted host block has no identity')
     const targetDocument = maps.get(identityKey('document', '', source.id))!
-    choose('block', source.id, block.id, row => row.document_id === targetDocument || restoredDocuments.has(String(row.document_id)) || deleted.has(String(row.document_id)))
+    const target = choose('block', source.id, block.id, row => row.document_id === targetDocument || restoredDocuments.has(String(row.document_id)) || deleted.has(String(row.document_id)))
+    const identity = blockIdentities.get(target)
+    if (identity && identity.last_owner_id !== targetDocument) {
+      blockOwnerTransfers.push({ id: target, fromDocumentId: identity.last_owner_id, toDocumentId: targetDocument, createdAt: identity.created_at })
+    }
   }
   for (const id of archive.manifest.missing.databaseIds) choose('database', '', id, () => false, 'missing')
   for (const item of archive.manifest.missing.views) choose('view', item.databaseId, item.viewId, () => false, 'missing')
@@ -111,13 +135,14 @@ export function planRestoreV2(store: KnowbookStore, archive: ArchiveV2): Restore
   }
   const created = archive.documents.filter(source => !occupied.get('document')!.has(maps.get(identityKey('document', '', source.id))!)).length
   const databaseCreated = archive.databases.filter(source => !occupied.get('database')!.has(maps.get(identityKey('database', '', source.id))!)).length
-  return { archive, expected, identities, maps, catalogId, deleteDocuments, deleteDatabases, prune,
+  return { archive, expected, identities, maps, catalogId, deleteDocuments, deleteDatabases, prune, blockOwnerTransfers,
     preview: { restored: archive.documents.length, created, updated: archive.documents.length - created, deleted: deleteDocuments.length,
       conflictsResolved: 0, placeholdersCreated: 0, standaloneDatabases: archive.databases.length, standaloneDatabasesCreated: databaseCreated,
       standaloneDatabasesUpdated: archive.databases.length - databaseCreated, standaloneDatabasesDeleted: deleteDatabases.length } }
 }
 
 export function applyRestoreV2(store: KnowbookStore, plan: RestorePlanV2, root: string): BackupRestoreResult {
+  if (!store.getUnsafeDatabaseHandle().inTransaction) return failBackup('complete restore requires its outer workspace transaction')
   if (fingerprint(store) !== plan.expected) return failBackup('workspace changed while preparing restore; preview again')
   const db = store.getUnsafeDatabaseHandle(), { archive, maps } = plan, now = new Date().toISOString()
   const mapped = (kind: Kind, owner: string, source: string): string => maps.get(identityKey(kind, owner, source))
@@ -127,6 +152,13 @@ export function applyRestoreV2(store: KnowbookStore, plan: RestorePlanV2, root: 
     databaseId: id => mapped('database', '', id), viewId: (owner, id) => mapped('view', owner, id), fieldId: field
   }))
   const values = (owner: string, input: Record<string, DocumentDatabaseFieldValue>) => Object.fromEntries(Object.entries(input).map(([id, value]) => [field(owner, id), value]))
+  // Capture observed physical routes before temporary paths or deletion hide
+  // them. A retained identity alone never proves its former owner's current path.
+  db.prepare(`INSERT OR IGNORE INTO document_block_routes(document_path,block_id)
+    SELECT d.path,b.id FROM blocks b JOIN documents d ON d.id=b.document_id
+    WHERE d.id IN (SELECT value FROM json_each(?)) OR b.id IN (SELECT value FROM json_each(?))`)
+    .run(JSON.stringify(archive.documents.map(source => mapped('document', '', source.id))),
+      JSON.stringify(plan.blockOwnerTransfers.map(transfer => transfer.id)))
   // Release restored descendants before deleting stale ancestors. The public
   // delete operation reparents children and may otherwise hit a sibling which
   // this same complete plan will replace or delete later.
@@ -156,6 +188,19 @@ export function applyRestoreV2(store: KnowbookStore, plan: RestorePlanV2, root: 
   const pathIds = new Map(archive.documents.map(source => [source.path, mapped('document', '', source.id)]))
   for (const source of archive.documents) for (const block of source.blocks) {
     db.prepare('UPDATE blocks SET document_id=? WHERE id=?').run(mapped('document', '', source.id), mapped('block', source.id, block.id))
+  }
+  const transferRetained = db.prepare(`UPDATE block_identities SET last_owner_id=? WHERE id=? AND state='retained'
+    AND last_owner_kind='document' AND last_owner_id=? AND created_at IS ?`)
+  const transferredLive = db.prepare(`SELECT 1 FROM block_identities i JOIN blocks b ON b.id=i.id
+    WHERE i.id=? AND i.state='live' AND i.last_owner_kind='document' AND i.last_owner_id=?
+      AND b.document_id=i.last_owner_id AND i.created_at IS ? AND b.created_at IS i.created_at`)
+  for (const transfer of plan.blockOwnerTransfers) {
+    // A planned live owner may have been deleted above. Both the surviving
+    // physical move and this retained transition must follow the same plan.
+    if (transferRetained.run(transfer.toDocumentId, transfer.id, transfer.fromDocumentId, transfer.createdAt).changes !== 1
+      && !transferredLive.get(transfer.id, transfer.toDocumentId, transfer.createdAt)) {
+      return failBackup('retained block ownership changed after restore planning')
+    }
   }
   const allBlockIds = new Map(archive.documents.flatMap(source => source.blocks.map(block => [block.id, mapped('block', source.id, block.id)] as const)))
   const rewriteBlockLinks = (content: string): string => {

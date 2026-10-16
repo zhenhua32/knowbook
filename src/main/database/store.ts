@@ -6,9 +6,10 @@ import { normalizeListStart, parseMarkdownBlocks } from '@shared/markdown'
 import { createHash, randomUUID } from 'node:crypto'
 import { SyncRepository } from '../sync/repository'
 import type { SyncRecord } from '../sync/model'
-import { existsSync, mkdirSync } from 'node:fs'
+import { constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
+import { tmpdir } from 'node:os'
 import type {
   AiConfig,
   AppearanceTheme,
@@ -77,6 +78,8 @@ import type {
 } from '@shared/contracts'
 import { appSchema, searchIndexSchema } from './schema'
 import { CURRENT_DATABASE_SCHEMA_VERSION } from './schema-version'
+import { assertNoUnsupportedSyncedContent, assertSyncedBlockSchema, installSyncedBlockSchema } from './synced-schema'
+import { BlockIdentityRepository } from './block-identities'
 import { DatabaseSavedViewNameError } from './saved-view-form'
 import { parseWorkspaceEventDetails } from '@shared/workspaceEventDetails'
 import { DocumentRecoveryRepository } from './document-recovery'
@@ -359,9 +362,46 @@ export interface ExportWorkspaceSnapshot {
   standaloneDatabases: ExportStandaloneDatabase[]
 }
 
+function assertSupportedDatabase(db: SqliteDatabase): number {
+  return db.transaction(() => {
+    const schemaVersion = db.pragma('user_version', { simple: true }) as number
+    if (schemaVersion > CURRENT_DATABASE_SCHEMA_VERSION) {
+      throw new Error(`Database schema version ${schemaVersion} is newer than supported version ${CURRENT_DATABASE_SCHEMA_VERSION}.`)
+    }
+    if (schemaVersion === CURRENT_DATABASE_SCHEMA_VERSION) {
+      assertSyncedBlockSchema(db)
+      assertNoUnsupportedSyncedContent(db)
+    }
+    return schemaVersion
+  })()
+}
+
+function preflightJournaledDatabase(databasePath: string): void {
+  const sidecars = ['-wal', '-journal'].filter(suffix => existsSync(databasePath + suffix))
+  if (!sidecars.length) return
+  // An unsupported reader must not recover/checkpoint the original just by
+  // opening and closing SQLite. A copied journal is authoritative too; copying
+  // SHM would instead reuse transient locks from another process. The normal
+  // profile lock excludes external writers during startup. Runtime readers
+  // still repeat the gate on their actual SQLite snapshot below.
+  const directory = mkdtempSync(join(tmpdir(), 'knowbook-database-preflight-'))
+  let inspection: SqliteDatabase | undefined
+  try {
+    const copy = join(directory, 'workspace.db')
+    copyFileSync(databasePath, copy, constants.COPYFILE_EXCL)
+    for (const suffix of sidecars) copyFileSync(databasePath + suffix, copy + suffix, constants.COPYFILE_EXCL)
+    inspection = new Database(copy, { fileMustExist: true })
+    assertSupportedDatabase(inspection)
+  } finally {
+    inspection?.close()
+    rmSync(directory, { recursive: true, force: true })
+  }
+}
+
 export class KnowbookStore {
   private readonly db: SqliteDatabase
   private readonly markdownLinks: MarkdownLinkIndex
+  private readonly blockIdentities: BlockIdentityRepository
   readonly pluginPlatform: SqlitePluginPlatformRepository
   readonly assistantSessions: SqliteAssistantSessionRepository
   readonly documentRecovery: DocumentRecoveryRepository
@@ -377,36 +417,37 @@ export class KnowbookStore {
   constructor(private readonly databasePath: string) {
     mkdirSync(dirname(databasePath), { recursive: true })
     const databaseAlreadyExists = existsSync(databasePath)
+    if (databaseAlreadyExists) preflightJournaledDatabase(databasePath)
     this.db = new Database(databasePath)
     this.markdownLinks = new MarkdownLinkIndex(this.db, (id) => {
       if (!this.restoringTrashedDocument) this.documentRecovery?.checkpoint(id)
     })
-    this.db.pragma('journal_mode = WAL')
-    this.db.pragma('foreign_keys = ON')
-    this.db.pragma('busy_timeout = 5000')
-    const schemaVersion = this.db.pragma('user_version', { simple: true }) as number
-    if (schemaVersion > CURRENT_DATABASE_SCHEMA_VERSION) {
+    try {
+      const schemaVersion = assertSupportedDatabase(this.db)
+      this.db.pragma('journal_mode = WAL')
+      this.db.pragma('foreign_keys = ON')
+      this.db.pragma('busy_timeout = 5000')
+      if (databaseAlreadyExists && schemaVersion < CURRENT_DATABASE_SCHEMA_VERSION) {
+        this.createMigrationSafetyCopy(schemaVersion, CURRENT_DATABASE_SCHEMA_VERSION)
+      }
+      this.db.exec(appSchema)
+      // Local templates are independent snapshots, with no source-document FK:
+      // deleting a source must not remove its template or attachment references.
+      this.db.exec(`CREATE TABLE IF NOT EXISTS document_templates (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL,
+        title TEXT NOT NULL, summary TEXT NOT NULL, blocks_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      )`)
+      this.migrateDatabase(schemaVersion)
+      this.blockIdentities = new BlockIdentityRepository(this.db)
+      if (this.readSetting('workspace.initialized') !== 'true') this.saveSetting('workspace.initialized', 'true')
+      this.pluginPlatform = new SqlitePluginPlatformRepository(this.db)
+      this.assistantSessions = new SqliteAssistantSessionRepository(this.db)
+      this.documentRecovery = new DocumentRecoveryRepository(this.db)
+    } catch (error) {
       this.db.close()
-      throw new Error(
-        `Database schema version ${schemaVersion} is newer than supported version ${CURRENT_DATABASE_SCHEMA_VERSION}.`
-      )
+      throw error
     }
-    if (databaseAlreadyExists && schemaVersion < CURRENT_DATABASE_SCHEMA_VERSION) {
-      this.createMigrationSafetyCopy(schemaVersion, CURRENT_DATABASE_SCHEMA_VERSION)
-    }
-    this.db.exec(appSchema)
-    // Local templates are independent snapshots, with no source-document FK:
-    // deleting a source must not remove its template or attachment references.
-    this.db.exec(`CREATE TABLE IF NOT EXISTS document_templates (
-      id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL,
-      title TEXT NOT NULL, summary TEXT NOT NULL, blocks_json TEXT NOT NULL,
-      created_at TEXT NOT NULL
-    )`)
-    this.migrateDatabase(schemaVersion)
-    if (this.readSetting('workspace.initialized') !== 'true') this.saveSetting('workspace.initialized', 'true')
-    this.pluginPlatform = new SqlitePluginPlatformRepository(this.db)
-    this.assistantSessions = new SqliteAssistantSessionRepository(this.db)
-    this.documentRecovery = new DocumentRecoveryRepository(this.db)
   }
 
   private migrateDatabase(schemaVersion: number): void {
@@ -517,6 +558,13 @@ export class KnowbookStore {
       if (schemaVersion < 24) this.db.pragma('user_version = 24')
       // V24 readers cannot preserve database-view atoms or restore identities.
       if (schemaVersion < 25) this.db.pragma('user_version = 25')
+      if (schemaVersion < 26) {
+        // Routes bind stable identities before physical content may change owner.
+        // The constructor has already written the pre-migration safety copy.
+        installSyncedBlockSchema(this.db)
+        assertSyncedBlockSchema(this.db)
+        this.db.pragma('user_version = 26')
+      }
     })
   }
 
@@ -1440,6 +1488,11 @@ export class KnowbookStore {
       WHERE document_id = ?
     `).all(documentId) as ExportBlockRow[]
     const existingBlockById = new Map(existingBlocks.map((block) => [block.id, block]))
+    // The ordinary writer has no group/instance guards. Reference edits use
+    // the separate strict structure transaction instead of legacy normalization.
+    if (existingBlocks.some(block => block.type === 'synced-block') || persistedBlocks.some(block => block.type === 'synced-block')) {
+      throw new Error('同步块宿主须通过完整结构事务保存，草稿仍保留。')
+    }
     const persistedBlockIds = new Set(persistedBlocks.map((block) => block.id))
     const oldPath = document.path
     const newPath = parentPath ? `${parentPath}/${normalizedTitle}` : normalizedTitle
@@ -1530,6 +1583,8 @@ export class KnowbookStore {
     `)
 
     const transaction = this.db.transaction(() => {
+      this.blockIdentities.assertDocumentWrite(documentId, persistedBlocks.map(block => block.id))
+      const identities = this.blockIdentities.getMany(persistedBlocks.map(block => block.id))
       if (newPath !== oldPath) this.preserveBlockRoutes(pathChangedDocuments)
       if (!internal.skipCheckpoint && !this.restoringTrashedDocument) this.documentRecovery.checkpoint(documentId)
       if (metadataChanged) {
@@ -1581,7 +1636,7 @@ export class KnowbookStore {
             block.listStart ?? null,
             block.markdownFormat ? JSON.stringify(block.markdownFormat) : null,
             highlight,
-            now,
+            identities.get(block.id)?.createdAt ?? now,
             now
           )
         }
@@ -3181,9 +3236,9 @@ export class KnowbookStore {
     return new SyncRepository(this.db, this, () => this.getDefaultDocumentDatabaseId()).snapshot()
   }
 
-  applySyncRecords(records: SyncRecord[]): void {
+  applySyncRecords(records: SyncRecord[], releaseProofs: SyncRecord[] = []): void {
     this.runInBulkDocumentMutation(() => {
-      new SyncRepository(this.db, this, () => this.getDefaultDocumentDatabaseId()).apply(records)
+      new SyncRepository(this.db, this, () => this.getDefaultDocumentDatabaseId()).apply(records, releaseProofs)
       this.deferredFullLinkResyncRequested = true
     })
   }

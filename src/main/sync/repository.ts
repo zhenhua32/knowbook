@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3'
 import type { KnowbookStore } from '../database/store'
+import { BlockIdentityRepository } from '../database/block-identities'
 import { mapDatabaseViewReferences, parseDatabaseViewPayload, serializeDatabaseViewPayload } from '../../shared/databaseViewBlock'
 import { canonicalJson, recordKey, validateRecord, SYNC_TABLE_COLUMNS, SYNC_TABLES, type SyncRecord, type SyncRow, type SyncDatabases, type SyncDocument } from './model'
 
@@ -16,7 +17,9 @@ export class SyncBlockOwnershipError extends Error {
   }
 }
 
-type SyncBlockTransferPlan = { id: string; fromId: string; fromPath: string; toId: string }
+type SyncBlockTransferPlan = { id: string; fromId: string; toId: string; createdAt: string | null } & (
+  { kind: 'live'; fromPath: string } | { kind: 'retained'; fromPath: null }
+)
 
 function mapDocumentDatabaseViews(content: SyncDocument['content'], sourceCatalogId: string, targetCatalogId: string): SyncDocument['content'] {
   return { ...content, blocks: content.blocks.map(block => {
@@ -46,28 +49,71 @@ export function preflightSyncCatalogReferences(records: Iterable<SyncRecord>, ca
 }
 
 /** Read-only preflight is also used before remote manifest publication. */
-export function preflightSyncBlockTransfers(db: Database.Database, records: SyncRecord[], deferredDocuments: SyncDocument[] = []): SyncBlockTransferPlan[] {
+export function preflightSyncBlockTransfers(db: Database.Database, records: SyncRecord[], deferredDocuments: SyncDocument[] = [], releaseProofs: SyncRecord[] = []): SyncBlockTransferPlan[] {
   const documentIds = new Set(records.filter(record => record.kind === 'document').map(record => record.id))
   const deletedIds = new Set(records.filter(record => record.kind === 'deleted').map(record => record.id))
-  const keys = new Set<string>(), incomingOwners = new Map<string, string>()
+  const versions = new Map<string, SyncRecord>(), incomingOwners = new Map<string, string>()
   for (const record of records) {
     validateRecord(record, recordKey(record))
     const key = recordKey(record)
-    if (keys.has(key)) throw new Error('同步批次包含重复文档，未修改本地数据。')
-    keys.add(key)
+    if (versions.has(key)) throw new Error('同步批次包含重复文档，未修改本地数据。')
+    versions.set(key, record)
     if (record.kind !== 'document') continue
     for (const block of record.content.blocks) {
       if (incomingOwners.has(block.id!)) throw new Error('同步批次包含重复块 ID，未修改本地数据。')
       incomingOwners.set(block.id!, record.id)
     }
   }
+  // The service supplies exact accepted/published versions, including an old
+  // owner already equal to the remote version and therefore absent from apply.
+  // These proofs never authorize moving a live row without its checkpoint.
+  const proofs = new Map<string, SyncRecord>()
+  for (const proof of releaseProofs) {
+    const key = recordKey(proof)
+    validateRecord(proof, key)
+    const selected = versions.get(key)
+    if (proofs.has(key) || selected && canonicalJson(selected) !== canonicalJson(proof)) {
+      throw new Error('同步批次的来源释放证明重复或与选定版本不一致，未修改本地数据。')
+    }
+    proofs.set(key, proof)
+  }
+  const releases = (record: SyncRecord | undefined, id: string): boolean => record?.kind === 'deleted'
+    || record?.kind === 'document' && !record.content.blocks.some(block => block.id === id)
   const transfers: SyncBlockTransferPlan[] = []
-  const existingOwner = db.prepare('SELECT block.document_id AS id, document.path FROM blocks AS block JOIN documents AS document ON document.id = block.document_id WHERE block.id = ?')
+  const identities = new BlockIdentityRepository(db)
+  const existingIdentities = identities.getMany([...incomingOwners.keys()])
+  type PhysicalOwner = { id: string; kind: 'document' | 'group'; owner_id: string; created_at: string; path: string | null }
+  const incomingIds = JSON.stringify([...incomingOwners.keys()])
+  const physicalOwners = new Map<string, PhysicalOwner>()
+  const physicalRows = db.prepare(`SELECT b.id,'document' AS kind,b.document_id AS owner_id,b.created_at,d.path
+    FROM blocks b LEFT JOIN documents d ON d.id=b.document_id WHERE b.id IN (SELECT value FROM json_each(?))
+    UNION ALL SELECT id,'group' AS kind,group_id AS owner_id,created_at,NULL AS path
+    FROM synced_group_blocks WHERE id IN (SELECT value FROM json_each(?))`).all(incomingIds, incomingIds) as PhysicalOwner[]
+  for (const physical of physicalRows) {
+    const identity = existingIdentities.get(physical.id)
+    if (physicalOwners.has(physical.id) || !identity || identity.state !== 'live'
+      || identity.owner.kind !== physical.kind || identity.owner.id !== physical.owner_id || identity.createdAt !== physical.created_at) {
+      throw new Error('同步块身份与实际归属不一致，未修改本地数据。')
+    }
+    physicalOwners.set(physical.id, physical)
+  }
   for (const [id, toId] of incomingOwners) {
-    const old = existingOwner.get(id) as { id: string; path: string } | undefined
-    if (!old || old.id === toId) continue
-    if (!deletedIds.has(old.id) && !documentIds.has(old.id)) throw new SyncBlockOwnershipError(old.id)
-    transfers.push({ id, fromId: old.id, fromPath: old.path, toId })
+    const identity = existingIdentities.get(id)
+    const physical = physicalOwners.get(id)
+    if (!identity) continue
+    if (identity.state === 'live' && !physical) throw new Error('同步块身份的实际归属缺失，未修改本地数据。')
+    if (identity.owner.kind !== 'document') throw new Error('同步批次不能认领由同步块或保留来源占用的块 ID，未修改本地数据。')
+    const fromId = identity.owner.id
+    if (fromId === toId) continue
+    const selected = versions.get(`doc:${fromId}`)
+    if (physical) {
+      if (!releases(selected, id)) throw new SyncBlockOwnershipError(fromId)
+      if (physical.path === null) throw new Error('同步块的实际来源文档缺失，未修改本地数据。')
+      transfers.push({ kind: 'live', id, fromId, fromPath: physical.path, toId, createdAt: identity.createdAt })
+    } else {
+      if (!releases(selected, id) && !releases(proofs.get(`doc:${fromId}`), id)) throw new SyncBlockOwnershipError(fromId)
+      transfers.push({ kind: 'retained', id, fromId, fromPath: null, toId, createdAt: identity.createdAt })
+    }
   }
   // A receiving target can be held back by its own conflict. Do not delete the
   // source projection before the complete paired target version is accepted.
@@ -78,7 +124,8 @@ export function preflightSyncBlockTransfers(db: Database.Database, records: Sync
   }
   const participating = [...new Set([...documentIds, ...deletedIds])]
   if (pendingOwners.size && participating.length) {
-    const oldBlocks = db.prepare('SELECT id, document_id FROM blocks WHERE document_id IN (SELECT value FROM json_each(?))')
+    const oldBlocks = db.prepare(`SELECT id, last_owner_id AS document_id FROM block_identities
+      WHERE last_owner_kind = 'document' AND last_owner_id IN (SELECT value FROM json_each(?))`)
       .all(JSON.stringify(participating)) as Array<{ id: string; document_id: string }>
     for (const block of oldBlocks) {
       const pending = pendingOwners.get(block.id)
@@ -155,8 +202,8 @@ export class SyncRepository {
   }
 
   /** Caller commits sync cursors in this same SQLite transaction. */
-  apply(records: SyncRecord[]): void {
-    const transfers = preflightSyncBlockTransfers(this.db, records)
+  apply(records: SyncRecord[], releaseProofs: SyncRecord[] = []): void {
+    const transfers = preflightSyncBlockTransfers(this.db, records, [], releaseProofs)
     preflightSyncCatalogReferences(records, this.catalogId())
     const now = new Date().toISOString()
     const documents = records.filter((record): record is SyncDocument => record.kind === 'document')
@@ -176,12 +223,19 @@ export class SyncRepository {
     const clearSources = this.db.prepare('DELETE FROM markdown_link_sources WHERE source_document_id = ?')
     for (const id of new Set([...documentIds, ...deletedIds])) clearSources.run(id)
     const route = this.db.prepare('INSERT OR IGNORE INTO document_block_routes (document_path, block_id) VALUES (?, ?)')
-    const transfer = this.db.prepare('UPDATE blocks SET document_id = ? WHERE id = ? AND document_id = ?')
+    const transfer = this.db.prepare(`UPDATE blocks SET document_id = ? WHERE id = ? AND document_id = ? AND created_at IS ?
+      AND EXISTS(SELECT 1 FROM block_identities i WHERE i.id = blocks.id AND i.state = 'live'
+        AND i.last_owner_kind = 'document' AND i.last_owner_id = blocks.document_id AND i.created_at IS blocks.created_at)`)
+    const transferRetained = this.db.prepare(`UPDATE block_identities SET last_owner_id = ?
+      WHERE id = ? AND last_owner_kind = 'document' AND last_owner_id = ? AND state = 'retained' AND created_at IS ?
+        AND NOT EXISTS(SELECT 1 FROM blocks WHERE blocks.id = block_identities.id)
+        AND NOT EXISTS(SELECT 1 FROM synced_group_blocks WHERE synced_group_blocks.id = block_identities.id)`)
     for (const move of transfers) {
       // Protocol v1 does not export historical routes. Preserve the old path
       // observed on this device; never invent routes for an unseen history.
-      route.run(move.fromPath, move.id)
-      if (transfer.run(move.toId, move.id, move.fromId).changes !== 1) throw new Error('同步块归属已变化，未修改本地数据。')
+      if (move.kind === 'live') route.run(move.fromPath, move.id)
+      const write = move.kind === 'live' ? transfer : transferRetained
+      if (write.run(move.toId, move.id, move.fromId, move.createdAt).changes !== 1) throw new Error('同步块归属已变化，未修改本地数据。')
     }
     // A deleted source can now cascade only its remaining blocks.
     for (const record of deleted) this.db.prepare('DELETE FROM documents WHERE id = ?').run(record.id)

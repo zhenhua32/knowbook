@@ -11,7 +11,7 @@ import { createEphemeralCredentialStorage } from '../src/main/credential-storage
 import { DEFAULT_WEBDAV_SYNC_CONFIG } from '../src/shared/webdav-sync'
 import { attachmentMarkdown } from '../src/shared/attachments'
 import { collectMarkdownDestinations } from '../src/shared/markdownLinks'
-import { canonicalJson, hashBytes, parseManifest, recordHash, validateRecord, type SyncDocument } from '../src/main/sync/model'
+import { canonicalJson, hashBytes, parseManifest, recordHash, validateRecord, type SyncDocument, type SyncRecord } from '../src/main/sync/model'
 import { normalizeWebDavConfig, WebDavClient, type WebDavRequestActivity } from '../src/main/sync/webdav-client'
 import { createWebDavServer } from './helpers/webdav-server'
 import { readWebDavEtag } from '../src/main/sync/webdav-properties'
@@ -848,6 +848,54 @@ function receivedMoveState(store: KnowbookStore) {
         return { key: row.key, baseline: value.baseline, lastSyncAt: value.lastSyncAt, workspaceId: value.workspaceId }
       })]))
 }
+
+test('real WebDAV receivers reclaim retained IDs using an already matching source version without rewriting that source', async context => {
+  for (const deleted of [false, true]) await context.test(deleted ? 'matching source tombstone' : 'matching source document', () => fixture(async (a, b, server) => {
+    const source = moveFixtureDocument(a.store, 'Accepted Source', [
+      { id: 'accepted-retained', content: 'Moved body' }, { id: 'accepted-keep', content: 'Keep body' }
+    ])
+    const target = moveFixtureDocument(a.store, 'Accepted Target', [{ id: 'accepted-target', content: 'Target body' }])
+    await a.sync.sync(); await b.sync.sync()
+    // This receiver actually observed both paths. Retained ownership cannot be
+    // used to invent a path after the physical block has already disappeared.
+    const original = b.store.documentRecovery.readContent(source)
+    b.store.updateDocument(source, { ...original, title: 'Observed Source' })
+    b.store.updateDocument(source, original)
+    const db = b.store.getUnsafeDatabaseHandle()
+    const born = db.prepare('SELECT created_at FROM blocks WHERE id=?').get('accepted-retained')
+    moveFixture(a.store, source, target, 'accepted-retained')
+    if (deleted) { a.store.deleteDocument(source); b.store.deleteDocument(source) }
+    else b.store.updateDocument(source, { ...original, blocks: original.blocks.filter(block => block.id !== 'accepted-retained') })
+    await a.sync.sync()
+    const manifest = Buffer.from(server.files.get('/KnowBook/manifest.json')!)
+    const selected = parseManifest(manifest)
+    const localSource = b.store.getSyncRecords().get('doc:' + source) ?? { kind: 'deleted' as const, id: source }
+    assert.equal(recordHash(localSource), selected.entries['doc:' + source], 'The releasing version is already equal and must take the accepted path')
+    assert.deepEqual(db.prepare('SELECT last_owner_id,state FROM block_identities WHERE id=?').get('accepted-retained'), { last_owner_id: source, state: 'retained' })
+    const sourceBefore = b.store.getDocumentDetail(source), historyBefore = b.store.documentRecovery.listHistory(source)
+    const apply = b.store.applySyncRecords.bind(b.store), batches: Array<{ records: SyncRecord[]; proofs: SyncRecord[] }> = []
+    b.store.applySyncRecords = ((records: SyncRecord[], proofs: SyncRecord[] = []) => {
+      batches.push({ records, proofs }); return apply(records, proofs)
+    }) as KnowbookStore['applySyncRecords']
+    await b.sync.sync()
+    assert.equal(batches.length, 1)
+    assert.deepEqual(batches[0].records.filter(record => record.kind === 'document').map(record => record.id), [target])
+    assert.ok(!batches[0].records.some(record => record.id === source), 'No source upsert/delete is manufactured to justify the transfer')
+    const proof = batches[0].proofs.find(record => record.id === source)!
+    assert.equal(recordHash(proof), selected.entries['doc:' + source])
+    assert.equal(proof.kind === 'document' && proof.content.blocks.some(block => block.id === 'accepted-retained'), false)
+    assert.deepEqual(b.store.getDocumentDetail(source), sourceBefore)
+    assert.deepEqual(b.store.documentRecovery.listHistory(source), historyBefore)
+    assert.equal(b.store.getDocumentDetail(target)!.blocks.find(block => block.id === 'accepted-retained')!.content, 'Moved body')
+    assert.deepEqual(db.prepare('SELECT created_at FROM blocks WHERE id=?').get('accepted-retained'), born)
+    assert.equal(b.store.getBlockReference('Observed Source', 'accepted-retained')!.documentId, target)
+    assert.equal(b.store.getBlockReference('Unobserved Source', 'accepted-retained'), null)
+    assert.deepEqual(server.files.get('/KnowBook/manifest.json'), manifest)
+    assert.equal(b.sync.getStatus().conflicts.length, 0)
+    await b.sync.sync()
+    assert.equal(batches.length, 1, 'An already converged retry creates no additional local mutation batch')
+  }))
+})
 
 test('two real WebDAV devices sync block ownership moves and reverse moves with stable IDs, timestamps and old routes', () => fixture(async (a, b) => {
   const source = moveFixtureDocument(a.store, 'Move Source', [{ id: 'sync-move', content: '[self](#^sync-move) [keep](#^sync-keep)' }, { id: 'sync-keep', content: 'Source keeper' }])

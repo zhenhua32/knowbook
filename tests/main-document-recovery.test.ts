@@ -73,8 +73,16 @@ test('failed delete and failed restore leave their original recoverable data int
   store.moveDocument(conflict, null)
   const blockId = store.getDocumentDetail(id)!.blocks[0].id
   store.deleteDocument(id)
-  // A later import may reuse a block ID; never silently overwrite its owner.
-  store.updateDocument(conflict, { ...store.getDocumentDetail(conflict)!, blocks: [{ id: blockId, type: 'paragraph', content: 'Owned elsewhere', checked: false, depth: 0 }] })
+  const imported = { ...store.getDocumentDetail(conflict)!, blocks: [{ id: blockId, type: 'paragraph', content: 'Owned elsewhere', checked: false, depth: 0 }] }
+  assert.throws(() => store.updateDocument(conflict, imported), /块身份.*保留/)
+  // Only a private, prevalidated import transaction can transfer this retained
+  // identity. Arrange that kernel state without weakening the restore oracle.
+  store.getUnsafeDatabaseHandle().transaction(() => {
+    const changed = store.getUnsafeDatabaseHandle().prepare(`UPDATE block_identities SET last_owner_id=?
+      WHERE id=? AND state='retained' AND last_owner_kind='document' AND last_owner_id=?`).run(conflict, blockId, id)
+    assert.equal(changed.changes, 1)
+    store.updateDocument(conflict, imported)
+  })()
   assert.throws(() => store.restoreTrashedDocument(id), /回收站中的块已移到其他文档/)
   assert.equal(store.getDocumentDetail(id), null)
   assert.equal(store.documentRecovery.listTrash()[0].id, id)
@@ -105,7 +113,7 @@ test('no-op saves do not create history and invalid updates roll back their chec
   const detail = store.getDocumentDetail(id)!
   store.updateDocument(id, detail)
   assert.equal(store.documentRecovery.listHistory(id).length, 0)
-  assert.throws(() => store.updateDocument(id, { ...detail, blocks: store.getDocumentDetail(other)!.blocks }), /UNIQUE/)
+  assert.throws(() => store.updateDocument(id, { ...detail, blocks: store.getDocumentDetail(other)!.blocks }), /块身份.*保留/)
   assert.equal(store.documentRecovery.listHistory(id).length, 0)
   assert.deepEqual(store.getDocumentDetail(id)!.blocks, detail.blocks)
 }))

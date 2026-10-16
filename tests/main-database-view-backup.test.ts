@@ -12,7 +12,129 @@ import { createDefaultDatabaseViewConfig } from '../src/shared/database-workspac
 import { parseDatabaseViewPayload, serializeDatabaseViewPayload } from '../src/shared/databaseViewBlock'
 import { parseMarkdownBackupDocument } from '../src/shared/markdown'
 import { databaseFile, parseArchiveV2, readV2Header } from '../src/main/backup/v2-format'
+import { applyRestoreV2, planRestoreV2 } from '../src/main/backup/v2-restore'
 import { KNOWBOOK_BACKUP_MARKER } from '../src/shared/markdownFrontmatter'
+
+test('V2 reclaims a moved then deleted ordinary block only through the complete restore plan and preserves its birth time and routes', () => stores(async (store, _target, root) => {
+  const a = store.createDocument(null), b = store.createDocument(null)
+  const block = { id: 'restore-retained', type: 'paragraph', content: 'Original', checked: false, depth: 0 }
+  store.updateDocument(a, { title: 'RestoreA', summary: '', blocks: [block] })
+  store.updateDocument(b, { title: 'RestoreB', summary: '', blocks: [{ ...block, id: 'restore-b', content: 'B' }] })
+  const db = store.getUnsafeDatabaseHandle()
+  const born = db.prepare('SELECT created_at FROM blocks WHERE id=?').get(block.id)
+  const backup = join(root, 'retained')
+  await new MarkdownBackupService(store, backup).exportAll()
+  store.updateDocument(a, { title: 'RenamedA', summary: '', blocks: [block] })
+  const moved = store.moveDocumentBlocks({ fromDocumentId: a, toDocumentId: b, blockIds: [block.id],
+    expectedFromUpdatedAt: store.getDocumentDetail(a)!.updatedAt, expectedToUpdatedAt: store.getDocumentDetail(b)!.updatedAt })
+  assert.equal(moved.state, 'applied')
+  const detail = store.getDocumentDetail(b)!
+  store.updateDocument(b, { title: detail.title, summary: detail.summary, blocks: detail.blocks.filter(item => item.id !== block.id) })
+  assert.deepEqual(db.prepare('SELECT last_owner_id,state FROM block_identities WHERE id=?').get(block.id), { last_owner_id: b, state: 'retained' })
+  const routes = db.prepare('SELECT * FROM document_block_routes WHERE block_id=? ORDER BY document_path').all(block.id)
+  assert.ok(routes.length)
+  assert.throws(() => store.updateDocument(a, { title: 'RenamedA', summary: '', blocks: [block] }), /块身份.*保留/)
+  const restore = new MarkdownRestoreService(store), preview = await restore.previewFromDirectory(backup)
+  const tables = ['documents', 'blocks', 'block_identities', 'document_block_routes', 'document_history', 'document_block_moves', 'backup_restore_identities']
+  const state = () => tables.map(table => db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all())
+  const beforeFailure = state(), update = store.updateDocument.bind(store)
+  store.updateDocument = ((...args: Parameters<KnowbookStore['updateDocument']>) => {
+    const result = update(...args)
+    throw new Error('Injected after retained owner restoration', { cause: result })
+  }) as KnowbookStore['updateDocument']
+  try { await assert.rejects(restore.restoreFromDirectory(backup), /Injected after retained owner restoration/) }
+  finally { store.updateDocument = update }
+  assert.deepEqual(state(), beforeFailure, 'Failed restore rolls back ownership, birth time, routes and recovery history together')
+  const result = await restore.restoreFromDirectory(backup)
+  assert.equal(result.restored, preview.restored)
+  assert.equal(store.getDocumentDetail(a)!.blocks.find(item => item.id === block.id)!.content, 'Original')
+  assert.deepEqual(db.prepare('SELECT created_at FROM blocks WHERE id=?').get(block.id), born)
+  assert.deepEqual(db.prepare('SELECT last_owner_id,state FROM block_identities WHERE id=?').get(block.id), { last_owner_id: a, state: 'live' })
+  for (const route of routes) assert.ok(db.prepare('SELECT 1 FROM document_block_routes WHERE document_path=? AND block_id=?')
+    .get((route as { document_path: string }).document_path, block.id))
+}))
+
+test('V2 maps occupied group, reserved and unrelated retained document identities to fresh blocks and rewrites exact block links', async () => {
+  for (const kind of ['group', 'reserved', 'document']) await stores(async (source, target, root) => {
+    const id = source.createDocument(null)
+    source.updateDocument(id, { title: 'Archived', summary: '', blocks: [
+      { id: 'occupied-retained', type: 'paragraph', content: 'Original', checked: false, depth: 0 },
+      { id: 'retained-link', type: 'paragraph', content: '[target](#occupied-retained) [[#^occupied-retained]]', checked: false, depth: 0 }
+    ] })
+    const db = target.getUnsafeDatabaseHandle()
+    if (kind === 'document') {
+      const owner = target.createDocument(null)
+      target.updateDocument(owner, { title: 'Unrelated', summary: '', blocks: [
+        { id: 'occupied-retained', type: 'paragraph', content: 'Unrelated history', checked: false, depth: 0 }
+      ] })
+      target.deleteDocument(owner)
+    } else db.prepare("INSERT INTO block_identities VALUES(?,?,?,'retained',NULL)").run('occupied-retained', kind, 'unrelated-owner')
+    const original = db.prepare('SELECT * FROM block_identities WHERE id=?').get('occupied-retained')
+    const backup = join(root, kind)
+    await new MarkdownBackupService(source, backup).exportAll()
+    const restore = new MarkdownRestoreService(target)
+    await restore.previewFromDirectory(backup)
+    assert.deepEqual(db.prepare('SELECT * FROM block_identities WHERE id=?').get('occupied-retained'), original)
+    await restore.restoreFromDirectory(backup)
+    const restored = target.getDocumentDetail(id)!, block = restored.blocks.find(item => item.content === 'Original')!
+    assert.notEqual(block.id, 'occupied-retained', kind)
+    assert.equal(restored.blocks.find(item => item.id === 'retained-link')!.content, `[target](#${block.id}) [[#^${block.id}]]`)
+    assert.deepEqual(db.prepare('SELECT * FROM block_identities WHERE id=?').get('occupied-retained'), original)
+    await restore.restoreFromDirectory(backup)
+    assert.equal(target.getDocumentDetail(id)!.blocks.find(item => item.content === 'Original')!.id, block.id)
+  })
+})
+
+test('V2 rejects a plan if only the retained identity ledger changes after planning, before any workspace mutation', () => stores(async (source, target, root) => {
+  const backup = join(root, 'plan-ledger')
+  await new MarkdownBackupService(source, backup).exportAll()
+  const inputs = ['__knowbook/databases/index.md', '__knowbook/databases/catalog.md'].map(path => ({
+    filePath: join(backup, path), relativePath: path.slice(0, -3), markdown: readFileSync(join(backup, path), 'utf8')
+  }))
+  const archive = parseArchiveV2(inputs, inputs.map(item => parseMarkdownBackupDocument(item.markdown)))!
+  const plan = planRestoreV2(target, archive), db = target.getUnsafeDatabaseHandle()
+  db.prepare("INSERT INTO block_identities VALUES('concurrent-retained','reserved','another-restore','retained',NULL)").run()
+  const before = target.getExportWorkspaceSnapshot()
+  const identities = db.prepare('SELECT * FROM block_identities ORDER BY rowid').all()
+  assert.throws(() => target.runInTransaction(() => applyRestoreV2(target, plan, backup)), /workspace changed/)
+  assert.deepEqual(target.getExportWorkspaceSnapshot(), before)
+  assert.deepEqual(db.prepare('SELECT * FROM block_identities ORDER BY rowid').all(), identities)
+}))
+
+test('V2 preserves the ID and birth time of a live block whose old document is deleted by the same complete plan', () => stores(async (source, target, root) => {
+  const id = source.createDocument(null), owner = target.createDocument(null)
+  const block = { id: 'planned-live-transfer', type: 'paragraph', content: 'Archived value', checked: false, depth: 0 }
+  source.updateDocument(id, { title: 'Restored', summary: '', blocks: [block] })
+  target.updateDocument(owner, { title: 'Removed by full restore', summary: '', blocks: [{ ...block, content: 'Current value' }] })
+  assert.equal(target.getBlockReference('Removed by full restore', block.id)!.documentId, owner)
+  const db = target.getUnsafeDatabaseHandle(), born = db.prepare('SELECT created_at FROM blocks WHERE id=?').get(block.id)
+  const backup = join(root, 'live-transfer')
+  await new MarkdownBackupService(source, backup).exportAll()
+  const restore = new MarkdownRestoreService(target), preview = await restore.previewFromDirectory(backup)
+  assert.equal(preview.deleted, 1)
+  await restore.restoreFromDirectory(backup)
+  assert.equal(target.getDocumentDetail(owner), null)
+  assert.equal(target.getDocumentDetail(id)!.blocks[0].id, block.id)
+  assert.equal(target.getDocumentDetail(id)!.blocks[0].content, 'Archived value')
+  assert.deepEqual(db.prepare('SELECT created_at FROM blocks WHERE id=?').get(block.id), born)
+  assert.deepEqual(db.prepare('SELECT last_owner_id,state FROM block_identities WHERE id=?').get(block.id), { last_owner_id: id, state: 'live' })
+  assert.equal(target.getBlockReference('Removed by full restore', block.id)!.documentId, id)
+}))
+
+test('V2 records the last observed current path before temporary restore renaming without changing the block owner', () => stores(async (store, _target, root) => {
+  const id = store.createDocument(null)
+  const block = { id: 'restore-same-owner', type: 'paragraph', content: 'Body', checked: false, depth: 0 }
+  store.updateDocument(id, { title: 'Archive path', summary: '', blocks: [block] })
+  const backup = join(root, 'same-owner-route')
+  await new MarkdownBackupService(store, backup).exportAll()
+  store.updateDocument(id, { title: 'Current path', summary: '', blocks: [block] })
+  const db = store.getUnsafeDatabaseHandle()
+  assert.equal(db.prepare('SELECT 1 FROM document_block_routes WHERE document_path=? AND block_id=?').get('Current path', block.id), undefined)
+  await new MarkdownRestoreService(store).restoreFromDirectory(backup)
+  assert.equal(store.getDocumentDetail(id)!.path, 'Archive path')
+  assert.equal(store.getBlockReference('Current path', block.id)!.documentId, id)
+  assert.equal(store.getBlockReference('Unobserved path', block.id), null)
+}))
 
 async function stores(run: (source: KnowbookStore, target: KnowbookStore, root: string) => Promise<void>) {
   const root = mkdtempSync(join(tmpdir(), 'knowbook-backup-v2-'))

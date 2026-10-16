@@ -64,13 +64,24 @@ test('restore accepts a damaged current database, preserves DB/WAL/SHM, and disa
 })
 
 test('invalid backup content, future schema, missing KnowBook tables, and active WAL never replace current DB', async () => {
-  for (const mode of ['corrupt', 'future', 'wrong-schema', 'wal']) await fixture(async (root, backup, database) => {
+  for (const mode of ['corrupt', 'future', 'wrong-schema', 'wal', 'identity-guard', 'workspace-id', 'synced-content']) await fixture(async (root, backup, database) => {
     writeFileSync(database, 'keep original')
     if (mode === 'corrupt') writeFileSync(backup, 'not a database')
     else if (mode === 'wal') writeFileSync(`${backup}-wal`, 'active WAL')
     else {
       const db = new Database(backup)
       if (mode === 'future') db.pragma('user_version=999')
+      else if (mode === 'identity-guard') db.exec('DROP TRIGGER trg_synced_identity_delete')
+      else if (mode === 'workspace-id') db.exec('DELETE FROM synced_workspace_state')
+      else if (mode === 'synced-content') {
+        const id = randomUUID(), now = new Date().toISOString()
+        const document = db.prepare('SELECT id,path FROM documents LIMIT 1').get() as { id: string; path: string }
+        db.prepare(`INSERT INTO synced_groups(id,creation_id,created_at,origin_json,revision,topology_revision,history_cursor)
+          VALUES(?,?,?,?,?,?,?)`).run(id, randomUUID(), now, JSON.stringify({ version: 1, documentId: document.id,
+            pathAtCreation: document.path, firstInstanceId: randomUUID() }), randomUUID(), randomUUID(), randomUUID())
+        db.prepare(`INSERT INTO synced_group_blocks(id,group_id,sort_order,type,content,created_at)
+          VALUES(?,?,0,'paragraph','Future canonical body',?)`).run(randomUUID(), id, now)
+      }
       else db.exec('DROP TABLE app_settings')
       db.close()
     }

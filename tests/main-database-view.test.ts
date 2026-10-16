@@ -102,14 +102,14 @@ test('document templates clone database host identities while keeping configurat
   assert.equal(store.listDocumentTemplates().find(item => item.id === template.id)!.blocks[1].content, content)
 }))
 
-test('schema24 upgrade first preserves an exact safety copy and then gates database atoms at schema25', () => fixture((store, _other, root) => {
+test('schema24 upgrade first preserves an exact safety copy before the current semantic gate', () => fixture((store, _other, root) => {
   const id = insert(store, 'missing-source'), before = store.getDocumentDetail(id)!
   const path = store.getDatabasePath(); store.getUnsafeDatabaseHandle().pragma('user_version = 24'); store.destroy()
   const reopened = new KnowbookStore(path)
   try {
     assert.equal(reopened.getUnsafeDatabaseHandle().pragma('user_version', { simple: true }), CURRENT_DATABASE_SCHEMA_VERSION)
-    assert.equal(CURRENT_DATABASE_SCHEMA_VERSION, 25); assert.deepEqual(reopened.getDocumentDetail(id), before)
-    const copies = readdirSync(root).filter(name => name.includes('pre-migration-v24-to-v25-'))
+    assert.equal(CURRENT_DATABASE_SCHEMA_VERSION, 26); assert.deepEqual(reopened.getDocumentDetail(id), before)
+    const copies = readdirSync(root).filter(name => name.includes(`pre-migration-v24-to-v${CURRENT_DATABASE_SCHEMA_VERSION}-`))
     assert.equal(copies.length, 1)
     const copy = new Database(join(root, copies[0]), { readonly: true })
     try { assert.equal(copy.pragma('user_version', { simple: true }), 24) } finally { copy.close() }

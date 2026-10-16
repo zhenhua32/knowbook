@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict'
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import test from 'node:test'
 import { MarkdownBackupService } from '../src/main/backup/exporter.ts'
 import { MarkdownRestoreService } from '../src/main/backup/importer.ts'
 import { KnowbookStore } from '../src/main/database/store.ts'
-import type { DocumentCatalogEntry, DocumentDetail } from '../src/shared/contracts.ts'
+import type { DocumentBlockDraft, DocumentCatalogEntry, DocumentDetail } from '../src/shared/contracts.ts'
 import { parseMarkdownBackupDocument } from '../src/shared/markdown.ts'
 
 // These fixtures exercise the pre-V2 path-based compatibility branch. Complete
@@ -1041,4 +1041,184 @@ test('MarkdownRestoreService rejects archives containing duplicate document ids 
     targetStore.destroy()
     rmSync(tempRoot, { recursive: true, force: true })
   }
+})
+
+type LegacyIdentityFixture = { root: string; open: (name: string) => KnowbookStore }
+async function withLegacyIdentityFixture(run: (fixture: LegacyIdentityFixture) => Promise<void>): Promise<void> {
+  const root = mkdtempSync(join(tmpdir(), 'knowbook-legacy-identities-')), stores: KnowbookStore[] = []
+  try {
+    await run({ root, open: name => {
+      const store = new KnowbookStore(join(root, name + '.sqlite'))
+      stores.push(store)
+      return store
+    } })
+  } finally {
+    for (const store of stores.reverse()) store.destroy()
+    const absolute = resolve(root)
+    assert.ok(absolute.startsWith(resolve(tmpdir()) + sep) && basename(absolute).startsWith('knowbook-legacy-identities-'))
+    rmSync(absolute, { recursive: true, force: true })
+  }
+}
+const legacyParagraph = (id: string, content = 'Body'): DocumentBlockDraft => ({
+  id, type: 'paragraph', content, checked: false, depth: 0, parentBlockId: null
+})
+function legacyIdentitySnapshot(store: KnowbookStore): string {
+  const db = store.getUnsafeDatabaseHandle()
+  const schema = db.prepare('SELECT type,name,sql FROM sqlite_master ORDER BY type,name').all() as Array<{ type: string; name: string }>
+  return JSON.stringify({ schema, tables: schema.filter(row => row.type === 'table').map(row => ({ name: row.name,
+    rows: db.prepare('SELECT * FROM "' + row.name.replaceAll('"', '""') + '"').raw().all().map(value => JSON.stringify(value)).sort() })) })
+}
+
+test('legacy restore reclaims a deleted source document retained block IDs, birth times and historical routes', async () => {
+  await withLegacyIdentityFixture(async ({ root, open }) => {
+    const store = open('same-workspace'), backup = join(root, 'backup'), id = store.createDocument(null)
+    const blocks: DocumentBlockDraft[] = [
+      { ...legacyParagraph('__proto__:旧父块', 'Fold'), type: 'toggle', tags: ['keep'], highlight: 'yellow' },
+      { ...legacyParagraph('constructor:旧子块', 'Original child'), depth: 1, parentBlockId: '__proto__:旧父块' }
+    ]
+    store.updateDocument(id, { title: 'LegacyBeforeRename', summary: 'Saved summary', blocks })
+    const oldPath = store.getDocumentDetail(id)!.path
+    store.updateDocument(id, { title: 'LegacyAfterRename', summary: 'Saved summary', blocks })
+    const original = store.getDocumentDetail(id)!, db = store.getUnsafeDatabaseHandle()
+    const identities = db.prepare('SELECT * FROM block_identities WHERE id IN (?,?) ORDER BY id').all(...blocks.map(block => block.id!)) as Array<{
+      id: string; created_at: string; last_owner_id: string
+    }>
+    const routes = db.prepare('SELECT * FROM document_block_routes WHERE block_id IN (?,?) ORDER BY document_path,block_id').all(...blocks.map(block => block.id!))
+    await legacyBackup(store, backup).exportAll()
+    store.deleteDocument(id)
+    const unrelated = store.getDocumentIndex()[0].id, unrelatedBefore = store.getDocumentDetail(unrelated)!
+    assert.throws(() => store.updateDocument(unrelated, { ...unrelatedBefore, blocks }), /块身份.*保留/,
+      'ordinary saves must keep the retained owner guard')
+    const restore = new MarkdownRestoreService(store)
+    assert.ok((await restore.previewFromDirectory(backup)).created >= 1)
+    await restore.restoreFromDirectory(backup)
+    const restored = store.getDocumentSnapshotByPath(original.path)!
+    assert.notEqual(restored.id, id, 'the legacy path adapter still creates its normal new logical target')
+    assert.deepEqual(store.getDocumentDetail(restored.id)!.blocks, original.blocks)
+    for (const identity of identities) {
+      assert.deepEqual(db.prepare('SELECT last_owner_kind,last_owner_id,state,created_at FROM block_identities WHERE id=?').get(identity.id),
+        { last_owner_kind: 'document', last_owner_id: restored.id, state: 'live', created_at: identity.created_at })
+      assert.equal((db.prepare('SELECT created_at FROM blocks WHERE id=?').get(identity.id) as { created_at: string }).created_at, identity.created_at)
+      assert.equal(store.getBlockReference(oldPath, identity.id)?.documentId, restored.id)
+    }
+    assert.deepEqual(db.prepare('SELECT * FROM document_block_routes WHERE block_id IN (?,?) ORDER BY document_path,block_id').all(...blocks.map(block => block.id!)), routes)
+    assert.deepEqual(db.pragma('foreign_key_check'), [])
+  })
+})
+
+test('a complete verified legacy manifest restores retained blocks moved to another participating source and then deleted', async () => {
+  await withLegacyIdentityFixture(async ({ root, open }) => {
+    const store = open('workspace'), backup = join(root, 'backup'), a = store.createDocument(null), b = store.createDocument(null)
+    const rootId = 'legacy-moved-root', childId = 'legacy-moved-child'
+    store.updateDocument(a, { title: 'LegacyA', summary: '', blocks: [
+      { ...legacyParagraph(rootId, 'Original root'), type: 'callout' },
+      { ...legacyParagraph(childId, 'Original child'), depth: 1, parentBlockId: rootId }, legacyParagraph('legacy-a-keep')
+    ] })
+    store.updateDocument(b, { title: 'LegacyB', summary: '', blocks: [legacyParagraph('legacy-b-keep')] })
+    const originalA = store.getDocumentDetail(a)!, originalB = store.getDocumentDetail(b)!
+    const db = store.getUnsafeDatabaseHandle(), birth = db.prepare('SELECT id,created_at FROM blocks WHERE id IN (?,?) ORDER BY id').all(rootId, childId)
+    await legacyBackup(store, backup).exportAll()
+    assert.ok(existsSync(join(backup, '__knowbook', 'databases', 'index.md')))
+    store.moveDocumentBlocks({ fromDocumentId: a, toDocumentId: b, blockIds: [rootId],
+      expectedFromUpdatedAt: originalA.updatedAt, expectedToUpdatedAt: originalB.updatedAt })
+    const moved = store.getDocumentDetail(b)!
+    store.updateDocument(b, { ...moved, blocks: moved.blocks.filter(block => block.id !== rootId && block.id !== childId) })
+    assert.equal((db.prepare('SELECT last_owner_id FROM block_identities WHERE id=?').get(rootId) as { last_owner_id: string }).last_owner_id, b)
+    await new MarkdownRestoreService(store).restoreFromDirectory(backup)
+    assert.deepEqual(store.getDocumentDetail(a)!.blocks, originalA.blocks)
+    assert.deepEqual(store.getDocumentDetail(b)!.blocks, originalB.blocks)
+    assert.deepEqual(db.prepare('SELECT id,created_at FROM blocks WHERE id IN (?,?) ORDER BY id').all(rootId, childId), birth)
+    assert.equal(store.getBlockReference(originalB.path, rootId)?.documentId, a, 'the stable route survives the explicit retained owner transition')
+    assert.deepEqual(db.pragma('foreign_key_check'), [])
+  })
+})
+
+test('a legacy manifest at another path cannot authorize a retained move between two source owners', async () => {
+  await withLegacyIdentityFixture(async ({ root, open }) => {
+    const store = open('workspace'), backup = join(root, 'backup'), a = store.createDocument(null), b = store.createDocument(null)
+    const blockId = 'legacy-no-manifest-owner'
+    store.updateDocument(a, { title: 'LegacyA', summary: '', blocks: [legacyParagraph(blockId), legacyParagraph('legacy-remains-a')] })
+    store.updateDocument(b, { title: 'LegacyB', summary: '', blocks: [legacyParagraph('legacy-remains-b')] })
+    await legacyBackup(store, backup).exportAll()
+    const manifest = join(backup, '__knowbook', 'databases', 'index.md')
+    writeFileSync(join(backup, 'PretendManifest.md'), readFileSync(manifest))
+    rmSync(manifest)
+    store.moveDocumentBlocks({ fromDocumentId: a, toDocumentId: b, blockIds: [blockId],
+      expectedFromUpdatedAt: store.getDocumentDetail(a)!.updatedAt, expectedToUpdatedAt: store.getDocumentDetail(b)!.updatedAt })
+    const target = store.getDocumentDetail(b)!
+    store.updateDocument(b, { ...target, blocks: target.blocks.filter(block => block.id !== blockId) })
+    const before = legacyIdentitySnapshot(store), restore = new MarkdownRestoreService(store)
+    await assert.rejects(restore.previewFromDirectory(backup), /块身份.*保留/)
+    await assert.rejects(restore.restoreFromDirectory(backup), /块身份.*保留/)
+    assert.equal(legacyIdentitySnapshot(store), before)
+  })
+})
+
+for (const kind of ['group', 'reserved', 'unrelated-document'] as const) {
+  test('legacy restore rejects a ' + kind + ' retained identity without rebinding it or changing any workspace row', async () => {
+    await withLegacyIdentityFixture(async ({ root, open }) => {
+      const source = open('source'), target = open('target'), backup = join(root, 'backup'), id = source.createDocument(null)
+      const blockId = 'legacy-foreign-retained'
+      source.updateDocument(id, { title: 'LegacyForeign', summary: '', blocks: [legacyParagraph(blockId)] })
+      await legacyBackup(source, backup).exportAll()
+      const db = target.getUnsafeDatabaseHandle(), unrelated = target.createDocument(null)
+      if (kind === 'unrelated-document') {
+        target.updateDocument(unrelated, { title: 'UnrelatedOwner', summary: '', blocks: [legacyParagraph(blockId), legacyParagraph('unrelated-keep')] })
+        target.updateDocument(unrelated, { title: 'UnrelatedOwner', summary: '', blocks: [legacyParagraph('unrelated-keep')] })
+      } else {
+        db.prepare(`INSERT INTO block_identities(id,last_owner_kind,last_owner_id,state,created_at) VALUES(?,?,?,'retained',NULL)`)
+          .run(blockId, kind, 'private-fixture-owner')
+      }
+      const before = legacyIdentitySnapshot(target), restore = new MarkdownRestoreService(target)
+      await assert.rejects(restore.previewFromDirectory(backup), /块身份.*保留/)
+      await assert.rejects(restore.restoreFromDirectory(backup), /块身份.*保留/)
+      assert.equal(legacyIdentitySnapshot(target), before)
+    })
+  })
+}
+
+test('legacy restore rejects duplicate block IDs across sources before any database mutation', async () => {
+  await withLegacyIdentityFixture(async ({ root, open }) => {
+    const source = open('source'), target = open('target'), backup = join(root, 'backup')
+    for (const [title, blockId] of [['LegacyDuplicateA', 'legacy-duplicate-first-id'], ['LegacyDuplicateB', 'legacy-duplicate-second-id']]) {
+      const id = source.createDocument(null)
+      source.updateDocument(id, { title, summary: '', blocks: [legacyParagraph(blockId)] })
+    }
+    await legacyBackup(source, backup).exportAll()
+    const second = join(backup, 'LegacyDuplicateB.md'), original = readFileSync(second, 'utf8')
+    assert.equal(parseMarkdownBackupDocument(original).blocks[0].id, 'legacy-duplicate-second-id')
+    const duplicate = original.replaceAll('legacy-duplicate-second-id', 'legacy-duplicate-first-id')
+    assert.equal(parseMarkdownBackupDocument(duplicate).blocks[0].id, 'legacy-duplicate-first-id')
+    writeFileSync(second, duplicate)
+    const before = legacyIdentitySnapshot(target), restore = new MarkdownRestoreService(target)
+    await assert.rejects(restore.previewFromDirectory(backup), /Duplicate legacy backup block identity/)
+    await assert.rejects(restore.restoreFromDirectory(backup), /Duplicate legacy backup block identity/)
+    assert.equal(legacyIdentitySnapshot(target), before)
+  })
+})
+
+test('a failure after retained owner adoption rolls back all legacy identity, route and document changes and can be retried', async context => {
+  await withLegacyIdentityFixture(async ({ root, open }) => {
+    const store = open('workspace'), backup = join(root, 'backup'), id = store.createDocument(null), blockId = 'legacy-adoption-rollback'
+    store.updateDocument(id, { title: 'LegacyRollback', summary: '', blocks: [legacyParagraph(blockId)] })
+    await legacyBackup(store, backup).exportAll()
+    store.deleteDocument(id)
+    const before = legacyIdentitySnapshot(store), update = store.updateDocument.bind(store)
+    const mocked = context.mock.method(store, 'updateDocument', (...args: Parameters<KnowbookStore['updateDocument']>) => {
+      if (args[1].title === 'LegacyRollback') {
+        const ledger = store.getUnsafeDatabaseHandle().prepare('SELECT last_owner_id,state FROM block_identities WHERE id=?').get(blockId) as { last_owner_id: string; state: string }
+        assert.equal(ledger.last_owner_id, args[0], 'the real private retained transfer has already occurred')
+        assert.equal(ledger.state, 'retained')
+        throw new Error('fixture failure after retained adoption')
+      }
+      return update(...args)
+    })
+    try { await assert.rejects(new MarkdownRestoreService(store).restoreFromDirectory(backup), /fixture failure after retained adoption/) }
+    finally { mocked.mock.restore() }
+    assert.equal(legacyIdentitySnapshot(store), before)
+    await new MarkdownRestoreService(store).restoreFromDirectory(backup)
+    const restored = store.getDocumentSnapshotByPath('LegacyRollback')!
+    assert.ok(store.getDocumentDetail(restored.id)!.blocks.some(block => block.id === blockId))
+    assert.equal((store.getUnsafeDatabaseHandle().prepare('SELECT last_owner_id FROM block_identities WHERE id=?').get(blockId) as { last_owner_id: string }).last_owner_id, restored.id)
+  })
 })
