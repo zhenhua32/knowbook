@@ -213,6 +213,11 @@ export interface SyncedGroupListResult {
 export type SyncedOperationResult =
   | { status: 'committed'; result: SyncedGroupSaved | SyncedStructureApplied }
   | { status: 'unknown' }
+/** Explicit read extension. The stored ACK remains unchanged and tickets stay
+ * Main-lifetime capabilities, outside portable semantics and executable history. */
+export type SyncedOperationWithLinkSourceResult =
+  | { status: 'unknown' }
+  | { status: 'committed'; workspaceScope: string; result: SyncedGroupSaved; bindingSource: SyncedBindingSource }
 
 /** The renderer may inject this complete port before the trusted IPC adapter is installed. */
 export interface SyncedBlocksApi {

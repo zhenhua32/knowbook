@@ -4,8 +4,8 @@ import type { SyncedCanonicalEdit, SyncedCanonicalWire, SyncedFailure, SyncedGro
   SyncedGroupSnapshot, SyncedGroupWire, SyncedOperationResult, SyncedRestoreGroupInput,
   SyncedUpdateGroupInput } from '../../shared/synced-blocks'
 import { validateSyncedRestoreGroupInput, validateSyncedUpdateGroupInput } from '../../shared/syncedBlockInputs'
-import { assertSyncedShape, isSyncedUuid, parseSyncedBlockPayload, SyncedValidationError, validateSyncedCanonicalProjection,
-  validateSyncedGroupSnapshot, validateSyncedGroupWire, validateSyncedHostForest } from '../../shared/syncedBlockValidation'
+import { parseSyncedBlockPayload, SyncedValidationError, validateSyncedCanonicalProjection,
+  validateSyncedGroupWire, validateSyncedHostForest } from '../../shared/syncedBlockValidation'
 import { canonicalSyncedPortableJson, projectSyncedGroupBudget, projectSyncedHostBudget,
   type SyncedPortableHostRecord } from '../../shared/syncedBlockPortable'
 import { parseStrictJson } from '../../shared/strictJson'
@@ -13,9 +13,9 @@ import { BlockIdentityRepository } from './block-identities'
 import { getSyncedGroupSnapshots } from './synced-blocks-read'
 import { assertSyncedStoredBindings, maintainSyncedGroupBindings } from './synced-block-links'
 import { resolveSyncedBindingSource } from './synced-binding-sources'
+import { decodeSyncedGroupOperationAck, readSyncedGroupOperationRow, validateSyncedOperationLookupInput } from './synced-group-operation-receipt'
 
 type Input = SyncedUpdateGroupInput | SyncedRestoreGroupInput
-type OperationRow = { client_operation_id: string; request_hash: string; result_json: string }
 type HistoryRow = { before_json: string; after_json: string; before_hash: string; after_hash: string }
 type PhysicalRow = { id: string; kind: 'document' | 'group'; owner_id: string; created_at: string }
 const hashPattern = /^[a-f0-9]{64}$/
@@ -62,28 +62,13 @@ function guarded(db: Database.Database, input: Input): SyncedGroupSnapshot {
     || instance.bindingVersion !== input.expectedInstanceBinding.bindingVersion) conflict(before, 'topology')
   return before
 }
-function operation(db: Database.Database, id: string): OperationRow | undefined {
-  return db.prepare('SELECT client_operation_id,request_hash,result_json FROM synced_operations WHERE client_operation_id=?')
-    .get(id) as OperationRow | undefined
-}
-function storedAck(row: OperationRow): SyncedGroupSaved {
-  try {
-    if (!isSyncedUuid(row.client_operation_id) || !hashPattern.test(row.request_hash)) throw new Error('Invalid receipt identity/hash')
-    const value = json(row.result_json)
-    assertSyncedShape(value, ['status', 'operationId', 'snapshot', 'replayed'])
-    if (value.status !== 'saved' && value.status !== 'noop' || value.operationId !== row.client_operation_id || value.replayed !== false) {
-      throw new Error('Invalid stored group acknowledgement')
-    }
-    return { status: value.status, operationId: row.client_operation_id, snapshot: validateSyncedGroupSnapshot(value.snapshot), replayed: false }
-  } catch (cause) { throw new Error('同步块操作收据损坏，不能猜测提交结果或重新执行。', { cause }) }
-}
 function replay(db: Database.Database, input: Input, requestHash: string): SyncedGroupSaved | null {
-  const row = operation(db, input.clientOperationId)
+  const row = readSyncedGroupOperationRow(db, input.clientOperationId)
   if (!row) return null
   if (!hashPattern.test(row.request_hash)) throw new Error('同步块操作收据损坏，不能猜测提交结果或重新执行。')
   if (row.request_hash !== requestHash) throw new Refused({ status: 'idempotency-mismatch' })
   // Do not hydrate the old ACK from today's blocks, instances, cursor or CAS.
-  const result = storedAck(row)
+  const result = decodeSyncedGroupOperationAck(row)
   if (result.snapshot.groupId !== input.groupId || 'blocks' in input
     && encode(result.snapshot.blocks.map(({ createdAt: _createdAt, ...block }) => block)) !== encode(input.blocks)) {
     throw new Error('同步块操作收据损坏：结果与原请求不一致，不能重新执行。')
@@ -290,11 +275,9 @@ export function restoreSyncedGroupOperation(db: Database.Database, value: unknow
 /** Only implemented group ACKs are accepted. A future structure writer must
  * supply its strict stored-result codec before installing structure receipts. */
 export function getSyncedOperation(db: Database.Database, input: unknown): SyncedOperationResult {
-  assertSyncedShape(input, ['clientOperationId'])
-  if (!isSyncedUuid(input.clientOperationId)) invalid('identity', '同步块操作身份无效。')
-  const id = input.clientOperationId
+  const id = validateSyncedOperationLookupInput(input)
   return ownedTransaction<SyncedOperationResult>(db, () => {
-    const row = operation(db, id)
-    return row ? { status: 'committed', result: { ...storedAck(row), replayed: true } } : { status: 'unknown' }
+    const row = readSyncedGroupOperationRow(db, id)
+    return row ? { status: 'committed', result: { ...decodeSyncedGroupOperationAck(row), replayed: true } } : { status: 'unknown' }
   }, false)
 }
