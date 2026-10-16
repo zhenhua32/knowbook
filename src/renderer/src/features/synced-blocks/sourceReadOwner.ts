@@ -4,6 +4,7 @@ import { validateSyncedBindingKey } from '@shared/syncedBlockInputs'
 import { collectDocumentMarkdownLinks } from '@shared/markdownLinkMaintenance'
 import { resolveMarkdownDocumentPath } from '@shared/markdownLinks'
 import { readSyncedCommittedEndpoint, readSyncedWorkingEndpoint, readSyncedWorkingEndpointCommitted,
+  readSyncedWorkingEndpointBaselineAck, readSyncedBaselineAck, type SyncedBaselineAckReceipt,
   type SyncedCommittedEndpointReceipt, type SyncedWorkingEndpointReceipt, type SyncedSourceReadOwnerFence } from './controller'
 import { readSourceReadOwnerAccess, installSourceHistorySide, revokeSourceHistoryOwner, type SourceCheckpoint, type AcceptedSourceCheckpoint, type AcceptedSourceCheckpointFacts } from './sourceLedger'
 import { createDomain, createConsumer, issueWitness, revokeConsumer, whenDomainDrained, domainDrained,
@@ -57,9 +58,11 @@ type Context = {
   references: number; cleanup: Promise<void> | null; cleanupFailed: boolean
 }
 type Owner = { checkpoint: SourceCheckpoint; issuer: ConsumerIssuer; context: Context; access: SourceReadOwnerAccess; closed: boolean; requests: number; idle: Array<() => void> }
+type OpeningProvenance = Readonly<{ kind: 'opening-content'; endpoint: SyncedWorkingEndpointReceipt; committed: SyncedCommittedEndpointReceipt }>
+  | Readonly<{ kind: 'opening-history'; endpoint: SyncedWorkingEndpointReceipt; baselineAck: SyncedBaselineAckReceipt }>
 type SideProvenance = Readonly<{ kind: 'baseline' }>
   | Readonly<{ kind: 'accepted'; accepted: AcceptedSourceCheckpoint }>
-  | Readonly<{ kind: 'opening'; endpoint: SyncedWorkingEndpointReceipt; committed: SyncedCommittedEndpointReceipt }>
+  | OpeningProvenance
 const contexts = new WeakMap<ControllerReadOwnerContext, Context>()
 const owners = new WeakMap<SourceReadOwner, Owner>()
 const sides = new WeakMap<AdoptedSourceSide, { facts: AdoptedSourceSideFacts; owner: SourceReadOwner; provenance: SideProvenance }>()
@@ -286,8 +289,8 @@ export async function adoptAcceptedSource(value: SourceReadOwner, accepted: Acce
     return adopted(value, owner, { kind: 'accepted', snapshot, bindingSource, endpoint: facts.endpoint, committed: facts.committed }, { kind: 'accepted', accepted })
   } catch { return refused('invalid-or-failed-read') } finally { finish(owner) }
 }
-/** A Rich opening has no SourceAccepted handle. Only its original content
- * Endpoint's own mailbox can select an operation; this never flushes or guesses. */
+/** Only the original opening Endpoint's content/history mailbox may select an
+ * operation. An ordinary baseline cannot guess one; this never flushes. */
 export async function adoptSourceOpening(value: SourceReadOwner): Promise<SourceSideAdoptionResult> {
   const owner = begin(value)
   if (!owner) return refused('unknown-or-closed-owner')
@@ -295,15 +298,29 @@ export async function adoptSourceOpening(value: SourceReadOwner): Promise<Source
     const { access, context } = owner, fence = access.capture(access.endpoint)
     if (!fence) return refused('stale-local-context')
     const opening = readSyncedWorkingEndpoint(access.endpoint)
-    if (opening.status !== 'available' || opening.kind !== 'content') return refused('not-content-opening')
-    const receipt = readSyncedWorkingEndpointCommitted(access.endpoint)
-    if (!receipt) return final(owner, access.endpoint, fence) ? waiting : refused('stale-local-context')
-    const committed = readSyncedCommittedEndpoint(receipt), baseline = access.snapshot
-    if (!committed || committed.ack.snapshot.groupId !== baseline.groupId || committed.ack.snapshot.creationId !== baseline.creationId
-      || committed.ack.snapshot.createdAt !== baseline.createdAt || !equal(committed.ack.snapshot.origin, baseline.origin)
-      || !equal(syncedCanonicalEdits(committed.ack.snapshot.blocks), opening.working)) return refused('opening-ack-mismatch')
+    if (opening.status !== 'available') return refused('stale-local-context')
+    let ack: Readonly<SyncedGroupSaved>, committed: SyncedCommittedEndpointReceipt | null = null
+    let provenance: OpeningProvenance
+    if (opening.kind === 'content') {
+      committed = readSyncedWorkingEndpointCommitted(access.endpoint)
+      if (!committed) return final(owner, access.endpoint, fence) ? waiting : refused('stale-local-context')
+      const original = readSyncedCommittedEndpoint(committed)
+      if (!original) return refused('missing-original-ack')
+      ack = original.ack
+      provenance = { kind: 'opening-content', endpoint: access.endpoint, committed }
+    } else {
+      const receipt = readSyncedWorkingEndpointBaselineAck(access.endpoint), original = receipt && readSyncedBaselineAck(receipt)
+      if (!receipt || !original || original.kind !== 'history') return refused('not-history-opening')
+      ack = original.ack
+      if (!equal(opening.baseline, access.snapshot) || !equal(ack.snapshot, opening.baseline)) return refused('opening-baseline-mismatch')
+      provenance = { kind: 'opening-history', endpoint: access.endpoint, baselineAck: receipt }
+    }
+    const baseline = context.snapshot
+    if (ack.snapshot.groupId !== baseline.groupId || ack.snapshot.creationId !== baseline.creationId
+      || ack.snapshot.createdAt !== baseline.createdAt || !equal(ack.snapshot.origin, baseline.origin)
+      || !equal(syncedCanonicalEdits(ack.snapshot.blocks), opening.working)) return refused('opening-ack-mismatch')
     const raw = copyData(await context.port.operation({ readOwnerId: context.readOwnerId,
-      clientOperationId: committed.ack.operationId })) as Record<string, unknown>
+      clientOperationId: ack.operationId })) as Record<string, unknown>
     if (raw.status === 'owner-unavailable' || raw.status === 'unknown-operation') {
       fields(raw, ['status']); return raw.status === 'owner-unavailable' ? ownerUnavailable : unknownOperation
     }
@@ -311,13 +328,12 @@ export async function adoptSourceOpening(value: SourceReadOwner): Promise<Source
     if (raw.status !== 'committed' || raw.workspaceScope !== context.workspaceScope || !isSyncedUuid(raw.workspaceScope)) return refused('workspace-mismatch')
     const result = fields(raw.result, ['status', 'operationId', 'snapshot', 'replayed'])
     if ((result.status !== 'saved' && result.status !== 'noop') || !isSyncedUuid(result.operationId) || result.replayed !== true
-      || result.operationId !== committed.ack.operationId || result.status !== committed.ack.status) return refused('ack-mismatch')
+      || result.operationId !== ack.operationId || result.status !== ack.status) return refused('ack-mismatch')
     const snapshot = freeze(validateSyncedGroupSnapshot(result.snapshot))
-    if (!equal(snapshot, committed.ack.snapshot) || !equal(syncedCanonicalEdits(snapshot.blocks), opening.working)) return refused('ack-snapshot-mismatch')
+    if (!equal(snapshot, ack.snapshot) || !equal(syncedCanonicalEdits(snapshot.blocks), opening.working)) return refused('ack-snapshot-mismatch')
     const bindingSource = sourceFor(snapshot, raw.bindingSource)
-    if (readSyncedWorkingEndpointCommitted(access.endpoint) !== receipt || !final(owner, access.endpoint, fence)) return refused('stale-local-context')
-    return adopted(value, owner, { kind: 'opening', snapshot, bindingSource, endpoint: access.endpoint, committed: receipt },
-      { kind: 'opening', endpoint: access.endpoint, committed: receipt })
+    if (!openingReceiptMatches(provenance) || !final(owner, access.endpoint, fence)) return refused('stale-local-context')
+    return adopted(value, owner, { kind: 'opening', snapshot, bindingSource, endpoint: access.endpoint, committed }, provenance)
   } catch { return refused('invalid-or-failed-read') } finally { finish(owner) }
 }
 export async function closeSourceReadOwner(value: SourceReadOwner): Promise<void> {
@@ -331,15 +347,22 @@ export async function closeSourceReadOwner(value: SourceReadOwner): Promise<void
 export function readAdoptedSourceSide(side: AdoptedSourceSide): AdoptedSourceSideFacts | null { return sides.get(side)?.facts ?? null }
 
 const historyKey = (key: Readonly<SyncedBindingKey>) => JSON.stringify([key.blockId, key.from, key.to, key.raw, key.syntax])
+function openingReceiptMatches(provenance: OpeningProvenance): boolean {
+  return provenance.kind === 'opening-content'
+    ? readSyncedWorkingEndpointCommitted(provenance.endpoint) === provenance.committed
+    : readSyncedWorkingEndpointBaselineAck(provenance.endpoint) === provenance.baselineAck
+}
 export async function registerHistorySide(checkpoint: SourceCheckpoint, side: AdoptedSourceSide): Promise<SourceHistoryRegistrationResult> {
   const record = sides.get(side), value = record?.owner, owner = value && begin(value)
   if (!record || !value || !owner) return { status: 'unavailable' }
   try {
     if (owner.checkpoint !== checkpoint) return { status: 'unavailable' }
     const accepted = record.provenance.kind === 'accepted' ? record.provenance.accepted : null
-    if (record.provenance.kind === 'opening' && (record.provenance.endpoint !== owner.access.endpoint
-      || record.facts.endpoint !== record.provenance.endpoint || record.facts.committed !== record.provenance.committed
-      || readSyncedWorkingEndpointCommitted(record.provenance.endpoint) !== record.provenance.committed)) return { status: 'unavailable' }
+    const provenance = record.provenance
+    if ((provenance.kind === 'opening-content' || provenance.kind === 'opening-history')
+      && (provenance.endpoint !== owner.access.endpoint || record.facts.endpoint !== provenance.endpoint
+        || record.facts.committed !== (provenance.kind === 'opening-content' ? provenance.committed : null)
+        || !openingReceiptMatches(provenance))) return { status: 'unavailable' }
     const fence = owner.access.capture(record.facts.endpoint)
     if (!fence) return { status: 'unavailable' }
     const raw = copyData(await owner.context.port.validate({ readOwnerId: owner.context.readOwnerId })) as Record<string, unknown>

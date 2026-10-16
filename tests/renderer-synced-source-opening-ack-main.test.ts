@@ -348,7 +348,7 @@ test('opening provenance cannot be forged or reassigned through an accepted hand
   await closeSyncedSourceReadOwner(value.owner); await closeSyncedSourceReadOwner(owner)
 }))
 
-test('initial and actual history baselines remain outside this content-opening slice', async () => withHistoryMain(async api => {
+test('initial baseline keeps B1 provenance while an actual history ACK proves the new B2 opening', async () => withHistoryMain(async api => {
   const initial = await setup(api), firstOwner = await sourceOwner(initial.source)
   adopted(await adoptSyncedSourceBaseline(firstOwner))
   assert.equal((await adoptSyncedSourceOpening(firstOwner)).status, 'unavailable')
@@ -358,8 +358,18 @@ test('initial and actual history baselines remain outside this content-opening s
   assert.equal((await adoptSyncedSourceOpening(owner)).status, 'unavailable', 'History expired the old content Endpoint')
   const history = sourceSession(initial.binding), historyOwner = await sourceOwner(history)
   assert.equal((await adoptSyncedSourceBaseline(historyOwner)).status, 'unavailable', 'B2 cannot borrow the original full B1 proof')
-  assert.equal((await adoptSyncedSourceOpening(historyOwner)).status, 'unavailable', 'No history receipt is invented by this content-only API')
-  assert.deepEqual(initial.reads.operations, [])
+  const { readSyncedWorkingEndpointBaselineAck, readSyncedBaselineAck } = await import('../src/renderer/src/features/synced-blocks/controller')
+  const endpoint = captureSyncedWorkingEndpoint(initial.binding)
+  assert.ok(endpoint, 'The real server Undo produced this B2 baseline Endpoint')
+  const receipt = readSyncedWorkingEndpointBaselineAck(endpoint)
+  assert.ok(receipt, 'Only the actual history ACK supplied the new B2 receipt')
+  const historyAck = readSyncedBaselineAck(receipt)
+  assert.ok(historyAck, 'The opaque B2 receipt has the original complete history ACK')
+  const proof = adopted(await adoptSyncedSourceOpening(historyOwner))
+  assert.equal(proof.facts.kind, 'opening'); assert.equal(proof.facts.committed, null)
+  assert.deepEqual(proof.facts.snapshot, historyAck.ack.snapshot)
+  assert.deepEqual(syncedCanonicalEdits(proof.facts.snapshot.blocks), initial.binding.getCurrent().working)
+  assert.deepEqual(initial.reads.operations, [historyAck.ack.operationId])
   await closeSyncedSourceReadOwner(firstOwner); await closeSyncedSourceReadOwner(owner); await closeSyncedSourceReadOwner(historyOwner)
 }))
 

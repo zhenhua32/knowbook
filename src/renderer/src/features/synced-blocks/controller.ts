@@ -18,6 +18,7 @@ interface SourceCopyApply { readonly preparation: object; readonly batch: Prepar
 /** Local read capabilities only. Public fields cannot reconstruct ownership. */
 export interface SyncedWorkingEndpointReceipt { readonly kind: 'synced-working-endpoint' }
 export interface SyncedCommittedEndpointReceipt { readonly kind: 'synced-committed-endpoint' }
+export interface SyncedBaselineAckReceipt { readonly kind: 'synced-baseline-ack' }
 export interface SyncedSourceReadOwnerFence { readonly kind: 'synced-source-read-owner-fence' }
 export type SyncedWorkingEndpointRead = Readonly<{ status: 'unavailable' }> | Readonly<{
   status: 'available'; current: boolean; editSequence: number; groupId: string; creationId: string;
@@ -57,6 +58,8 @@ const endpointPorts = new WeakMap<SyncedGroupBinding, EndpointPort>()
 const endpointReaders = new WeakMap<SyncedWorkingEndpointReceipt, () => SyncedWorkingEndpointRead>()
 const endpointIdentities = new WeakMap<SyncedWorkingEndpointReceipt, Endpoint>()
 const committedEndpoints = new WeakMap<SyncedCommittedEndpointReceipt, SyncedCommittedEndpointFacts>()
+const baselineAckReceipts = new WeakMap<Endpoint, SyncedBaselineAckReceipt>()
+const baselineAcks = new WeakMap<SyncedBaselineAckReceipt, Readonly<{ kind: 'history'; ack: Readonly<SyncedGroupSaved> }>>()
 const unavailableEndpoint = Object.freeze({ status: 'unavailable' as const })
 const refusedEndpointApply = Object.freeze({ accepted: false as const })
 export function captureSyncedWorkingEndpoint(binding: SyncedGroupBinding): SyncedWorkingEndpointReceipt | null {
@@ -83,6 +86,15 @@ export function readSyncedWorkingEndpointCommitted(receipt: SyncedWorkingEndpoin
 }
 export function readSyncedCommittedEndpoint(receipt: SyncedCommittedEndpointReceipt): SyncedCommittedEndpointFacts | null {
   return committedEndpoints.get(receipt) ?? null
+}
+/** Independent read-only history facts for this exact original baseline.
+ * No scope/live/current checks, Main reads, content version or write lease. */
+export function readSyncedWorkingEndpointBaselineAck(receipt: SyncedWorkingEndpointReceipt): SyncedBaselineAckReceipt | null {
+  const endpoint = endpointIdentities.get(receipt)
+  return endpoint ? baselineAckReceipts.get(endpoint) ?? null : null
+}
+export function readSyncedBaselineAck(receipt: SyncedBaselineAckReceipt): Readonly<{ kind: 'history'; ack: Readonly<SyncedGroupSaved> }> | null {
+  return baselineAcks.get(receipt) ?? null
 }
 /** Real binding -> shared apply core, never apply:boolean + capture-latest.
  * In particular synchronous publication/reentry cannot change the returned handle. */
@@ -275,7 +287,9 @@ class GroupController implements SyncedGroupController {
    * It never searches for a frame by body/ID/edit sequence. */
   private adoptEndpoint(working: SyncedCanonicalEdit[], sequence: number, snapshot = this.state.snapshot, changedFrame: Frame | null = null) {
     const frame = this.frames.at(-1)
-    this.currentEndpoint = frame ? this.frameEndpoint(frame, working, sequence, frame === changedFrame) : this.baselineEndpoint(working, sequence, snapshot)
+    const endpoint = frame ? this.frameEndpoint(frame, working, sequence, frame === changedFrame) : this.baselineEndpoint(working, sequence, snapshot)
+    this.currentEndpoint = endpoint
+    return endpoint
   }
   private expireEndpoints() {
     this.endpointEpoch = Object.freeze({})
@@ -620,8 +634,16 @@ class GroupController implements SyncedGroupController {
     this.pending = null
     if (pending.kind === 'history') {
       if (result.status === 'saved') this.expireEndpoints()
-      this.adoptEndpoint(this.frames.length ? this.state.working : blocks,
+      const endpoint = this.adoptEndpoint(this.frames.length ? this.state.working : blocks,
         result.status === 'saved' ? this.state.editSequence + 1 : this.state.editSequence, snapshot)
+      // Bind only this actual history transition's new baseline, before publish.
+      // Equal ordinary loads or later endpoints can never acquire this receipt.
+      if (endpoint.baseline === snapshot && equal(endpoint.working, blocks)) {
+        const receipt: SyncedBaselineAckReceipt = Object.freeze({ kind: 'synced-baseline-ack' })
+        const ack = Object.freeze({ status: result.status, operationId: result.operationId, snapshot, replayed: result.replayed })
+        baselineAcks.set(receipt, Object.freeze({ kind: 'history', ack }))
+        baselineAckReceipts.set(endpoint, receipt)
+      }
     }
     const incoming = this.state.incoming && this.state.incoming.revision === snapshot.revision
       && this.state.incoming.topologyRevision === snapshot.topologyRevision ? null : this.state.incoming
