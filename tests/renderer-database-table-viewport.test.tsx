@@ -195,6 +195,57 @@ test('reordering or replacing a same-sized result set retains a valid position i
   })
 })
 
+test('native scrolling keeps only the focused offscreen row alive without expanding the virtual window', async () => {
+  await withViewport(async ({ document, scroll, render, move }) => {
+    await render(records)
+    const checkbox = rows(document)[0].querySelector<HTMLInputElement>('input[type="checkbox"]')!
+    await act(async () => checkbox.focus())
+    for (const top of [600, 12000, 55442, 0]) {
+      await move(top, 175)
+      assert.equal(checkbox.isConnected, true)
+      assert.equal(document.activeElement, checkbox)
+      assert.equal(scroll().scrollTop, top)
+      assert.equal(scroll().scrollLeft, 175)
+      assert.ok(rows(document).length < 40, 'retaining one focused row must not render the intervening records')
+      assert.ok(spacers(document).every(height => Number.isFinite(height) && height >= 0))
+      assert.equal(rows(document).length * 56 + spacers(document).reduce((total, height) => total + height, 0), records.length * 56)
+    }
+    await move(55442)
+    await act(async () => checkbox.dispatchEvent(new document.defaultView!.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
+    assert.equal(document.activeElement, checkbox, 'ArrowDown must not jump across the spacer from record 0 to the bottom window')
+    const external = document.createElement('button')
+    document.body.append(external)
+    await act(async () => external.focus())
+    assert.equal(document.activeElement, external, 'virtualization must not restore focus over another control')
+    assert.equal(checkbox.isConnected, false, 'the extra row is released when focus moves outside the table')
+    assert.equal(titles(document).at(-1), 'Record 999')
+  })
+})
+
+test('a focused last row survives scrolling upward and record refresh but an actual removal releases it', async () => {
+  await withViewport(async ({ document, scroll, render, move }) => {
+    await render(records)
+    await move(55442)
+    const checkbox = rows(document).at(-1)!.querySelector<HTMLInputElement>('input[type="checkbox"]')!
+    await act(async () => checkbox.focus())
+    await move(0)
+    assert.equal(checkbox.isConnected, true)
+    assert.equal(document.activeElement, checkbox)
+    assert.ok(rows(document).length < 40)
+    await act(async () => checkbox.dispatchEvent(new document.defaultView!.KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true })))
+    assert.equal(document.activeElement, checkbox, 'ArrowUp must not jump from record 999 to the top window')
+    await render(records.map(record => ({ ...record, updatedAt: '2026-10-02' })))
+    assert.equal(document.activeElement, checkbox)
+    assert.equal(checkbox.isConnected, true)
+    assert.equal(scroll().scrollTop, 0)
+    await render(records.slice(0, 5))
+    assert.deepEqual(titles(document), ['Record 0', 'Record 1', 'Record 2', 'Record 3', 'Record 4'])
+    assert.equal(checkbox.isConnected, false)
+    assert.equal(document.activeElement, document.body)
+    assert.deepEqual(spacers(document), [])
+  })
+})
+
 test('overrunning the last interval and reducing to a shorter nonempty list never produces a blank slice or loses horizontal offset', async () => {
   await withViewport(async ({ document, scroll, render, move }) => {
     await render(records)

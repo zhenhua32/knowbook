@@ -279,6 +279,7 @@ test.describe('database data viewport', () => {
         await expect(page.locator('.dbw-record-title strong').first()).toHaveText(firstTitle)
         const checkbox = page.locator('tbody .dbw-select-column input').first(); await checkbox.check(); await checkbox.uncheck()
         await expect(checkbox).toBeFocused(); await page.keyboard.press('PageDown'); await expect.poll(() => table.evaluate(element => element.scrollTop)).toBeGreaterThan(0); await record('native-checkbox-pagedown')
+        await expect(checkbox).toBeFocused()
         await page.keyboard.press('Control+End'); await expect.poll(() => table.evaluate(element => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeLessThanOrEqual(1)
         await expect(page.locator('.dbw-record-title strong').last()).toHaveText(fixture.lastTitle); await record('native-checkbox-control-end')
         await page.locator('.dbw-main-search input').fill('Match entry'); await expect(page.locator('.dbw-record-title strong')).toHaveText(Array.from({ length: 5 }, (_, index) => `Match entry ${String(index).padStart(4, '0')}`))

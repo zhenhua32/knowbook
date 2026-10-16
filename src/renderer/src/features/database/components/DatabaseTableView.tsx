@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react'
+import { Fragment, useLayoutEffect, useRef, useState } from 'react'
 import type { DatabaseField, DatabaseRecord, DatabaseSourceKind, DocumentCatalogEntry, DocumentDatabaseFieldValue } from '@shared/contracts'
 import { DATABASE_SYSTEM_FIELD_IDS } from '@shared/database-workspace'
 import { DatabaseValueEditor } from './DatabaseValueEditor'
@@ -57,6 +57,7 @@ export function DatabaseTableView({
   const [scrollTop, setScrollTop] = useState(0)
   const [viewportHeight, setViewportHeight] = useState(600)
   const [headerHeight, setHeaderHeight] = useState(0)
+  const [focusedRecordId, setFocusedRecordId] = useState<string | null>(null)
   const [resizePreview, setResizePreview] = useState<{ fieldId: string; width: number } | null>(null)
   const resizeCleanup = useRef<() => void>(() => {})
   const columnWidths = resizePreview ? { ...committedColumnWidths, [resizePreview.fieldId]: resizePreview.width } : committedColumnWidths
@@ -72,7 +73,13 @@ export function DatabaseTableView({
     Math.max(0, Math.floor(Math.max(0, boundedScrollTop - headerHeight) / rowHeight) - overscan))
   const visibleCount = Math.ceil(viewportHeight / rowHeight) + overscan * 2
   const endIndex = Math.min(records.length, startIndex + visibleCount)
-  const visibleRecords = records.slice(startIndex, endIndex)
+  // Native PageDown/End on a checkbox or button does not move focus. Keep that
+  // one row mounted so the next key still has its scroll ancestor. Text editors
+  // retain their existing draft-cache and virtual-unmount lifecycle.
+  const focusedIndex = focusedRecordId === null ? -1 : records.findIndex(record => record.id === focusedRecordId)
+  const visibleIndices = Array.from({ length: endIndex - startIndex }, (_, index) => startIndex + index)
+  if (focusedIndex >= 0 && focusedIndex < startIndex) visibleIndices.unshift(focusedIndex)
+  else if (focusedIndex >= endIndex) visibleIndices.push(focusedIndex)
 
   useLayoutEffect(() => {
     const node = scrollRef.current
@@ -116,7 +123,16 @@ export function DatabaseTableView({
   }, [boundedScrollTop, maximumScrollTop, scrollTop])
 
   return (
-    <div className="dbw-table-scroll" data-testid="database-table-view" onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)} ref={scrollRef}>
+    <div className="dbw-table-scroll" data-testid="database-table-view" onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)} ref={scrollRef}
+      onFocusCapture={event => {
+        const target = event.target as HTMLElement
+        const editing = target.matches('input:not([type="checkbox"]), select, textarea') || target.isContentEditable
+        setFocusedRecordId(editing ? null : target.closest<HTMLTableRowElement>('tr[data-dbw-record-id]')?.dataset.dbwRecordId ?? null)
+      }}
+      onBlurCapture={event => {
+        const next = event.relatedTarget, ownerWindow = event.currentTarget.ownerDocument.defaultView
+        if (ownerWindow && next instanceof ownerWindow.Node && !event.currentTarget.contains(next)) setFocusedRecordId(null)
+      }}>
       <table
         className="dbw-table"
         style={{ minWidth: tableWidth }}
@@ -132,6 +148,9 @@ export function DatabaseTableView({
           const cellIndex = [...row.cells].indexOf(cell)
           const nextRowIndex = event.key === 'ArrowUp' ? rowIndex - 1 : event.key === 'ArrowDown' ? rowIndex + 1 : rowIndex
           const nextCellIndex = event.key === 'ArrowLeft' ? cellIndex - 1 : event.key === 'ArrowRight' ? cellIndex + 1 : cellIndex
+          // An offscreen focus row is not adjacent to the window across a spacer.
+          // Keep native scrolling there instead of jumping over unseen records.
+          if (nextRowIndex !== rowIndex && Math.abs(visibleIndices[nextRowIndex] - visibleIndices[rowIndex]) !== 1) return
           const nextCell = rows[nextRowIndex]?.cells[nextCellIndex]
           if (!nextCell) return
           event.preventDefault()
@@ -195,9 +214,11 @@ export function DatabaseTableView({
           })}
         </tr></thead>
         <tbody>
-          {startIndex > 0 ? <tr aria-hidden="true" className="dbw-virtual-spacer"><td colSpan={fields.length + 1} style={{ height: startIndex * rowHeight }} /></tr> : null}
-          {visibleRecords.map((record) => (
-            <tr className={selectedIds.has(record.id) ? 'is-selected' : ''} key={record.id}>
+          {visibleIndices.map((recordIndex, index) => {
+            const record = records[recordIndex], gap = recordIndex - (index ? visibleIndices[index - 1] + 1 : 0)
+            return <Fragment key={record.id}>
+            {gap > 0 ? <tr aria-hidden="true" className="dbw-virtual-spacer"><td colSpan={fields.length + 1} style={{ height: gap * rowHeight }} /></tr> : null}
+            <tr className={selectedIds.has(record.id) ? 'is-selected' : ''} data-dbw-record-id={record.id} key="record">
               <td className="dbw-select-column" tabIndex={-1}>
                 <label className="dbw-checkbox-hit-target">
                   <input disabled={readOnly} aria-label={text.selected(1)} checked={selectedIds.has(record.id)} onChange={(event) => onSelect(record.id, event.target.checked)} type="checkbox" />
@@ -231,8 +252,9 @@ export function DatabaseTableView({
                 </td>
               ))}
             </tr>
-          ))}
-          {endIndex < records.length ? <tr aria-hidden="true" className="dbw-virtual-spacer"><td colSpan={fields.length + 1} style={{ height: (records.length - endIndex) * rowHeight }} /></tr> : null}
+            </Fragment>
+          })}
+          {visibleIndices.length && visibleIndices.at(-1)! < records.length - 1 ? <tr aria-hidden="true" className="dbw-virtual-spacer"><td colSpan={fields.length + 1} style={{ height: (records.length - visibleIndices.at(-1)! - 1) * rowHeight }} /></tr> : null}
         </tbody>
       </table>
     </div>
