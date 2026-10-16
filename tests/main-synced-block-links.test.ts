@@ -173,8 +173,13 @@ test('stored bindings must cover exact parser ranges rather than matching arbitr
   assert.equal(changes(value), count)
 }))
 
-test('actual empty local hrefs fail closed until the binding contract can protect a nonempty source range', () => fixture(value => {
+test('actual empty local hrefs bind their exact parser point to immutable origin', () => fixture(value => {
   for (const content of ['[self]()', '[self](<>)']) {
-    assert.throws(() => captureSyncedGroupBindings(value.db, value.origin, [wire('empty', content)]), /空链接目的地/)
+    const blocks = [wire('empty', content)], bindings = captureSyncedGroupBindings(value.db, value.origin, blocks)
+    assert.equal(bindings.length, 1)
+    assert.equal(bindings[0].from, bindings[0].to)
+    assert.equal(bindings[0].raw, '')
+    assert.deepEqual(bindings[0].target, { kind: 'document', id: value.source, state: 'live' })
+    assertSyncedStoredBindings(value.db, value.origin, blocks, bindings)
   }
 }))

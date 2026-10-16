@@ -178,16 +178,21 @@ export function validateSyncedBindings(value: unknown, blocks: readonly SyncedCa
     assertSyncedShape(raw, ['blockId', 'from', 'to', 'raw', 'syntax', 'target'])
     const blockId = opaque(raw.blockId), block = byId.get(blockId)
     if (!block || typeof raw.from !== 'number' || typeof raw.to !== 'number' || !Number.isSafeInteger(raw.from)
-      || !Number.isSafeInteger(raw.to) || raw.from < 0 || raw.to <= raw.from || raw.to > block.content.length
+      || !Number.isSafeInteger(raw.to) || raw.from < 0 || raw.to < raw.from || raw.to > block.content.length
       || typeof raw.raw !== 'string' || block.content.slice(raw.from, raw.to) !== raw.raw
-      || raw.syntax !== 'markdown' && raw.syntax !== 'wiki') return fail('binding')
+      || raw.syntax !== 'markdown' && raw.syntax !== 'wiki'
+      || raw.to === raw.from && (raw.syntax !== 'markdown' || raw.raw !== '')) return fail('binding')
     const used = ranges.get(blockId) ?? []
     used.push([raw.from, raw.to]); ranges.set(blockId, used)
     return { blockId, from: raw.from, to: raw.to, raw: raw.raw, syntax: raw.syntax, target: linkTarget(raw.target) }
   })
   for (const used of ranges.values()) {
     used.sort((first, second) => first[0] - second[0] || first[1] - second[1])
-    for (let index = 1; index < used.length; index++) if (used[index][0] < used[index - 1][1]) return fail('binding')
+    // An actual empty Markdown destination has a parser-proven insertion point.
+    // Reject duplicate points as well as ordinary interval overlaps. Main still
+    // proves exact AST coverage; an arbitrary empty substring is not authority.
+    for (let index = 1; index < used.length; index++) if (used[index][0] < used[index - 1][1]
+      || used[index][0] === used[index - 1][0]) return fail('binding')
   }
   return result
 }

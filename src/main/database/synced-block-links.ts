@@ -21,7 +21,6 @@ function occurrences(origin: SyncedOriginV1, blocks: readonly SyncedCanonicalWir
     if (!link.blockId || link.end < link.start) fail('实际链接无法映射到 canonical 块范围。')
     const wiki = link.kind === 'wiki'
     if (!wiki && !resolveMarkdownDocumentPath(origin.pathAtCreation, link.url)) continue
-    if (link.end === link.start) fail('空链接目的地尚无可保护的绑定范围，当前内部写入保留草稿。')
     const block = blocks[link.blockIndex]
     result.push({ blockId: link.blockId, from: link.start, to: link.end,
       raw: block.content.slice(link.start, link.end), syntax: wiki ? 'wiki' : 'markdown', url: link.url })
