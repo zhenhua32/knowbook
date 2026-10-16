@@ -33,12 +33,29 @@ const mediaForest = (): SyncedCanonicalWire[] => [
 ]
 
 async function readyMedia(roots: HTMLElement[]) {
-  await act(async () => {
-    await import('../src/renderer/src/components/BlockImagePresentations')
-    await import('../src/renderer/src/components/ImagePresentationEditor')
-    await new Promise<void>(resolve => setImmediate(resolve))
-  })
-  for (const root of roots) assert.ok(root.querySelector('.rich-text-source-media .image-presentation-frame'))
+  assert.ok(roots.length > 0, 'The media fixture has actual mounted occurrences')
+  const selector = '.rich-text-source-media .image-presentation-frame'
+  let disconnectMedia = noop
+  try {
+    const mediaReady = new Promise<void>(resolve => {
+      const check = () => {
+        if (roots.every(root => root.querySelector(selector))) { observer.disconnect(); resolve() }
+      }
+      const observer = new roots[0].ownerDocument.defaultView!.MutationObserver(check)
+      disconnectMedia = () => observer.disconnect()
+      for (const root of roots) observer.observe(root, { childList: true, subtree: true })
+      check()
+    })
+    await act(async () => { await Promise.all([
+      import('../src/renderer/src/components/BlockImagePresentations'),
+      import('../src/renderer/src/components/ImagePresentationEditor')
+    ]) })
+    // React must be free to commit its private lazy resource before the DOM
+    // observer resolves; awaiting this promise inside act would block that flush.
+    await mediaReady
+    await act(async () => {})
+    for (const root of roots) assert.ok(root.querySelector(selector), 'Each real occurrence has committed its media frame before media input')
+  } finally { disconnectMedia() }
 }
 
 async function typeCaption(dom: JSDOM, root: HTMLElement, text: string) {
