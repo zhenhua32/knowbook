@@ -9,7 +9,8 @@ import { extractMarkdownFrontmatter, KNOWBOOK_BACKUP_MARKER } from './markdownFr
 import { assertDatabaseViewStructure, validateDatabaseViewBlock } from './databaseViewBlock'
 import { renderDatabaseViewFence } from './markdownDatabaseView'
 import { parseStrictJson } from './strictJson'
-export { parseMarkdownSourceStrict, serializeMarkdownHostSource } from './markdownSource'
+import type { MarkdownSourceTracePort, MarkdownSourceEmission } from './markdownSourceTrace'
+export { parseMarkdownSourceStrict, parseMarkdownSourceStrictWithTrace, serializeMarkdownHostSource } from './markdownSource'
 
 function assertMarkdownColumnStructure(blocks: MarkdownRenderableBlock[]): void {
   try { assertColumnStructure(blocks) }
@@ -50,6 +51,7 @@ export interface MarkdownSourceStrictResult {
 /** Internal policy port: the public grammar has no dependency on Source-only
  * validation, reference payloads or budgets. The cold Source module injects it. */
 export interface MarkdownSourceParsePolicy {
+  trace?: MarkdownSourceTracePort
   push: (block: MarkdownRenderableBlock, index: number, refKey: string | null) => void
   expectedRef: (node: MarkdownNode) => { key: string; payload: string } | undefined
   consumeRef: (node: MarkdownNode, key: string) => void
@@ -420,7 +422,7 @@ function stripIndent(line: string, indent: number): string {
   return expanded.slice(Math.min(indent, expanded.match(/^ */)![0].length))
 }
 
-function protectParagraphContinuations(content: string): string {
+export function protectParagraphContinuations(content: string, onEdit?: (from: number, to: number, insert: string) => void): string {
   // Lazy continuation lines can look like new blocks once a container gains
   // explicit indentation/quote markers. Escape only when inline meaning stays
   // identical (in particular, never insert escapes inside a multiline code span).
@@ -430,18 +432,19 @@ function protectParagraphContinuations(content: string): string {
   for (const match of continuations.reverse()) {
     const at = match.index + match[0].length
     const escaped = content.slice(0, at) + '\\' + content.slice(at)
-    if (markdownEngine.renderInline(escaped) === original) content = escaped
+    if (markdownEngine.renderInline(escaped) === original) { onEdit?.(at, at, '\\'); content = escaped }
     else {
       // A newline within a code span already renders as a space. Joining just
       // that newline avoids a Setext heading without changing code contents.
       const joined = content.slice(0, match.index) + ' ' + content.slice(match.index + 1)
-      if (markdownEngine.renderInline(joined) === original) content = joined
+      if (markdownEngine.renderInline(joined) === original) { onEdit?.(match.index, match.index + 1, ' '); content = joined }
     }
   }
   return content
 }
 
-function protectContainerParagraphs(body: string, children: MarkdownNode[], firstLine: number): string {
+export function protectContainerParagraphs(body: string, children: MarkdownNode[], firstLine: number,
+  onEdit?: (from: number, to: number, insert: string) => void): string {
   const lines = body.split('\n')
   // Joining code-span newlines can shorten a paragraph. Work backwards so the
   // parser's original line maps remain valid for earlier paragraphs.
@@ -449,7 +452,9 @@ function protectContainerParagraphs(body: string, children: MarkdownNode[], firs
     if (child.token.type !== 'paragraph_open' || !child.token.map) continue
     const start = child.token.map[0] - firstLine
     const end = child.token.map[1] - firstLine
-    lines.splice(start, end - start, ...protectParagraphContinuations(lines.slice(start, end).join('\n')).split('\n'))
+    const offset = onEdit ? lines.slice(0, start).reduce((length, line) => length + line.length + 1, 0) : 0
+    lines.splice(start, end - start, ...protectParagraphContinuations(lines.slice(start, end).join('\n'),
+      onEdit ? (from, to, insert) => onEdit(offset + from, offset + to, insert) : undefined).split('\n'))
   }
   return lines.join('\n')
 }
@@ -466,13 +471,15 @@ export function parseMarkdownBlocksCore(markdownBody: string, sourceRanges?: Mar
   const source = markdownBody.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n')
   if (!source.trim()) return []
   const environment: Record<string, unknown> = {}
-  const tokens = markdownEngine.parse(source, environment)
+  const trace = strict?.trace
+  const tokens = trace ? trace.parse(source, environment) : markdownEngine.parse(source, environment)
   const lines = decodedNativeSourceLines(source, tokens)
   const nodes = markdownTokenTree(tokens)
   assertNativeContainerParse(environment)
   const blocks: MarkdownRenderableBlock[] = []
   const declared = new Map<number, { metadata: MarkdownBlockMetadata; scopeDepth: number; scopeParent?: number }>()
-  const push = (block: MarkdownRenderableBlock, startLine: number, endLine: number, refKey: string | null = null) => {
+  const push = (block: MarkdownRenderableBlock, startLine: number, endLine: number, refKey: string | null = null, emission?: MarkdownSourceEmission) => {
+    trace?.emit(block, blocks.length, emission ?? { kind: 'raw', startLine, endLine })
     while (startLine < endLine && !lines[startLine]?.trim()) startLine++
     while (endLine > startLine && !lines[endLine - 1]?.trim()) endLine--
     sourceRanges?.push({ index: blocks.length, startLine, endLine })
@@ -491,7 +498,7 @@ export function parseMarkdownBlocksCore(markdownBody: string, sourceRanges?: Mar
     const ref = strict ? expectedRef(node) : undefined
     if (ref) {
       strict!.consumeRef(node, ref.key)
-      push(make('synced-block', ref.payload, depth), ...token.map!, ref.key)
+      push(make('synced-block', ref.payload, depth), ...token.map!, ref.key, trace ? { kind: 'token', token, stripFinalLF: true } : undefined)
       return
     }
     // An unsupported multi-line marked opening may have fallen back to a legacy
@@ -517,12 +524,14 @@ export function parseMarkdownBlocksCore(markdownBody: string, sourceRanges?: Mar
         delete owner.markdownFormat
         owner = applyMarkdownBlockMetadata(owner, metadata)
       }
-      push(owner, metadataLine ?? container.headerRange[0], container.headerRange[1])
+      push(owner, metadataLine ?? container.headerRange[0], container.headerRange[1], null,
+        trace ? title ? { kind: 'token', token: title.token } : { kind: 'empty' } : undefined)
       appendScope(children.filter(child => child !== title), ...container.bodyRange, depth + 1, ownerIndex)
       closingRanges?.push({ index: ownerIndex, startLine: container.closingRange[0], endLine: container.closingRange[1] })
       return
     }
-    const put = (block: MarkdownRenderableBlock, startLine: number, endLine: number) => push({ ...block, depth: block.depth || depth }, startLine, endLine)
+    const put = (block: MarkdownRenderableBlock, startLine: number, endLine: number, emission?: MarkdownSourceEmission) =>
+      push({ ...block, depth: block.depth || depth }, startLine, endLine, null, emission)
     if (token.type === 'bullet_list_open' || token.type === 'ordered_list_open') {
       strict?.checkListDepth(node, depth)
       const ordered = token.type === 'ordered_list_open'
@@ -554,23 +563,27 @@ export function parseMarkdownBlocksCore(markdownBody: string, sourceRanges?: Mar
         block.checked = task?.checked ?? false
         block.markdownFormat = { listMarker: token.markup as MarkdownBlockFormat['listMarker'], listLoose: loose }
         if (ordered && index === 0) block.listStart = Number(token.attrGet('start') ?? 1)
-        push(block, item.token.map![0], projectedStart ?? (simple ? item.children[0].token.map![1] : item.token.map![1]))
+        push(block, item.token.map![0], projectedStart ?? (simple ? item.children[0].token.map![1] : item.token.map![1]), null,
+          trace ? { kind: 'list', item, simple, projectedFrom, taskLength: task?.length ?? 0 } : undefined)
         if (simple) item.children.slice(1).forEach(child => append(child, depth + 1))
         else if (projectedFrom >= 0) item.children.slice(projectedFrom).forEach(child => append(child, depth + 1))
       })
-    } else if (token.type === 'heading_open') put(make('heading-' + token.tag.slice(1), children[0]?.token.content ?? ''), ...token.map!)
-    else if (token.type === 'knowbook_database_view') put(make('database-view', token.content), ...token.map!)
+    } else if (token.type === 'heading_open') put(make('heading-' + token.tag.slice(1), children[0]?.token.content ?? ''), ...token.map!,
+      trace ? { kind: 'token', token: children[0]?.token ?? token } : undefined)
+    else if (token.type === 'knowbook_database_view') put(make('database-view', token.content), ...token.map!, trace ? { kind: 'token', token } : undefined)
     else if (token.type === 'fence' || token.type === 'code_block') put({ ...make('code', token.content.replace(/\n$/, '')), language: token.info.trim() || undefined,
-      markdownFormat: { codeInfo: token.info.trim(), ...(token.content === '' ? { emptyCode: true } : {}) } }, ...token.map!)
-    else if (token.type === 'frontmatter') put(make('frontmatter', token.content), ...token.map!)
+      markdownFormat: { codeInfo: token.info.trim(), ...(token.content === '' ? { emptyCode: true } : {}) } }, ...token.map!,
+      trace ? { kind: 'token', token, stripFinalLF: true } : undefined)
+    else if (token.type === 'frontmatter') put(make('frontmatter', token.content), ...token.map!, trace ? { kind: 'token', token } : undefined)
     else if (token.type === 'html_details_open' || token.type === 'html_figure_open') put(make('html', raw(node)), ...token.map!)
-    else if (token.type === 'math_block') put(make('math', token.content), ...token.map!)
-    else if (token.type === 'hr') put(make('divider', ''), ...token.map!)
+    else if (token.type === 'math_block') put(make('math', token.content), ...token.map!, trace ? { kind: 'token', token } : undefined)
+    else if (token.type === 'hr') put(make('divider', ''), ...token.map!, trace ? { kind: 'empty' } : undefined)
     else if (token.type === 'table_open') put(make('table', raw(node)), rawStart(node), token.map![1])
     else if (token.type === 'blockquote_open') {
       const body = raw(node).split('\n').map(line => expandLeadingTabs(line).replace(/^ {0,3}> ?/, '')).join('\n')
-      put(make('quote', protectContainerParagraphs(body, children, token.map![0])), ...token.map!)
-    } else put(make('paragraph', raw(node).replace(/^ {1,3}(?=\S)/gm, '')), ...token.map!)
+      put(make('quote', protectContainerParagraphs(body, children, token.map![0])), ...token.map!, trace ? { kind: 'quote', node } : undefined)
+    } else put(make('paragraph', raw(node).replace(/^ {1,3}(?=\S)/gm, '')), ...token.map!,
+      trace ? { kind: 'paragraph', startLine: rawStart(node), endLine: token.map![1] } : undefined)
   }
   const appendScope = (items: MarkdownNode[], scopeStart: number, scopeEnd: number, depth: number, scopeParent?: number): void => {
     if (depth > 6 && trimBlankLines(lines.slice(scopeStart, scopeEnd).join('\n'))) throw new NativeMarkdownContainerError('editable child nesting exceeds six levels')

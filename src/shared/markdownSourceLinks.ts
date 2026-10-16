@@ -6,7 +6,13 @@ export type MarkdownDestination = { start: number; end: number; url: string; kin
 export type MarkdownSourceLink = MarkdownDestination | { start: number; end: number; url: string; kind: 'wiki' }
 export type MarkdownCompatibilityFinding = { start: number; end: number; reason: 'unsupported-html' | 'html-attributes' | 'wiki-syntax' }
 export type MarkdownSourceImage = { start: number; end: number; token: Token }
-type Capture = { links: MarkdownSourceLink[]; diagnostics: MarkdownCompatibilityFinding[]; maps: WeakMap<Token[], number[]>; endMaps?: WeakMap<Token[], number[]>; ranges?: Array<{ start: number; end: number }>; images?: MarkdownSourceImage[]; context?: { positions: number[]; ends?: number[]; offset: number }; inAlt?: boolean }
+/** Cold observers receive the actual successful rule's token and source range.
+ * Reference values are parser-owned objects, never a URL-based identity. */
+export type MarkdownLinkProvenanceObserver = {
+  definition: (token: Token, destination: MarkdownDestination, reference: object | undefined) => void
+  link: (token: Token, use: { start: number; end: number }, destination?: MarkdownSourceLink, reference?: object) => void
+}
+type Capture = { links: MarkdownSourceLink[]; diagnostics: MarkdownCompatibilityFinding[]; maps: WeakMap<Token[], number[]>; endMaps?: WeakMap<Token[], number[]>; ranges?: Array<{ start: number; end: number }>; images?: MarkdownSourceImage[]; provenance?: MarkdownLinkProvenanceObserver; context?: { positions: number[]; ends?: number[]; offset: number }; inAlt?: boolean }
 const capture = (env: Env) => env.markdownSourceLinks as Capture | undefined
 const sourceMap = (token: Token) => token.meta?.sourceMap as number[] | undefined
 
@@ -68,6 +74,17 @@ function record(data: Capture, link: MarkdownSourceLink): void {
   data.links.push({ ...link, start: map[link.start + offset], end: ends?.[link.end - 1 + offset] ?? map[link.end - 1 + offset] + 1 })
 }
 
+function traceLink(data: Capture, token: Token, start: number, end: number, destination?: MarkdownSourceLink, reference?: object): void {
+  if (!data.provenance || data.inAlt || !data.context) return
+  const { positions, ends, offset } = data.context
+  const span = (from: number, to: number) => {
+    const first = positions[from + offset], last = to === from ? first : ends?.[to - 1 + offset] ?? positions[to - 1 + offset] + 1
+    return first === undefined || last === undefined || !Number.isFinite(last) ? undefined : { start: first, end: last }
+  }
+  const use = span(start, end), target = destination && span(destination.start, destination.end)
+  if (use) data.provenance.link(token, use, destination && target ? { ...destination, ...target } : undefined, reference)
+}
+
 function recordImage(data: Capture, start: number, end: number, token: Token): void {
   if (!data.images || data.inAlt || !data.context) return
   const { positions, ends, offset } = data.context
@@ -96,9 +113,9 @@ export function capturedMarkdownCompatibility(env: Env): MarkdownCompatibilityFi
  * Source maps are allocated only for source operations, never normal rendering. */
 export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>): void {
   md.core.ruler.after('normalize', 'source_links_initialize', (state) => {
-    if (state.env.captureSourceLinks) state.env.markdownSourceLinks = {
+    if (state.env.captureSourceLinks || state.env.markdownLinkProvenance) state.env.markdownSourceLinks = {
       links: [], diagnostics: [], maps: new WeakMap(), endMaps: new WeakMap(), ranges: state.env.captureInlineRanges ? [] : undefined,
-      images: state.env.captureImageOccurrences ? [] : undefined
+      images: state.env.captureImageOccurrences ? [] : undefined, provenance: state.env.markdownLinkProvenance as MarkdownLinkProvenanceObserver | undefined
     } satisfies Capture
   })
   for (const name of ['paragraph', 'heading', 'lheading', 'table', 'reference']) {
@@ -126,8 +143,10 @@ export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>):
           const destination = md.helpers.parseLinkDestination(source, label.length, source.length)
           if (!destination.ok) continue
           const angled = source[label.length] === '<'
-          data.links.push({ start: map[label.length + (angled ? 1 : 0)], end: map[destination.pos - (angled ? 2 : 1)] + 1,
-            url: md.normalizeLink(destination.str), kind: 'definition' })
+          const link: MarkdownDestination = { start: map[label.length + (angled ? 1 : 0)], end: map[destination.pos - (angled ? 2 : 1)] + 1,
+            url: md.normalizeLink(destination.str), kind: 'definition' }
+          data.links.push(link)
+          data.provenance?.definition(token, link, typeof token.meta?.label === 'string' ? state.env.references?.[token.meta.label] : undefined)
         }
       }
       return accepted
@@ -137,7 +156,8 @@ export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>):
     const data = capture(state.env)
     if (!data) return
     for (const token of state.tokens) {
-      const map = sourceMap(token)
+      const map = sourceMap(token) ?? (state.inlineMode && data.provenance && token.type === 'inline'
+        ? Array.from({ length: token.content.length }, (_, index) => index) : undefined)
       if (token.type === 'inline' && token.children && map) {
         data.maps.set(token.children, map)
         if (Array.isArray(token.meta?.sourceEndMap)) data.endMaps?.set(token.children, token.meta.sourceEndMap)
@@ -177,6 +197,11 @@ export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>):
       if (name === 'safe_html') {
         const html = state.tokens.slice(first).find((token) => token.meta?.htmlSourceLinks)
         for (const link of (html?.meta?.htmlSourceLinks ?? []) as MarkdownDestination[]) record(data, { ...link, start: start + link.start, end: start + link.end })
+        if (data.provenance) for (const token of state.tokens.slice(first)) {
+          const trace = token.meta?.sourceLinkProvenance as { destination: MarkdownDestination; use: { start: number; end: number } } | undefined
+          if (token.type === 'link_open' && trace) traceLink(data, token, start + trace.use.start, start + trace.use.end,
+            { ...trace.destination, start: start + trace.destination.start, end: start + trace.destination.end })
+        }
         return true
       }
       if (name === 'footnote_inline') return true
@@ -204,10 +229,14 @@ export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>):
       if (!token) return true
       if (name === 'image') recordImage(data, start, state.pos, token)
       const url = String(token.attrGet(name === 'image' ? 'src' : 'href') ?? '')
+      let tracedDestination: MarkdownSourceLink | undefined
       if (name === 'linkify') {
         if (/^file:/i.test(url)) record(data, { start: start - schemeLength, end: state.pos, url, kind: 'autolink', syntax: 'bare' })
-      } else if (name === 'autolink') record(data, { start: start + 1, end: state.pos - 1, url, kind: 'autolink' })
-      else if (!token.meta?.label) {
+        if (data.provenance) tracedDestination = { start: start - schemeLength, end: state.pos, url, kind: 'autolink', syntax: 'bare' }
+      } else if (name === 'autolink') {
+        const link: MarkdownSourceLink = { start: start + 1, end: state.pos - 1, url, kind: 'autolink' }
+        record(data, link); tracedDestination = link
+      } else if (!token.meta?.label) {
         const labelEnd = md.helpers.parseLinkLabel(state, start + (name === 'image' ? 1 : 0), name === 'link')
         let position = labelEnd + 2
         const emptyPosition = position
@@ -217,12 +246,16 @@ export function installMarkdownSourceLinks(md: InstanceType<typeof MarkdownIt>):
           // The accepted native rule also permits an empty destination before
           // a title. Keep its leading whitespace outside the insertion range.
           const from = state.src.slice(position, position + 2) === '<>' ? position + 1 : emptyPosition
-          record(data, { start: from, end: from, url, kind: name === 'image' ? 'image' : 'link' })
+          tracedDestination = { start: from, end: from, url, kind: name === 'image' ? 'image' : 'link' }
+          record(data, tracedDestination)
         } else if (destination.ok) {
           const angled = state.src[position] === '<'
-          record(data, { start: position + (angled ? 1 : 0), end: destination.pos - (angled ? 1 : 0), url, kind: name === 'image' ? 'image' : 'link' })
+          tracedDestination = { start: position + (angled ? 1 : 0), end: destination.pos - (angled ? 1 : 0), url, kind: name === 'image' ? 'image' : 'link' }
+          record(data, tracedDestination)
         }
       }
+      if (data.provenance && token.type === 'link_open') traceLink(data, token, name === 'linkify' ? start - schemeLength : start, state.pos,
+        tracedDestination, typeof token.meta?.label === 'string' ? state.env.references?.[token.meta.label] : undefined)
       return true
     })
   }

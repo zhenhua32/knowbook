@@ -8,6 +8,7 @@ import { INLINE_TEXT_COLOR_ATTRIBUTE, INLINE_BACKGROUND_COLOR_ATTRIBUTE, parseIn
 import type { MarkSpec } from 'prosemirror-model'
 import { isContainerBlockType } from '@shared/blockTypes'
 import { nativeContainerPresentation } from '../utils/nativeContainerPresentation'
+import { RICH_LINK_OCCURRENCE_ATTR } from './linkProvenance'
 
 function presentationMark(name: 'textColor' | 'backgroundColor', attribute: string): MarkSpec {
   return {
@@ -165,7 +166,7 @@ export const richTextSchema = new Schema({
   },
   marks: {
     link: {
-      attrs: { href: {}, title: { default: null } },
+      attrs: { href: {}, title: { default: null }, [RICH_LINK_OCCURRENCE_ATTR]: { default: null } },
       inclusive: false,
       parseDOM: [{ tag: 'a[href]', getAttrs: (element) => {
         const href = element.getAttribute('href') ?? ''

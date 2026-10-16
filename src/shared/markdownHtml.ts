@@ -178,7 +178,7 @@ function destination(element: Html.Element, source: string, attrs: Array<[string
     start: location.startOffset + prefix.length + (quoted ? 1 : 0), end: location.endOffset - (quoted ? 1 : 0) }]
 }
 
-function htmlTokens(nodes: Html.ChildNode[], source: string, make: TokenFactory, links: MarkdownDestination[], depth = 0, presentationContext = false): Token[] {
+function htmlTokens(nodes: Html.ChildNode[], source: string, make: TokenFactory, links: MarkdownDestination[], depth = 0, presentationContext = false, traceLinks = false): Token[] {
   return nodes.flatMap((node): Token[] => {
     const text = (value: string, unsupported = false) => { const token = make('text', '', 0); token.content = value; token.meta = { html: true, ...(unsupported ? { unsupportedHtml: true } : {}) }; return [token] }
     if ('value' in node) return text(node.value)
@@ -201,10 +201,14 @@ function htmlTokens(nodes: Html.ChildNode[], source: string, make: TokenFactory,
       return tokens
     }
     const attrs = attributes(node), tag = node.tagName
-    links.push(...destination(node, source, attrs))
+    const sourceLinks = destination(node, source, attrs)
+    links.push(...sourceLinks)
     const type = tag === 'img' ? 'image' : tag === 'br' ? 'hardbreak' : tag === 'a' && attrs.some(([name]) => name === 'href') ? 'link_open' : 'html_element_open'
     const token = make(type, tag, voidTags.has(tag) ? 0 : 1)
     token.attrs = attrs; token.meta = { html: true }
+    if (traceLinks && type === 'link_open' && sourceLinks[0] && node.sourceCodeLocation) token.meta.sourceLinkProvenance = {
+      destination: sourceLinks[0], use: { start: node.sourceCodeLocation.startOffset, end: node.sourceCodeLocation.endOffset }
+    }
     if (tag === 'img') {
       token.content = attrs.find(([name]) => name === 'alt')?.[1] ?? ''
       token.attrSet('alt', token.content)
@@ -212,7 +216,7 @@ function htmlTokens(nodes: Html.ChildNode[], source: string, make: TokenFactory,
       const alt = make('text', '', 0); alt.content = token.content; token.children = [alt]
     }
     if (voidTags.has(tag)) return [token]
-    return [token, ...htmlTokens(node.childNodes, source, make, links, depth + 1, presentationContext || presentationTags.has(tag)), make(type === 'link_open' ? 'link_close' : 'html_element_close', tag, -1)]
+    return [token, ...htmlTokens(node.childNodes, source, make, links, depth + 1, presentationContext || presentationTags.has(tag), traceLinks), make(type === 'link_open' ? 'link_close' : 'html_element_close', tag, -1)]
   })
 }
 
@@ -276,7 +280,7 @@ export function installMarkdownHtml(md: InstanceType<typeof MarkdownIt>): void {
     if (!root || root.tagName === 'details' || root.tagName === 'span' && !root.attrs.length || root.tagName === 'a' && state.linkLevel > 0) return false
     if (!silent) {
       const links: MarkdownDestination[] = []
-      const tokens = htmlTokens([root], source, (type, tag, nesting) => new state.Token(type, tag, nesting), links)
+      const tokens = htmlTokens([root], source, (type, tag, nesting) => new state.Token(type, tag, nesting), links, 0, false, Boolean(state.env.markdownLinkProvenance))
       tokens[0].meta = { ...tokens[0].meta, htmlSourceLinks: links }
       for (const token of tokens) {
         const pushed = state.push(token.type, token.tag, token.nesting)

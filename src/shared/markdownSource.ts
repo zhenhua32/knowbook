@@ -9,6 +9,7 @@ import type { SyncedStableBlockDraft } from './synced-blocks'
 import { canBlockNestUnder, isListBlockType } from './blockTypes'
 import { columnStructureErrorCode } from './columnStructure'
 import { SYNCED_BLOCK_FENCE_INFO, parseSyncedBlockPayload, serializeSyncedBlockPayload, validateSyncedHostForest } from './syncedBlockValidation'
+import { createMarkdownSourceTrace, type MarkdownSourceContentTrace, type MarkdownSourceTracePort } from './markdownSourceTrace'
 
 function fail(message: string): never { throw new Error('Invalid strict Markdown source: ' + message) }
 type ExpectedRef = { key: string; from: number; to: number; payload: string; used: boolean }
@@ -16,6 +17,23 @@ type ExpectedRef = { key: string; from: number; to: number; payload: string; use
 /** This cold adapter uses the same token walker as public Markdown. Local
  * expectations prove source provenance, never Main's ownership authority. */
 export function parseMarkdownSourceStrict(source: string, options: MarkdownSourceStrictOptions): MarkdownSourceStrictResult {
+  return parseStrict(source, options)
+}
+
+export interface MarkdownSourceStrictTracedResult extends MarkdownSourceStrictResult {
+  readonly contentTraces: readonly MarkdownSourceContentTrace[]
+}
+
+/** A cold, explicit source operation. Ordinary strict/public parses do not
+ * install observers, allocate character maps or change their result shape. */
+export function parseMarkdownSourceStrictWithTrace(source: string, options: MarkdownSourceStrictOptions): MarkdownSourceStrictTracedResult {
+  if (typeof source !== 'string') fail('invalid input')
+  const trace = createMarkdownSourceTrace(source)
+  const result = parseStrict(source, options, trace.port)
+  return { ...result, contentTraces: trace.finish() }
+}
+
+function parseStrict(source: string, options: MarkdownSourceStrictOptions, trace?: MarkdownSourceTracePort): MarkdownSourceStrictResult {
   if (typeof source !== 'string' || !options || !['canonical', 'internal-host'].includes(options.mode)) fail('invalid input')
   const result: MarkdownSourceStrictResult = { blocks: [], sourceRanges: [], closingRanges: [], metadata: [], references: [] }
   const starts = [0], originalLines = source.split(/\r\n?|\n/)
@@ -65,6 +83,7 @@ export function parseMarkdownSourceStrict(source: string, options: MarkdownSourc
       if (child.token.type === 'bullet_list_open' || child.token.type === 'ordered_list_open') checkListDepth(child, depth + 1)
   }
   const policy: MarkdownSourceParsePolicy = {
+    trace,
     fail, expectedRef, checkListDepth,
     push(block, index, refKey) {
       const depth = block.depth ?? 0, parentIndex = depth ? parents[depth - 1] : null

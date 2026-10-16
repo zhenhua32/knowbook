@@ -1,5 +1,5 @@
 import { Fragment, type Mark, type Node } from 'prosemirror-model'
-import { defaultMarkdownSerializer, MarkdownSerializer } from 'prosemirror-markdown'
+import { defaultMarkdownSerializer, MarkdownSerializer, type MarkdownSerializerState } from 'prosemirror-markdown'
 import type { DocumentBlockDraft } from '@shared/contracts'
 import { markdownEngine, parseMarkdownInline, type MarkdownEnvironment, type MarkdownNode } from '@shared/markdownEngine'
 import { capturedMarkdownCompatibility } from '@shared/markdownSourceLinks'
@@ -11,6 +11,7 @@ import { createDraftBlockId } from '../utils/draftTreeFragment'
 import { resolveDraftBlockRelationship } from '../utils/draftTreePlacement'
 import { richTextSchema } from './schema'
 import { validateDatabaseViewBlock } from '@shared/databaseViewBlock'
+import { RICH_LINK_OCCURRENCE_ATTR, RichLinkTraceCollector, withRichLinkOccurrence, type RichInlineLinkSerialization } from './linkProvenance'
 
 const textBlockTypes = new Set(['paragraph', 'quote', 'heading-1', 'heading-2', 'heading-3',
   'heading-4', 'heading-5', 'heading-6', 'callout', 'toggle', 'todo', 'numbered-todo', 'bulleted-list', 'numbered-list'])
@@ -28,7 +29,18 @@ function defaultBlock(): DocumentBlockDraft {
 }
 
 export function richTextInlineFingerprint(node: Node): string {
-  return JSON.stringify(node.content.toJSON() ?? [])
+  if (!node.content.content.some(child => child.marks.some(mark => mark.type.name === 'link'))) return JSON.stringify(node.content.toJSON() ?? [])
+  // Token-only splits must not force untouched source through a serializer.
+  // Fragment coalescing restores the ordinary adjacent-text representation.
+  const children: Node[] = []
+  node.forEach(child => children.push(child.mark(child.marks.map(mark => mark.type.name === 'link'
+    ? withRichLinkOccurrence(mark, null) : mark))))
+  return JSON.stringify(Fragment.fromArray(children).toJSON() ?? [], (_name, value: unknown) => {
+    if (!value || typeof value !== 'object' || !('type' in value) || value.type !== 'link' || !('attrs' in value)
+      || !value.attrs || typeof value.attrs !== 'object') return value
+    const { [RICH_LINK_OCCURRENCE_ATTR]: _runtimeOnly, ...attrs } = value.attrs as Record<string, unknown>
+    return { ...value, attrs }
+  })
 }
 
 function inlineContent(nodes: MarkdownNode[], marks: readonly Mark[] = []): Node[] | null {
@@ -256,7 +268,16 @@ const inlineSerializer = new MarkdownSerializer({
   soft_break: state => state.write('\n'),
   hard_break: state => state.write('\\\n')
 }, {
-  link: defaultMarkdownSerializer.marks.link,
+  link: {
+    ...defaultMarkdownSerializer.marks.link,
+    close(state, mark, parent, index) {
+      const close = defaultMarkdownSerializer.marks.link.close
+      const value = typeof close === 'function' ? close(state, mark, parent, index) : close
+      // Without an explicit empty destination the parser reads the quoted
+      // title as the href. Preserve the upstream title's exact escaping.
+      return mark.attrs.href === '' && mark.attrs.title ? value.slice(0, 2) + '<>' + value.slice(2) : value
+    }
+  },
   strong: defaultMarkdownSerializer.marks.strong,
   em: defaultMarkdownSerializer.marks.em,
   strike: { open: '~~', close: '~~', mixable: true, expelEnclosingWhitespace: true },
@@ -270,25 +291,32 @@ const inlineSerializer = new MarkdownSerializer({
 
 /** UTF-16 source offsets let the source editor restore the selected rendered
  * text after canonical HTML changes its surrounding markup. */
-export function serializeRichTextInlineHtml(node: Node): { content: string; startOffsets: number[]; endOffsets: number[] } {
+function serializeRichTextInlineHtmlCore(node: Node, trace?: RichLinkTraceCollector): { content: string; startOffsets: number[]; endOffsets: number[] } {
     const escape = (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\r/g, '&#13;').replace(/\n/g, '&#10;')
     const attribute = (value: string) => escape(value).replace(/"/g, '&quot;')
     let content = `<span ${INLINE_TEXT_SHELL_ATTRIBUTE}="true">`
     const startOffsets: number[] = [], endOffsets: number[] = []
     node.forEach((child, offset) => {
-      let opening = '', closing = ''
+      let closing = ''
       for (const mark of child.marks) {
         const name = mark.type.name
         let open: string, close: string
-        if (name === 'link') { open = `<a href="${attribute(mark.attrs.href)}"${mark.attrs.title === null ? '' : ` title="${attribute(mark.attrs.title)}"`}>`; close = '</a>' }
+        if (name === 'link') {
+          content += '<a href="'
+          const raw = attribute(mark.attrs.href), from = content.length
+          content += raw
+          trace?.record(mark, from, raw, 'html')
+          content += `"${mark.attrs.title === null ? '' : ` title="${attribute(mark.attrs.title)}"`}>`
+          closing = '</a>' + closing
+          continue
+        }
         else if (name === 'textColor' || name === 'backgroundColor') { open = `<span ${name === 'textColor' ? INLINE_TEXT_COLOR_ATTRIBUTE : INLINE_BACKGROUND_COLOR_ATTRIBUTE}="${attribute(mark.attrs.color)}">`; close = '</span>' }
         else {
           const tag = name === 'strike' ? 'del' : name === 'highlight' ? 'mark' : name === 'underline' ? 'u' : name === 'em' ? 'em' : name === 'code' ? 'code' : 'strong'
           open = `<${tag}>`; close = `</${tag}>`
         }
-        opening += open; closing = close + closing
+        content += open; closing = close + closing
       }
-      content += opening
       startOffsets[offset] = content.length
       endOffsets[offset] ??= content.length
       if (child.isText) {
@@ -304,6 +332,66 @@ export function serializeRichTextInlineHtml(node: Node): { content: string; star
     })
     if (!node.childCount) startOffsets[0] = endOffsets[0] = content.length
     return { content: content + '</span>', startOffsets, endOffsets }
+}
+
+export function serializeRichTextInlineHtml(node: Node): { content: string; startOffsets: number[]; endOffsets: number[] } {
+  return serializeRichTextInlineHtmlCore(node)
+}
+
+export function serializeRichTextInlineHtmlWithLinkTrace(node: Node): RichInlineLinkSerialization & { startOffsets: number[]; endOffsets: number[] } {
+  const trace = new RichLinkTraceCollector(), result = serializeRichTextInlineHtmlCore(node, trace)
+  return { ...result, linkDestinations: trace.finish(result.content) }
+}
+
+/** The installed PM serializer exposes its write buffer at runtime but omits it
+ * from the public declaration. Read only at a real write boundary; never search
+ * the final source. If that upstream invariant changes, tracing fails closed. */
+function emittedMarkdownLength(state: MarkdownSerializerState): number {
+  const output = (state as unknown as { out: unknown }).out
+  if (typeof output !== 'string') throw new Error('富文本 Markdown serializer 不提供可核验的发射位置。')
+  return output.length
+}
+
+function serializeRichTextInlineMarkdownWithLinkTrace(node: Node): RichInlineLinkSerialization {
+  const trace = new RichLinkTraceCollector(), original = inlineSerializer.marks.link
+  let autolinkFrom: number | null = null
+  const serializer = new MarkdownSerializer(inlineSerializer.nodes, { ...inlineSerializer.marks, link: {
+    ...original,
+    open(state, mark, parent, index) {
+      const value = typeof original.open === 'function' ? original.open(state, mark, parent, index) : original.open
+      // Use the same actual writer as the ordinary mark emitter, including its
+      // preceding-! escape. Returning '' prevents a second emission by PM.
+      state.text(value, false)
+      autolinkFrom = value === '<' ? emittedMarkdownLength(state) : null
+      return ''
+    },
+    close(state, mark, parent, index) {
+      const value = typeof original.close === 'function' ? original.close(state, mark, parent, index) : original.close
+      if (autolinkFrom !== null) {
+        trace.record(mark, autolinkFrom, mark.attrs.href as string, 'autolink')
+        autolinkFrom = null
+        state.text(value, false)
+      } else {
+        const raw = (mark.attrs.href as string).replace(/[\(\)"]/g, '\\$&')
+        const prefix = mark.attrs.href === '' && mark.attrs.title ? '](<' : ']('
+        state.text(prefix, false)
+        const from = emittedMarkdownLength(state)
+        state.text(raw, false)
+        trace.record(mark, from, raw, 'markdown')
+        // The title and closing punctuation come from the unchanged upstream
+        // emitter. The split point is the href's construction length, not a match.
+        state.text(value.slice(prefix.length + raw.length), false)
+      }
+      return ''
+    }
+  } }, inlineSerializer.options)
+  const content = serializer.serialize(richTextSchema.nodes.doc.create(null, node))
+  return { content, linkDestinations: trace.finish(content) }
+}
+
+export function serializeRichTextInlineWithLinkTrace(node: Node): RichInlineLinkSerialization {
+  return node.content.content.some(child => child.marks.some(mark => ['underline', 'textColor', 'backgroundColor'].includes(mark.type.name)))
+    ? serializeRichTextInlineHtmlWithLinkTrace(node) : serializeRichTextInlineMarkdownWithLinkTrace(node)
 }
 
 export function serializeRichTextInline(node: Node): string {

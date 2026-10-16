@@ -3,6 +3,7 @@ import { expect, test, type Locator, type Page } from '@playwright/test'
 import type { DocumentBlockDraft } from '../src/shared/contracts'
 import { closeElectronApp, launchElectronApp, uiText } from './helpers/electron'
 import { selectSource, sourceValue } from './helpers/markdown-source'
+import { collectMarkdownSourceLinks } from '../src/shared/markdownLinks'
 
 const editor = (page: Page) => page.locator('.knowbook-rich-text-editor')
 const rows = (page: Page) => editor(page).locator('.block-editor-row')
@@ -93,6 +94,34 @@ test('rich text is the default and formatted text saves and reloads without visi
   } finally {
     await closeElectronApp(context)
   }
+})
+
+test('formatting a self link with a quoted title preserves its empty destination after save and reload @electron', async () => {
+  const context = await launchElectronApp({}, { editorMode: 'rich' })
+  try {
+    const { page } = context, linkTitle = 'Self "quoted" 😀', title = 'Empty destination title persistence'
+    const block = paragraph('rich-empty-href-title', `[self](<> ${JSON.stringify(linkTitle)}) tail`)
+    const id = await openFixture(page, title, [block]), body = rows(page).first()
+    await expect(body.locator('a')).toHaveAttribute('href', '')
+    await expect(body.locator('a')).toHaveAttribute('title', linkTitle)
+    await selectRich(page, { blockId: block.id!, offset: 0 }, { blockId: block.id!, offset: 4 })
+    await page.keyboard.press('Control+b')
+    await expect(body.locator('a strong')).toHaveText('self')
+    await save(page)
+    await expect.poll(async () => (await detail(page, id))?.blocks[0].content).toContain('**self**')
+    const stored = (await detail(page, id))!.blocks[0]
+    expect(stored.id).toBe(block.id)
+    const destinations = collectMarkdownSourceLinks(stored.content).filter(link => link.kind === 'link')
+    expect(destinations).toHaveLength(1)
+    expect(destinations[0].url).toBe('')
+    expect(destinations[0].start).toBe(destinations[0].end)
+    expect(stored.content.slice(destinations[0].start - 1, destinations[0].end + 1)).toBe('<>')
+    await reopen(page, title)
+    await expect(rows(page).first().locator('a')).toHaveAttribute('href', '')
+    await expect(rows(page).first().locator('a')).toHaveAttribute('title', linkTitle)
+    await expect(rows(page).first().locator('a strong')).toHaveText('self')
+    expect((await detail(page, id))!.blocks[0].content).toBe(stored.content)
+  } finally { await closeElectronApp(context) }
 })
 
 test('Ctrl+B formats a real partial cross-paragraph DOM Range and preserves reversed selection through history @electron', async () => {
