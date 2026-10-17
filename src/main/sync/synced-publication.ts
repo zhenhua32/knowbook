@@ -1,3 +1,12 @@
+import { assertSyncedBlockSchema } from '../database/synced-schema'
+import { assertSyncedLifecycleSchema } from '../database/synced-lifecycle-schema'
+import { readSyncedGroupLifecycles, syncedLifecycleSemanticHash } from '../database/synced-lifecycle-state'
+import { getSyncedGroupSnapshots } from '../database/synced-blocks-read'
+import { assertSyncedRemoteObservationRecords, readObservedLocalIncarnation, readSyncedRemoteObservation } from '../database/synced-remote-observation-read'
+import { holdSyncedObservationPending, releaseSyncedObservationPending, observationDatabasePath, type SyncedObservationPendingLease } from '../database/synced-remote-observation-pending'
+import { observationKey, sameObservedIncarnation, validateObservedIncarnation, validateRemoteObservationMarker, observationRequestHash, observationCorrupt, SYNCED_OBSERVATION_CHANNEL, SYNCED_RETIRED_OBSERVATION_CHANNEL, type SyncedObservedIncarnation, type SyncedRemoteObservationMarker, type SyncedObservationRemote } from '../database/synced-remote-observation-codec'
+import type { SyncedGroupSnapshot, SyncedGroupWire } from '../../shared/synced-blocks'
+import { SYNCED_MAX_BLOCKS } from '../../shared/syncedBlockValidation'
 import { randomUUID } from 'node:crypto'
 import { lstatSync, realpathSync } from 'node:fs'
 import { mkdir, open, readFile, readdir, rename } from 'node:fs/promises'
@@ -257,7 +266,7 @@ export async function recoverInitialSyncedPublication(db: Database.Database, inp
     return mint({ db, paths, target, state: frozenPublicationFacts(loaded.state), claim, closed: false, busy: false })
   })
 }
-export async function readSyncedPublishedSnapshot(client: WebDavClient): Promise<{ status: 'missing' } | { status: 'ready'; plan: SyncedPublishedSnapshot } | { status: 'unsupported'; reason: 'initial-snapshot-only' }> {
+async function readPublishedSnapshot(client: WebDavClient, completed?: (remote: Remote) => void): Promise<{ status: 'missing' } | { status: 'ready'; plan: SyncedPublishedSnapshot } | { status: 'unsupported'; reason: 'initial-snapshot-only' }> {
   return publicBoundary(async () => {
     if (!(client instanceof WebDavClient) || Object.getPrototypeOf(client) !== WebDavClient.prototype) return publicationInvalid('readonly reader需要真实WebDavClient。')
     const response = await network(() => client.getVersioned('manifest.json', PUBLICATION_RECORD_MAX_BYTES))
@@ -279,10 +288,13 @@ export async function readSyncedPublishedSnapshot(client: WebDavClient): Promise
       if (!object || publicationHash(object.bytes) !== hash) return publicationInvalid('远端真实资产缺失或hash不符。')
       assets.set(hash, Buffer.from(object.bytes)); assetFacts.push({ path: 'assets/' + hash, hash, bytes: object.bytes.length, names: [...names].sort(publicationCompare) })
     }
-    const plan = Object.freeze({ kind: 'synced-published-initial-snapshot' as const })
-    remotes.set(plan, { manifest: Buffer.from(response.bytes), objects, assets, facts: frozenPublicationFacts({ manifest: validated.manifest,
+    const remote: Remote = { manifest: Buffer.from(response.bytes), objects, assets, facts: frozenPublicationFacts({ manifest: validated.manifest,
       records: validated.records.map(item => ({ ...item, hash: manifest.entries[item.key], bytes: objects.get(item.key)!.length })),
-      assets: assetFacts.sort((a, b) => publicationCompare(a.path, b.path)) }) })
+      assets: assetFacts.sort((a, b) => publicationCompare(a.path, b.path)) }) }
+    // Private completion runs synchronously after full closure, before any ready delivery.
+    completed?.(remote)
+    const plan = Object.freeze({ kind: 'synced-published-initial-snapshot' as const })
+    remotes.set(plan, remote)
     return { status: 'ready' as const, plan }
   })
 }
@@ -361,6 +373,234 @@ export async function publishInitialSyncedPublication(db: Database.Database, pre
       }
       const checked = await query(data, spool, client)
       return checked.status === 'missing' ? { status: 'conflict', ...identity(data) } : checked
+    } finally { data.busy = false }
+  })
+}
+
+export async function readSyncedPublishedSnapshot(client: WebDavClient): ReturnType<typeof readPublishedSnapshot> { return readPublishedSnapshot(client) }
+
+// Main-only historical observation. No incoming/install authority is exposed.
+export interface SyncedRemoteObservation { readonly kind: 'synced-remote-observation' }
+export type SyncedRemoteObservationOpen = { status: 'ready'; observation: SyncedRemoteObservation }
+  | { status: 'unsupported'; reason: 'schema-27-required' }
+export interface SyncedObservedGroupResult { groupId: string; creationId: string; outcome: 'active-confirmed' | 'retired-disabled'; reused: boolean }
+export type SyncedRemoteExposureResult = { status: 'missing' } | { status: 'unsupported'; reason: 'initial-snapshot-only' }
+  | { status: 'observed'; workspaceScope: string; recoveryEpoch: string; remoteWorkspaceId: string; manifestHash: string; closureHash: string;
+      groups: SyncedObservedGroupResult[]; ignoredRemoteGroups: number }
+export type SyncedRemoteObservationRetry = { status: 'no-pending' } | { status: 'committed'; proofs: number; groups: SyncedObservedGroupResult[] }
+type ObservationContext = { workspaceScope: string; recoveryEpoch: string }
+type Observation = { db: Database.Database; root: string; databasePath: string; target: WebDavSyncConfig;
+  targetFingerprint: string; context: ObservationContext; busy: boolean; closed: boolean }
+type ObservationProof = { databasePath: string; workspaceScope: string; recoveryEpoch: string; targetFingerprint: string;
+  remoteWorkspaceId: string; manifestHash: string; closureHash: string; ignoredRemoteGroups: number;
+  groups: Array<{ incarnation: SyncedObservedIncarnation; groupHash: string }> }
+type PendingObservation = { proof: ObservationProof; leases: SyncedObservationPendingLease[] }
+const observations = new WeakMap<SyncedRemoteObservation, Observation>()
+// Only verified completion below can populate this registry. No db or payload buffers are retained here.
+const pendingObservations = new Set<PendingObservation>()
+function observationBoundary<T>(run: () => T): T {
+  try { return run() } catch (cause) {
+    if (cause instanceof SyncedPublicationError) throw cause
+    const sql = cause && typeof cause === 'object' && 'code' in cause && typeof cause.code === 'string' && cause.code.startsWith('SQLITE')
+    throw new SyncedPublicationError(sql ? 'database' : 'invalid', '远端历史观察边界失败；已知 pending 不会被撤销。', cause)
+  }
+}
+function observationTargetFingerprint(target: WebDavSyncConfig): string {
+  return publicationHash(publicationJson({ kind: 'webdav-target', version: 1, channel: SYNCED_OBSERVATION_CHANNEL,
+    url: target.url, username: target.username, directory: target.directory }))
+}
+function observationEnvironment(db: Database.Database, input: { userDataRoot: string; target: WebDavSyncConfig }): { root: string; databasePath: string; target: WebDavSyncConfig } {
+  databaseBoundary(db); assertSyncedShape(input, ['userDataRoot', 'target'])
+  if (typeof input.userDataRoot !== 'string' || !isAbsolute(input.userDataRoot)) return publicationInvalid('观察必须使用 Main 真实应用根。')
+  assertSyncedShape(input.target, targetKeys)
+  let target: WebDavSyncConfig
+  try { target = Object.freeze(normalizeWebDavConfig(input.target)) } catch (cause) { throw new SyncedPublicationError('invalid', '观察目标无效。', cause) }
+  const root = resolve(input.userDataRoot), file = join(root, 'storage', 'knowbook.db')
+  assertSafe(root); assertSafe(file)
+  if (typeof db.name !== 'string' || spelling(db.name) !== spelling(file) || !lstatSync(file).isFile()
+    || spelling(realpathSync(file)) !== spelling(file) || spelling(realpathSync(root)) !== spelling(root)) return unavailable('观察 connection 不是原 Main knowbook.db。')
+  return { root, databasePath: observationDatabasePath(file), target }
+}
+function observationContext(db: Database.Database): ObservationContext {
+  const row = db.prepare('SELECT workspace_scope,recovery_epoch FROM synced_workspace_state WHERE singleton=1').get() as { workspace_scope: unknown; recovery_epoch: unknown } | undefined
+  if (!row || !isSyncedUuid(row.workspace_scope) || !isSyncedUuid(row.recovery_epoch)) return publicationInvalid('观察 workspace/recovery 身份无效。')
+  return { workspaceScope: row.workspace_scope, recoveryEpoch: row.recovery_epoch }
+}
+/** Called only inside an owned read/IMMEDIATE; no caller transaction or raw context can enter. */
+function currentObservation(data: Observation): void {
+  if (!data.db.open || data.db.readonly) return unavailable('观察原 writable connection 已失效。')
+  if (data.db.pragma('foreign_keys', { simple: true }) !== 1) return publicationInvalid('观察外键保护失效。')
+  const file = join(data.root, 'storage', 'knowbook.db')
+  assertSafe(data.root); assertSafe(file)
+  if (observationDatabasePath(data.db.name) !== data.databasePath || observationDatabasePath(file) !== data.databasePath) return unavailable('观察真实数据库路径已变。')
+  if (data.db.pragma('user_version', { simple: true }) !== 27) return unavailable('观察原 schema 世代已变。')
+  assertSyncedBlockSchema(data.db)
+  assertSyncedLifecycleSchema(data.db)
+  if (publicationJson(observationContext(data.db)) !== publicationJson(data.context)) return unavailable('观察原 workspace/recovery 世代已变。')
+}
+export function openSyncedRemoteObservation(db: Database.Database, input: { userDataRoot: string; target: WebDavSyncConfig }): SyncedRemoteObservationOpen {
+  return observationBoundary((): SyncedRemoteObservationOpen => {
+    const environment = observationEnvironment(db, input), version = db.pragma('user_version', { simple: true })
+    if (version === 26) { assertSyncedBlockSchema(db); return Object.freeze({ status: 'unsupported' as const, reason: 'schema-27-required' as const }) }
+    if (version !== 27) return publicationInvalid('观察不迁移或修复未知/未来 schema。')
+    const context = db.transaction(() => { assertSyncedBlockSchema(db); assertSyncedLifecycleSchema(db); return observationContext(db) })()
+    const observation = Object.freeze({ kind: 'synced-remote-observation' as const })
+    observations.set(observation, { db, ...environment, targetFingerprint: observationTargetFingerprint(environment.target), context, busy: false, closed: false })
+    return Object.freeze({ status: 'ready' as const, observation })
+  })
+}
+export function disposeSyncedRemoteObservation(observation: SyncedRemoteObservation): boolean {
+  const data = observations.get(observation)
+  if (!data || data.closed) return false
+  data.closed = true; return true
+}
+function acceptObservation(observation: SyncedRemoteObservation): Observation {
+  const data = observations.get(observation)
+  if (!data || data.closed || data.busy) return unavailable('观察 handle 不存在、已关闭或 busy。')
+  data.busy = true
+  try { databaseBoundary(data.db); data.db.transaction(() => currentObservation(data))(); return data }
+  catch (cause) { data.busy = false; throw cause }
+}
+function knownObservationIncarnations(data: Observation): Map<string, SyncedObservedIncarnation> {
+  databaseBoundary(data.db)
+  return data.db.transaction(() => {
+    currentObservation(data)
+    const ids = (data.db.prepare('SELECT id FROM synced_groups ORDER BY id').all() as Array<{ id: unknown }>).map(row => {
+      if (!isSyncedUuid(row.id)) return publicationInvalid('本机观察索引的 group UUID 损坏。'); return row.id
+    })
+    for (let from = 0; from < ids.length; from += SYNCED_MAX_BLOCKS) readSyncedGroupLifecycles(data.db, ids.slice(from, from + SYNCED_MAX_BLOCKS))
+    const tuples = new Map<string, SyncedObservedIncarnation>()
+    for (const id of ids) {
+      const tuple = readObservedLocalIncarnation(data.db, id)
+      if (!tuple) return publicationInvalid('原本机 incarnation 在同一读取中缺失。')
+      tuples.set(id, tuple)
+    }
+    return tuples
+  })()
+}
+function sourceObservationProof(data: Observation, remote: Remote, known: Map<string, SyncedObservedIncarnation>): ObservationProof {
+  const groups: ObservationProof['groups'] = []; let total = 0
+  for (const item of remote.facts.records) {
+    if (item.record.kind !== 'synced-group') continue
+    total += 1
+    const tuple = validateObservedIncarnation({ groupId: item.record.id, creationId: item.record.creationId, createdAt: item.record.createdAt, origin: item.record.origin })
+    const original = known.get(tuple.groupId)
+    if (original && sameObservedIncarnation(original, tuple)) groups.push({ incarnation: tuple, groupHash: item.hash })
+  }
+  const manifestHash = publicationHash(remote.manifest)
+  const closureHash = publicationHash(publicationJson({ kind: 'synced-remote-initial-closure', version: 1,
+    manifest: { hash: manifestHash, bytes: remote.manifest.length },
+    records: remote.facts.records.map(({ key, hash, bytes }) => ({ key, hash, bytes })).sort((a, b) => publicationCompare(a.key, b.key)),
+    assets: remote.facts.assets }))
+  return frozenPublicationFacts({ databasePath: data.databasePath, ...data.context, targetFingerprint: data.targetFingerprint,
+    remoteWorkspaceId: remote.facts.manifest.workspaceId, manifestHash, closureHash, ignoredRemoteGroups: total - groups.length,
+    groups: groups.sort((a, b) => publicationCompare(observationKey(a.incarnation), observationKey(b.incarnation))) })
+}
+function retainObservationProof(proof: ObservationProof): PendingObservation {
+  const leases: SyncedObservationPendingLease[] = []
+  const pending = { proof, leases }; pendingObservations.add(pending)
+  // Finish all independent holds before entering SQLite; no callout/await releases them on failure.
+  for (const item of proof.groups) leases.push(holdSyncedObservationPending(proof.databasePath, item.incarnation))
+  return pending
+}
+function localGroupWire(snapshot: SyncedGroupSnapshot): SyncedGroupWire {
+  return { kind: 'synced-group', id: snapshot.groupId, creationId: snapshot.creationId, createdAt: snapshot.createdAt,
+    origin: snapshot.origin, bindings: snapshot.bindings, blocks: snapshot.blocks }
+}
+function persistObservedIncarnation(data: Observation, source: ObservationProof, item: ObservationProof['groups'][number]): SyncedObservedGroupResult {
+  const db = data.db, tuple = readObservedLocalIncarnation(db, item.incarnation.groupId)
+  if (!tuple || !sameObservedIncarnation(tuple, item.incarnation)) return observationCorrupt('原本机 immutable tuple 在观察期间被替换')
+  const existing = readSyncedRemoteObservation(db, tuple)
+  if (existing) return { groupId: tuple.groupId, creationId: tuple.creationId, outcome: existing.persistence.kind, reused: true }
+  const lifecycle = readSyncedGroupLifecycles(db, [tuple.groupId]).get(tuple.groupId)
+  const current = db.prepare('SELECT revision,topology_revision FROM synced_groups WHERE id=?').get(tuple.groupId) as { revision: string; topology_revision: string } | undefined
+  if (!lifecycle || !current) return publicationInvalid('本机观察组失去当前生命周期/CAS。')
+  const observedAt = new Date().toISOString(), remote: SyncedObservationRemote = { channel: SYNCED_OBSERVATION_CHANNEL,
+    targetFingerprint: source.targetFingerprint, remoteWorkspaceId: source.remoteWorkspaceId,
+    manifestHash: source.manifestHash, groupHash: item.groupHash, closureHash: source.closureHash }
+  const base = { kind: 'synced-remote-exposure-observation', version: 1, ...data.context, incarnation: tuple, remote, observedAt }
+  let marker: SyncedRemoteObservationMarker
+  if (lifecycle.state === 'active') {
+    const read = getSyncedGroupSnapshots(db, { groupIds: [tuple.groupId] }), entry = read.items[0]
+    if (read.workspaceScope !== data.context.workspaceScope || !entry || entry.status !== 'ready') return publicationInvalid('active 观察没有真实本机 snapshot。')
+    marker = validateRemoteObservationMarker({ ...base, local: { state: 'active', revision: entry.snapshot.revision,
+      topologyRevision: entry.snapshot.topologyRevision, semanticHash: syncedLifecycleSemanticHash(localGroupWire(entry.snapshot)), createHistoryId: lifecycle.createHistoryId },
+      persistence: { kind: 'active-confirmed', attemptId: randomUUID() } })
+  } else {
+    if (current.revision !== lifecycle.activationRevision || current.topology_revision !== lifecycle.activationTopologyRevision) return observationCorrupt('retired mint时原CAS不等activation')
+    const retirement = db.prepare('SELECT wire_json,semantic_hash,retired_at FROM synced_group_retirements WHERE group_id=?').get(tuple.groupId) as { wire_json: string; semantic_hash: string; retired_at: string } | undefined
+    if (!retirement || lifecycle.createHistoryId === null) return publicationInvalid('retired 观察缺原准确 frozen retirement。')
+    marker = validateRemoteObservationMarker({ ...base, local: { state: 'retired-create', revision: current.revision, topologyRevision: current.topology_revision,
+      semanticHash: retirement.semantic_hash, createHistoryId: lifecycle.createHistoryId, retiredAt: retirement.retired_at,
+      retirementHash: syncedLifecycleSemanticHash(parseStrictJson(retirement.wire_json, { maxBytes: Math.max(1, Buffer.byteLength(retirement.wire_json)), maxDepth: 32 })) },
+      persistence: { kind: 'retired-disabled', anchorId: observationKey(tuple) } })
+  }
+  const requestHash = observationRequestHash(marker)
+  db.prepare('INSERT INTO synced_operations(client_operation_id,request_hash,result_json,created_at) VALUES(?,?,?,?)')
+    .run(observationKey(tuple), requestHash, publicationJson(marker), observedAt)
+  const persistence = marker.persistence
+  const id = persistence.kind === 'active-confirmed' ? persistence.attemptId : persistence.anchorId
+  const channel = persistence.kind === 'active-confirmed' ? SYNCED_OBSERVATION_CHANNEL : SYNCED_RETIRED_OBSERVATION_CHANNEL
+  db.prepare("INSERT INTO synced_exposure_attempts(id,request_hash,channel,target_fingerprint,publication_hash,state,created_at,confirmed_at) VALUES(?,?,?,?,?,'possible',?,NULL)")
+    .run(id, requestHash, channel, remote.targetFingerprint, remote.closureHash, observedAt)
+  if (marker.local.state === 'active' && persistence.kind === 'active-confirmed') {
+    db.prepare('INSERT INTO synced_group_exposure_members(attempt_id,group_id,creation_id,revision,topology_revision,semantic_hash) VALUES(?,?,?,?,?,?)')
+      .run(id, tuple.groupId, tuple.creationId, marker.local.revision, marker.local.topologyRevision, marker.local.semanticHash)
+    if (db.prepare("UPDATE synced_exposure_attempts SET state='confirmed',confirmed_at=? WHERE id=? AND state='possible'").run(observedAt, id).changes !== 1) return publicationInvalid('active observed confirmation 没有唯一原行。')
+  }
+  return { groupId: tuple.groupId, creationId: tuple.creationId, outcome: persistence.kind, reused: false }
+}
+function commitObservationProofs(data: Observation, pending: PendingObservation[]): SyncedObservedGroupResult[] {
+  databaseBoundary(data.db)
+  const groups = data.db.transaction(() => {
+    currentObservation(data)
+    const result = new Map<string, SyncedObservedGroupResult>()
+    for (const job of pending) {
+      const proof = job.proof
+      if (proof.databasePath !== data.databasePath || proof.workspaceScope !== data.context.workspaceScope || proof.recoveryEpoch !== data.context.recoveryEpoch
+        || proof.targetFingerprint !== data.targetFingerprint) return unavailable('旧 pending proof 不授予其它路径/世代/目标的持久写权限。')
+      for (const item of proof.groups) {
+        const entry = persistObservedIncarnation(data, proof, item), key = observationKey(item.incarnation), previous = result.get(key)
+        result.set(key, previous ? { ...previous, reused: previous.reused && entry.reused } : entry)
+      }
+    }
+    assertSyncedRemoteObservationRecords(data.db)
+    return [...result.values()].sort((a, b) => publicationCompare(observationKey(a), observationKey(b)))
+  }).immediate()
+  // Commit has succeeded. Release exactly these holds, never another job's group/key.
+  for (const job of pending) {
+    for (const lease of job.leases) releaseSyncedObservationPending(lease)
+    pendingObservations.delete(job)
+  }
+  return groups
+}
+export function retrySyncedRemoteObservationCommit(observation: SyncedRemoteObservation): SyncedRemoteObservationRetry {
+  return observationBoundary((): SyncedRemoteObservationRetry => {
+    const data = acceptObservation(observation)
+    try {
+      const pending = [...pendingObservations].filter(item => item.proof.databasePath === data.databasePath && item.proof.targetFingerprint === data.targetFingerprint)
+      if (!pending.length) return Object.freeze({ status: 'no-pending' as const })
+      return frozenPublicationFacts({ status: 'committed' as const, proofs: pending.length, groups: commitObservationProofs(data, pending) })
+    } finally { data.busy = false }
+  })
+}
+export async function observeSyncedRemoteExposure(observation: SyncedRemoteObservation, input: SyncedPublicationRuntime): Promise<SyncedRemoteExposureResult> {
+  return publicBoundary(async () => {
+    const data = acceptObservation(observation)
+    try {
+      const options = runtime(input), known = knownObservationIncarnations(data)
+      const client = new WebDavClient(data.target, options.password, options.signal)
+      let observed: Extract<SyncedRemoteExposureResult, { status: 'observed' }> | undefined
+      const response = await readPublishedSnapshot(client, remote => {
+        const proof = sourceObservationProof(data, remote, known), pending = retainObservationProof(proof)
+        // No signal/closed check or await after this full-closure boundary may skip persistence.
+        const groups = observationBoundary(() => commitObservationProofs(data, [pending]))
+        observed = frozenPublicationFacts({ status: 'observed' as const, ...data.context, remoteWorkspaceId: proof.remoteWorkspaceId,
+          manifestHash: proof.manifestHash, closureHash: proof.closureHash, groups, ignoredRemoteGroups: proof.ignoredRemoteGroups })
+      })
+      if (response.status === 'missing' || response.status === 'unsupported') return Object.freeze(response)
+      if (!observed) return publicationInvalid('真实 reader 没有经过同次观察完成点。')
+      return observed
     } finally { data.busy = false }
   })
 }

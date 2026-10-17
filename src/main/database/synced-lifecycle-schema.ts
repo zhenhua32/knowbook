@@ -1,3 +1,4 @@
+import { assertSyncedRemoteObservationRecords } from './synced-remote-observation-read'
 import type Database from 'better-sqlite3'
 import type { SyncedGroupSnapshot } from '../../shared/synced-blocks'
 import { canonicalSyncedPortableJson } from '../../shared/syncedBlockPortable'
@@ -192,10 +193,7 @@ export function assertSyncedLifecycleSchema(db: Database.Database): void {
     }
   }
   assertSyncedLifecycleCoverage(db)
-  if (db.prepare(`SELECT 1 FROM synced_exposure_attempts a WHERE NOT EXISTS(
-    SELECT 1 FROM synced_group_exposure_members m WHERE m.attempt_id=a.id) LIMIT 1`).get()) {
-    throw new Error('同步块 schema27 存在没有准确参与组的发布记录；不会丢弃可能曝光证据。')
-  }
+  assertSyncedRemoteObservationRecords(db)
 }
 
 function wire(snapshot: SyncedGroupSnapshot) {

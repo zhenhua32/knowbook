@@ -1,3 +1,4 @@
+import { hasSyncedRemoteObservationForCreate } from './synced-remote-observation-read'
 import { randomUUID } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import type { SyncedFailure, SyncedGroupSnapshot, SyncedGroupWire, SyncedRestoreHostInput,
@@ -601,7 +602,13 @@ function checkCreateOriginalIdentities(db: Database.Database, journal: HostCreat
       || (undo ? identity.state !== 'live' || owner?.kind !== 'group' || owner.id !== groupId : identity.state !== 'retained' || owner !== null)) invalid('identity', 'create 原group辅助definition身份不再准确。')
   }
 }
+function assertCreateObservationAllowsInverse(db: Database.Database, journal: HostCreateJournal): void {
+  const observed = journal.create.wire
+  if (hasSyncedRemoteObservationForCreate(db, { groupId: observed.id, creationId: observed.creationId,
+    createdAt: observed.createdAt, origin: observed.origin })) unsupported('lifecycle')
+}
 function createInversePreflight(db: Database.Database, input: SyncedRestoreHostInput, journal: HostCreateJournal) {
+  assertCreateObservationAllowsInverse(db, journal)
   const undo = input.direction === 'undo', from = undo ? journal.after : journal.before, to = undo ? journal.before : journal.after, ids = from.map(side => side.documentId)
   if (!exactSet(input.expectedHosts.map(item => item.documentId), ids)) invalid('binding', 'create 恢复宿主必须与原journal完整闭合。')
   const all = readAllHosts(db), groups = allGroups(db), hosts = participating(all, ids), persisted = persistedSides(hosts), groupId = journal.create.wire.id
@@ -685,6 +692,7 @@ export function getSyncedCreateRestoreContext(db: Database.Database, value: unkn
     const journal = decodeHostJournal(row)
     if (!('create' in journal)) return { status: 'unavailable', reason: 'journal-kind' }
     try {
+      assertCreateObservationAllowsInverse(db, journal)
       for (const side of journal.before) {
         assertHostChain(db, side.documentId)
         const history = getSyncedHostHistory(db, { documentId: side.documentId })
