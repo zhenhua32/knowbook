@@ -50,7 +50,9 @@ function wire(snapshot: SyncedGroupSnapshot): SyncedGroupWire {
   return { kind: 'synced-group', id: snapshot.groupId, creationId: snapshot.creationId, createdAt: snapshot.createdAt,
     origin: snapshot.origin, bindings: snapshot.bindings, blocks: snapshot.blocks }
 }
-function readSnapshot(db: Database.Database): SyncedPublicationLocalSnapshot {
+/** Readonly core, consumed inside the caller's owned transaction; never mints write authority. */
+export function readSyncedPersistentPublicationSnapshot(db: Database.Database): SyncedPublicationLocalSnapshot {
+  if (!db.inTransaction) return publicationInvalid('完整持久图读取须位于调用方自有一致事务。')
   assertSyncedBlockSchema(db); assertSyncedLifecycleCoverage(db)
   const foreignKeys = db.pragma('foreign_key_check')
   if (!Array.isArray(foreignKeys) || foreignKeys.length) return publicationInvalid('完整数据库存在外键损坏。')
@@ -130,7 +132,7 @@ export function captureSyncedPublicationSnapshot(db: Database.Database):
   if (version === 26) { database(() => assertSyncedBlockSchema(db)); return { status: 'unsupported', reason: 'schema-27-required' } }
   if (version !== 27) return publicationInvalid('未知、未来或损坏的数据库版本；不会迁移或修复。')
   return database(() => db.transaction(() => {
-    const snapshot = readSnapshot(db)
+    const snapshot = readSyncedPersistentPublicationSnapshot(db)
     if (!snapshot.groups.length) return { status: 'unsupported' as const, reason: 'no-active-groups' as const }
     const capture = Object.freeze({ kind: 'synced-publication-capture' as const })
     captures.set(capture, { db, snapshot }); return { status: 'ready' as const, capture }
@@ -216,7 +218,7 @@ export function claimSyncedPublication(db: Database.Database, claim: SyncedPubli
   return database(() => db.transaction(() => {
     const saved = current(db, claim), existing = attempt(db, saved)
     if (existing?.state === 'confirmed') return 'confirmed' as const
-    const snapshot = readSnapshot(db)
+    const snapshot = readSyncedPersistentPublicationSnapshot(db)
     if (snapshot.localFingerprint !== saved.descriptor.localFingerprint) return 'stale' as const
     assertMembers(snapshot, saved.descriptor)
     if (existing) return 'possible' as const
@@ -232,7 +234,7 @@ export function claimSyncedPublication(db: Database.Database, claim: SyncedPubli
 }
 export function currentSyncedPublicationMatches(db: Database.Database, claim: SyncedPublicationClaim): boolean {
   outer(db); return database(() => db.transaction(() => {
-    const saved = current(db, claim), snapshot = readSnapshot(db)
+    const saved = current(db, claim), snapshot = readSyncedPersistentPublicationSnapshot(db)
     return snapshot.localFingerprint === saved.descriptor.localFingerprint
   })())
 }

@@ -147,11 +147,31 @@ function replacement(source: string, destination: MarkdownDestination, uri: stri
   return { from: destination.start, to: destination.end, text: angled ? uri : `<${uri}>` }
 }
 
-function rewriteText(source: string, map: SyncedAssetMapper): RewrittenText {
+type AssetOutputValidator = (source: string, next: string) => void
+function validatePortableOutput(_source: string, next: string): void { parseSyncedPortableAssetUri(next) }
+/** Syntactic conversion only: neither workspace-root nor real file/byte authority. */
+function validateLocalizedOutput(source: string, next: string): void {
+  const asset = parseSyncedPortableAssetUri(source)
+  let parsed: URL
+  try { parsed = new URL(next) } catch { return invalidAsset() }
+  if (parsed.protocol !== 'file:' || parsed.hostname || parsed.username || parsed.password || parsed.port
+    || parsed.search || parsed.hash || parsed.href !== next) return invalidAsset()
+  const match = /\/attachments\/([a-f0-9]{2})\/([a-f0-9]{64})\/([^/]+)$/.exec(parsed.pathname)
+  if (!match || match[1] !== asset.hash.slice(0, 2) || match[2] !== asset.hash) return invalidAsset()
+  let decodedName: string
+  try { decodedName = decodeURIComponent(match[3]) } catch { return invalidAsset() }
+  // Match Main pathToFileURL plus its explicit escaping; portable-name encoding differs.
+  const encodedName = encodeURI(asset.name).replace(/[!'()*~#]/g, char => '%' + char.charCodeAt(0).toString(16).toUpperCase())
+  if (decodedName !== asset.name || match[3] !== encodedName) return invalidAsset()
+}
+function localizingMapper(map: SyncedAssetMapper): SyncedAssetMapper {
+  return source => { parseSyncedPortableAssetUri(source); return map(source) }
+}
+function rewriteText(source: string, map: SyncedAssetMapper, validateOutput: AssetOutputValidator = validatePortableOutput): RewrittenText {
   const edits: ContentEdit[] = []
   for (const destination of collectSyncedMarkdownAssetDestinations(source)) {
     const next = map(destination.url)
-    parseSyncedPortableAssetUri(next)
+    validateOutput(destination.url, next)
     if (next === destination.url) continue
     const edit = replacement(source, destination, next), previous = edits.at(-1)
     if (previous && edit.from < previous.to) {
@@ -167,12 +187,12 @@ function rewriteText(source: string, map: SyncedAssetMapper): RewrittenText {
 
 const markdownTypes = new Set(['paragraph', 'html', 'quote', 'todo', 'numbered-todo', 'bulleted-list', 'numbered-list', 'table', 'callout', 'toggle'])
 const opaqueTypes = new Set(['code', 'code-block', 'math', 'frontmatter', 'divider', 'columns', 'column', 'database-view', 'synced-block'])
-function rewriteBlock<T extends SyncedStableBlockDraft>(block: T, map: SyncedAssetMapper): { block: T; edits: ContentEdit[] } {
+function rewriteBlock<T extends SyncedStableBlockDraft>(block: T, map: SyncedAssetMapper, validateOutput: AssetOutputValidator = validatePortableOutput): { block: T; edits: ContentEdit[] } {
   if (opaqueTypes.has(block.type)) return { block: { ...block }, edits: [] }
   if (!markdownTypes.has(block.type) && !/^heading-[1-6]$/.test(block.type)) {
     throw new SyncedValidationError('forest', '未知内容块没有附件投影规则。')
   }
-  const content = rewriteText(block.content, map)
+  const content = rewriteText(block.content, map, validateOutput)
   // Current finite MarkdownBlockFormat fields are enums, scalars or literal
   // code info. None is an asset-bearing field; never recursively walk strings.
   return { block: { ...block, content: content.text }, edits: content.edits }
@@ -193,9 +213,9 @@ function rewriteBinding(binding: SyncedLinkBinding, content: string, edits: Cont
 /** Only real parsed block Markdown destinations are visited. Origin, source IDs,
  * DB config/query/value, code/math/YAML and arbitrary format strings are opaque.
  * The caller must separately verify actual file bytes before using real hashes. */
-export function rewriteSyncedGroupAssets(input: SyncedGroupWire, map: SyncedAssetMapper): SyncedGroupWire {
+function rewrittenGroup(input: SyncedGroupWire, map: SyncedAssetMapper, validateOutput: AssetOutputValidator): SyncedGroupWire {
   const group = validateSyncedGroupWire(input)
-  const rewritten = group.blocks.map(block => rewriteBlock(block, map)), byId = new Map(rewritten.map(item => [item.block.id, item]))
+  const rewritten = group.blocks.map(block => rewriteBlock(block, map, validateOutput)), byId = new Map(rewritten.map(item => [item.block.id, item]))
   const blocks: SyncedCanonicalWire[] = rewritten.map(item => item.block)
   const bindings = group.bindings.map(binding => {
     const item = byId.get(binding.blockId)!
@@ -203,6 +223,14 @@ export function rewriteSyncedGroupAssets(input: SyncedGroupWire, map: SyncedAsse
   })
   validateSyncedBindings(bindings, blocks)
   return { ...group, blocks, bindings }
+}
+
+export function rewriteSyncedGroupAssets(input: SyncedGroupWire, map: SyncedAssetMapper): SyncedGroupWire {
+  return rewrittenGroup(input, map, validatePortableOutput)
+}
+/** Pure portable-to-managed conversion. Main must separately prove root, aliases and actual bytes. */
+export function localizeSyncedPortableGroupAssets(input: SyncedGroupWire, map: SyncedAssetMapper): SyncedGroupWire {
+  return rewrittenGroup(input, localizingMapper(map), validateLocalizedOutput)
 }
 
 function portable(uri: string): string { parseSyncedPortableAssetUri(uri); return uri }
@@ -228,7 +256,7 @@ export function projectSyncedGroupBudget(input: SyncedGroupWire): SyncedPortable
   return measureSyncedPortableGroup(rewriteSyncedGroupAssets(input, placeholder))
 }
 
-function rewrittenHost(host: SyncedPortableHostRecord, map: SyncedAssetMapper): SyncedPortableHostRecord {
+function rewrittenHost(host: SyncedPortableHostRecord, map: SyncedAssetMapper, validateOutput: AssetOutputValidator = validatePortableOutput): SyncedPortableHostRecord {
   assertSyncedShape(host, ['kind', 'id', 'parentId', 'sortOrder', 'createdAt', 'content'])
   assertSyncedShape(host.content, ['title', 'summary', 'blocks'])
   if (!host || host.kind !== 'document' || typeof host.id !== 'string' || !host.id.trim()
@@ -238,9 +266,9 @@ function rewrittenHost(host: SyncedPortableHostRecord, map: SyncedAssetMapper): 
     throw new SyncedValidationError('forest', '宿主附件预算输入无效。')
   }
   if (host.content.blocks.length > SYNCED_MAX_BLOCKS) overBudget()
-  const blocks = validateSyncedHostForest(host.content.blocks).map(block => rewriteBlock(block, map).block)
+  const blocks = validateSyncedHostForest(host.content.blocks).map(block => rewriteBlock(block, map, validateOutput).block)
   return { kind: 'document', id: host.id, parentId: host.parentId, sortOrder: host.sortOrder, createdAt: host.createdAt,
-    content: { title: host.content.title, summary: rewriteText(host.content.summary, map).text, blocks } }
+    content: { title: host.content.title, summary: rewriteText(host.content.summary, map, validateOutput).text, blocks } }
 }
 
 function measureHost(host: SyncedPortableHostRecord, groups: ReadonlyMap<string, SyncedGroupWire>): SyncedPortableBudget {
@@ -305,4 +333,8 @@ export function projectSyncedHostBudget(host: SyncedPortableHostRecord, groups: 
 /** The same typed asset visitor used by real Main snapshot publication and its strict reader. */
 export function rewriteSyncedPortableHostAssets(host: SyncedPortableHostRecord, map: SyncedAssetMapper): SyncedPortableHostRecord {
   return rewrittenHost(host, map)
+}
+/** Pure portable-to-managed conversion using the same typed visitor, without file or persistence authority. */
+export function localizeSyncedPortableHostAssets(host: SyncedPortableHostRecord, map: SyncedAssetMapper): SyncedPortableHostRecord {
+  return rewrittenHost(host, localizingMapper(map), validateLocalizedOutput)
 }
