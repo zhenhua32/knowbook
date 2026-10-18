@@ -1,4 +1,5 @@
 import { hasSyncedRemoteObservationForCreate } from './synced-remote-observation-read'
+import { readSyncedExchangeHostCut } from './synced-exchange-host-cut'
 import { randomUUID } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import type { SyncedFailure, SyncedGroupSnapshot, SyncedGroupWire, SyncedRestoreHostInput,
@@ -423,6 +424,17 @@ export function restoreSyncedHostOperation(db: Database.Database, value: unknown
     const all = readAllHosts(db), groups = allGroups(db), hosts = participating(all, ids), persisted = persistedSides(hosts)
     checkUpdatedAt(input.expectedHosts, hosts, groups)
     const mappings = db.prepare('SELECT document_id,position FROM synced_host_history_documents WHERE history_id=?').all(input.historyToken) as Array<{ document_id: string; position: number }>
+    const externalCut = readSyncedExchangeHostCut(db, input.historyToken)
+    if (mappings.length === 0 && externalCut) {
+      // A complete external boundary may retire the entire executable branch while preserving its immutable journal/ACK/pins.
+      for (const id of ids) {
+        assertHostChain(db, id)
+        const history = getSyncedHostHistory(db, { documentId: id })
+        if (history.undoToken === input.historyToken || history.redoToken === input.historyToken)
+          throw new Error('已撤执行映射的宿主 journal 仍被实际 Undo/Redo tail 引用。')
+      }
+      conflict('history', groups, hosts)
+    }
     if (!exactSet(mappings.map(item => item.document_id), ids)) throw new Error('宿主 journal 与实际 mappings 参与者不一致。')
     for (const side of from) {
       assertHostChain(db, side.documentId)

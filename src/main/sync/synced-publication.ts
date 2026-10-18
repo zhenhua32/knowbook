@@ -1,4 +1,6 @@
 import { assertSyncedBlockSchema } from '../database/synced-schema'
+import { validateSyncedProtocol5Record, validateSyncedProtocol5Snapshot,
+  type SyncedProtocol5Record } from './synced-protocol5-model'
 import { readInitialIncomingLocal, readInitialIncomingReceipt, readInitialIncomingBaseline, readInitialIncomingIdentityDigest, type InitialIncomingLocal } from '../database/synced-initial-incoming-read'
 import { readSyncedPersistentPublicationSnapshot } from '../database/synced-publication'
 import { MarkdownLinkIndex } from '../database/markdown-link-index'
@@ -38,7 +40,7 @@ import { bindSyncedPublicationCapture, captureSyncedPublicationSnapshot, claimSy
   syncedPublicationRequestHash, type SyncedPublicationClaim, type SyncedPublicationLocalSnapshot } from '../database/synced-publication'
 import { SyncedPublicationError, decodePublicationJson, frozenPublicationFacts, mapPublicationCatalog, publicationCompare,
   publicationHash, publicationInvalid, publicationJson, publicationRecordKey, PUBLICATION_RECORD_MAX_BYTES,
-  validateInitialSnapshot, validateInitialManifest5, validatePublicationDescriptor, type InitialPublicationRecord, type PublicationDescriptor,
+  validateInitialSnapshot, validateInitialRecord, validateInitialManifest5, validatePublicationDescriptor, type InitialPublicationRecord, type PublicationDescriptor,
   type PublicationAssetDescriptor, type SyncedInitialManifest5 } from './synced-publication-model'
 export { SyncedPublicationError } from './synced-publication-model'
 export type { SyncedInitialManifest5, PublicationDescriptor, InitialPublicationRecord } from './synced-publication-model'
@@ -61,6 +63,8 @@ type SpoolState = { kind: 'synced-publication-spool'; version: 1; attemptId: str
 type LoadedSpool = { state: SpoolState; manifest: Buffer; objects: Map<string, Buffer>; assets: Map<string, Buffer> }
 type Prepared = { db: Database.Database; paths: Paths; target: WebDavSyncConfig; state: SpoolState; claim: SyncedPublicationClaim; closed: boolean; busy: boolean }
 type Remote = { facts: SyncedPublishedSnapshotFacts; manifestEtag: string; manifest: Buffer; objects: Map<string, Buffer>; assets: Map<string, Buffer> }
+type ObservedClosure = { manifest: Buffer; facts: { manifest: SyncedInitialManifest5;
+  records: Array<{ key: string; hash: string; bytes: number; record: SyncedProtocol5Record }>; assets: PublicationAssetDescriptor[] } }
 const prepareds = new WeakMap<PreparedSyncedPublication, Prepared>(), remotes = new WeakMap<SyncedPublishedSnapshot, Remote>()
 const targetKeys = ['enabled', 'url', 'username', 'directory', 'intervalMinutes', 'allowInsecureHttp'] as const
 function unavailable(message: string): never { throw new SyncedPublicationError('unavailable', message) }
@@ -490,7 +494,7 @@ function knownObservationIncarnations(data: Observation): Map<string, SyncedObse
     return tuples
   })()
 }
-function sourceObservationProof(data: Observation, remote: Remote, known: Map<string, SyncedObservedIncarnation>): ObservationProof {
+function sourceObservationProof(data: Observation, remote: ObservedClosure, known: Map<string, SyncedObservedIncarnation>): ObservationProof {
   const groups: ObservationProof['groups'] = []; let total = 0
   for (const item of remote.facts.records) {
     if (item.record.kind !== 'synced-group') continue
@@ -620,7 +624,7 @@ export async function observeSyncedRemoteExposure(observation: SyncedRemoteObser
 type IncomingPlan = { mode: 'applied' | 'noop'; local: InitialIncomingLocal; records: InitialPublicationRecord[];
   documentPaths: Map<string, string>; physicalIds: string[]; reservedIds: string[]; reservationSources: InitialIncomingReservationSource[];
   reservationSourceKey: string; reservationDigest: string; portableDigest: string }
-function completeObservedRemote(data: Observation, remote: Remote, known: Map<string, SyncedObservedIncarnation>): ObservationProof {
+function completeObservedRemote(data: Observation, remote: ObservedClosure, known: Map<string, SyncedObservedIncarnation>): ObservationProof {
   const proof = sourceObservationProof(data, remote, known), pending = retainObservationProof(proof)
   observationBoundary(() => commitObservationProofs(data, [pending]))
   return proof
@@ -972,5 +976,138 @@ export async function receiveInitialSyncedSnapshot(db: Database.Database, input:
         }
       }
     }
+  })
+}
+
+/** Internal Main read capabilities. Neither handle is accepted by a public mutation API. */
+export interface SyncedExchangeRemoteSource { readonly kind: 'synced-exchange-remote-source' }
+export interface SyncedExchangeLocalMaterial { readonly kind: 'synced-exchange-local-material' }
+export interface SyncedExchangeRemoteFacts {
+  workspaceScope: string; recoveryEpoch: string; databasePath: string; root: string
+  manifest: SyncedInitialManifest5; manifestEtag: string; manifestHash: string; closureHash: string
+  records: Array<{ key: string; hash: string; bytes: number; record: SyncedProtocol5Record }>
+  assets: PublicationAssetDescriptor[]
+}
+export interface SyncedExchangeMaterialFacts {
+  databasePath: string; root: string; snapshot: SyncedPublicationLocalSnapshot; records: InitialPublicationRecord[]
+}
+type ExchangeRemote = { data: Observation; remote: ObservedClosure & {
+  manifestEtag: string; objects: Map<string, Buffer>; assets: Map<string, Buffer> }; proof: ObservationProof }
+type ExchangeMaterial = { data: Observation; snapshot: SyncedPublicationLocalSnapshot;
+  records: InitialPublicationRecord[]; assets: Map<string, Buffer> }
+const exchangeRemoteSources = new WeakMap<SyncedExchangeRemoteSource, ExchangeRemote>()
+const exchangeLocalMaterials = new WeakMap<SyncedExchangeLocalMaterial, ExchangeMaterial>()
+function exchangeObservation(db: Database.Database, input: { userDataRoot: string; target: WebDavSyncConfig }): Observation {
+  const environment = observationEnvironment(db, input)
+  if (db.pragma('user_version', { simple: true }) !== 27) return unavailable('增量读取只接受原 schema27。')
+  const context = db.transaction(() => { assertSyncedLifecycleSchema(db); return observationContext(db) })()
+  return { db, ...environment, context, targetFingerprint: observationTargetFingerprint(environment.target), busy: false, closed: false }
+}
+/** Real client -> complete protocol5 closure -> synchronous original observer completion. */
+export async function readObservedSyncedProtocol5(db: Database.Database, input: { userDataRoot: string; target: WebDavSyncConfig },
+  options: SyncedPublicationRuntime): Promise<{ status: 'missing' } | { status: 'unsupported'; reason: 'protocol5-required' }
+  | { status: 'ready'; source: SyncedExchangeRemoteSource }> {
+  return publicBoundary(async () => {
+    const data = exchangeObservation(db, input), credentials = runtime(options), known = knownObservationIncarnations(data)
+    const client = new WebDavClient(data.target, credentials.password, credentials.signal)
+    const response = await network(() => client.getVersioned('manifest.json', PUBLICATION_RECORD_MAX_BYTES))
+    if (!response) return Object.freeze({ status: 'missing' as const })
+    const raw = parseStrictJson(Buffer.from(response.bytes).toString('utf8'), { maxBytes: PUBLICATION_RECORD_MAX_BYTES, maxDepth: 32 })
+    if (!raw || typeof raw !== 'object' || !('version' in raw)) return publicationInvalid('增量清单版本缺失。')
+    if (raw.version !== 5) return Object.freeze({ status: 'unsupported' as const, reason: 'protocol5-required' as const })
+    const manifest = validateInitialManifest5(decodePublicationJson(response.bytes))
+    const values: Array<{ key: string; record: unknown }> = [], objects = new Map<string, Buffer>()
+    for (const [key, hash] of Object.entries(manifest.entries)) {
+      const object = await network(() => client.get('objects/' + hash + '.json', PUBLICATION_RECORD_MAX_BYTES))
+      if (!object || publicationHash(object.bytes) !== hash) return publicationInvalid('增量对象原 bytes/hash 缺失或损坏。')
+      const record = validateSyncedProtocol5Record(decodePublicationJson(object.bytes), key)
+      objects.set(key, Buffer.from(object.bytes)); values.push({ key, record })
+    }
+    const checked = validateSyncedProtocol5Snapshot(manifest, values), assets = new Map<string, Buffer>()
+    const assetFacts: PublicationAssetDescriptor[] = []
+    for (const [hash, names] of checked.assetNames) {
+      const object = await network(() => client.get('assets/' + hash, ATTACHMENT_MAX_FILE_BYTES))
+      if (!object || publicationHash(object.bytes) !== hash) return publicationInvalid('增量资产原 bytes/hash 缺失或损坏。')
+      assets.set(hash, Buffer.from(object.bytes))
+      assetFacts.push({ path: 'assets/' + hash, hash, bytes: object.bytes.length, names: [...names].sort(publicationCompare) })
+    }
+    const remote: ExchangeRemote['remote'] = { manifest: Buffer.from(response.bytes), manifestEtag: response.etag, objects, assets,
+      facts: frozenPublicationFacts({ manifest: checked.manifest,
+        records: checked.records.map(item => ({ ...item, bytes: objects.get(item.key)!.length })),
+        assets: assetFacts.sort((a, b) => publicationCompare(a.path, b.path)) }) }
+    // No await or cancellation check can interpose between verified closure and its sticky/durable observation.
+    const proof = completeObservedRemote(data, remote, known)
+    const source = Object.freeze({ kind: 'synced-exchange-remote-source' as const })
+    exchangeRemoteSources.set(source, { data, remote, proof })
+    return Object.freeze({ status: 'ready' as const, source })
+  })
+}
+export function readObservedSyncedProtocol5Facts(source: SyncedExchangeRemoteSource): Readonly<SyncedExchangeRemoteFacts> | null {
+  const saved = exchangeRemoteSources.get(source)
+  return saved ? frozenPublicationFacts({ ...saved.data.context, databasePath: saved.data.databasePath, root: saved.data.root,
+    ...saved.remote.facts, manifestEtag: saved.remote.manifestEtag, manifestHash: saved.proof.manifestHash, closureHash: saved.proof.closureHash }) : null
+}
+export function readObservedSyncedProtocol5Object(source: SyncedExchangeRemoteSource, key: string, hash: string): Uint8Array | null {
+  const saved = exchangeRemoteSources.get(source), bytes = saved?.remote.objects.get(key)
+  return bytes && saved?.remote.facts.manifest.entries[key] === hash && publicationHash(bytes) === hash ? Buffer.from(bytes) : null
+}
+export function readObservedSyncedProtocol5Asset(source: SyncedExchangeRemoteSource, hash: string): Uint8Array | null {
+  const bytes = exchangeRemoteSources.get(source)?.remote.assets.get(hash)
+  return bytes && publicationHash(bytes) === hash ? Buffer.from(bytes) : null
+}
+export function assertObservedSyncedProtocol5Current(db: Database.Database, source: SyncedExchangeRemoteSource): void {
+  const saved = exchangeRemoteSources.get(source)
+  if (!saved || saved.data.db !== db) return unavailable('增量 source 不属于原真实 connection。')
+  currentObservation(saved.data)
+}
+/** The local side is always freshly captured from real SQLite; no caller snapshot can be substituted. */
+export async function materializeSyncedExchangeLocal(db: Database.Database, input: { userDataRoot: string; target: WebDavSyncConfig }): Promise<SyncedExchangeLocalMaterial> {
+  return publicBoundary(async () => {
+    const data = exchangeObservation(db, input)
+    const snapshot = db.transaction(() => { currentObservation(data); return readSyncedPersistentPublicationSnapshot(db) })()
+    const paths: Paths = { root: data.root, databasePath: data.databasePath, assetRoot: join(data.root, 'storage', 'assets'),
+      spoolRoot: join(data.root, 'storage', 'synced-exchanges-v1'), directory: '' }
+    const material = await portable(snapshot, paths)
+    const handle = Object.freeze({ kind: 'synced-exchange-local-material' as const })
+    exchangeLocalMaterials.set(handle, { data, snapshot, ...material })
+    return handle
+  })
+}
+export function readSyncedExchangeLocalMaterial(handle: SyncedExchangeLocalMaterial): Readonly<SyncedExchangeMaterialFacts> | null {
+  const saved = exchangeLocalMaterials.get(handle)
+  return saved ? frozenPublicationFacts({ databasePath: saved.data.databasePath, root: saved.data.root, snapshot: saved.snapshot, records: saved.records }) : null
+}
+export function readSyncedExchangeLocalAsset(handle: SyncedExchangeLocalMaterial, hash: string): Uint8Array | null {
+  const bytes = exchangeLocalMaterials.get(handle)?.assets.get(hash)
+  return bytes && publicationHash(bytes) === hash ? Buffer.from(bytes) : null
+}
+/** Exact historical confirmed publications, authenticated by durable rows and original private spools.
+ * No timestamp selection and no supplied snapshot can become a common ancestor. */
+export async function readConfirmedSyncedPublicationSeeds(db: Database.Database, input: { userDataRoot: string; target: WebDavSyncConfig }): Promise<Array<{
+  operationId: string; manifest: SyncedInitialManifest5; records: Array<{ key: string; hash: string; record: InitialPublicationRecord }>
+}>> {
+  return publicBoundary(async () => {
+    const data = exchangeObservation(db, input), originalTarget = targetFingerprint(data.target)
+    const rows = db.transaction(() => {
+      currentObservation(data)
+      return db.prepare("SELECT id,request_hash,publication_hash FROM synced_exposure_attempts WHERE channel='webdav-manifest5' AND target_fingerprint=? AND state='confirmed' ORDER BY id")
+        .all(originalTarget) as Array<{ id: string; request_hash: string; publication_hash: string }>
+    })()
+    const result: Array<{ operationId: string; manifest: SyncedInitialManifest5; records: Array<{ key: string; hash: string; record: InitialPublicationRecord }> }> = []
+    for (const row of rows) {
+      if (!isSyncedUuid(row.id)) return publicationInvalid('原 confirmed publication UUID 损坏。')
+      const paths: Paths = { root: data.root, databasePath: data.databasePath, assetRoot: join(data.root, 'storage', 'assets'),
+        spoolRoot: join(data.root, 'storage', 'synced-publications-v1'), directory: join(data.root, 'storage', 'synced-publications-v1', row.id) }
+      const loaded = await loadSpool(paths), state = loaded.state
+      if (state.attemptId !== row.id || state.publicationHash !== row.publication_hash || state.requestHash !== row.request_hash
+        || state.descriptor.targetFingerprint !== originalTarget || publicationJson(state.target) !== publicationJson(storedTarget(data.target))) return publicationInvalid('原 confirmed source/target/descriptor 不闭合。')
+      if (state.descriptor.workspaceScope !== data.context.workspaceScope || state.descriptor.recoveryEpoch !== data.context.recoveryEpoch) continue
+      const manifest = validateInitialManifest5(decodePublicationJson(loaded.manifest))
+      const records = state.descriptor.objects.map(item => ({ key: item.key, hash: item.hash,
+        record: validateInitialRecord(decodePublicationJson(loaded.objects.get(item.key)!), item.key) }))
+      result.push(frozenPublicationFacts({ operationId: row.id, manifest, records }))
+    }
+    db.transaction(() => currentObservation(data))()
+    return result
   })
 }
