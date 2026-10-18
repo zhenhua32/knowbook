@@ -23,6 +23,12 @@ async function child(profile: string, backup: string, mode: string, transcript: 
     writeFileSync(transcript + '.stdio.json', JSON.stringify({ ...result, error: failed?.message ?? null, stdout, stderr }, null, 2) + '\n')
     assert.equal(failed, undefined, 'The hidden genuine Electron Node child started successfully')
     assert.equal(result.signal, null, 'The real controlled restore child completes before its bounded cleanup deadline: ' + stderr.slice(-1500))
+    if (result.code === 2) {
+      const evidence = JSON.parse(readFileSync(transcript, 'utf8')) as Record<string, unknown>
+      globalThis.process.stderr.write('[controlled-restore-hook-miss] ' + JSON.stringify({ mode,
+        inputProfile: evidence.inputProfile, canonicalProfile: evidence.canonicalProfile,
+        unexpectedCompletion: evidence.unexpectedCompletion, actual: evidence.actual, stderr: stderr.slice(-1500) }) + '\n')
+    }
     return result.code
   } finally {
     clearTimeout(timer)

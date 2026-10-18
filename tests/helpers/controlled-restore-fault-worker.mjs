@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { createRequire, syncBuiltinESMExports } from 'node:module'
 import { dirname, isAbsolute, join, relative, resolve, toNamespacedPath } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -7,11 +7,12 @@ import { pathToFileURL } from 'node:url'
 const [repository, profile, backup, mode, transcript] = process.argv.slice(2)
 const modes = ['move-db', 'move-wal', 'move-shm', 'stage-epoch', 'stage-receipt', 'result-error', 'cleanup-error', 'installed', 'recover']
 if (![repository, profile, backup, transcript].every(value => typeof value === 'string' && isAbsolute(value)) || !modes.includes(mode)) throw new Error('Invalid controlled restore fault child arguments')
+const canonicalProfile = realpathSync.native(profile)
 const require = createRequire(join(repository, 'package.json')), Database = require('better-sqlite3')
 const fsPromises = require('node:fs/promises')
 const source = join(repository, 'src/main/database/restore-maintenance.ts')
 const hash = bytes => createHash('sha256').update(bytes).digest('hex')
-const note = { pid: process.pid, mode, sourceSHA256: hash(readFileSync(source)),
+const note = { pid: process.pid, mode, inputProfile: profile, canonicalProfile, sourceSHA256: hash(readFileSync(source)),
   safetySHA256: hash(readFileSync(join(repository, 'src/main/database/restore-safety.ts'))), scriptSHA256: hash(readFileSync(new URL(import.meta.url))) }
 let injected = false, witness = null
 const save = value => writeFileSync(transcript, JSON.stringify({ ...note, injected, witness, ...value }, null, 2) + '\n')
@@ -28,13 +29,13 @@ function stageFacts(file) {
   try { return connectionFacts(db) } finally { db.close() }
 }
 function installedWitness() {
-  const pointer = json(join(profile, 'database-restore-pending.json')), fence = json(join(profile, 'database-restore-fence.json'))
+  const pointer = json(join(canonicalProfile, 'database-restore-pending.json')), fence = json(join(canonicalProfile, 'database-restore-fence.json'))
   if (pointer.kind !== 'controlled-database-restore-journal' || pointer.version !== 2 || pointer.phase !== 'installed'
     || fence.phase !== 'installed' || fence.operationId !== pointer.operationId) throw new Error('Injected completion fault did not follow the actual installed journal and fence')
-  const actual = stageFacts(join(profile, 'storage', 'knowbook.db'))
+  const actual = stageFacts(join(canonicalProfile, 'storage', 'knowbook.db'))
   const receipt = actual.receipts.find(row => row.key === 'database.restore.receipt.' + pointer.operationId)
   if (!receipt) throw new Error('Injected completion fault did not follow the actual installed SQL receipt')
-  return { pointer, fence, actual, databaseSHA256: hash(readFileSync(join(profile, 'storage', 'knowbook.db'))) }
+  return { pointer, fence, actual, databaseSHA256: hash(readFileSync(join(canonicalProfile, 'storage', 'knowbook.db'))) }
 }
 const nativeRename = fsPromises.rename, nativeRm = fsPromises.rm, nativePrepare = Database.prototype.prepare
 // No file bytes are changed before sourceStage's exact copy hash check. This
@@ -42,7 +43,7 @@ const nativeRename = fsPromises.rename, nativeRm = fsPromises.rm, nativePrepare 
 // TEMP triggers are connection-local and the SQLite engine raises the failure.
 Database.prototype.prepare = function (sql, ...rest) {
   if (!injected && mode.startsWith('stage-')) {
-    const target = resolve(this.name), inside = relative(toNamespacedPath(resolve(profile, 'backups', 'database-restore')), toNamespacedPath(target)).split(/[\\/]/)
+    const target = resolve(this.name), inside = relative(toNamespacedPath(resolve(canonicalProfile, 'backups', 'database-restore')), toNamespacedPath(target)).split(/[\\/]/)
     if (inside.length === 2 && /^[0-9a-f-]{36}$/i.test(inside[0]) && inside[1] === 'candidate.db') {
       if (sql === 'UPDATE synced_workspace_state SET workspace_scope=?,recovery_epoch=? WHERE singleton=1') {
         witness = { stage: target, before: connectionFacts(this), nativeTrigger: mode, inTransaction: this.inTransaction }
@@ -61,24 +62,24 @@ Database.prototype.prepare = function (sql, ...rest) {
 }
 fsPromises.rename = async function (from, to) {
   const target = resolve(String(to))
-  if (!injected && mode === 'result-error' && target.endsWith('result.json') && dirname(dirname(dirname(target))) === join(profile, 'backups')) {
+  if (!injected && mode === 'result-error' && target.endsWith('result.json') && dirname(dirname(dirname(target))) === join(canonicalProfile, 'backups')) {
     witness = installedWitness(); injected = true
     const error = new Error('controlled-installed-result-EIO'); error.code = 'EIO'; throw error
   }
   const result = await nativeRename.call(this, from, to)
-  if (!injected && mode === 'installed' && target === join(profile, 'database-restore-pending.json')) {
+  if (!injected && mode === 'installed' && target === join(canonicalProfile, 'database-restore-pending.json')) {
     const pointer = json(target)
     if (pointer.kind === 'controlled-database-restore-journal' && pointer.version === 2 && pointer.phase === 'installed') {
-      injected = true; witness = { pointer, actual: stageFacts(join(profile, 'storage', 'knowbook.db')) }
+      injected = true; witness = { pointer, actual: stageFacts(join(canonicalProfile, 'storage', 'knowbook.db')) }
       save({ interrupted: true }); process.exit(74)
     }
   }
   if (!injected && mode.startsWith('move-')) {
     const name = { 'move-db': 'knowbook.db', 'move-wal': 'knowbook.db-wal', 'move-shm': 'knowbook.db-shm' }[mode]
-    const pointer = existsSync(join(profile, 'database-restore-pending.json')) ? json(join(profile, 'database-restore-pending.json')) : null
+    const pointer = existsSync(join(canonicalProfile, 'database-restore-pending.json')) ? json(join(canonicalProfile, 'database-restore-pending.json')) : null
     if (pointer?.kind === 'controlled-database-restore-journal' && pointer.version === 2 && pointer.phase === 'moving'
-      && resolve(String(from)) === join(profile, 'storage', name)
-      && target === join(profile, 'backups', 'database-restore', pointer.operationId, 'original', name)) {
+      && resolve(String(from)) === join(canonicalProfile, 'storage', name)
+      && target === join(canonicalProfile, 'backups', 'database-restore', pointer.operationId, 'original', name)) {
       injected = true; witness = { pointer, from: resolve(String(from)), to: target, archivedSHA256: hash(readFileSync(target)) }
       save({ interrupted: true }); process.exit({ 'move-db': 76, 'move-wal': 77, 'move-shm': 78 }[mode])
     }
@@ -86,7 +87,7 @@ fsPromises.rename = async function (from, to) {
   return result
 }
 fsPromises.rm = async function (path, ...rest) {
-  if (!injected && mode === 'cleanup-error' && resolve(String(path)) === join(profile, 'database-restore-pending.json')) {
+  if (!injected && mode === 'cleanup-error' && resolve(String(path)) === join(canonicalProfile, 'database-restore-pending.json')) {
     witness = installedWitness(); injected = true
     const error = new Error('controlled-installed-cleanup-EIO'); error.code = 'EIO'; throw error
   }
