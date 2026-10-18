@@ -8,6 +8,8 @@ import { assertNoUnsupportedSyncedContent, assertSyncedBlockSchema } from './syn
 import { assertSyncedLifecycleSchema } from './synced-lifecycle-schema'
 import { stopDatabaseRestoreProcesses, type RestoreProcessIdentity } from './restore-process-guard'
 import { isSystemPluginManagedPath, resolveSystemPluginPhysicalPath } from '../system-plugin/managed-paths'
+import { recoverControlledDatabaseRestore, restoreControlledDatabase, type ControlledRestoreInput, type ControlledRestoreResult } from './restore-safety'
+import { restoreSqliteFilename } from './restore-safety-sqlite-path'
 
 const require = createRequire(import.meta.url)
 const Database = require('better-sqlite3') as typeof import('better-sqlite3')
@@ -121,7 +123,7 @@ async function readCurrentIdentities(root: string, recovery: string): Promise<Re
   if (!existsSync(join(directory, 'knowbook.db'))) return []
   let db: InstanceType<typeof Database> | undefined
   try {
-    db = new Database(join(directory, 'knowbook.db'), { readonly: true, fileMustExist: true })
+    db = new Database(restoreSqliteFilename(join(directory, 'knowbook.db')), { readonly: true, fileMustExist: true })
     const rows = db.prepare("SELECT pid, health_json FROM system_plugin_runs WHERE component = 'detached' AND pid IS NOT NULL").all() as Array<{ pid: number; health_json: string | null }>
     const result: RestoreProcessIdentity[] = []
     for (const row of rows) {
@@ -173,7 +175,7 @@ async function rollback(userDataRoot: string, journal: RestoreJournal): Promise<
 }
 
 /** Must run before creating any Store, worker, or plugin host on every boot. */
-export async function recoverInterruptedDatabaseRestore(userDataRoot: string): Promise<boolean> {
+async function recoverInterruptedDatabaseRestoreV1(userDataRoot: string): Promise<boolean> {
   const journalPath = join(resolve(userDataRoot), JOURNAL)
   if (existsSync(journalPath)) {
     const journal = JSON.parse(await readFile(journalPath, 'utf8')) as RestoreJournal
@@ -214,7 +216,7 @@ export async function consumeDatabaseRestoreSafeMode(userDataRoot: string): Prom
   await rm(join(resolve(userDataRoot), SAFE_MARKER), { force: true })
 }
 
-export async function restoreKnowbookDatabase(input: {
+async function restoreKnowbookDatabaseV1(input: {
   userDataRoot: string
   backupPath: string
   stopProcesses?: typeof stopDatabaseRestoreProcesses
@@ -268,4 +270,13 @@ export async function restoreKnowbookDatabase(input: {
     await durableJson(join(p.recovery, 'result.json'), { status: 'failed', error: String(error), completedAt: new Date().toISOString() })
     throw new Error(`数据库未替换或已回退。恢复记录：${p.recovery}\n${String(error)}`, { cause: error })
   }
+}
+
+/** Original version-1 journal recovery is kept separate; a new fence never downgrades to it. */
+export async function recoverInterruptedDatabaseRestore(userDataRoot: string): Promise<boolean> {
+  return recoverControlledDatabaseRestore(userDataRoot, recoverInterruptedDatabaseRestoreV1)
+}
+
+export async function restoreKnowbookDatabase(input: ControlledRestoreInput): Promise<ControlledRestoreResult> {
+  return restoreControlledDatabase(input, { readCurrentIdentities, recoverLegacy: recoverInterruptedDatabaseRestoreV1 })
 }

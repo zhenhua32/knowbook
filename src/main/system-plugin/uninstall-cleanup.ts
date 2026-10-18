@@ -90,7 +90,8 @@ export async function cleanupSystemPluginsForApplicationUninstall(input: {
   const failures: Error[] = []
   for (const profile of profiles) {
     const database = join(profile, 'storage', 'knowbook.db')
-    if (!existsSync(database) && !existsSync(join(profile, 'database-restore-pending.json'))) continue
+    if (!existsSync(database) && !existsSync(join(profile, 'database-restore-pending.json'))
+      && !existsSync(join(profile, 'database-restore-fence.json'))) continue
     let store: KnowbookStore | undefined
     let manager: SystemPluginManager | undefined
     let failure: unknown

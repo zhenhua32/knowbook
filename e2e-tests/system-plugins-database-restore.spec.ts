@@ -1,12 +1,12 @@
 import { expect, test } from '@playwright/test'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { closeElectronApp, launchElectronApp, type ElectronAppContext } from './helpers/electron'
 
-test('SQLite maintenance stops verified detached service, restores damaged DB, and boots safely @database-restore', async ({}, testInfo) => {
+test('SQLite maintenance stops verified detached service, refuses fenced corruption, and restores an unfenced damaged DB safely @database-restore', async ({}, testInfo) => {
   test.setTimeout(240_000)
   expect(process.platform).toBe('win32')
   const executable = process.env.KNOWBOOK_E2E_EXECUTABLE!
@@ -127,19 +127,41 @@ test('SQLite maintenance stops verified detached service, restores damaged DB, a
     snapshots.push({ stage, backupRuns, plugin: await assertRetiredHostRuns() })
     stages.push(stage)
 
-    stage = 'corrupt-current-database-still-recovers'
+    stage = 'fenced-corrupt-current-is-not-a-legacy-disaster-bypass'
     await close()
     const database = join(profile, 'storage', 'knowbook.db')
-    const corrupted = Buffer.from('controlled corrupt KnowBook database')
+    const corrupted = Buffer.from('controlled corrupt KnowBook database with existing fence')
     writeFileSync(database, corrupted)
-    await maintenance(executable, profile, backup)
-    const recovered = JSON.parse(readFileSync(join(profile, 'database-restore-result.json'), 'utf8'))
-    expect(recovered).toMatchObject({ status: 'restored', stoppedPids: [] })
-    expect(readFileSync(join(recovered.recoveryDirectory, 'original', 'knowbook.db'))).toEqual(corrupted)
+    const fencePath = join(profile, 'database-restore-fence.json')
+    const fenceBefore = readFileSync(fencePath)
+    const currentBefore = ['', '-wal', '-shm'].filter((suffix) => existsSync(database + suffix))
+      .map((suffix) => ({ suffix, bytes: readFileSync(database + suffix) }))
+    await maintenance(executable, profile, backup, 25)
+    const rejected = JSON.parse(readFileSync(join(profile, 'database-restore-result.json'), 'utf8'))
+    expect(rejected).toMatchObject({ status: 'failed' })
+    expect(rejected.error).toMatch(/fence|安全认证|连续/i)
+    expect(readFileSync(fencePath)).toEqual(fenceBefore)
+    for (const file of currentBefore) expect(readFileSync(database + file.suffix)).toEqual(file.bytes)
     expect(hash(backup)).toBe(sourceHash)
-    await boot()
+    expect(readFileSync(callsPath, 'utf8')).toBe(calls)
+    snapshots.push({ stage, rejected, fenceSha256: hash(fencePath), preservedFiles: currentBefore.map((file) => file.suffix) })
+    stages.push(stage)
+
+    stage = 'unfenced-corrupt-current-keeps-explicit-unverified-disaster-recovery'
+    const legacyProfile = join(root, '独立未建立 fence 的灾难工作区')
+    const legacyStorage = join(legacyProfile, 'storage')
+    mkdirSync(legacyStorage, { recursive: true })
+    const legacyOriginals = { 'knowbook.db': 'controlled unfenced corrupt DB', 'knowbook.db-wal': 'original unfenced WAL', 'knowbook.db-shm': 'original unfenced SHM' }
+    for (const [name, value] of Object.entries(legacyOriginals)) writeFileSync(join(legacyStorage, name), value)
+    expect(existsSync(join(legacyProfile, 'database-restore-fence.json'))).toBe(false)
+    await maintenance(executable, legacyProfile, backup)
+    const recovered = JSON.parse(readFileSync(join(legacyProfile, 'database-restore-result.json'), 'utf8'))
+    expect(recovered).toMatchObject({ status: 'restored', stoppedPids: [], continuity: 'legacy-disaster-unverified', installedSchemaVersion: 27 })
+    for (const [name, value] of Object.entries(legacyOriginals)) expect(readFileSync(join(recovered.recoveryDirectory, 'original', name), 'utf8')).toBe(value)
+    expect(hash(backup)).toBe(sourceHash)
+    context = await launchElectronApp({}, { userDataRoot: legacyProfile })
     expect(await sentinel()).toBe('healthy backup')
-    await expect.poll(() => existsSync(join(profile, 'database-restore-safe-mode.json'))).toBe(false)
+    await expect.poll(() => existsSync(join(legacyProfile, 'database-restore-safe-mode.json'))).toBe(false)
     expect(readFileSync(callsPath, 'utf8')).toBe(calls)
     expect((await state())?.enabled).toBe(false)
     snapshots.push({ stage, recovered, plugin: await assertRetiredHostRuns() })
@@ -160,8 +182,8 @@ test('SQLite maintenance stops verified detached service, restores damaged DB, a
 })
 
 function alive(pid: number) { try { process.kill(pid, 0); return true } catch { return false } }
-async function maintenance(executable: string, profile: string, backup: string): Promise<void> {
-  const env = { ...process.env }
+async function maintenance(executable: string, profile: string, backup: string, expectedExit = 0): Promise<void> {
+  const env: NodeJS.ProcessEnv = { ...process.env, KNOWBOOK_E2E_BACKGROUND: '1' }
   delete env.ELECTRON_RUN_AS_NODE
   delete env.ELECTRON_RENDERER_URL
   delete env.KNOWBOOK_USER_DATA_DIR
@@ -177,6 +199,6 @@ async function maintenance(executable: string, profile: string, backup: string):
       reject(new Error(`Database restore maintenance timed out. ${existsSync(report) ? readFileSync(report, 'utf8') : output}`))
     }, 60_000)
     child.once('error', (error) => { clearTimeout(timer); reject(error) })
-    child.once('close', (code) => { clearTimeout(timer); code === 0 ? resolvePromise() : reject(new Error(`Restore exited ${code}: ${output}`)) })
+    child.once('close', (code) => { clearTimeout(timer); code === expectedExit ? resolvePromise() : reject(new Error(`Restore exited ${code}: ${output}`)) })
   })
 }

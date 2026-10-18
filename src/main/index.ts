@@ -363,6 +363,7 @@ if (!hasSingleInstanceLock) {
 const earlyWebClipExtractionWorker = hasSingleInstanceLock && !maintenanceRequested
   && !existsSync(join(app.getPath('userData'), 'database-restore-pending.json'))
   && !existsSync(join(app.getPath('userData'), 'database-restore-safe-mode.json'))
+  && !existsSync(join(app.getPath('userData'), 'database-restore-fence.json'))
   ? new WebClipExtractionWorkerRunner()
   : null
 
