@@ -70,7 +70,7 @@ export interface ParsedMarkdownDocument {
   blocks: MarkdownRenderableBlock[]
 }
 
-type MarkdownBlockMetadata = {
+export type MarkdownBlockMetadata = {
   parentSpecified?: boolean
   type?: string
   depth?: number
@@ -80,6 +80,15 @@ type MarkdownBlockMetadata = {
   parentBlockId?: string | null
   tags?: string[]
   highlight?: string
+  /** Only a trusted V3 adapter supplies this exact optional language provenance. */
+  language?: string | null
+}
+
+/** Cold trusted-backup adapter. Ordinary/V2 parsing never supplies this port. */
+export interface MarkdownTrustedBackupPolicy {
+  metadata: (line: string) => MarkdownBlockMetadata
+  reference: (body: string, metadata: MarkdownBlockMetadata) => MarkdownRenderableBlock
+  finish: (blocks: MarkdownRenderableBlock[]) => void
 }
 
 const MARKDOWN_BLOCK_METADATA_PREFIX = '<!-- knowbook:block '
@@ -381,6 +390,7 @@ function applyMarkdownBlockMetadata(block: MarkdownRenderableBlock, metadata: Ma
     id: metadata.id ?? block.id,
     parentBlockId: metadata.parentBlockId ?? block.parentBlockId ?? null
   }
+  if (Object.hasOwn(metadata, 'language')) nextBlock.language = metadata.language ?? undefined
 
   const tags = metadata.tags ?? block.tags
   if (tags) {
@@ -500,7 +510,8 @@ export function parseMarkdownBlocks(markdownBody: string, sourceRanges?: Markdow
   return parseMarkdownBlocksCore(markdownBody, sourceRanges, closingRanges)
 }
 
-export function parseMarkdownBlocksCore(markdownBody: string, sourceRanges?: MarkdownBlockSourceRange[], closingRanges?: MarkdownContainerClosingRange[], strict?: MarkdownSourceParsePolicy): MarkdownRenderableBlock[] {
+export function parseMarkdownBlocksCore(markdownBody: string, sourceRanges?: MarkdownBlockSourceRange[], closingRanges?: MarkdownContainerClosingRange[], strict?: MarkdownSourceParsePolicy, backup?: MarkdownTrustedBackupPolicy): MarkdownRenderableBlock[] {
+  if (strict && backup) throw new Error('Strict Source and trusted backup policies are mutually exclusive')
   if (sourceRanges) sourceRanges.length = 0
   if (closingRanges) closingRanges.length = 0
   const source = markdownBody.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n')
@@ -636,7 +647,7 @@ export function parseMarkdownBlocksCore(markdownBody: string, sourceRanges?: Mar
           strict.metadata(node)
           continue
         }
-        pending = parseMarkdownBlockMetadata(node.token.content)
+        pending = backup ? backup.metadata(node.token.content) : parseMarkdownBlockMetadata(node.token.content)
         if (!pending) push(make('paragraph', node.token.content, depth), ...node.token.map)
         else if (pending.type && isNativeStructureBlockType(pending.type)) {
           const next = items[index + 1]
@@ -648,7 +659,7 @@ export function parseMarkdownBlocksCore(markdownBody: string, sourceRanges?: Mar
           while (next < items.length && items[next].token.type !== 'knowbook_metadata') next++
           const end = items[next]?.token.map?.[0] ?? scopeEnd
           const body = trimBlankLines(lines.slice(cursor, end).join('\n'))
-          const parsedBody = parseMarkdownBlocks(body)
+          const parsedBody = backup && pending.type === 'synced-block' ? [backup.reference(body, pending)] : parseMarkdownBlocks(body)
           let parsed = parsedBody[0] ?? make(pending.type, '')
           if (pending.type === 'database-view' || parsedBody.some(block => block.type === 'database-view')) {
             if (pending.type !== 'database-view' || parsedBody.length !== 1 || parsed.type !== 'database-view')
@@ -683,7 +694,7 @@ export function parseMarkdownBlocksCore(markdownBody: string, sourceRanges?: Mar
     if (remaining.trim()) push(applyMarkdownBlockMetadata(make('paragraph', remaining, depth), pending), cursor, scopeEnd)
   }
   appendScope(nodes, 0, lines.length, 0)
-  if (blocks.some(value => isNativeStructureBlockType(value.type)) && declared.size) {
+  if ((backup || blocks.some(value => isNativeStructureBlockType(value.type))) && declared.size) {
     const ids = new Set<string>(), active: MarkdownRenderableBlock[] = []
     for (let index = 0; index < blocks.length; index++) {
       const value = blocks[index], entry = declared.get(index)
@@ -694,7 +705,7 @@ export function parseMarkdownBlocksCore(markdownBody: string, sourceRanges?: Mar
       const depth = value.depth ?? 0
       if (!Number.isInteger(depth) || depth < 0 || depth > 6) throw new NativeMarkdownContainerError('invalid backup block depth')
       if (entry) {
-        if (isListBlockType(value.type)) {
+        if (isListBlockType(value.type) || backup && value.type === 'synced-block' && depth > entry.scopeDepth) {
           if (depth < entry.scopeDepth) throw new NativeMarkdownContainerError('list metadata escapes its container scope')
           for (let ancestor = entry.scopeDepth; ancestor < depth; ancestor++)
             if (!isListBlockType(active[ancestor]?.type ?? '')) throw new NativeMarkdownContainerError('list metadata points outside its active list')
@@ -702,7 +713,7 @@ export function parseMarkdownBlocksCore(markdownBody: string, sourceRanges?: Mar
         const scopeOwner = entry.scopeParent === undefined ? null : blocks[entry.scopeParent]
         if (entry.scopeDepth > 0 && active[entry.scopeDepth - 1] !== scopeOwner) throw new NativeMarkdownContainerError('backup child escapes its active container')
         const parent = depth > 0 ? active[depth - 1] : null
-        if (depth > 0 && (!parent || !canBlockNestUnder(parent.type, value.type))) throw new NativeMarkdownContainerError('incompatible backup parent')
+        if (depth > 0 && (!parent || !canBlockNestUnder(parent.type, value.type) && !(backup && value.type === 'synced-block' && isListBlockType(parent.type)))) throw new NativeMarkdownContainerError('incompatible backup parent')
         if (entry.metadata.parentSpecified && (entry.metadata.parentBlockId ?? null) !== (parent?.id ?? null)) throw new NativeMarkdownContainerError('foreign or inactive backup parent identity')
       }
       active.length = depth; active[depth] = value
@@ -710,11 +721,12 @@ export function parseMarkdownBlocksCore(markdownBody: string, sourceRanges?: Mar
   }
   if (strict) {
     strict.finish(blocks)
-  } else assertMarkdownColumnStructure(blocks)
+  } else if (backup) backup.finish(blocks)
+  else assertMarkdownColumnStructure(blocks)
   assertDatabaseViewStructure(blocks)
-  return strict ? blocks : finalizeParsedMarkdownBlocks(blocks)
+  return strict || backup ? blocks : finalizeParsedMarkdownBlocks(blocks)
 }
-type MarkdownSerializationOptions = { fallbackCodeLanguage?: string; includeBlockMetadata?: boolean }
+type MarkdownSerializationOptions = { fallbackCodeLanguage?: string; includeBlockMetadata?: boolean; trustedBackupMetadata?: (block: MarkdownRenderableBlock) => string }
 /** Cold facts from the actual append branches. Coordinates are UTF-16; source
  * positions are absolute in this one serialization, content in projection.source. */
 export type MarkdownEmissionSegment = { from: number; to: number; sourceFrom: number; sourceTo: number }
@@ -785,7 +797,7 @@ function serializeContainerForest(
       if (isNativeStructureBlockType(block.type)) {
         let subtreeEnd = index + 1
         while (subtreeEnd < end && depths[subtreeEnd] > depths[index]) subtreeEnd++
-        const metadata = options.includeBlockMetadata ? renderMarkdownBlockMetadata(block) : null
+        const metadata = options.includeBlockMetadata ? options.trustedBackupMetadata?.(block) ?? renderMarkdownBlockMetadata(block) : null
         let title: { from: number; projection: NativeTextProjection; edits: readonly NativeLiteralEdit[] } | undefined
         const header = (metadata ? metadata + '\n' : '') + renderNativeContainerHeader(block, observer ? (from, projection, edits) => { title = { from, projection, edits } } : undefined)
         const startLine = emit(header)
@@ -884,7 +896,7 @@ function serializeFlatMarkdownWithBlockRanges(
         return renderedBlock
       }
 
-      const metadata = renderMarkdownBlockMetadata(metadataBlocks[index])
+      const metadata = options.trustedBackupMetadata?.(metadataBlocks[index]) ?? renderMarkdownBlockMetadata(metadataBlocks[index])
       if (emission && metadata) emission.metadata = metadata.length + 1
       return metadata ? `${metadata}\n${renderedBlock}` : renderedBlock
     })

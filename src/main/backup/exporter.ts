@@ -1,3 +1,6 @@
+import Database from 'better-sqlite3'
+import { writeSyncedBackupV3 } from './v3-export'
+import { assertSyncedShape, isSyncedUuid } from '../../shared/syncedBlockValidation'
 import {
   copyFileSync,
   existsSync,
@@ -10,7 +13,7 @@ import {
   writeFileSync
 } from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
-import { dirname, join, relative, resolve, sep } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { BackupResult } from '@shared/contracts'
 import { renderMarkdownFrontmatter, serializeBlocksToMarkdown } from '@shared/markdown'
@@ -48,10 +51,32 @@ export interface BackupDatabaseExportJob extends BackupExportJobBase {
   databasePath: string
 }
 
-export type BackupExportJob = BackupDataExportJob | BackupDatabaseExportJob
+export interface BackupV3DatabaseExportJob {
+  kind: 'synced-v3'
+  databasePath: string
+  userDataRoot: string
+  destination: string
+  snapshotId: string
+}
+
+export type BackupExportJob = BackupDataExportJob | BackupDatabaseExportJob | BackupV3DatabaseExportJob
 export type BackupExportRunner = (job: BackupExportJob) => Promise<number | void>
 
 export function writeBackupSnapshot(job: BackupExportJob): number {
+  if ('kind' in job) {
+    assertSyncedShape(job, ['kind', 'databasePath', 'userDataRoot', 'destination', 'snapshotId'])
+    if (job.kind !== 'synced-v3' || typeof job.databasePath !== 'string' || typeof job.userDataRoot !== 'string'
+      || typeof job.destination !== 'string' || !isSyncedUuid(job.snapshotId)) throw new Error('Invalid V3 backup worker job.')
+    if (!isAbsolute(job.databasePath) || !isAbsolute(job.userDataRoot) || !isAbsolute(job.destination)) throw new Error('V3 backup worker paths must be absolute.')
+    const normalized = (path: string) => process.platform === 'win32' ? resolve(path).toLowerCase() : resolve(path)
+    if (normalized(job.databasePath) !== normalized(join(job.userDataRoot, 'storage', 'knowbook.db'))) throw new Error('V3 backup worker database does not belong to its Main root.')
+    const database = new Database(job.databasePath, { fileMustExist: true })
+    try {
+      database.pragma('foreign_keys = ON')
+      return writeSyncedBackupV3(database, { userDataRoot: job.userDataRoot,
+        destination: job.destination, snapshotId: job.snapshotId }).documents
+    } finally { database.close() }
+  }
   if ('databasePath' in job) {
     const store = new KnowbookStore(job.databasePath)
     try {

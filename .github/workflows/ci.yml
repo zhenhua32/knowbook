@@ -146,6 +146,23 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Fetch pinned schema25 backup reader source
+        run: git fetch --no-tags --depth=1 origin a62a69807b57375fb7b0e359102244d68795a657
+
+      - name: Verify V3 archive with genuine schema25 backup readers
+        run: npm run test:backup-v3-legacy-reader
+
+      - name: Upload V3 backup legacy reader evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backup-v3-compat
+          path: |
+            test-results/backup-v3-compat/**
+            !test-results/backup-v3-compat/**/legacy-a62a698/**
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Fetch pinned schema26 reader source
         run: git fetch --no-tags --depth=1 origin 6d61134b917d88753bdbc72a5cafe6e3d81fc216
 
