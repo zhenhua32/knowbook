@@ -20,6 +20,7 @@ import { readSyncedPersistentPublicationSnapshot } from '../database/synced-publ
 import { observationDatabasePath } from '../database/synced-remote-observation-pending'
 import { readSyncedExchangeCutJournal } from '../database/synced-exchange-host-cut'
 import { readSyncedExchangeLocal, readSyncedExchangeReceipt, type SyncedExchangeLocal } from '../database/synced-exchange-read'
+import { readSyncedExchangeConflictPreviewIndex } from '../database/synced-exchange-conflict-read'
 import { WebDavClient, WebDavHttpError, normalizeWebDavConfig } from './webdav-client'
 import { SYNC_TABLE_COLUMNS, SYNC_TABLES, type SyncDatabases } from './model'
 import { initialIncomingTargetFingerprint, inverseInitialIncomingCatalog, initialIncomingPortableDigest } from './synced-initial-incoming-model'
@@ -34,20 +35,26 @@ import { readObservedSyncedProtocol5, readObservedSyncedProtocol5Facts, readObse
   readSyncedExchangeLocalMaterial, readSyncedExchangeLocalAsset, readConfirmedSyncedPublicationSeeds,
   type SyncedExchangeRemoteSource, type SyncedExchangeLocalMaterial, type SyncedExchangeRemoteFacts } from './synced-publication'
 import * as M from './synced-exchange-model'
-import { planSyncedExchange, deriveSyncedExchangeDependencyFacts, type ExchangePlan } from './synced-exchange-plan'
+import { planSyncedExchange, planSyncedExchangeV1, deriveSyncedExchangeDependencyFacts, type ExchangePlan, type ExchangePlanInput } from './synced-exchange-plan'
+import * as C from './synced-exchange-conflict-model'
 
 export type { SyncedExchangeResult } from './synced-exchange-model'
 export interface SyncedExchangeInput { operationId: string; userDataRoot: string; target: WebDavSyncConfig }
 export interface SyncedExchangeRuntime { password: string; signal?: AbortSignal }
+export interface SyncedExchangeConflictPreviewInput { previewId: string; userDataRoot: string; target: WebDavSyncConfig }
+export interface SyncedExchangeConflictResolveInput extends SyncedExchangeInput { previewId: string; decisions: C.SyncedExchangeConflictDecision[] }
+export type { SyncedExchangeConflictPreviewResult, SyncedExchangeConflictDecision } from './synced-exchange-conflict-model'
 type Context = { root: string; databasePath: string; target: WebDavSyncConfig; request: M.ExchangeRequest;
-  workspaceScope: string; recoveryEpoch: string; initialTargetFingerprint: string }
+  workspaceScope: string; recoveryEpoch: string; initialTargetFingerprint: string;
+  resolution: C.ExchangeResolutionBinding | null; selections: NonNullable<ExchangePlanInput['conflictSelections']> }
 type Prepared = { context: Context; local: SyncedExchangeLocal; localMaterial: SyncedExchangeLocalMaterial;
   localWire: SyncedProtocol5Snapshot; source: SyncedExchangeRemoteSource; remote: SyncedExchangeRemoteFacts;
-  state: M.ExchangeState; baseRecords: SyncedProtocol5Snapshot['records']; plan: ExchangePlan; planningAuthority: ReturnType<typeof authority> }
+  state: M.ExchangeState; baseRecords: SyncedProtocol5Snapshot['records']; plan: ExchangePlan; planningAuthority: ReturnType<typeof authority>; engine: 1 | 2 }
 type Spool = { directory: string; job: M.ExchangeJob; plan: ExchangePlan; state: M.ExchangeState;
   localFingerprint: string; manifest: Buffer; records: SyncedProtocol5Snapshot['records']; objects: Map<string, Buffer>; assets: Map<string, Buffer>;
   planning: { local: SyncedProtocol5Snapshot; remote: SyncedProtocol5Snapshot; baseRecords: SyncedProtocol5Snapshot['records'];
-    authority: ReturnType<typeof authority>; keyGuards: Record<string, string>; stateRaw: string | null } }
+    authority: ReturnType<typeof authority>; keyGuards: Record<string, string>; stateRaw: string | null;
+    engine: 1 | 2; conflictSelections: NonNullable<ExchangePlanInput['conflictSelections']> } }
 type Head = { kind: 'synced-exchange-job-head'; version: 1; operationId: string; requestHash: string;
   attemptId: string; attemptIndex: number; jobHash: string }
 const running = new Set<string>()
@@ -82,7 +89,7 @@ function context(db: Database.Database, input: SyncedExchangeInput): Context {
     || spelling(realpathSync(file)) !== spelling(file) || spelling(realpathSync(root)) !== spelling(root)) return unavailable('exchange connection/root不是Main真实knowbook.db。')
   const databasePath = observationDatabasePath(file), request = M.validateExchangeRequest({ method: 'exchangeSyncedSnapshot', operationId: input.operationId,
     databasePath, targetFingerprint: M.exchangeTargetFingerprint(target) })
-  return { root, databasePath, target, request, ...identity(db), initialTargetFingerprint: initialIncomingTargetFingerprint(target) }
+  return { root, databasePath, target, request, ...identity(db), initialTargetFingerprint: initialIncomingTargetFingerprint(target), resolution: null, selections: [] }
 }
 function current(db: Database.Database, c: Context): void {
   if (!db.open || db.readonly) return unavailable('exchange原writable connection已失效。')
@@ -212,7 +219,10 @@ function authority(local: SyncedExchangeLocal, missingBaseKeys: string[], deferr
     historyComponents: local.historyComponents, pinnedGroupIds: local.pinnedGroupIds, knownGroupIds: local.knownGroupIds, missingBaseKeys, deferredKeys,
     keyGuards: Object.entries(local.keyGuards).map(([key, fingerprint]) => ({ key, fingerprint })) }
 }
-async function prepare(db: Database.Database, c: Context, runtime: SyncedExchangeRuntime, deferredKeys: string[] = []): Promise<Prepared | M.SyncedExchangeResult> {
+function makePlan(input: ExchangePlanInput, engine: 1 | 2): ExchangePlan {
+  return engine === 1 ? planSyncedExchangeV1(input) : planSyncedExchange(input)
+}
+async function prepare(db: Database.Database, c: Context, runtime: SyncedExchangeRuntime, deferredKeys: string[] = [], engine: 1 | 2 = 2): Promise<Prepared | M.SyncedExchangeResult> {
   const loaded = await readObservedSyncedProtocol5(db, { userDataRoot: c.root, target: c.target }, runtime)
   if (loaded.status !== 'ready') return loaded
   const source = loaded.source, remote = readObservedSyncedProtocol5Facts(source)
@@ -262,9 +272,10 @@ async function prepare(db: Database.Database, c: Context, runtime: SyncedExchang
   const now = capture(db, c)
   if (now.fingerprint !== local.fingerprint) return { status: 'stale', side: 'local' }
   const planningAuthority = authority(local, sort(common.missing), deferredKeys)
-  const plan = planSyncedExchange({ operationId: c.request.operationId, local: localWire, remote: remoteWire,
-    baseRecords: common.records, state, localFingerprint: local.fingerprint, authority: planningAuthority })
-  return { context: c, local, localMaterial, localWire, source, remote, state, baseRecords: common.records, plan, planningAuthority }
+  const plan = makePlan({ operationId: c.request.operationId, local: localWire, remote: remoteWire,
+    baseRecords: common.records, state, localFingerprint: local.fingerprint, authority: planningAuthority,
+    ...(engine === 2 ? {conflictSelections:c.selections} : {}) },engine)
+  return { context: c, local, localMaterial, localWire, source, remote, state, baseRecords: common.records, plan, planningAuthority, engine }
 }
 function directory(c: Context, attemptId: string): string { return join(c.root, 'storage', 'synced-exchanges-v1', c.request.operationId, attemptId) }
 async function durable(file: string, bytes: Uint8Array): Promise<void> {
@@ -344,23 +355,26 @@ async function spool(prepared: Prepared, parent: Head | null): Promise<Spool> {
   const descriptor = M.validateExchangeDescriptor({ kind: 'synced-exchange-publication', version: 1, attemptId,
     workspaceScope: c.workspaceScope, recoveryEpoch: c.recoveryEpoch, targetFingerprint: c.request.targetFingerprint, localFingerprint: local.fingerprint,
     planHash: plan.planHash, expectedRemote: { etag: remote.manifestEtag, manifestHash: remote.manifestHash }, next: { manifestHash: plan.afterManifestHash, objects: objectFacts, assets: assetFacts }, members })
-  const inputs = { kind: 'synced-exchange-private-inputs', version: 1, request: c.request, target: c.target, local: prepared.localWire,
+  const inputs = { kind: 'synced-exchange-private-inputs', version: prepared.engine, request: c.request, target: c.target, local: prepared.localWire,
     remote: fromRemote(remote), state: prepared.state, baseRecords: prepared.baseRecords, authority: prepared.planningAuthority,
-    keyGuards: local.keyGuards, stateRaw: local.stateRaw, plan }
+    keyGuards: local.keyGuards, stateRaw: local.stateRaw, plan,
+    ...(prepared.engine === 2 ? {plannerVersion:'conflicts-v1',resolution:c.resolution,conflictSelections:c.selections}: {}) }
   // assetNames is a Map and never crosses a JSON boundary. Full snapshots are reconstructed strictly on load.
   const storedInputs = { ...inputs, local: { manifest: inputs.local.manifest, records: inputs.local.records }, remote: { manifest: inputs.remote.manifest, records: inputs.remote.records },
     plan: { ...plan, nextRemote: { manifest: plan.nextRemote.manifest, records: plan.nextRemote.records }, localFinal: { manifest: plan.localFinal.manifest, records: plan.localFinal.records } } }
   const inputBytes = Buffer.from(publicationJson(storedInputs)), spoolHash = publicationHash(publicationJson({ inputHash: publicationHash(inputBytes), descriptor }))
-  const job = M.validateExchangeJob({ kind: 'synced-exchange-job', version: 1, request: c.request, requestHash: M.exchangeRequestHash(c.request),
+  const job = M.validateExchangeJob({ kind: 'synced-exchange-job', version: prepared.engine, request: c.request, requestHash: M.exchangeRequestHash(c.request),
     attemptId, parentAttemptId: parent?.attemptId ?? null, attemptIndex: parent ? parent.attemptIndex + 1 : 0, workspaceScope: c.workspaceScope,
-    recoveryEpoch: c.recoveryEpoch, remoteWorkspaceId: remote.manifest.workspaceId, source: prepared.state.source, descriptor, components: plan.components, spoolHash, preparedAt: now })
+    recoveryEpoch: c.recoveryEpoch, remoteWorkspaceId: remote.manifest.workspaceId, source: prepared.state.source, descriptor, components: plan.components, spoolHash, preparedAt: now,
+    ...(prepared.engine === 2 ? {plannerVersion:'conflicts-v1',resolution:c.resolution,merges:plan.merges??[]}: {}) })
   const dir = directory(c, attemptId); safe(dir, c.root); await mkdir(join(dir, 'objects'), { recursive: true, mode: 0o700 }); await mkdir(join(dir, 'assets'), { mode: 0o700 }); safe(dir, c.root)
   await durable(join(dir, 'inputs.json'), inputBytes); await durable(join(dir, 'manifest.json'), manifest)
   for (const item of descriptor.next.objects) { const file = join(dir, item.path); if (!lstatSync(file, { throwIfNoEntry: false })) await durable(file, objects.get(item.key)!) }
   for (const item of descriptor.next.assets) await durable(join(dir, item.path), assets.get(item.hash)!)
   await durable(join(dir, 'job.json'), Buffer.from(publicationJson(job))); await durable(join(dir, 'ready.json'), Buffer.from(publicationJson({ jobHash: M.exchangeJobHash(job), spoolHash }))); await syncDirectory(dir)
   return { directory: dir, job, plan, state: prepared.state, localFingerprint: local.fingerprint, manifest, records, objects, assets,
-    planning: { local: prepared.localWire, remote: fromRemote(remote), baseRecords: prepared.baseRecords, authority: prepared.planningAuthority, keyGuards: local.keyGuards, stateRaw: local.stateRaw } }
+    planning: { local: prepared.localWire, remote: fromRemote(remote), baseRecords: prepared.baseRecords, authority: prepared.planningAuthority, keyGuards: local.keyGuards, stateRaw: local.stateRaw,
+      engine:prepared.engine,conflictSelections:prepared.engine===2?c.selections:[] } }
 }
 function registerJob(db: Database.Database, c: Context, spool: Spool, parent: Head | null): boolean {
   return db.transaction(() => {
@@ -392,8 +406,9 @@ async function loadSpool(db: Database.Database, c: Context, head: Head): Promise
   const ready = M.parseExchangeStored((await read('ready.json')).toString('utf8')); assertSyncedShape(ready, ['jobHash', 'spoolHash'])
   if (!same(savedJob, job) || ready.jobHash !== head.jobHash || ready.spoolHash !== job.spoolHash) return publicationInvalid('exchange原spool/job原bytes已变。')
   const inputBytes = await read('inputs.json'), input = M.parseExchangeStored(inputBytes.toString('utf8'))
-  assertSyncedShape(input, ['kind', 'version', 'request', 'target', 'local', 'remote', 'state', 'baseRecords', 'authority', 'keyGuards', 'stateRaw', 'plan'])
-  if (input.kind !== 'synced-exchange-private-inputs' || input.version !== 1 || !same(input.request, c.request) || !same(input.target, c.target)
+  assertSyncedShape(input, ['kind', 'version', 'request', 'target', 'local', 'remote', 'state', 'baseRecords', 'authority', 'keyGuards', 'stateRaw', 'plan',
+    ...(job.version===2?['plannerVersion','resolution','conflictSelections']:[])])
+  if (input.kind !== 'synced-exchange-private-inputs' || input.version !== job.version || !same(input.request, c.request) || !same(input.target, c.target)
     || publicationHash(publicationJson({ inputHash: publicationHash(inputBytes), descriptor: job.descriptor })) !== job.spoolHash) return publicationInvalid('exchange原spoolinput认证失败。')
   const decodeSnapshot = (value: unknown): SyncedProtocol5Snapshot => {
     assertSyncedShape(value, ['manifest', 'records']); if (!Array.isArray(value.records)) return publicationInvalid('exchange原snapshot records无效。')
@@ -409,10 +424,14 @@ async function loadSpool(db: Database.Database, c: Context, head: Head): Promise
   assertSyncedShape(input.authority, ['catalogId', 'identities', 'occupiedDocumentIds', 'historyComponents', 'pinnedGroupIds', 'knownGroupIds', 'missingBaseKeys', 'deferredKeys'], ['keyGuards'])
   // The authority was minted only by this module's original real capture and is authenticated by both immutable DB job and private spool hash.
   const originalAuthority = input.authority as unknown as ReturnType<typeof authority>
-  const plan = planSyncedExchange({ operationId: c.request.operationId, local, remote, baseRecords, state,
-    localFingerprint: job.descriptor.localFingerprint, authority: originalAuthority })
+  const conflictSelections=job.version===2?readSelections(input.conflictSelections,c.request):[]
+  if(job.version===2&&(input.plannerVersion!=='conflicts-v1'||!same(C.validateExchangeResolutionBinding(input.resolution),job.resolution))) return publicationInvalid('原job决定来源/算法损坏。')
+  const plan = makePlan({ operationId: c.request.operationId, local, remote, baseRecords, state,
+    localFingerprint: job.descriptor.localFingerprint, authority: originalAuthority,
+    ...(job.version===2?{conflictSelections}: {}) },job.version)
   const normalized = { ...plan, nextRemote: { manifest: plan.nextRemote.manifest, records: plan.nextRemote.records }, localFinal: { manifest: plan.localFinal.manifest, records: plan.localFinal.records } }
   if (!same(input.plan, normalized) || plan.planHash !== job.descriptor.planHash) return publicationInvalid('exchange原planner结果与不可变job不符。')
+  if(job.version===2&&!same(plan.merges??[],job.merges))return publicationInvalid('原job merge来源与原inputs/plan不闭合。')
   const manifest = await read('manifest.json'), objects = new Map<string, Buffer>(), assets = new Map<string, Buffer>()
   if (publicationHash(manifest) !== job.descriptor.next.manifestHash || !same(decodePublicationJson(manifest), plan.nextRemote.manifest)) return publicationInvalid('exchange原Manifest bytes已变。')
   const objectNames = new Set<string>(), assetNames = new Set<string>()
@@ -428,7 +447,7 @@ async function loadSpool(db: Database.Database, c: Context, head: Head): Promise
   for (const [key, value] of Object.entries(input.keyGuards)) { if (typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)) return publicationInvalid('exchange原key guard损坏。'); keyGuards[key] = value }
   if (input.stateRaw !== null && typeof input.stateRaw !== 'string') return publicationInvalid('exchange原state raw损坏。')
   return { directory: dir, job, plan, state, localFingerprint: job.descriptor.localFingerprint, manifest, records: plan.nextRemote.records, objects, assets,
-    planning: { local, remote, baseRecords, authority: originalAuthority, keyGuards, stateRaw: input.stateRaw } }
+    planning: { local, remote, baseRecords, authority: originalAuthority, keyGuards, stateRaw: input.stateRaw, engine:job.version,conflictSelections } }
 }
 function claim(db: Database.Database, c: Context, saved: Spool): boolean {
   return db.transaction(() => {
@@ -731,9 +750,10 @@ function settle(db: Database.Database, c: Context, saved: Spool, etag: string): 
     const local = capture(db, c)
     if (local.fingerprint !== saved.localFingerprint || local.stateRaw !== saved.planning.stateRaw) return null
     const actualLocal = wire(portableRecords(local.snapshot, c), c.workspaceScope)
-    const checked = planSyncedExchange({ operationId: c.request.operationId, local: actualLocal, remote: saved.planning.remote,
+    const checked = makePlan({ operationId: c.request.operationId, local: actualLocal, remote: saved.planning.remote,
       baseRecords: saved.planning.baseRecords, state: saved.state, localFingerprint: local.fingerprint,
-      authority: authority(local, saved.planning.authority.missingBaseKeys, saved.planning.authority.deferredKeys) })
+      authority: authority(local, saved.planning.authority.missingBaseKeys, saved.planning.authority.deferredKeys),
+      ...(saved.job.version===2?{conflictSelections:saved.planning.conflictSelections}: {}) },saved.job.version)
     if (checked.planHash !== saved.plan.planHash || !same(checked.localFinal.manifest.entries, saved.plan.localFinal.manifest.entries)
       || !same(checked.nextRemote.manifest.entries, saved.plan.nextRemote.manifest.entries)) return publicationInvalid('exchange最后owned SQL全图planner复核不闭合。')
     const now = new Date().toISOString(), historyEffects = checked.incoming.length ? install(db, c, saved, local, now) : { historyArchives: [], hostHistoryCuts: [] }
@@ -742,11 +762,12 @@ function settle(db: Database.Database, c: Context, saved: Spool, etag: string): 
       remoteWorkspaceId: saved.job.remoteWorkspaceId, beforeManifestHash: checked.beforeManifestHash, afterManifestHash: checked.afterManifestHash,
       publishedKeys: checked.writes, appliedKeys: checked.incoming, acceptedKeys: checked.accepted, deferred: checked.deferred, acceptedAt: now })
     const state = M.validateExchangeState({ ...saved.state, currentOperationId: c.request.operationId, generation: randomUUID(), baseline: checked.nextBaseline, deferred: checked.deferred, lastSyncAt: now })
-    const receipt = M.validateExchangeReceipt({ kind: 'synced-exchange-operation', version: 1, request: c.request, result, provenance: {
+    const receipt = M.validateExchangeReceipt({ kind: 'synced-exchange-operation', version: saved.job.version, request: c.request, result, provenance: {
       beforeManifestHash: result.beforeManifestHash, afterManifestHash: result.afterManifestHash, beforeManifestEtag: saved.job.descriptor.expectedRemote.etag,
       afterManifestEtag: etag, planHash: checked.planHash, source: saved.state.source, accepted: checked.acceptedSides, transfers: checked.transfers, historyArchives: historyEffects.historyArchives,
       hostHistoryCuts: historyEffects.hostHistoryCuts,
-      afterStateHash: publicationHash(publicationJson(state)) } })
+      afterStateHash: publicationHash(publicationJson(state)),
+      ...(saved.job.version===2?{plannerVersion:'conflicts-v1',resolution:saved.job.resolution,merges:checked.merges??[],attemptId:saved.job.attemptId}: {}) } })
     db.prepare('INSERT INTO synced_operations(client_operation_id,request_hash,result_json,created_at) VALUES(?,?,?,?)')
       .run(c.request.operationId, M.exchangeRequestHash(c.request), publicationJson(receipt), now)
     // Baseline is the last knowledge write, in the very same transaction as actual graph/owner/history and exact receipt.
@@ -760,6 +781,111 @@ function settle(db: Database.Database, c: Context, saved: Spool, etag: string): 
 function changedKeys(before: Record<string, string>, after: Record<string, string>): string[] {
   return sort([...Object.keys(before), ...Object.keys(after)].filter(key => before[key] !== after[key]))
 }
+function readSelections(value: unknown, request: M.ExchangeRequest): NonNullable<ExchangePlanInput['conflictSelections']> {
+  M.assertExchangeData(value)
+  if(!Array.isArray(value))return publicationInvalid('原component selectors不是数组。')
+  const selections=value.map(row=>{assertSyncedShape(row,['preview','decision'])
+    const preview=C.validateConflictPreviewComponent(row.preview), decisions=C.validateConflictDecisions([row.decision])
+    if(decisions[0].componentId!==preview.componentId)return publicationInvalid('selector与原component身份不等。')
+    return {preview,decision:decisions[0]} })
+  const decisions=C.validateConflictDecisions(selections.map(row=>row.decision))
+  if(request.method==='exchangeSyncedSnapshot' ? decisions.length!==0 : !same(decisions,request.decisions)) return publicationInvalid('原inputs selectors与完整request不闭合。')
+  return selections
+}
+function previewDirectory(c: Context, previewId: string): string { return join(c.root,'storage','synced-exchange-previews-v1',previewId) }
+type StoredPreview = {index:C.ConflictPreviewIndex;facts:C.SyncedExchangeConflictPreview}
+async function loadPreview(db:Database.Database,c:Context,previewId:string):Promise<StoredPreview|null> {
+  const index=db.transaction(()=>{current(db,c);return readSyncedExchangeConflictPreviewIndex(db,previewId,c.request)})()
+  if(!index)return null
+  if(index.workspaceScope!==c.workspaceScope||index.recoveryEpoch!==c.recoveryEpoch)return unavailable('原preview属于另一scope/recovery世代。')
+  const dir=previewDirectory(c,previewId),file=join(dir,'preview.json');safe(dir,c.root);safe(file,dir)
+  if(!lstatSync(file).isFile())return publicationInvalid('原preview不是私有regular file。')
+  const bytes=await readFile(file)
+  if(publicationHash(bytes)!==index.previewHash)return publicationInvalid('原preview bytes/index hash不闭合。')
+  const value=M.parseExchangeStored(bytes.toString('utf8'))
+  assertSyncedShape(value,['kind','version','previewId','databasePath','target','workspaceScope','recoveryEpoch','remoteWorkspaceId','stateGeneration','remoteManifestHash','remoteEtag','createdAt','local','remote','baseRecords','state','authority','keyGuards','stateRaw','localFingerprint','components'])
+  if(value.kind!=='synced-exchange-conflict-preview-inputs'||value.version!==1||value.previewId!==previewId
+    ||value.databasePath!==c.databasePath||!same(value.target,c.target)||value.workspaceScope!==index.workspaceScope||value.recoveryEpoch!==index.recoveryEpoch
+    ||value.createdAt!==index.createdAt||typeof value.remoteEtag!=='string') return publicationInvalid('原preview私有来源损坏。')
+  const facts=C.validateConflictPreview({kind:'synced-exchange-conflict-preview',version:1,previewId,previewHash:index.previewHash,
+    workspaceScope:value.workspaceScope,recoveryEpoch:value.recoveryEpoch,remoteWorkspaceId:value.remoteWorkspaceId,targetFingerprint:index.targetFingerprint,
+    stateGeneration:value.stateGeneration,remoteManifestHash:value.remoteManifestHash,createdAt:value.createdAt,components:value.components})
+  const strictSnapshot=(raw:unknown):SyncedProtocol5Snapshot=>{
+    assertSyncedShape(raw,['manifest','records'])
+    if(!Array.isArray(raw.records))return publicationInvalid('preview snapshot records无效。')
+    return validateSyncedProtocol5Snapshot(raw.manifest,raw.records.map(row=>{assertSyncedShape(row,['key','hash','record'])
+      if(typeof row.key!=='string'||row.hash!==publicationHash(publicationJson(row.record)))return publicationInvalid('preview原record hash损坏。')
+      return {key:row.key,record:row.record}}))
+  }
+  const local=strictSnapshot(value.local),remote=strictSnapshot(value.remote),state=M.validateExchangeState(value.state)
+  if(typeof value.localFingerprint!=='string'||!/^[a-f0-9]{64}$/.test(value.localFingerprint)||!Array.isArray(value.baseRecords)
+    ||state.workspaceScope!==c.workspaceScope||state.recoveryEpoch!==c.recoveryEpoch||state.generation!==facts.stateGeneration
+    ||remote.manifest.workspaceId!==facts.remoteWorkspaceId||publicationHash(publicationJson(remote.manifest))!==facts.remoteManifestHash)
+    return publicationInvalid('preview原B/scope/remote manifest来源损坏。')
+  const baseRecords=value.baseRecords.map(raw=>{assertSyncedShape(raw,['key','hash','record'])
+    if(typeof raw.key!=='string'||typeof raw.hash!=='string')return publicationInvalid('preview原B key/hash损坏。')
+    return {key:raw.key,hash:raw.hash,record:validateSyncedProtocol5Record(raw.record,raw.key)}})
+  assertSyncedShape(value.authority,['catalogId','identities','occupiedDocumentIds','historyComponents','pinnedGroupIds','knownGroupIds','missingBaseKeys','deferredKeys'],['keyGuards'])
+  const originalAuthority=value.authority as unknown as ReturnType<typeof authority>
+  const checked=planSyncedExchange({operationId:previewId,local,remote,baseRecords,state,localFingerprint:value.localFingerprint,authority:originalAuthority})
+  if(!same(checked.conflictPreviews??[],facts.components))return publicationInvalid('preview原展示和真实原plan不闭合。')
+  // Re-read the exact immutable DB index after file awaits; it is a denial guard, not new authority.
+  const final=db.transaction(()=>{current(db,c);return readSyncedExchangeConflictPreviewIndex(db,previewId,c.request)})()
+  if(!same(final,index))return publicationInvalid('读取preview期间原index被删除/改写。')
+  return {index,facts}
+}
+async function attachPreview(db:Database.Database,c:Context,request:M.ExchangeResolveRequest):Promise<void> {
+  const loaded=await loadPreview(db,c,request.previewId)
+  if(!loaded)return unavailable('resolve缺真实Main原preview。')
+  const components=new Map(loaded.facts.components.map(row=>[row.componentId,row]))
+  c.selections=request.decisions.map(decision=>{
+    const preview=components.get(decision.componentId)
+    if(!preview||!preview.choices.includes(decision.choice))return publicationInvalid('决定不在真实preview的可执行闭集。')
+    if(decision.choice==='merge') {
+      const required=preview.records.filter(row=>row.merge&&row.merge.unresolved.length>0)
+      if(!same(required.map(row=>row.key),decision.records.map(row=>row.key)))return publicationInvalid('merge records必须精确对应原unresolved。')
+      for(let i=0;i<required.length;i++) {
+        const parts=[...required[i].merge!.unresolved].sort((a,b)=>publicationCompare(a.id,b.id)),selected=decision.records[i].parts
+        if(!same(parts.map(row=>row.id),selected.map(row=>row.id)))return publicationInvalid('merge parts未完整解决或有额外part。')
+        for(let j=0;j<parts.length;j++)if(selected[j].value.choice==='custom'&&!parts[j].canEditText)return publicationInvalid('原part不允许custom。')
+      }
+    }
+    return {preview,decision}
+  })
+  c.resolution={previewId:request.previewId,previewHash:loaded.index.previewHash,decisionsHash:C.conflictDecisionsHash(request.decisions)}
+}
+async function createPreview(db:Database.Database,c:Context,previewId:string,runtime:SyncedExchangeRuntime):Promise<C.SyncedExchangeConflictPreviewResult> {
+  if(db.pragma('user_version',{simple:true})===26)return Object.freeze({status:'unsupported',reason:'schema-27-required'})
+  if(db.pragma('user_version',{simple:true})!==27)return publicationInvalid('preview不接受未知/未来schema。')
+  const existing=await loadPreview(db,c,previewId)
+  if(existing)return frozenPublicationFacts({status:'ready',preview:existing.facts})
+  const prepared=await prepare(db,c,runtime)
+  if(!('plan'in prepared)) {
+    if(prepared.status==='missing'||prepared.status==='unsupported'||prepared.status==='stale')return frozenPublicationFacts(prepared)
+    return publicationInvalid('preview不接受exchange结果冒充读取结果。')
+  }
+  const now=new Date().toISOString(),dir=previewDirectory(c,previewId)
+  const payload={kind:'synced-exchange-conflict-preview-inputs',version:1,previewId,databasePath:c.databasePath,target:c.target,
+    workspaceScope:c.workspaceScope,recoveryEpoch:c.recoveryEpoch,remoteWorkspaceId:prepared.remote.manifest.workspaceId,stateGeneration:prepared.state.generation,
+    remoteManifestHash:prepared.remote.manifestHash,remoteEtag:prepared.remote.manifestEtag,createdAt:now,
+    local:{manifest:prepared.localWire.manifest,records:prepared.localWire.records},remote:{manifest:prepared.remote.manifest,records:fromRemote(prepared.remote).records},
+    baseRecords:prepared.baseRecords,state:prepared.state,authority:prepared.planningAuthority,keyGuards:prepared.local.keyGuards,stateRaw:prepared.local.stateRaw,localFingerprint:prepared.local.fingerprint,
+    components:prepared.plan.conflictPreviews??[]}
+  const bytes=Buffer.from(publicationJson(payload)),previewHash=publicationHash(bytes)
+  const index=C.validateConflictPreviewIndex({kind:'synced-exchange-conflict-preview-index',version:1,previewId,databasePath:c.databasePath,
+    targetFingerprint:c.request.targetFingerprint,workspaceScope:c.workspaceScope,recoveryEpoch:c.recoveryEpoch,previewHash,createdAt:now})
+  const facts=C.validateConflictPreview({kind:'synced-exchange-conflict-preview',version:1,previewId,previewHash,workspaceScope:c.workspaceScope,
+    recoveryEpoch:c.recoveryEpoch,remoteWorkspaceId:prepared.remote.manifest.workspaceId,targetFingerprint:c.request.targetFingerprint,
+    stateGeneration:prepared.state.generation,remoteManifestHash:prepared.remote.manifestHash,createdAt:now,components:payload.components})
+  safe(dir,c.root);await mkdir(join(c.root,'storage','synced-exchange-previews-v1'),{recursive:true,mode:0o700});safe(dir,c.root)
+  await mkdir(dir,{mode:0o700});safe(dir,c.root);await durable(join(dir,'preview.json'),bytes);await syncDirectory(dir)
+  const installed=db.transaction(()=>{current(db,c)
+    if(capture(db,c).fingerprint!==prepared.local.fingerprint)return false
+    putImmutable(db,C.conflictPreviewKey(previewId),index,now);return true
+  }).immediate()
+  if(!installed)return Object.freeze({status:'stale',side:'local'})
+  return frozenPublicationFacts({status:'ready',preview:facts})
+}
 async function run(db: Database.Database, c: Context, runtime: SyncedExchangeRuntime): Promise<M.SyncedExchangeResult> {
   const replay = db.transaction(() => readSyncedExchangeReceipt(db, c.request))()
   if (replay) return frozenPublicationFacts({ ...replay.result, replayed: true })
@@ -767,11 +893,14 @@ async function run(db: Database.Database, c: Context, runtime: SyncedExchangeRun
   if (db.pragma('user_version', { simple: true }) !== 27) return publicationInvalid('exchange未知/未来schema不是普通unsupported。')
   const first = capture(db, c), originalGuards = first.keyGuards
   let deferredKeys: string[] = [], head = db.transaction(() => readHead(db, c))(), saved: Spool | null = head ? await loadSpool(db, c, head) : null
+  const engine=saved?.job.version??2
+  if(saved&&engine===2) {c.resolution=saved.job.resolution??null;c.selections=saved.planning.conflictSelections}
+  else if(c.request.method==='resolveSyncedExchangeConflicts') await attachPreview(db,c,c.request)
   // A bounded set of real competing snapshots; each retry gets a new immutable attempt and fresh original ETag.
   for (let turn = 0; turn < 8; turn++) {
     aborted(runtime.signal)
     if (!saved) {
-      const prepared = await prepare(db, c, runtime, deferredKeys)
+      const prepared = await prepare(db, c, runtime, deferredKeys,engine)
       if (!('plan' in prepared)) {
         if (prepared.status === 'stale' && prepared.side === 'local') { deferredKeys = sort([...deferredKeys, ...changedKeys(originalGuards, capture(db, c).keyGuards)]); continue }
         return frozenPublicationFacts(prepared)
@@ -828,4 +957,35 @@ export async function exchangeSyncedSnapshot(db: Database.Database, input: Synce
     const code = cause instanceof Error && /SQLITE|sqlite|database|constraint|trigger|exchange exact late receipt/i.test(cause.message) ? 'database' : 'invalid'
     throw new SyncedPublicationError(code, 'Main-only exchange失败；原possible/job与远端事实不会回滚。', cause)
   } finally { if (key && ownsRunning) running.delete(key); if (c) connections.delete(c) }
+}
+/** Main creates and retains the original preview; selectors are never a caller-supplied forest. */
+export async function previewSyncedExchangeConflicts(db:Database.Database,input:SyncedExchangeConflictPreviewInput,options:SyncedExchangeRuntime):Promise<C.SyncedExchangeConflictPreviewResult> {
+  let c:Context|null=null,key:string|null=null,owns=false
+  try {
+    M.assertExchangeData(input);assertSyncedShape(input,['previewId','userDataRoot','target'])
+    if(!isSyncedUuid(input.previewId))return publicationInvalid('previewId不是UUID。')
+    c=context(db,{operationId:input.previewId,userDataRoot:input.userDataRoot,target:input.target});const runtime=credentials(options);connections.set(c,db)
+    key=publicationJson([c.databasePath,c.workspaceScope,c.recoveryEpoch,c.request.targetFingerprint])
+    if(running.has(key))return unavailable('同一真实本机/target已有exchange/preview在途。')
+    running.add(key);owns=true
+    return await createPreview(db,c,input.previewId,runtime)
+  }catch(cause){if(cause instanceof SyncedPublicationError)throw cause
+    throw new SyncedPublicationError(cause instanceof Error&&/SQLITE|sqlite|database|constraint|trigger/i.test(cause.message)?'database':'invalid','真实冲突preview失败；曝光事实保持。',cause)}
+  finally{if(key&&owns)running.delete(key);if(c)connections.delete(c)}
+}
+export async function resolveSyncedExchangeConflicts(db:Database.Database,input:SyncedExchangeConflictResolveInput,options:SyncedExchangeRuntime):Promise<M.SyncedExchangeResult> {
+  let c:Context|null=null,key:string|null=null,owns=false
+  try {
+    M.assertExchangeData(input);assertSyncedShape(input,['operationId','userDataRoot','target','previewId','decisions'])
+    const decisions=C.validateConflictDecisions(input.decisions)
+    c=context(db,{operationId:input.operationId,userDataRoot:input.userDataRoot,target:input.target})
+    c.request=M.validateExchangeRequest({...c.request,method:'resolveSyncedExchangeConflicts',previewId:input.previewId,decisions})
+    const runtime=credentials(options);connections.set(c,db)
+    key=publicationJson([c.databasePath,c.workspaceScope,c.recoveryEpoch,c.request.targetFingerprint])
+    if(running.has(key))return unavailable('同一真实本机/target已有exchange/resolve在途。')
+    running.add(key);owns=true
+    return await run(db,c,runtime)
+  }catch(cause){if(cause instanceof SyncedPublicationError)throw cause
+    throw new SyncedPublicationError(cause instanceof Error&&/SQLITE|sqlite|database|constraint|trigger|exchange exact late receipt/i.test(cause.message)?'database':'invalid','真实冲突resolve失败；原job/possible保持。',cause)}
+  finally{if(key&&owns)running.delete(key);if(c)connections.delete(c)}
 }

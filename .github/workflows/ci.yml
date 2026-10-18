@@ -48,6 +48,23 @@ jobs:
       - name: Run unit and integration tests
         run: npm test
 
+      - name: Fetch pinned protocol5 v1 exchange source
+        run: git fetch --no-tags --depth=1 origin 852fd18d9c842082015ef7359696659a7a866980
+
+      - name: Verify genuine protocol5 v1 exchange recovery compatibility
+        run: npm run test:synced-exchange-v1-compat
+
+      - name: Upload protocol5 v1 exchange compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: synced-exchange-v1-compat-evidence
+          path: |
+            test-results/synced-exchange-v1-compat/**
+            !test-results/synced-exchange-v1-compat/**/legacy-852fd18/**
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Fetch pinned schema26 reader source
         run: git fetch --no-tags --depth=1 origin 6d61134b917d88753bdbc72a5cafe6e3d81fc216
 

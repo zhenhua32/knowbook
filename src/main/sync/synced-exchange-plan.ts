@@ -6,6 +6,10 @@ import { syncedProtocol5RecordKey, validateSyncedProtocol5Record, validateSynced
   type SyncedProtocol5Record, type SyncedProtocol5Snapshot } from './synced-protocol5-model'
 import { exchangeRecordKey, validateExchangeState, type ExchangeAcceptedSide, type ExchangeBaselineEntry, type ExchangeComponent,
   type ExchangeDeferredReason, type ExchangeState, type ExchangeTransfer, type DeferredExchangeComponent } from './synced-exchange-model'
+import { mergeSyncedProtocol5Record, type SyncedRecordMergeChoice } from './synced-merge'
+import { validateConflictPreviewComponent, type ConflictPreviewComponent, type ConflictPreviewRecord,
+  type ExchangeMergeProvenance, type SyncedExchangeConflictDecision } from './synced-exchange-conflict-model'
+export { planSyncedExchange as planSyncedExchangeV1 } from './synced-exchange-plan-v1'
 
 export interface ExchangePlanIdentity {
   id: string; last_owner_kind: 'document' | 'group' | 'reserved'; last_owner_id: string
@@ -23,6 +27,7 @@ export interface ExchangePlanInput {
   /** Individually strict, exact original common-hash records; may be partial, never a fake full snapshot. */
   baseRecords: readonly SyncedProtocol5Snapshot['records'][number][]
   state: ExchangeState; localFingerprint: string; authority: ExchangePlanAuthority
+  conflictSelections?: Array<{ preview: ConflictPreviewComponent; decision: SyncedExchangeConflictDecision }>
 }
 export interface ExchangePlan {
   nextRemote: SyncedProtocol5Snapshot; localFinal: SyncedProtocol5Snapshot
@@ -30,6 +35,7 @@ export interface ExchangePlan {
   components: ExchangeComponent[]; deferred: DeferredExchangeComponent[]; transfers: ExchangeTransfer[]
   historyBoundaryKeys: string[]; acceptedSides: ExchangeAcceptedSide[]; nextBaseline: ExchangeBaselineEntry[]
   localFingerprint: string; beforeManifestHash: string; afterManifestHash: string; planHash: string
+  plannerVersion?: 'conflicts-v1'; conflictPreviews?: ConflictPreviewComponent[]; merges?: ExchangeMergeProvenance[]
 }
 type Entry = SyncedProtocol5Snapshot['records'][number]
 type Entries = Map<string, Entry>
@@ -71,6 +77,7 @@ function snapshot(records: Entries, workspaceId: string): SyncedProtocol5Snapsho
 function pathsValid(records: Entries): boolean {
   const siblings = new Set<string>()
   for (const { record } of records.values()) if (record.kind === 'document') {
+    if (record.content.title !== record.content.title.trim()) return false
     const key = publicationJson([record.parentId, record.content.title.replace(/[A-Z]/g, value => value.toLowerCase())])
     if (siblings.has(key)) return false
     siblings.add(key)
@@ -220,7 +227,7 @@ export function planSyncedExchange(input: ExchangePlanInput): ExchangePlan {
     return hashData({ edges: part.map(key => [key, dependencies(key)]), identities: part.map(key => [key, identityDigests.get(key) ?? null]), guards: part.map(key => [key, keyGuards.get(key) ?? null]), baseline: part.map(key => { const row = baseline.get(key); return [key, row?.commonHash ?? row?.remoteHash ?? null] }) })
   }
   function transferPlan(part: string[], choices: Entries): { transfers: ExchangeTransfer[]; reason: ExchangeDeferredReason | null } {
-    const transfers: ExchangeTransfer[] = [], chosenIds = new Set<string>()
+    const transfers: ExchangeTransfer[] = [], chosenIds = new Set<string>(), partKeys = new Set(part)
     // Original L/R/B sides remain strict. Mixing valid choices may collide only in this component.
     for (const { record } of choices.values()) {
       const blocks = record.kind === 'document' ? record.content.blocks : record.kind === 'synced-group' ? record.blocks : []
@@ -247,7 +254,7 @@ export function planSyncedExchange(input: ExchangePlanInput): ExchangePlan {
         }
         continue
       }
-      if (!part.includes(old.key) || !choices.has(old.key)) return { transfers, reason: 'owner-source' }
+      if (!partKeys.has(old.key) || !choices.has(old.key)) return { transfers, reason: 'owner-source' }
       const targetBirth = row.kind === 'group' ? row.createdAt : ledger.created_at
       if (targetBirth === null) return { transfers, reason: 'unknown-birth' }
       // The explicit doc->canonical wire selection is the only birth replacement exception.
@@ -265,10 +272,48 @@ export function planSyncedExchange(input: ExchangePlanInput): ExchangePlan {
     }
     return false
   }
+  const conflictPreviews: ConflictPreviewComponent[] = [], mergeSources = new Map<string, ExchangeMergeProvenance>()
+  const capturedComponents = new Map<string, {component: ExchangeComponent; componentId: string; records: ConflictPreviewRecord[]}>()
+  const selections = new Map((input.conflictSelections ?? []).map(row => [row.decision.componentId, row]))
+  if (selections.size !== (input.conflictSelections?.length ?? 0)) return publicationInvalid('显式component决定重复。')
+  const selectionsByKey = new Map<string, NonNullable<ExchangePlanInput['conflictSelections']>[number]>()
+  for(const row of selections.values()) for(const key of row.preview.keys) {
+    if(selectionsByKey.has(key))return publicationInvalid('原显式组件不能重叠。')
+    selectionsByKey.set(key,row)
+  }
   for (const part of partitions) {
     const component: ExchangeComponent = { keys: part, localSignature: signature(part, local), remoteSignature: signature(part, remote), dependencySignature: dependencySignature(part) }, choices: Entries = new Map()
     components.push(component)
     let reason: ExchangeDeferredReason | null = part.some(key => input.authority.deferredKeys?.includes(key)) ? 'dependency' : null
+    const records: ConflictPreviewRecord[] = [], divergent = new Set<string>(), tentativeMerges = new Map<string, Entry>()
+    const mergeResults = new Map<string, NonNullable<ReturnType<typeof mergeSyncedProtocol5Record>>>()
+    let hardReason: ExchangeDeferredReason | null = reason
+    for (const key of part) {
+      const l = local.get(key), r = remote.get(key), b = baseline.get(key), original = base.get(key)
+      if ([l, r, original].some(item => item && tombstone(item.record))) hardReason ??= 'tombstone'
+      if (b && !l) hardReason ??= 'local-removal'
+      if (b && !r) hardReason ??= 'tombstone'
+      const groups = [l, r, original].filter((item): item is Entry & {record: SyncedGroupWire} => item?.record.kind === 'synced-group')
+      if (new Set(groups.map(item => tuple(item.record))).size > 1) hardReason ??= 'incarnation'
+      let result: ReturnType<typeof mergeSyncedProtocol5Record> = null
+      const changedBoth = l && r && l.hash !== r.hash && !(b && (r.hash === b.remoteHash || l.hash === b.localHash))
+      if (changedBoth) {
+        divergent.add(key)
+        if (b?.commonHash && original?.hash === b.commonHash && !missingBase.has(key)) result = mergeSyncedProtocol5Record(original.record, l.record, r.record)
+        if (result) { mergeResults.set(key, result)
+          if (!result.unresolved.length) tentativeMerges.set(key, {key,hash:hashData(result.record),record:validateSyncedProtocol5Record(result.record,key)}) }
+      }
+      records.push({key,baseHash:b?.commonHash ?? null,localHash:l?.hash ?? null,remoteHash:r?.hash ?? null,
+        merge:result ? {conflicts:result.conflicts,unresolved:result.unresolved,resultHash:result.unresolved.length ? null : hashData(result.record)} : null})
+    }
+    const originalComponentId = hashData({component,records:records.map(({key,baseHash,localHash,remoteHash})=>({key,baseHash,localHash,remoteHash}))})
+    capturedComponents.set(publicationJson(part),{component,componentId:originalComponentId,records})
+    const usedMerge = new Set(tentativeMerges.keys())
+    // A formerly conflicted record can become equal/one-sided during an await. It is still an
+    // invalidated explicit decision, never an excuse to silently turn that decision into auto work.
+    const related = [...new Set(part.flatMap(key=>{const row=selectionsByKey.get(key);return row?[row]:[]}))]
+    if(related.some(row=>row.decision.componentId!==originalComponentId)) hardReason='dependency'
+    reason = hardReason
     for (const key of part) {
       if (reason) break
       const l = local.get(key), r = remote.get(key), b = baseline.get(key)
@@ -281,16 +326,92 @@ export function planSyncedExchange(input: ExchangePlanInput): ExchangePlan {
       else if (b && (l?.hash ?? null) === b.localHash && r) choices.set(key, r)
       else if (!b && l && !r) choices.set(key, l)
       else if (!b && r && !l) choices.set(key, r)
+      else if (tentativeMerges.has(key)) choices.set(key, tentativeMerges.get(key)!)
       else { reason = b ? 'diverged' : 'baseline-missing'; break }
+    }
+    if (divergent.size) {
+      const componentId = originalComponentId
+      const eligible: Array<'local'|'remote'|'merge'> = []
+      const valid = (values: Entries): boolean => {
+        if(values.size !== part.length || hardReason || catalogCollision(values) || transferPlan(part,values).reason)return false
+        const trialLocal = new Map(local), trialRemote = new Map(remote)
+        for(const [key,value] of values) {trialLocal.set(key,value);trialRemote.set(key,value)}
+        try {
+          if(!pathsValid(trialLocal)||!pathsValid(trialRemote))return false
+          snapshot(trialLocal,input.local.manifest.workspaceId);snapshot(trialRemote,input.remote.manifest.workspaceId)
+          return true
+        }catch(cause) {
+          if(cause instanceof SyncedPublicationError||cause instanceof SyncedValidationError)return false
+          throw cause
+        }
+      }
+      for (const side of ['local','remote'] as const) {
+        const values = new Map(part.flatMap(key => {const entry=(side==='local'?local:remote).get(key);return entry?[[key,entry] as const]:[]}))
+        if (valid(values)) eligible.push(side)
+      }
+      const mergeCandidate = new Map<string,Entry>(), defaults = new Map<string,Entry>()
+      let allMergeable = true
+      for (const key of part) {
+        if (divergent.has(key)) {
+          const result=mergeResults.get(key), l=local.get(key),r=remote.get(key),b=base.get(key)
+          if (!result || !l || !r || !b) { allMergeable=false;continue }
+          const selected:Record<string,SyncedRecordMergeChoice>=Object.create(null) as Record<string,SyncedRecordMergeChoice>
+          for (const item of result.unresolved) selected[item.id]={choice:'local'}
+          const complete=result.unresolved.length?mergeSyncedProtocol5Record(b.record,l.record,r.record,selected):result
+          if (!complete || complete.unresolved.length) { allMergeable=false;continue }
+          mergeCandidate.set(key,{key,hash:hashData(complete.record),record:validateSyncedProtocol5Record(complete.record,key)})
+        } else {
+          const l=local.get(key),r=remote.get(key),b=baseline.get(key)
+          const value=l?.hash===r?.hash?l:b&&r?.hash===b.remoteHash?l:b&&(l?.hash??null)===b.localHash?r:!b&&l&&!r?l:!b&&r&&!l?r:undefined
+          if(value) { mergeCandidate.set(key,value);defaults.set(key,value) } else allMergeable=false
+        }
+      }
+      if(allMergeable&&valid(mergeCandidate)) eligible.push('merge')
+      const preview=validateConflictPreviewComponent({...component,componentId,reason:reason??'diverged',choices:eligible,records})
+      conflictPreviews.push(preview)
+      const selection=selections.get(componentId)
+      if(selection) {
+        if(publicationJson(selection.preview)!==publicationJson(preview)) { reason='dependency' }
+        else {
+          const decision=selection.decision
+          if(!eligible.includes(decision.choice)) return publicationInvalid('决定不属于原可执行候选。')
+          choices.clear();reason=hardReason
+          if(decision.choice==='local'||decision.choice==='remote') {
+            usedMerge.clear()
+            const side=decision.choice==='local'?local:remote
+            for(const key of part) {const entry=side.get(key);if(!entry)return publicationInvalid('整forest选择缺原记录。');choices.set(key,entry)}
+          } else if(decision.choice==='merge') {
+            const required=records.filter(row=>row.merge&&row.merge.unresolved.length>0).map(row=>row.key)
+            if(publicationJson(required)!==publicationJson(decision.records.map(row=>row.key))) return publicationInvalid('merge selectors必须精确覆盖原unresolved记录。')
+            const selectors=new Map(decision.records.map(row=>[row.key,row.parts]))
+            for(const key of part) {
+              if(!divergent.has(key)) {const entry=defaults.get(key);if(entry)choices.set(key,entry);continue}
+              const original=base.get(key)!,l=local.get(key)!,r=remote.get(key)!,result=mergeResults.get(key)!
+              const provided=selectors.get(key)??[],unresolved=[...result.unresolved].sort((a,b)=>publicationCompare(a.id,b.id))
+              if(publicationJson(provided.map(row=>row.id))!==publicationJson(unresolved.map(row=>row.id))) return publicationInvalid('merge parts必须完整且没有额外part。')
+              const values:Record<string,SyncedRecordMergeChoice>=Object.create(null) as Record<string,SyncedRecordMergeChoice>
+              for(let i=0;i<provided.length;i++) {if(provided[i].value.choice==='custom'&&!unresolved[i].canEditText)return publicationInvalid('该part不允许custom。');values[provided[i].id]=provided[i].value}
+              const complete=provided.length?mergeSyncedProtocol5Record(original.record,l.record,r.record,values):result
+              if(!complete||complete.unresolved.length)return publicationInvalid('未解决merge不能进入持久候选。')
+              choices.set(key,{key,hash:hashData(complete.record),record:validateSyncedProtocol5Record(complete.record,key)})
+              usedMerge.add(key)
+            }
+          }
+        }
+      } else if(related.length) reason='dependency'
+      for(const key of divergent) {const selected=choices.get(key),l=local.get(key),r=remote.get(key),b=baseline.get(key)
+        if(selected&&l&&r&&b?.commonHash&&usedMerge.has(key)) mergeSources.set(key,{key,baseHash:b.commonHash,localHash:l.hash,remoteHash:r.hash,resultHash:selected.hash})}
     }
     if (!reason && catalogCollision(choices)) reason = 'catalog'
     if (!reason) reason = transferPlan(part, choices).reason
+    if(reason&&!divergent.size) conflictPreviews.push(validateConflictPreviewComponent({...component,componentId:originalComponentId,reason,choices:[],records}))
     if (reason) { deferred.push({ ...component, reason }); continue }
     selectedParts.push({ component, choices })
     for (const key of part) { const choice = choices.get(key); if (choice) { nextRemote.set(key, choice); localFinal.set(key, choice) } }
   }
   // Regular path validates both complete final graphs once. A failed mixed constraint is never half-applied.
   let next: SyncedProtocol5Snapshot, final: SyncedProtocol5Snapshot
+  const fallbackBlocked = new Set<string>()
   try {
     if (!pathsValid(nextRemote) || !pathsValid(localFinal)) return publicationInvalid('exchange混合候选路径冲突。')
     next = snapshot(nextRemote, input.remote.manifest.workspaceId); final = snapshot(localFinal, input.local.manifest.workspaceId)
@@ -311,9 +432,22 @@ export function planSyncedExchange(input: ExchangePlanInput): ExchangePlan {
       } catch (error) {
         if (!(error instanceof SyncedPublicationError) && !(error instanceof SyncedValidationError)) throw error
         deferred.push({ ...item.component, reason: !pathsValid(trialRemote) || !pathsValid(trialLocal) ? 'path' : item.component.keys.includes('databases') ? 'catalog' : 'dependency' })
+        fallbackBlocked.add(publicationJson(item.component.keys))
       }
     }
     next = snapshot(nextRemote, input.remote.manifest.workspaceId); final = snapshot(localFinal, input.local.manifest.workspaceId)
+  }
+  // Final graph validation may discover a blocker absent from a per-record preview.
+  // Display the real captured component, but never advertise a rejected candidate as executable.
+  const previewPositions = new Map(conflictPreviews.map((row,index)=>[row.componentId,index]))
+  for(const blocked of deferred) if(fallbackBlocked.has(publicationJson(blocked.keys))) {
+    const captured=capturedComponents.get(publicationJson(blocked.keys))
+    if(!captured)return publicationInvalid('fallback缺原captured component。')
+    const preview=validateConflictPreviewComponent({...captured.component,componentId:captured.componentId,reason:blocked.reason,choices:[],
+      records:captured.records.map(row=>({...row,merge:null}))})
+    const index=previewPositions.get(captured.componentId)
+    if(index===undefined) {previewPositions.set(captured.componentId,conflictPreviews.length);conflictPreviews.push(preview)}
+    else conflictPreviews[index]=preview
   }
   const accepted = sorted(selectedParts.flatMap(row => row.component.keys)), acceptedSet = new Set(accepted), writes = accepted.filter(key => nextRemote.get(key)?.hash !== remote.get(key)?.hash), incoming = accepted.filter(key => localFinal.get(key)?.hash !== local.get(key)?.hash)
   const transfers = selectedParts.flatMap(row => transferPlan(row.component.keys, row.choices).transfers).sort((a, b) => publicationCompare(a.id, b.id))
@@ -335,5 +469,7 @@ export function planSyncedExchange(input: ExchangePlanInput): ExchangePlan {
   const historySeen = new Set(historyBoundaryKeys)
   for (let offset = 0; offset < historyBoundaryKeys.length; offset++) for (const key of historyAdjacency.get(historyBoundaryKeys[offset]) ?? []) if (acceptedSet.has(key) && !historySeen.has(key)) { historySeen.add(key); historyBoundaryKeys.push(key) }
   const result = { nextRemote: next, localFinal: final, writes, incoming, accepted, components, deferred: deferred.sort((a, b) => publicationCompare(publicationJson(a.keys), publicationJson(b.keys))), transfers, historyBoundaryKeys: sorted(historyBoundaryKeys), acceptedSides, nextBaseline: [...updates.values()].sort((a, b) => publicationCompare(a.key, b.key)), localFingerprint: input.localFingerprint, beforeManifestHash: hashData(input.remote.manifest), afterManifestHash: hashData(next.manifest) }
-  return { ...result, planHash: hashData({ kind: 'synced-exchange-plan', version: 1, operationId: input.operationId, workspaceScope: state.workspaceScope, recoveryEpoch: state.recoveryEpoch, localFingerprint: input.localFingerprint, beforeManifestHash: result.beforeManifestHash, afterManifestHash: result.afterManifestHash, nextEntries: next.manifest.entries, finalEntries: final.manifest.entries, acceptedSides, deferred: result.deferred, transfers, historyBoundaryKeys: result.historyBoundaryKeys }) }
+  const merges=[...mergeSources.values()].filter(row=>acceptedSet.has(row.key)).sort((a,b)=>publicationCompare(a.key,b.key))
+  conflictPreviews.sort((a,b)=>publicationCompare(a.componentId,b.componentId))
+  return { ...result,plannerVersion:'conflicts-v1',conflictPreviews,merges,planHash: hashData({ kind: 'synced-exchange-plan', version: 2, operationId: input.operationId, workspaceScope: state.workspaceScope, recoveryEpoch: state.recoveryEpoch, localFingerprint: input.localFingerprint, beforeManifestHash: result.beforeManifestHash, afterManifestHash: result.afterManifestHash, nextEntries: next.manifest.entries, finalEntries: final.manifest.entries, acceptedSides, deferred: result.deferred, transfers, historyBoundaryKeys: result.historyBoundaryKeys,merges,conflictSelections:input.conflictSelections??[] }) }
 }

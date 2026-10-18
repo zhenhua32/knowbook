@@ -7,6 +7,7 @@ import type { InitialIncomingBaseline } from '../sync/synced-initial-incoming-mo
 import { exchangeRequestHash, exchangeStateKey, parseExchangeStored, validateExchangeReceipt, validateExchangeState,
   type ExchangeRequest, type ExchangeReceipt, type ExchangeState } from '../sync/synced-exchange-model'
 import { publicationHash, publicationInvalid, publicationJson, SyncedPublicationError } from '../sync/synced-publication-model'
+import { readExactSyncedExchangeReceipt, readSyncedExchangeReceiptById } from './synced-exchange-receipt'
 
 export interface SyncedExchangeLocal {
   snapshot: SyncedPublicationLocalSnapshot; fingerprint: string
@@ -21,14 +22,7 @@ function owned(db: Database.Database): void {
 }
 export function readSyncedExchangeReceipt(db: Database.Database, request: ExchangeRequest): ExchangeReceipt | null {
   owned(db)
-  const row = db.prepare('SELECT request_hash,result_json,created_at FROM synced_operations WHERE client_operation_id=?')
-    .get(request.operationId) as { request_hash: string; result_json: string; created_at: string } | undefined
-  if (!row) return null
-  const receipt = validateExchangeReceipt(parseExchangeStored(row.result_json))
-  if (receipt.result.replayed || row.request_hash !== exchangeRequestHash(request)
-    || publicationJson(receipt.request) !== publicationJson(request) || receipt.result.acceptedAt !== row.created_at)
-    return publicationInvalid('exchange原operation/method/request/receipt损坏或idempotency不匹配。')
-  return receipt
+  return readExactSyncedExchangeReceipt(db, request)
 }
 export function readSyncedExchangeState(db: Database.Database, request: ExchangeRequest,
   context: { workspaceScope: string; recoveryEpoch: string }): { value: ExchangeState; raw: string } | null {
@@ -42,17 +36,19 @@ export function readSyncedExchangeState(db: Database.Database, request: Exchange
   if (value.workspaceScope !== context.workspaceScope || value.recoveryEpoch !== context.recoveryEpoch)
     throw new SyncedPublicationError('unavailable', '历史exchange state属于另一workspace/recovery世代；不借旧state授新写权。')
   if (!isSyncedUuid(value.currentOperationId)) return publicationInvalid('durable exchange state缺准确最终operation。')
-  const current = readSyncedExchangeReceipt(db, { ...request, operationId: value.currentOperationId })
-  if (!current || current.provenance.afterStateHash !== publicationHash(publicationJson(value)) || current.result.acceptedAt !== value.lastSyncAt
+  const current = readSyncedExchangeReceiptById(db, value.currentOperationId)
+  if (!current || current.request.databasePath !== request.databasePath || current.request.targetFingerprint !== request.targetFingerprint
+    || current.provenance.afterStateHash !== publicationHash(publicationJson(value)) || current.result.acceptedAt !== value.lastSyncAt
     || current.result.workspaceScope !== value.workspaceScope || current.result.recoveryEpoch !== value.recoveryEpoch
     || current.result.remoteWorkspaceId !== value.remoteWorkspaceId || publicationJson(current.provenance.source) !== publicationJson(value.source))
     return publicationInvalid('exchange完整state缺原结算receipt准确认证；不能删baseline row再猜新来源。')
   for (const entry of value.baseline) {
     // The initial source proof is authenticated separately from its original receipt/spool.
     if (entry.acceptedOperationId === value.source.operationId) continue
-    const original = readSyncedExchangeReceipt(db, { ...request, operationId: entry.acceptedOperationId })
+    const original = readSyncedExchangeReceiptById(db, entry.acceptedOperationId)
     const accepted = original?.provenance.accepted.find(side => side.key === entry.key)
-    if (!original || !accepted || original.result.workspaceScope !== value.workspaceScope || original.result.recoveryEpoch !== value.recoveryEpoch
+    if (!original || !accepted || original.request.databasePath !== request.databasePath || original.request.targetFingerprint !== request.targetFingerprint
+      || original.result.workspaceScope !== value.workspaceScope || original.result.recoveryEpoch !== value.recoveryEpoch
       || original.result.remoteWorkspaceId !== value.remoteWorkspaceId || accepted.afterHash !== entry.remoteHash || entry.localHash !== accepted.afterHash || entry.commonHash !== accepted.afterHash
       || entry.dependencySignature !== accepted.dependencySignature
       || publicationJson(entry.dependencyKeys) !== publicationJson(accepted.dependencyKeys)

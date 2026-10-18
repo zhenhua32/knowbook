@@ -5,6 +5,7 @@ import type { SyncedHostHistoryBranchRow } from './synced-host-history-branch'
 import { exchangeHostCutKey, exchangeRequestHash, parseExchangeStored, validateExchangeHostCut, validateExchangeReceipt,
   type ExchangeHostCut, type ExchangeReceipt } from '../sync/synced-exchange-model'
 import { publicationCompare, publicationHash, publicationInvalid, publicationJson } from '../sync/synced-publication-model'
+import { readSyncedExchangeReceiptById } from './synced-exchange-receipt'
 
 function owned(db: Database.Database): void {
   if (!db.open || !db.inTransaction || db.pragma('foreign_keys', { simple: true }) !== 1)
@@ -42,7 +43,8 @@ export function assertSyncedExchangeHostCutRecords(db: Database.Database): Map<s
   const receipts = new Map<string, ExchangeReceipt>(), references = new Map<string, { operationId: string; cutHash: string }>()
   // Materialize before nested journal/pragma reads; no active iterate() statement is retained.
   for (const row of receiptRows) {
-    const receipt = validateExchangeReceipt(parseExchangeStored(row.result_json))
+    const receipt = readSyncedExchangeReceiptById(db, row.client_operation_id)
+    if (!receipt) return publicationInvalid('原cut receipt缺失。')
     if (receipt.request.operationId !== row.client_operation_id || receipt.result.operationId !== row.client_operation_id || receipt.result.replayed
       || exchangeRequestHash(receipt.request) !== row.request_hash || receipt.result.acceptedAt !== row.created_at)
       return publicationInvalid('exchange history cut原operation request_hash/created_at/replay损坏。')
