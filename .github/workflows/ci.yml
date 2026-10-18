@@ -82,6 +82,37 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      - name: Fetch pinned protocol5 v3 both source
+        run: git fetch --no-tags --depth=1 origin 58991583bd59c932d242168223ca7b9e5d0cafd0
+
+      - name: Verify genuine protocol5 v3 both recovery compatibility
+        run: npm run test:synced-exchange-v3-compat
+
+      - name: Upload protocol5 v3 both compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: synced-exchange-v3-compat
+          path: |
+            test-results/synced-exchange-v3-compat/**
+            !test-results/synced-exchange-v3-compat/**/legacy-5899158/**
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Verify schema27 logical deletion with genuine old Main readers
+        run: npm run test:synced-tombstone-legacy-readers
+
+      - name: Upload logical deletion legacy reader evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: synced-tombstone-legacy-readers
+          path: |
+            test-results/synced-tombstone-legacy-readers/**
+            !test-results/synced-tombstone-legacy-readers/**/legacy-5899158/**
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Fetch pinned schema26 reader source
         run: git fetch --no-tags --depth=1 origin 6d61134b917d88753bdbc72a5cafe6e3d81fc216
 

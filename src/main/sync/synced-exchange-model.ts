@@ -9,6 +9,9 @@ import { validateConflictDecisions, validateExchangeResolutionBinding, validateE
   type SyncedExchangeConflictDecision, type ExchangeResolutionBinding, type ExchangeMergeProvenance } from './synced-exchange-conflict-model'
 import * as B from './synced-exchange-both-model'
 import type { SyncedExchangeBothForkSummary, SyncedExchangeBothPublishedBlock, SyncedBothForkProof } from './synced-exchange-both-types'
+import type { TombstoneAcceptedSide, TombstoneBaselineEntry, TombstoneDeletionIntent, TombstoneExchangeState,
+  TombstoneIdentityEffect, TombstoneLocalOutcome, TombstoneProofReference } from './synced-exchange-tombstone-types'
+import { validateSyncedProtocol5Record } from './synced-protocol5-model'
 
 export type ExchangeHash = string
 export type ExchangeDeferredReason = 'diverged' | 'incarnation' | 'owner-source' | 'unknown-birth' | 'history-pin'
@@ -68,9 +71,17 @@ export interface ExchangeHostCut {
   kind: 'synced-exchange-host-cut'; version: 1; operationId: string; historyToken: string; journalHash: string
   participants: Array<{ documentId: string; position: number }>; cutAt: string
 }
-export interface ExchangeReceipt {
+export interface LegacyExchangeReceipt {
   kind: 'synced-exchange-operation'; version: 1 | 2 | 3; request: ExchangeRequest; result: SyncedExchangeAccepted; provenance: ExchangeProvenance
 }
+export interface TombstoneExchangeReceipt {
+  kind: 'synced-exchange-operation'; version: 4; request: ExchangeRequestV1; result: SyncedExchangeAccepted
+  provenance: Omit<ExchangeProvenance, 'accepted' | 'plannerVersion' | 'resolution' | 'forks'> & {
+    plannerVersion: 'tombstones-v1'; accepted: TombstoneAcceptedSide[]; deletions: TombstoneProofReference[]; attemptId: string; merges: ExchangeMergeProvenance[]
+    resolution?: never; forks?: never
+  }
+}
+export type ExchangeReceipt = LegacyExchangeReceipt | TombstoneExchangeReceipt
 export interface ExchangePublicationMember {
   groupId: string; creationId: string; revision: string; topologyRevision: string; semanticHash: string; nextPortableHash: string
 }
@@ -81,7 +92,7 @@ export interface ExchangePublicationDescriptor {
   members: ExchangePublicationMember[]
 }
 /** Immutable original job. Progress is a separate fact; never rewrite these bytes after a 412/possible. */
-export interface ExchangeJob {
+export interface LegacyExchangeJob {
   kind: 'synced-exchange-job'; version: 1 | 2 | 3; request: ExchangeRequest; requestHash: string
   attemptId: string; parentAttemptId: string | null; attemptIndex: number
   workspaceScope: string; recoveryEpoch: string; remoteWorkspaceId: string; source: ExchangeSeedProof
@@ -90,6 +101,12 @@ export interface ExchangeJob {
   merges?: ExchangeMergeProvenance[]
   forks?: SyncedBothForkProof[]
 }
+export interface TombstoneExchangeJob extends Omit<LegacyExchangeJob, 'version' | 'request' | 'plannerVersion' | 'resolution' | 'forks'> {
+  version: 4; request: ExchangeRequestV1; plannerVersion: 'tombstones-v1'; deletions: TombstoneDeletionIntent[]; merges: ExchangeMergeProvenance[]
+  resolution?: never; forks?: never
+}
+export type ExchangeJob = LegacyExchangeJob | TombstoneExchangeJob
+export type AnyExchangeState = ExchangeState | TombstoneExchangeState
 export type ExchangeJobPhase = 'prepared' | 'possible' | 'remote-confirmed' | 'settled' | 'remote-uncertain' | 'published-local-deferred' | 'blocked'
 export interface ExchangeJobPhaseFact {
   kind: 'synced-exchange-job-phase'; version: 1 | 2; operationId: string; requestHash: string; jobHash: string
@@ -233,6 +250,7 @@ function acceptedSide(value: unknown): ExchangeAcceptedSide {
   return { key, beforeLocalHash: maybeHash(value.beforeLocalHash), beforeRemoteHash: maybeHash(value.beforeRemoteHash), afterHash: hash(value.afterHash), dependencyKeys, dependencySignature: hash(value.dependencySignature) }
 }
 export function validateExchangeReceipt(value: unknown): ExchangeReceipt {
+  if (value !== null && typeof value === 'object' && Object.getOwnPropertyDescriptor(value, 'version')?.value === 4) return validateTombstoneExchangeReceipt(value)
   versionedRoot(value, 'synced-exchange-operation', ['kind', 'version', 'request', 'result', 'provenance'], [])
   let result: SyncedExchangeAccepted
   if (value.version === 3) {
@@ -315,13 +333,14 @@ export function validateExchangeDescriptor(value: unknown): ExchangePublicationD
   return { kind: 'synced-exchange-publication', version: 1, attemptId: uuid(value.attemptId), workspaceScope: uuid(value.workspaceScope), recoveryEpoch: uuid(value.recoveryEpoch), targetFingerprint: hash(value.targetFingerprint), localFingerprint: hash(value.localFingerprint), planHash: hash(value.planHash), expectedRemote: { etag: opaque(expected.etag), manifestHash: hash(expected.manifestHash) }, next: { manifestHash: hash(next.manifestHash), objects, assets }, members }
 }
 export function validateExchangeJob(value: unknown): ExchangeJob {
+  if (value !== null && typeof value === 'object' && Object.getOwnPropertyDescriptor(value, 'version')?.value === 4) return validateTombstoneExchangeJob(value)
   versionedRoot(value, 'synced-exchange-job', ['kind', 'version', 'request', 'requestHash', 'attemptId', 'parentAttemptId', 'attemptIndex', 'workspaceScope', 'recoveryEpoch', 'remoteWorkspaceId', 'source', 'descriptor', 'components', 'spoolHash', 'preparedAt'], ['plannerVersion', 'resolution', 'merges'], ['plannerVersion', 'resolution', 'merges', 'forks'])
   const request = validateExchangeRequest(value.request), descriptor = validateExchangeDescriptor(value.descriptor), workspaceScope = uuid(value.workspaceScope), recoveryEpoch = uuid(value.recoveryEpoch)
   const attemptId = uuid(value.attemptId), parentAttemptId = value.parentAttemptId === null ? null : uuid(value.parentAttemptId), attemptIndex = integer(value.attemptIndex)
   if ((attemptIndex === 0) !== (parentAttemptId === null) || parentAttemptId === attemptId || descriptor.attemptId !== attemptId) return publicationInvalid('exchange原attempt父链无效。')
   if (exchangeRequestHash(request) !== value.requestHash || request.targetFingerprint !== descriptor.targetFingerprint || workspaceScope !== descriptor.workspaceScope || recoveryEpoch !== descriptor.recoveryEpoch) return publicationInvalid('exchange immutable job与原请求不闭合。')
   const components = ordered(list(value.components, validateExchangeComponent), row => publicationJson(row.keys)); disjoint(components)
-  const result: ExchangeJob = { kind: 'synced-exchange-job', version: value.version === 3 ? 3 : value.version === 2 ? 2 : 1, request, requestHash: hash(value.requestHash), attemptId, parentAttemptId, attemptIndex, workspaceScope, recoveryEpoch, remoteWorkspaceId: uuid(value.remoteWorkspaceId), source: validateExchangeSeedProof(value.source), descriptor, components, spoolHash: hash(value.spoolHash), preparedAt: time(value.preparedAt) }
+  const result: LegacyExchangeJob = { kind: 'synced-exchange-job', version: value.version === 3 ? 3 : value.version === 2 ? 2 : 1, request, requestHash: hash(value.requestHash), attemptId, parentAttemptId, attemptIndex, workspaceScope, recoveryEpoch, remoteWorkspaceId: uuid(value.remoteWorkspaceId), source: validateExchangeSeedProof(value.source), descriptor, components, spoolHash: hash(value.spoolHash), preparedAt: time(value.preparedAt) }
   if (value.version === 1 && request.method !== 'exchangeSyncedSnapshot') return publicationInvalid('原v1 job不能伪成resolve。')
   if (value.version === 2) { if (value.plannerVersion !== 'conflicts-v1') return publicationInvalid('未知job planner。')
     if (request.method !== 'exchangeSyncedSnapshot' && request.method !== 'resolveSyncedExchangeConflicts') return publicationInvalid('原v2 job不接受both方法。')
@@ -350,6 +369,113 @@ export function validateExchangeJobPhase(value: unknown): ExchangeJobPhaseFact {
   const sequence = integer(value.sequence), previousFactHash = maybeHash(value.previousFactHash)
   if ((sequence === 0) !== (previousFactHash === null) || sequence === 0 && value.phase !== 'prepared') return publicationInvalid('exchange追加phase链无效。')
   return { kind: 'synced-exchange-job-phase', version: 1, operationId: uuid(value.operationId), requestHash: hash(value.requestHash), jobHash: hash(value.jobHash), attemptId: uuid(value.attemptId), sequence, previousFactHash, phase: value.phase as ExchangeJobPhase, remoteEtag: maybeString(value.remoteEtag), recordedAt: time(value.recordedAt) }
+}
+export function validateTombstoneLocalOutcome(value: unknown): TombstoneLocalOutcome {
+  assertExchangeData(value)
+  const kind = value !== null && typeof value === 'object' ? Object.getOwnPropertyDescriptor(value, 'kind')?.value : undefined
+  root(value, kind === 'absent' ? ['kind', 'tombstoneHash', 'deletionOperationId', 'intentHash'] : ['kind', 'hash'])
+  if (kind === 'live') return { kind, hash: hash(value.hash) }
+  if (kind !== 'absent') return publicationInvalid('tombstone本机结果不是live/absent。')
+  return { kind, tombstoneHash: hash(value.tombstoneHash), deletionOperationId: uuid(value.deletionOperationId), intentHash: hash(value.intentHash) }
+}
+export function validateTombstoneProofReference(value: unknown): TombstoneProofReference {
+  root(value, ['key', 'intentHash', 'proofHash', 'anchorId'])
+  return { key: exchangeRecordKey(value.key), intentHash: hash(value.intentHash), proofHash: hash(value.proofHash), anchorId: opaque(value.anchorId) }
+}
+export function validateTombstoneIdentityEffect(value: unknown): TombstoneIdentityEffect {
+  root(value, ['before', 'after']); root(value.before, ['id', 'last_owner_kind', 'last_owner_id', 'state', 'created_at'])
+  const before = value.before
+  if ((before.last_owner_kind !== 'document' && before.last_owner_kind !== 'group') || before.state !== 'live') return publicationInvalid('tombstone原identity不是真实live。')
+  const checked: TombstoneIdentityEffect['before'] = { id: opaque(before.id), last_owner_kind: before.last_owner_kind, last_owner_id: before.last_owner_kind === 'group' ? uuid(before.last_owner_id) : opaque(before.last_owner_id), state: 'live' as const, created_at: time(before.created_at) }
+  assertExchangeData(value.after)
+  const kind = value.after !== null && typeof value.after === 'object' ? Object.getOwnPropertyDescriptor(value.after, 'kind')?.value : undefined
+  root(value.after, kind === 'transferred' ? ['kind', 'ownerKind', 'ownerId', 'createdAt'] : ['kind'])
+  if (kind === 'retained') return { before: checked, after: { kind } }
+  if (kind !== 'transferred' || (value.after.ownerKind !== 'document' && value.after.ownerKind !== 'group')) return publicationInvalid('tombstoneidentity后果无效。')
+  return { before: checked, after: { kind, ownerKind: value.after.ownerKind, ownerId: value.after.ownerKind === 'group' ? uuid(value.after.ownerId) : opaque(value.after.ownerId), createdAt: time(value.after.createdAt) } }
+}
+export function validateTombstoneDeletionIntent(value: unknown): TombstoneDeletionIntent {
+  root(value, ['kind', 'key', 'baseLiveHash', 'tombstoneHash', 'before', 'identities', 'intentHash'])
+  const key = exchangeRecordKey(value.key), before = validateSyncedProtocol5Record(value.before, key)
+  if ((before.kind !== 'document' && before.kind !== 'synced-group') || value.kind !== (before.kind === 'document' ? 'document' : 'group')
+    || publicationHash(publicationJson(before)) !== value.baseLiveHash) return publicationInvalid('tombstoneintent缺准确live前身。')
+  const identities = ordered(list(value.identities, validateTombstoneIdentityEffect), row => row.before.id), byId = new Map(identities.map(row => [row.before.id, row]))
+  const blocks = before.kind === 'document' ? before.content.blocks : before.blocks
+  const births = new Map(before.kind === 'synced-group' ? before.blocks.map(row => [row.id, row.createdAt]) : [])
+  if (blocks.length !== identities.length || blocks.some(block => { const row = byId.get(block.id)
+    return !row || row.before.last_owner_kind !== value.kind || row.before.last_owner_id !== before.id || before.kind === 'synced-group' && row.before.created_at !== births.get(block.id) }))
+    return publicationInvalid('tombstoneintent不是全部实际physical原owner/birth闭集。')
+  return { kind: before.kind === 'document' ? 'document' : 'group', key, before, baseLiveHash: hash(value.baseLiveHash), tombstoneHash: hash(value.tombstoneHash), identities, intentHash: hash(value.intentHash) }
+}
+function tombstoneSide(value: unknown): TombstoneAcceptedSide {
+  root(value, ['key', 'beforeLocalHash', 'beforeRemoteHash', 'local', 'remoteHash', 'commonHash', 'dependencyKeys', 'dependencySignature'])
+  const key = exchangeRecordKey(value.key), local = validateTombstoneLocalOutcome(value.local), remoteHash = hash(value.remoteHash), commonHash = hash(value.commonHash), dependencyKeys = exchangeKeys(value.dependencyKeys)
+  if (dependencyKeys.includes(key) || remoteHash !== commonHash || (local.kind === 'live' ? local.hash : local.tombstoneHash) !== remoteHash)
+    return publicationInvalid('tombstoneaccepted两侧知识和原依赖不闭合。')
+  return { key, beforeLocalHash: maybeHash(value.beforeLocalHash), beforeRemoteHash: maybeHash(value.beforeRemoteHash), local, remoteHash, commonHash, dependencyKeys, dependencySignature: hash(value.dependencySignature) }
+}
+export function validateTombstoneExchangeState(value: unknown): TombstoneExchangeState {
+  root(value, ['kind', 'version', 'databasePath', 'targetFingerprint', 'workspaceScope', 'recoveryEpoch', 'remoteWorkspaceId', 'generation', 'currentOperationId', 'source', 'baseline', 'deferred', 'lastSyncAt'])
+  if (value.kind !== 'synced-exchange-state' || value.version !== 2) return publicationInvalid('tombstonestate finite版本不符。')
+  const baseline = ordered(list(value.baseline, raw => {
+    root(raw, ['key', 'local', 'remoteHash', 'commonHash', 'dependencyKeys', 'dependencySignature', 'acceptedOperationId'])
+    const key = exchangeRecordKey(raw.key), dependencyKeys = exchangeKeys(raw.dependencyKeys)
+    if (dependencyKeys.includes(key)) return publicationInvalid('tombstonestate不把自身伪作依赖。')
+    return { key, local: validateTombstoneLocalOutcome(raw.local), remoteHash: hash(raw.remoteHash), commonHash: maybeHash(raw.commonHash), dependencyKeys,
+      dependencySignature: hash(raw.dependencySignature), acceptedOperationId: uuid(raw.acceptedOperationId) } satisfies TombstoneBaselineEntry
+  }), row => row.key)
+  const deferred = ordered(list(value.deferred, validateDeferredExchangeComponent), row => publicationJson(row.keys)); disjoint(deferred)
+  return { kind: 'synced-exchange-state', version: 2, databasePath: opaque(value.databasePath), targetFingerprint: hash(value.targetFingerprint), workspaceScope: uuid(value.workspaceScope), recoveryEpoch: uuid(value.recoveryEpoch), remoteWorkspaceId: uuid(value.remoteWorkspaceId), generation: uuid(value.generation), currentOperationId: value.currentOperationId === null ? null : uuid(value.currentOperationId), source: validateExchangeSeedProof(value.source), baseline, deferred, lastSyncAt: time(value.lastSyncAt) }
+}
+export function validateAnyExchangeState(value: unknown): AnyExchangeState {
+  return value !== null && typeof value === 'object' && Object.getOwnPropertyDescriptor(value, 'version')?.value === 2 ? validateTombstoneExchangeState(value) : validateExchangeState(value)
+}
+export function liftTombstoneExchangeState(value: ExchangeState): TombstoneExchangeState {
+  return validateTombstoneExchangeState({ ...value, version: 2, baseline: value.baseline.map(row => ({ key: row.key,
+    local: row.localHash === null ? publicationInvalid('旧absence不能假升为已接受删除。') : { kind: 'live', hash: row.localHash },
+    remoteHash: row.remoteHash, commonHash: row.commonHash, dependencyKeys: row.dependencyKeys, dependencySignature: row.dependencySignature, acceptedOperationId: row.acceptedOperationId })) })
+}
+function validateTombstoneExchangeJob(value: unknown): TombstoneExchangeJob {
+  root(value, ['kind', 'version', 'request', 'requestHash', 'attemptId', 'parentAttemptId', 'attemptIndex', 'workspaceScope', 'recoveryEpoch', 'remoteWorkspaceId', 'source', 'descriptor', 'components', 'spoolHash', 'preparedAt', 'plannerVersion', 'merges', 'deletions'])
+  if (value.kind !== 'synced-exchange-job' || value.version !== 4 || value.plannerVersion !== 'tombstones-v1') return publicationInvalid('tombstonejob算法/版本不符。')
+  const request = validateExchangeRequest(value.request)
+  if (request.method !== 'exchangeSyncedSnapshot') return publicationInvalid('tombstonejob只接受真实exchange入口。')
+  const descriptor = validateExchangeDescriptor(value.descriptor), attemptId = uuid(value.attemptId), parentAttemptId = value.parentAttemptId === null ? null : uuid(value.parentAttemptId), attemptIndex = integer(value.attemptIndex)
+  const workspaceScope = uuid(value.workspaceScope), recoveryEpoch = uuid(value.recoveryEpoch), remoteWorkspaceId = uuid(value.remoteWorkspaceId)
+  if ((attemptIndex === 0) !== (parentAttemptId === null) || parentAttemptId === attemptId || descriptor.attemptId !== attemptId
+    || exchangeRequestHash(request) !== value.requestHash || request.targetFingerprint !== descriptor.targetFingerprint || workspaceScope !== descriptor.workspaceScope || recoveryEpoch !== descriptor.recoveryEpoch)
+    return publicationInvalid('tombstonejob原请求/attempt/scope不闭合。')
+  const components = ordered(list(value.components, validateExchangeComponent), row => publicationJson(row.keys)); disjoint(components)
+  const deletions = ordered(list(value.deletions, validateTombstoneDeletionIntent), row => row.key)
+  for (const { intentHash, ...intent } of deletions) if (intentHash !== publicationHash(publicationJson({ domain: 'synced-deletion-intent.v1',
+    operationId: request.operationId, workspaceScope, recoveryEpoch, targetFingerprint: request.targetFingerprint, remoteWorkspaceId, ...intent }))) return publicationInvalid('tombstonejob原intent完整来源hash损坏。')
+  return { kind: 'synced-exchange-job', version: 4, request, requestHash: hash(value.requestHash), attemptId, parentAttemptId, attemptIndex, workspaceScope, recoveryEpoch, remoteWorkspaceId,
+    source: validateExchangeSeedProof(value.source), descriptor, components, spoolHash: hash(value.spoolHash), preparedAt: time(value.preparedAt), plannerVersion: 'tombstones-v1', merges: validateExchangeMerges(value.merges), deletions }
+}
+function validateTombstoneExchangeReceipt(value: unknown): TombstoneExchangeReceipt {
+  root(value, ['kind', 'version', 'request', 'result', 'provenance'])
+  if (value.kind !== 'synced-exchange-operation' || value.version !== 4) return publicationInvalid('tombstonereceipt版本不符。')
+  const request = validateExchangeRequest(value.request), result = validateExchangeAccepted(value.result), p = value.provenance
+  if (request.method !== 'exchangeSyncedSnapshot') return publicationInvalid('tombstonereceipt不能伪造resolve/both。')
+  root(p, ['beforeManifestHash', 'afterManifestHash', 'beforeManifestEtag', 'afterManifestEtag', 'planHash', 'source', 'accepted', 'transfers', 'afterStateHash', 'historyArchives', 'hostHistoryCuts', 'plannerVersion', 'merges', 'attemptId', 'deletions'])
+  if (p.plannerVersion !== 'tombstones-v1') return publicationInvalid('tombstonereceipt算法不符。')
+  const accepted = ordered(list(p.accepted, tombstoneSide), row => row.key), deletions = ordered(list(p.deletions, validateTombstoneProofReference), row => row.key)
+  const acceptedByKey = new Map(accepted.map(row => [row.key, row])), deletionKeys = new Set(deletions.map(ref => ref.key))
+  const transfers = ordered(list(p.transfers, validateExchangeTransfer), row => row.id)
+  for (const ref of deletions) { const side = acceptedByKey.get(ref.key)
+    if (!side || side.local.kind !== 'absent' || side.local.deletionOperationId !== request.operationId || side.local.intentHash !== ref.intentHash)
+      return publicationInvalid('tombstonereceipt删除ref不是本次准确accepted absence。') }
+  for (const side of accepted) if (side.local.kind === 'absent' && side.local.deletionOperationId === request.operationId && !deletionKeys.has(side.key)) return publicationInvalid('tombstonereceipt漏本次真实删除proof。')
+  const historyArchives = ordered(list(p.historyArchives, raw => { root(raw, ['groupId', 'indexHash']); return { groupId: uuid(raw.groupId), indexHash: hash(raw.indexHash) } }), row => row.groupId)
+  const hostHistoryCuts = ordered(list(p.hostHistoryCuts, raw => { root(raw, ['historyToken', 'cutHash']); return { historyToken: uuid(raw.historyToken), cutHash: hash(raw.cutHash) } }, Number.MAX_SAFE_INTEGER), row => row.historyToken)
+  const provenance: TombstoneExchangeReceipt['provenance'] = { beforeManifestHash: hash(p.beforeManifestHash), afterManifestHash: hash(p.afterManifestHash), beforeManifestEtag: opaque(p.beforeManifestEtag), afterManifestEtag: maybeString(p.afterManifestEtag),
+    planHash: hash(p.planHash), source: validateExchangeSeedProof(p.source), accepted, transfers, afterStateHash: hash(p.afterStateHash), historyArchives, hostHistoryCuts,
+    plannerVersion: 'tombstones-v1', merges: validateExchangeMerges(p.merges), attemptId: uuid(p.attemptId), deletions }
+  const byKey = new Map(accepted.map(row => [row.key, row]))
+  for (const merge of provenance.merges) { const side = byKey.get(merge.key)
+    if (!side || side.local.kind !== 'live' || side.local.hash !== merge.resultHash || side.beforeLocalHash !== merge.localHash || side.beforeRemoteHash !== merge.remoteHash) return publicationInvalid('tombstone无关live合并来源不闭合。') }
+  if (request.operationId !== result.operationId || provenance.beforeManifestHash !== result.beforeManifestHash || provenance.afterManifestHash !== result.afterManifestHash || publicationJson(accepted.map(row => row.key)) !== publicationJson(result.acceptedKeys)) return publicationInvalid('tombstonereceipt结果闭集不符。')
+  return { kind: 'synced-exchange-operation', version: 4, request, result, provenance }
 }
 export function exchangeTargetFingerprint(target: WebDavSyncConfig): string { return publicationHash(publicationJson({ kind: 'webdav-target', version: 1, channel: 'webdav-manifest5-exchange', url: target.url, username: target.username, directory: target.directory })) }
 export const exchangeRequestHash = (request: ExchangeRequest): string => publicationHash(publicationJson(validateExchangeRequest(request)))

@@ -4,16 +4,19 @@ import { readInitialIncomingLocal, type InitialIncomingIdentity } from './synced
 import { assertSyncedExchangeHostCutRecords } from './synced-exchange-host-cut'
 import type { SyncedPublicationLocalSnapshot } from './synced-publication'
 import type { InitialIncomingBaseline } from '../sync/synced-initial-incoming-model'
-import { exchangeRequestHash, exchangeStateKey, parseExchangeStored, validateExchangeReceipt, validateExchangeState,
-  type ExchangeRequest, type ExchangeReceipt, type ExchangeState } from '../sync/synced-exchange-model'
+import { exchangeRequestHash, exchangeStateKey, parseExchangeStored, validateExchangeReceipt, validateAnyExchangeState,
+  type ExchangeRequest, type ExchangeReceipt, type AnyExchangeState } from '../sync/synced-exchange-model'
+import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-read'
+import type { TombstonePinFact } from '../sync/synced-exchange-tombstone-types'
 import { publicationHash, publicationInvalid, publicationJson, SyncedPublicationError } from '../sync/synced-publication-model'
 import { readExactSyncedExchangeReceipt, readSyncedExchangeReceiptById } from './synced-exchange-receipt'
 
 export interface SyncedExchangeLocal {
   snapshot: SyncedPublicationLocalSnapshot; fingerprint: string
   identities: InitialIncomingIdentity[]; occupiedDocumentIds: string[]; historyComponents: string[][]; pinnedGroupIds: string[]
-  state: ExchangeState | null; stateRaw: string | null; initialBaseline: InitialIncomingBaseline | null
+  state: AnyExchangeState | null; stateRaw: string | null; initialBaseline: InitialIncomingBaseline | null
   keyGuards: Record<string, string>; knownGroupIds: string[]
+  deletionPins: TombstonePinFact[]
 }
 function owned(db: Database.Database): void {
   if (!db.inTransaction) return publicationInvalid('exchange readonly authority requires an owned transaction。')
@@ -25,12 +28,12 @@ export function readSyncedExchangeReceipt(db: Database.Database, request: Exchan
   return readExactSyncedExchangeReceipt(db, request)
 }
 export function readSyncedExchangeState(db: Database.Database, request: ExchangeRequest,
-  context: { workspaceScope: string; recoveryEpoch: string }): { value: ExchangeState; raw: string } | null {
+  context: { workspaceScope: string; recoveryEpoch: string }): { value: AnyExchangeState; raw: string } | null {
   owned(db)
   const row = db.prepare('SELECT value,updated_at FROM app_settings WHERE key=?').get(exchangeStateKey(request.targetFingerprint)) as
     { value: string; updated_at: string } | undefined
   if (!row) return null
-  const value = validateExchangeState(parseExchangeStored(row.value))
+  const value = validateAnyExchangeState(parseExchangeStored(row.value))
   if (value.databasePath !== request.databasePath || value.targetFingerprint !== request.targetFingerprint || row.updated_at !== value.lastSyncAt)
     return publicationInvalid('exchange state准确路径/target/接受时点损坏。')
   if (value.workspaceScope !== context.workspaceScope || value.recoveryEpoch !== context.recoveryEpoch)
@@ -42,14 +45,22 @@ export function readSyncedExchangeState(db: Database.Database, request: Exchange
     || current.result.workspaceScope !== value.workspaceScope || current.result.recoveryEpoch !== value.recoveryEpoch
     || current.result.remoteWorkspaceId !== value.remoteWorkspaceId || publicationJson(current.provenance.source) !== publicationJson(value.source))
     return publicationInvalid('exchange完整state缺原结算receipt准确认证；不能删baseline row再猜新来源。')
+  const receiptCache = new Map<string, ExchangeReceipt>([[current.request.operationId,current]])
+  const acceptedIndexes = new Map<string, Map<string, ExchangeReceipt['provenance']['accepted'][number]>>()
   for (const entry of value.baseline) {
     // The initial source proof is authenticated separately from its original receipt/spool.
     if (entry.acceptedOperationId === value.source.operationId) continue
-    const original = readSyncedExchangeReceiptById(db, entry.acceptedOperationId)
-    const accepted = original?.provenance.accepted.find(side => side.key === entry.key)
+    const original = receiptCache.get(entry.acceptedOperationId) ?? readSyncedExchangeReceiptById(db, entry.acceptedOperationId)
+    if (original) receiptCache.set(entry.acceptedOperationId,original)
+    let byKey = acceptedIndexes.get(entry.acceptedOperationId)
+    if (original && !byKey) { byKey = new Map(original.provenance.accepted.map(side => [side.key,side])); acceptedIndexes.set(entry.acceptedOperationId,byKey) }
+    const accepted = byKey?.get(entry.key)
+    const acceptedLocal = accepted && ('local' in accepted ? accepted.local : { kind: 'live', hash: accepted.afterHash })
+    const expectedLocal = value.version === 2 && 'local' in entry ? entry.local : 'localHash' in entry ? { kind: 'live', hash: entry.localHash } : null
+    const commonHash = accepted && ('local' in accepted ? accepted.commonHash : accepted.afterHash)
     if (!original || !accepted || original.request.databasePath !== request.databasePath || original.request.targetFingerprint !== request.targetFingerprint
       || original.result.workspaceScope !== value.workspaceScope || original.result.recoveryEpoch !== value.recoveryEpoch
-      || original.result.remoteWorkspaceId !== value.remoteWorkspaceId || accepted.afterHash !== entry.remoteHash || entry.localHash !== accepted.afterHash || entry.commonHash !== accepted.afterHash
+      || original.result.remoteWorkspaceId !== value.remoteWorkspaceId || commonHash !== entry.remoteHash || publicationJson(expectedLocal) !== publicationJson(acceptedLocal) || entry.commonHash !== commonHash
       || entry.dependencySignature !== accepted.dependencySignature
       || publicationJson(entry.dependencyKeys) !== publicationJson(accepted.dependencyKeys)
       || publicationJson(value.source) !== publicationJson(original.provenance.source)) return publicationInvalid('exchange baseline缺少其准确结算receipt。')
@@ -63,6 +74,7 @@ export function readSyncedExchangeLocal(db: Database.Database,
   const legacy = readInitialIncomingLocal(db, { method: 'receiveInitialSyncedSnapshot', operationId: input.request.operationId,
     databasePath: input.request.databasePath, targetFingerprint: input.initialTargetFingerprint })
   const state = readSyncedExchangeState(db, input.request, legacy.snapshot)
+  const logicalDeletions = assertSyncedLogicalDeletionRecords(db)
   const hostCuts = assertSyncedExchangeHostCutRecords(db)
   const rows = db.prepare('SELECT history_id,document_id FROM synced_host_history_documents ORDER BY history_id,document_id')
     .all() as Array<{ history_id: string; document_id: string }>
@@ -72,6 +84,8 @@ export function readSyncedExchangeLocal(db: Database.Database,
   const pinned = new Set((db.prepare('SELECT DISTINCT group_id FROM synced_group_pins ORDER BY group_id').all() as Array<{ group_id: string }>).map(row => row.group_id))
   const archives = db.prepare("SELECT key,value,updated_at FROM app_settings WHERE key LIKE 'sync.webdav.protocol5.exchange-history-index.v1.%' ORDER BY key").all() as
     Array<{ key: string; value: string; updated_at: string }>
+  const deletionPins: TombstonePinFact[] = (db.prepare('SELECT group_id,kind,pin_id FROM synced_group_pins ORDER BY group_id,kind,pin_id').all() as Array<{group_id:string;kind:string;pin_id:string}>)
+    .map(row => ({ groupId: row.group_id, kind: row.kind, pinId: row.pin_id, sourceHash: publicationHash(publicationJson(row)) }))
   const referencedRows = new Set<string>()
   const archiveReceipts = new Map<string, ExchangeReceipt>()
   const operationRows = db.prepare("SELECT client_operation_id,result_json FROM synced_operations WHERE json_extract(result_json,'$.kind')='synced-exchange-operation'").all() as Array<{ client_operation_id: string; result_json: string }>
@@ -127,6 +141,7 @@ export function readSyncedExchangeLocal(db: Database.Database,
       'sync.webdav.protocol5.exchange-history-row.v1.' + archive.operationId + '.' + archive.groupId + '.') as Array<{ key: string }>).map(item => item.key)
     if (publicationJson(actualKeys) !== publicationJson(keys.sort())) return publicationInvalid('exchange archive row闭集不符。')
     pinned.add(archive.groupId)
+    deletionPins.push({ groupId: archive.groupId, kind: 'exchange-history-archive', pinId: row.key, sourceHash: publicationHash(row.value) })
   }
   // Bidirectional closure: deleting a whole index+row set must not silently erase its historical denial/pin evidence.
   const archiveIndexes = new Map(archives.map(row => [row.key, row]))
@@ -174,10 +189,11 @@ export function readSyncedExchangeLocal(db: Database.Database,
     const key = record.kind === 'databases' ? 'databases' : record.kind === 'document' ? 'doc:' + record.id : 'group:' + record.id
     keyGuards[key] = publicationHash(publicationJson({ record, owners: owners.get(key) ?? [], guards: (parts.get(key) ?? []).sort(), group: groups.get(record.id) ?? null }))
   }
+  for (const [key, proof] of logicalDeletions) keyGuards[key] = publicationHash(publicationJson(proof))
   return { snapshot: legacy.snapshot, identities: [...legacy.identities.values()], occupiedDocumentIds: [...legacy.historyDocuments].sort(),
     historyComponents, pinnedGroupIds: [...pinned].sort(), initialBaseline: legacy.baseline,
     state: state?.value ?? null, stateRaw: state?.raw ?? null,
-    knownGroupIds: [...legacy.groupIds].sort(), keyGuards,
+    knownGroupIds: [...legacy.groupIds].sort(), keyGuards, deletionPins,
     fingerprint: publicationHash(publicationJson({ snapshot: legacy.snapshot.localFingerprint, keyGuards, identities: [...legacy.identities.values()], history, state: state?.raw ?? null, archives,
       hostCuts: [...hostCuts.values()].sort((a, b) => a.historyToken < b.historyToken ? -1 : a.historyToken > b.historyToken ? 1 : 0) })) }
 }

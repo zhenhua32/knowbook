@@ -5,6 +5,8 @@ import { validateSyncedWorkspaceGraph } from '../../shared/syncedBlockGraph'
 import { assertSyncedBlockSchema } from './synced-schema'
 import { assertSyncedLifecycleCoverage, readSyncedGroupLifecycles, syncedLifecycleSemanticHash } from './synced-lifecycle-state'
 import { getSyncedGroupSnapshots } from './synced-blocks-read'
+import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-read'
+import type { SyncedLogicalDeletionProof } from '../sync/synced-logical-deletion-model'
 import { readStrictHostDocument } from './synced-host-document-read'
 import { assertSyncedStoredBindings } from './synced-block-links'
 import { SYNC_TABLE_COLUMNS, SYNC_TABLES, type SyncDatabases } from '../sync/model'
@@ -18,6 +20,7 @@ export interface SyncedPublicationLocalSnapshot {
   workspaceScope: string; recoveryEpoch: string; localFingerprint: string; catalogId: string
   records: InitialPublicationRecord[]
   groups: Array<{ wire: SyncedGroupWire; revision: string; topologyRevision: string; semanticHash: string }>
+  deletions?: SyncedLogicalDeletionProof[]
 }
 type Identity = { workspaceScope: string; recoveryEpoch: string }
 type Capture = { db: Database.Database; snapshot: SyncedPublicationLocalSnapshot }
@@ -57,6 +60,7 @@ export function readSyncedPersistentPublicationSnapshot(db: Database.Database): 
   const foreignKeys = db.pragma('foreign_key_check')
   if (!Array.isArray(foreignKeys) || foreignKeys.length) return publicationInvalid('完整数据库存在外键损坏。')
   const context = identity(db)
+  const deleted = assertSyncedLogicalDeletionRecords(db)
   const ids = (db.prepare('SELECT id FROM synced_groups ORDER BY id').all() as Array<{ id: unknown }>).map(row => {
     if (!isSyncedUuid(row.id)) return publicationInvalid('真实同步组身份无效。'); return row.id
   })
@@ -74,7 +78,7 @@ export function readSyncedPersistentPublicationSnapshot(db: Database.Database): 
         const body = wire(item.snapshot)
         groups.push({ wire: body, revision: item.snapshot.revision, topologyRevision: item.snapshot.topologyRevision, semanticHash: syncedLifecycleSemanticHash(body) })
         snapshots.push(item.snapshot)
-      } else if (life.get(item.groupId)?.state !== 'retired-create') return publicationInvalid('真实活动组不能被丢成 missing。')
+      } else if (life.get(item.groupId)?.state !== 'retired-create' && !deleted.has('group:' + item.groupId)) return publicationInvalid('真实活动组不能被丢成 missing。')
     }
   }
   const rows = db.prepare('SELECT id FROM documents ORDER BY id').all() as Array<{ id: unknown }>
@@ -122,8 +126,8 @@ export function readSyncedPersistentPublicationSnapshot(db: Database.Database): 
   validatePublicationCatalog(mapPublicationCatalog(orderedRecords, setting.value))
   const lifecycleContent = ids.map(id => { const item = life.get(id)!; return { groupId: id, creationId: item.creationId, state: item.state } })
   const localFingerprint = publicationHash(publicationJson({ ...context, catalogId: setting.value, records: orderedRecords, groups,
-    documentFacts, actualOwners, actualInstances, lifecycleContent }))
-  return { ...context, localFingerprint, catalogId: setting.value, records: orderedRecords, groups }
+    documentFacts, actualOwners, actualInstances, lifecycleContent, ...(deleted.size ? { deleted: [...deleted].map(([key, proof]) => [key, publicationHash(publicationJson(proof))]) } : {}) }))
+  return { ...context, localFingerprint, catalogId: setting.value, records: orderedRecords, groups, ...(deleted.size ? { deletions: [...deleted.values()] } : {}) }
 }
 export function captureSyncedPublicationSnapshot(db: Database.Database):
   { status: 'ready'; capture: SyncedPublicationCapture } | { status: 'unsupported'; reason: 'schema-27-required' | 'no-active-groups' } {

@@ -372,7 +372,8 @@ export function assertSyncedBlockSchema(db: Database.Database): void {
  * build may enable them; this reader must refuse that data before any write.
  * Remove this gate only when the complete group persistence/export is wired. */
 export function assertNoUnsupportedSyncedContent(db: Database.Database): void {
-  if (db.prepare('SELECT 1 FROM synced_groups LIMIT 1').get()) {
+  if (db.prepare('SELECT 1 FROM synced_groups LIMIT 1').get() || (db.pragma('user_version', { simple: true }) as number) >= 27
+    && db.prepare("SELECT 1 FROM synced_exposure_attempts WHERE channel='logical-deletion-denial-v1' LIMIT 1").get()) {
     throw new Error('此构建尚不支持数据库中已启用的同步块正文，请使用支持同步块的完整版本；原数据未修改。')
   }
 }

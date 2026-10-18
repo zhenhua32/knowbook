@@ -2,7 +2,10 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "allowImportingTsExtensions": true,
-    "types": ["node", "electron"]
+    "types": [
+      "node",
+      "electron"
+    ]
   },
   "include": [
     "src/main/node-worker.d.ts",
@@ -17,6 +20,8 @@
     "scripts/synced-source-checkpoint-benchmark.ts",
     "scripts/verify-schema27-legacy-readers.ts",
     "scripts/verify-synced-exchange-v1.ts",
-    "scripts/verify-synced-exchange-v2.ts"
+    "scripts/verify-synced-exchange-v2.ts",
+    "scripts/verify-synced-exchange-v3.ts",
+    "scripts/verify-synced-tombstone-legacy-readers.ts"
   ]
 }

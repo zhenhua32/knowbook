@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3'
+import { assertSyncedDocumentNotLogicallyDeleted } from './synced-logical-deletion-read'
 
 export type LiveBlockOwner = { kind: 'document' | 'group'; id: string }
 export type BlockOwner = LiveBlockOwner | { kind: 'reserved'; id: string }
@@ -63,6 +64,10 @@ export class BlockIdentityRepository {
   }
 
   assertDocumentWrite(documentId: string, ids: readonly string[]): void {
+    if ((this.db.pragma('user_version', { simple: true }) as number) >= 27) {
+      const check = () => assertSyncedDocumentNotLogicallyDeleted(this.db, documentId)
+      if (this.db.inTransaction) check(); else this.db.transaction(check)()
+    }
     const unique = new Set<string>()
     for (const id of ids) {
       if (typeof id !== 'string' || !id.trim() || unique.has(id)) throw new Error('块身份无效或重复。')

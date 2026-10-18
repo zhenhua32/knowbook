@@ -1,4 +1,6 @@
 import type Database from 'better-sqlite3'
+import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-read'
+import { LOGICAL_DELETION_CHANNEL } from '../sync/synced-logical-deletion-model'
 import { isSyncedUuid } from '../../shared/syncedBlockValidation'
 import { parseStrictJson } from '../../shared/strictJson'
 import { readSyncedGroupLifecycles, syncedLifecycleSemanticHash } from './synced-lifecycle-state'
@@ -67,6 +69,7 @@ export function readSyncedRemoteObservation(db: Database.Database, incarnation: 
 
 /** Runtime finite format, never DDL/repair. Ordinary empty publication attempts remain invalid. */
 export function assertSyncedRemoteObservationRecords(db: Database.Database): void {
+  const logical = assertSyncedLogicalDeletionRecords(db), logicalAnchors = new Set([...logical.values()].map(proof => proof.persistence.anchorId))
   const checked = new Set<string>()
   const checkKey = (key: string): void => {
     if (checked.has(key)) return
@@ -84,14 +87,15 @@ export function assertSyncedRemoteObservationRecords(db: Database.Database): voi
       || proof.local.state !== 'retired-create') return observationCorrupt('退休观察锚未被原退休首证准确引用')
   }
   for (const row of db.prepare(`SELECT a.id,a.channel FROM synced_exposure_attempts a WHERE NOT EXISTS(
-    SELECT 1 FROM synced_group_exposure_members m WHERE m.attempt_id=a.id)`).iterate() as Iterable<{ id: string; channel: string }>) {
+    SELECT 1 FROM synced_group_exposure_members m WHERE m.attempt_id=a.id)`).all() as Array<{ id: string; channel: string }>) {
+    if (row.channel === LOGICAL_DELETION_CHANNEL && logicalAnchors.has(row.id)) continue
     if (row.channel !== SYNCED_RETIRED_OBSERVATION_CHANNEL || !row.id.startsWith(SYNCED_OBSERVATION_PREFIX)) {
       throw new Error('同步块 schema27 存在没有准确参与组的发布记录；不会丢弃可能曝光证据。')
     }
     checkRetiredAnchor(row.id)
   }
-  for (const row of db.prepare('SELECT id FROM synced_exposure_attempts WHERE channel=?').iterate(SYNCED_RETIRED_OBSERVATION_CHANNEL) as Iterable<{ id: string }>) checkRetiredAnchor(row.id)
-  for (const row of db.prepare(`SELECT a.id,m.group_id,m.creation_id FROM synced_exposure_attempts a LEFT JOIN synced_group_exposure_members m ON m.attempt_id=a.id WHERE a.channel=?`).iterate(SYNCED_OBSERVATION_CHANNEL) as Iterable<{ id: string; group_id: string | null; creation_id: string | null }>) {
+  for (const row of db.prepare('SELECT id FROM synced_exposure_attempts WHERE channel=?').all(SYNCED_RETIRED_OBSERVATION_CHANNEL) as Array<{ id: string }>) checkRetiredAnchor(row.id)
+  for (const row of db.prepare(`SELECT a.id,m.group_id,m.creation_id FROM synced_exposure_attempts a LEFT JOIN synced_group_exposure_members m ON m.attempt_id=a.id WHERE a.channel=?`).all(SYNCED_OBSERVATION_CHANNEL) as Array<{ id: string; group_id: string | null; creation_id: string | null }>) {
     if (!isSyncedUuid(row.id) || !isSyncedUuid(row.group_id) || !isSyncedUuid(row.creation_id)) return observationCorrupt('active observed attempt 失去原准确成员')
     const key = observationKey({ groupId: row.group_id, creationId: row.creation_id })
     checkKey(key)
@@ -102,7 +106,7 @@ export function assertSyncedRemoteObservationRecords(db: Database.Database): voi
   }
   // The stable primary-key range checks orphan markers without parsing ordinary ACKs.
   const end = SYNCED_OBSERVATION_PREFIX.slice(0, -1) + ';'
-  for (const row of db.prepare('SELECT client_operation_id FROM synced_operations WHERE client_operation_id>=? AND client_operation_id<?').iterate(SYNCED_OBSERVATION_PREFIX, end) as Iterable<{ client_operation_id: string }>) checkKey(row.client_operation_id)
+  for (const row of db.prepare('SELECT client_operation_id FROM synced_operations WHERE client_operation_id>=? AND client_operation_id<?').all(SYNCED_OBSERVATION_PREFIX, end) as Array<{ client_operation_id: string }>) checkKey(row.client_operation_id)
 }
 
 export function hasSyncedRemoteObservationForCreate(db: Database.Database, incarnation: SyncedObservedIncarnation): boolean {

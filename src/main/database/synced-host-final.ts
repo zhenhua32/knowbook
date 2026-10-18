@@ -24,6 +24,7 @@ import { isHostMoveInput, planSyncedHostMove, assertSyncedHostMoveContext, Unsup
 import { captureSyncedCreateSourceFacts, createPhysicalKey, createRawHash, isHostCreateInput, planSyncedHostCreate, projectSyncedCreateLinks, UnsupportedSyncedHostCreate, type HostCreateInput } from './synced-host-create-plan'
 import { decodeHostCreateJournal, encodeHostCreateJournal, validateCreatedLifecycleSide, type HostCreateJournal, type CreatedLifecycleSide, type SyncedHostCreateApplied } from './synced-host-create-codec'
 import { readSyncedGroupLifecycles } from './synced-lifecycle-state'
+import { isSyncedGroupLogicallyDeleted, assertSyncedDocumentNotLogicallyDeleted } from './synced-logical-deletion-read'
 import { assertSyncedStoredBindings, captureSyncedCreateBindings } from './synced-block-links'
 export type { SyncedHostCreateApplied } from './synced-host-create-codec'
 
@@ -70,7 +71,10 @@ function receipt(db: Database.Database, result: SyncedStructureApplied, requestH
     .run(result.operationId, requestHash, hostEncode({ kind: 'synced-host-operation', version: 1, result: exact }), now)
   return exact
 }
-function host(db: Database.Database, id: string): StrictHostDocument { return readStrictHostDocument(db, id) ?? missing('document', id) }
+function host(db: Database.Database, id: string): StrictHostDocument {
+  assertSyncedDocumentNotLogicallyDeleted(db, id)
+  return readStrictHostDocument(db, id) ?? missing('document', id)
+}
 function readAllHosts(db: Database.Database): Hosts {
   const result: Hosts = new Map()
   for (const row of db.prepare('SELECT id FROM documents ORDER BY id').all() as Array<{ id: string }>) result.set(row.id, host(db, row.id))
@@ -491,6 +495,7 @@ function createReceipt(db: Database.Database, value: SyncedHostCreateApplied, re
   return exact
 }
 function createLifeSide(db: Database.Database, journal: HostCreateJournal, token: string): CreatedLifecycleSide {
+  if (isSyncedGroupLogicallyDeleted(db, journal.create.wire.id)) unsupported('lifecycle')
   const groupId = journal.create.wire.id, state = readSyncedGroupLifecycles(db, [groupId]).get(groupId)
   const row = db.prepare('SELECT revision,topology_revision,bindings_json,history_cursor,history_position FROM synced_groups WHERE id=?').get(groupId) as { revision: string; topology_revision: string; bindings_json: string; history_cursor: string; history_position: number } | undefined
   if (!state || !row || state.exposure !== 'never' || state.createHistoryId !== token || state.creationId !== journal.create.wire.creationId
@@ -615,6 +620,7 @@ function checkCreateOriginalIdentities(db: Database.Database, journal: HostCreat
   }
 }
 function assertCreateObservationAllowsInverse(db: Database.Database, journal: HostCreateJournal): void {
+  if (isSyncedGroupLogicallyDeleted(db, journal.create.wire.id)) unsupported('lifecycle')
   const observed = journal.create.wire
   if (hasSyncedRemoteObservationForCreate(db, { groupId: observed.id, creationId: observed.creationId,
     createdAt: observed.createdAt, origin: observed.origin })) unsupported('lifecycle')

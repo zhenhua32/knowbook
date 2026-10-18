@@ -43,6 +43,11 @@ import { deriveBothComponents, planSyncedBothExchange, type BothExchangePlan } f
 import { describeSyncedBothComponent, planSyncedBothFork } from './synced-exchange-fork'
 import { captureSyncedCreateSourceFacts } from '../database/synced-host-create-plan'
 import { readSyncedBothPreviewIndex, readSyncedBothIdentityCollisions } from '../database/synced-exchange-both-read'
+import { planSyncedTombstoneExchange } from './synced-exchange-tombstone-plan'
+import type { TombstoneExchangePlan, TombstoneExchangeState, TombstonePlanInput } from './synced-exchange-tombstone-types'
+import { assertSyncedLogicalDeletionRecords } from '../database/synced-logical-deletion-read'
+import { LOGICAL_DELETION_CHANNEL, validateSyncedLogicalDeletionProof, logicalDeletionAnchorId, logicalDeletionRequestHash,
+  logicalDeletionProofReference, type SyncedLogicalDeletionProof } from './synced-logical-deletion-model'
 
 export type { SyncedExchangeBothPreviewInput, SyncedExchangeBothResolveInput, SyncedExchangeBothPreviewResult, SyncedExchangeBothResult } from './synced-exchange-both-types'
 export type { SyncedExchangeResult } from './synced-exchange-model'
@@ -51,19 +56,23 @@ export interface SyncedExchangeRuntime { password: string; signal?: AbortSignal 
 export interface SyncedExchangeConflictPreviewInput { previewId: string; userDataRoot: string; target: WebDavSyncConfig }
 export interface SyncedExchangeConflictResolveInput extends SyncedExchangeInput { previewId: string; decisions: C.SyncedExchangeConflictDecision[] }
 export type { SyncedExchangeConflictPreviewResult, SyncedExchangeConflictDecision } from './synced-exchange-conflict-model'
-type RuntimePlan = ExchangePlan | BothExchangePlan
+type TombstoneRuntimePlan = TombstoneExchangePlan & { localFinal: SyncedProtocol5Snapshot }
+type RuntimePlan = ExchangePlan | BothExchangePlan | TombstoneRuntimePlan
+type Engine = 1 | 2 | 3 | 4
 type BothSource = { resolution: B.BothResolution; selections: B.BothPrivateSelection[] }
 type Context = { root: string; databasePath: string; target: WebDavSyncConfig; request: M.ExchangeRequest;
   workspaceScope: string; recoveryEpoch: string; initialTargetFingerprint: string;
   resolution: C.ExchangeResolutionBinding | null; selections: NonNullable<ExchangePlanInput['conflictSelections']>; both: BothSource | null }
 type Prepared = { context: Context; local: SyncedExchangeLocal; localMaterial: SyncedExchangeLocalMaterial;
   localWire: SyncedProtocol5Snapshot; source: SyncedExchangeRemoteSource; remote: SyncedExchangeRemoteFacts;
-  state: M.ExchangeState; baseRecords: SyncedProtocol5Snapshot['records']; plan: RuntimePlan; planningAuthority: ReturnType<typeof authority>; engine: 1 | 2 | 3; bothLinks: T.SyncedBothOwnerSourceLinks[] }
-type Spool = { directory: string; job: M.ExchangeJob; plan: RuntimePlan; state: M.ExchangeState;
+  state: M.AnyExchangeState; baseRecords: SyncedProtocol5Snapshot['records']; plan: RuntimePlan; planningAuthority: ReturnType<typeof authority>; engine: Engine; bothLinks: T.SyncedBothOwnerSourceLinks[];
+  localPhysical?: SyncedProtocol5Snapshot }
+type Spool = { directory: string; job: M.ExchangeJob; plan: RuntimePlan; state: M.AnyExchangeState;
   localFingerprint: string; manifest: Buffer; records: SyncedProtocol5Snapshot['records']; objects: Map<string, Buffer>; assets: Map<string, Buffer>;
   planning: { local: SyncedProtocol5Snapshot; remote: SyncedProtocol5Snapshot; baseRecords: SyncedProtocol5Snapshot['records'];
     authority: ReturnType<typeof authority>; keyGuards: Record<string, string>; stateRaw: string | null;
-    engine: 1 | 2 | 3; conflictSelections: NonNullable<ExchangePlanInput['conflictSelections']>; bothSelections: B.BothPrivateSelection[]; bothLinks: T.SyncedBothOwnerSourceLinks[] } }
+    engine: Engine; conflictSelections: NonNullable<ExchangePlanInput['conflictSelections']>; bothSelections: B.BothPrivateSelection[]; bothLinks: T.SyncedBothOwnerSourceLinks[];
+    localPhysical?: SyncedProtocol5Snapshot; remoteClosureHash?: string } }
 type Head = { kind: 'synced-exchange-job-head'; version: 1; operationId: string; requestHash: string;
   attemptId: string; attemptIndex: number; jobHash: string }
 const running = new Set<string>()
@@ -131,6 +140,22 @@ function wire(records: readonly SyncedProtocol5Record[], workspaceId: string): S
   }) : []).sort((a, b) => publicationCompare(a.documentId, b.documentId) || publicationCompare(a.instanceId, b.instanceId))
   return validateSyncedProtocol5Snapshot({ version: 5, workspaceId, entries, syncedInstances }, records.map(record => ({ key: syncedProtocol5RecordKey(record), record })))
 }
+function legacyState(state: M.AnyExchangeState): M.ExchangeState {
+  if (state.version === 1) return state
+  return M.validateExchangeState({ ...state, version: 1, baseline: state.baseline.map(row => {
+    if (row.local.kind !== 'live') return unavailable('旧冲突/分叉格式不能重解释已接受删除知识；不授复活写权。')
+    return { key: row.key, localHash: row.local.hash, remoteHash: row.remoteHash, commonHash: row.commonHash,
+      dependencyKeys: row.dependencyKeys, dependencySignature: row.dependencySignature, acceptedOperationId: row.acceptedOperationId }
+  }) })
+}
+function knowledge(physical: SyncedProtocol5Snapshot, local: SyncedExchangeLocal): SyncedProtocol5Snapshot {
+  return wire([...physical.records.map(row => row.record), ...(local.snapshot.deletions ?? []).map(proof => proof.deletion)], physical.manifest.workspaceId)
+}
+function makeTombstonePlan(input: TombstonePlanInput): TombstoneRuntimePlan {
+  const plan = planSyncedTombstoneExchange(input)
+  // Private execution view only; the pure planner's own planHash is unchanged.
+  return { ...plan, localFinal: plan.localPhysicalFinal }
+}
 function fromRemote(remote: SyncedExchangeRemoteFacts): SyncedProtocol5Snapshot {
   return validateSyncedProtocol5Snapshot(remote.manifest, remote.records.map(item => ({ key: item.key, record: item.record })))
 }
@@ -166,7 +191,7 @@ function seedState(c: Context, source: M.ExchangeSeedProof, base: SyncedProtocol
       dependencyKeys: edges.get(item.key)!.dependencyKeys, dependencySignature: edges.get(item.key)!.dependencySignature,
       acceptedOperationId: source.operationId ?? c.request.operationId })).sort((a, b) => publicationCompare(a.key, b.key)), deferred: [], lastSyncAt: now })
 }
-async function bases(c: Context, state: M.ExchangeState, local: SyncedProtocol5Snapshot, remote: SyncedProtocol5Snapshot,
+async function bases(c: Context, state: M.AnyExchangeState, local: SyncedProtocol5Snapshot, remote: SyncedProtocol5Snapshot,
   client: WebDavClient, original?: SyncedProtocol5Snapshot): Promise<{ records: SyncedProtocol5Snapshot['records']; missing: string[] }> {
   const records: SyncedProtocol5Snapshot['records'] = [], missing: string[] = []
   const available = new Map([...(original?.records ?? []), ...local.records, ...remote.records].map(item => [publicationJson([item.key, item.hash]), item.record]))
@@ -186,7 +211,7 @@ async function bases(c: Context, state: M.ExchangeState, local: SyncedProtocol5S
 }
 async function initialState(c: Context, local: SyncedExchangeLocal, localWire: SyncedProtocol5Snapshot,
   remote: SyncedProtocol5Snapshot): Promise<{ state: M.ExchangeState; original?: SyncedProtocol5Snapshot }> {
-  if (local.state) return { state: local.state }
+  if (local.state) return { state: legacyState(local.state) }
   if (local.initialBaseline) {
     const original = local.initialBaseline
     if (original.result.workspaceScope !== c.workspaceScope || original.result.recoveryEpoch !== c.recoveryEpoch
@@ -228,16 +253,27 @@ function authority(local: SyncedExchangeLocal, missingBaseKeys: string[], deferr
     historyComponents: local.historyComponents, pinnedGroupIds: local.pinnedGroupIds, knownGroupIds: local.knownGroupIds, missingBaseKeys, deferredKeys,
     keyGuards: Object.entries(local.keyGuards).map(([key, fingerprint]) => ({ key, fingerprint })) }
 }
+function deletionAuthority(local: SyncedExchangeLocal, missingBaseKeys: string[], deferredKeys: string[] = []) {
+  return { ...authority(local, missingBaseKeys, deferredKeys), pins: local.deletionPins,
+    deletedFacts: (local.snapshot.deletions ?? []).map(proof => ({ key: proof.key, tombstoneHash: proof.tombstoneHash,
+      deletionOperationId: proof.application.operationId, intentHash: proof.intentHash })) }
+}
 function makePlan(input: ExchangePlanInput, engine: 1 | 2 | 3, selections: B.BothPrivateSelection[] = [], links: T.SyncedBothOwnerSourceLinks[] = []): RuntimePlan {
   return engine === 1 ? planSyncedExchangeV1(input) : engine === 2 ? planSyncedExchange(input) : planSyncedBothExchange(input, selections, links)
 }
-async function prepare(db: Database.Database, c: Context, runtime: SyncedExchangeRuntime, deferredKeys: string[] = [], engine: 1 | 2 | 3 = 2): Promise<Prepared | M.SyncedExchangeResult> {
-  const loaded = await readObservedSyncedProtocol5(db, { userDataRoot: c.root, target: c.target }, runtime)
-  if (loaded.status !== 'ready') return loaded
-  const source = loaded.source, remote = readObservedSyncedProtocol5Facts(source)
+type PrivatePreparedRead = { source: SyncedExchangeRemoteSource; localMaterial: SyncedExchangeLocalMaterial; local: SyncedExchangeLocal }
+async function prepare(db: Database.Database, c: Context, runtime: SyncedExchangeRuntime, deferredKeys: string[] = [], engine: Engine = 2, captured?: PrivatePreparedRead): Promise<Prepared | M.SyncedExchangeResult> {
+  if (engine === 4) return prepareTombstone(db, c, runtime, deferredKeys)
+  let source = captured?.source
+  if (!source) {
+    const loaded = await readObservedSyncedProtocol5(db, { userDataRoot: c.root, target: c.target }, runtime)
+    if (loaded.status !== 'ready') return loaded
+    source = loaded.source
+  }
+  const remote = readObservedSyncedProtocol5Facts(source)
   if (!remote) return unavailable('真实remote source已经失效。')
-  const localMaterial = await materializeSyncedExchangeLocal(db, { userDataRoot: c.root, target: c.target })
-  const material = readSyncedExchangeLocalMaterial(localMaterial), local = capture(db, c)
+  const localMaterial = captured?.localMaterial ?? await materializeSyncedExchangeLocal(db, { userDataRoot: c.root, target: c.target })
+  const material = readSyncedExchangeLocalMaterial(localMaterial), local = captured?.local ?? capture(db, c)
   if (!material || material.snapshot.localFingerprint !== local.snapshot.localFingerprint) return { status: 'stale', side: 'local' }
   const localWire = wire(material.records, c.workspaceScope), remoteWire = fromRemote(remote)
   const initialized = await initialState(c, local, localWire, remoteWire)
@@ -286,6 +322,55 @@ async function prepare(db: Database.Database, c: Context, runtime: SyncedExchang
     baseRecords: common.records, state, localFingerprint: local.fingerprint, authority: planningAuthority,
     ...(engine === 2 ? {conflictSelections:c.selections} : {}) },engine,c.both?.selections??[],bothLinks)
   return { context: c, local, localMaterial, localWire, source, remote, state, baseRecords: common.records, plan, planningAuthority, engine, bothLinks }
+}
+async function prepareTombstone(db: Database.Database, c: Context, runtime: SyncedExchangeRuntime, deferredKeys: string[], selectLegacyLive = false): Promise<Prepared | M.SyncedExchangeResult> {
+  const loaded = await readObservedSyncedProtocol5(db, { userDataRoot: c.root, target: c.target }, runtime)
+  if (loaded.status !== 'ready') return loaded
+  const source = loaded.source, remote = readObservedSyncedProtocol5Facts(source)
+  if (!remote) return unavailable('真实remote source已经失效。')
+  const localMaterial = await materializeSyncedExchangeLocal(db, { userDataRoot: c.root, target: c.target }), material = readSyncedExchangeLocalMaterial(localMaterial), local = capture(db, c)
+  if (!material || material.snapshot.localFingerprint !== local.snapshot.localFingerprint) return { status: 'stale', side: 'local' }
+  const localPhysical = wire(material.records, c.workspaceScope), localWire = knowledge(localPhysical, local), remoteWire = fromRemote(remote)
+  // Only a new, unregistered automatic operation may select its original live
+  // format. Reuse the very same private reader/material handles: no second GET,
+  // observer completion or new race window is introduced by this dispatch.
+  const needsTombstones = local.state?.version === 2 || Boolean(local.snapshot.deletions?.length) || !local.snapshot.groups.length
+    || remoteWire.records.some(row => row.record.kind === 'deleted' || row.record.kind === 'synced-group-deleted')
+  if (selectLegacyLive && !needsTombstones) return prepare(db,c,runtime,deferredKeys,2,{source,localMaterial,local})
+  const initialized = local.state ? { state: local.state, original: undefined } : await initialState(c, local, localPhysical, remoteWire)
+  let state = initialized.state.version === 2 ? initialized.state : M.liftTombstoneExchangeState(initialized.state)
+  const common = await bases(c, state, localWire, remoteWire, new WebDavClient(c.target, runtime.password, runtime.signal), initialized.original)
+  if (!local.state && state.source.kind === 'initial-receipt') {
+    if (common.missing.length) { const all = state.baseline.map(row => row.key)
+      state = M.validateTombstoneExchangeState({ ...state, baseline: state.baseline.map(row => ({ ...row, dependencyKeys: all.filter(key => key !== row.key),
+        dependencySignature: publicationHash(publicationJson({ unknownOriginalClosure: state.source.manifestHash, key: row.key, all })) })) })
+    } else {
+      const original = validateSyncedProtocol5Snapshot(local.initialBaseline!.manifest, common.records.map(item => ({ key: item.key, record: item.record })))
+      state = M.liftTombstoneExchangeState(seedState(c, state.source, original))
+    }
+  }
+  if (local.state && state.source.kind !== 'current-equality') {
+    let original: SyncedProtocol5Snapshot | undefined
+    if (state.source.kind === 'confirmed-publication') {
+      const seeds = await readConfirmedSyncedPublicationSeeds(db, { userDataRoot: c.root, target: c.target }), seed = seeds.find(row => row.operationId === state.source.operationId)
+      if (!seed || publicationHash(publicationJson(seed.manifest)) !== state.source.manifestHash) return publicationInvalid('删除planner原confirmed seed缺失/被改。')
+      original = validateSyncedProtocol5Snapshot(seed.manifest, seed.records.map(row => ({ key: row.key, record: row.record })))
+    } else if (!local.initialBaseline || local.initialBaseline.result.operationId !== state.source.operationId || local.initialBaseline.result.manifestHash !== state.source.manifestHash)
+      return publicationInvalid('删除planner原initial seed缺失/被改。')
+    else {
+      const values = common.records.filter(row => local.initialBaseline!.manifest.entries[row.key] === row.hash)
+      if (values.length === Object.keys(local.initialBaseline.manifest.entries).length) original = validateSyncedProtocol5Snapshot(local.initialBaseline.manifest, values.map(row => ({ key: row.key, record: row.record })))
+    }
+    if (original) {
+      const expected = new Map(M.liftTombstoneExchangeState(seedState(c, state.source, original)).baseline.map(row => [row.key, row]))
+      for (const row of state.baseline) if (row.acceptedOperationId === state.source.operationId && !same(row, expected.get(row.key))) return publicationInvalid('删除baseline冒借/修改原seed事实。')
+    } else if (state.baseline.some(row => row.acceptedOperationId === state.source.operationId)) common.missing.push(...state.baseline.map(row => row.key))
+  }
+  if (capture(db, c).fingerprint !== local.fingerprint) return { status: 'stale', side: 'local' }
+  const planningAuthority = deletionAuthority(local, sort(common.missing), deferredKeys)
+  const plan = makeTombstonePlan({ operationId: c.request.operationId, localPhysical, localKnowledge: localWire, remote: remoteWire, baseRecords: common.records,
+    state, localFingerprint: local.fingerprint, authority: planningAuthority })
+  return { context: c, local, localMaterial, localWire, localPhysical, source, remote, state, baseRecords: common.records, plan, planningAuthority, engine: 4, bothLinks: [] }
 }
 function directory(c: Context, attemptId: string): string { return join(c.root, 'storage', 'synced-exchanges-v1', c.request.operationId, attemptId) }
 async function durable(file: string, bytes: Uint8Array): Promise<void> {
@@ -343,6 +428,11 @@ function phase(db: Database.Database, job: M.ExchangeJob, value: M.ExchangeJobPh
     previousFactHash: publicationHash(publicationJson(last)), phase: value, remoteEtag, recordedAt: new Date().toISOString(), ...(job.version === 3 ? { blocked } : {}) })
   putImmutable(db, M.exchangeJobPhaseKey(job.request.operationId, job.attemptId, fact.sequence), fact, fact.recordedAt)
 }
+function storedRuntimePlan(plan: RuntimePlan): unknown {
+  const snapshot = (value: SyncedProtocol5Snapshot) => ({ manifest: value.manifest, records: value.records })
+  return { ...plan, nextRemote: snapshot(plan.nextRemote), localFinal: snapshot(plan.localFinal),
+    ...('localKnowledgeFinal' in plan ? { localKnowledgeFinal: snapshot(plan.localKnowledgeFinal), localPhysicalFinal: snapshot(plan.localPhysicalFinal) } : {}) }
+}
 async function spool(prepared: Prepared, parent: Head | null): Promise<Spool> {
   const { context: c, plan, local, remote } = prepared, attemptId = randomUUID(), now = new Date().toISOString()
   const records = plan.nextRemote.records, manifest = Buffer.from(publicationJson(plan.nextRemote.manifest)), objects = new Map<string, Buffer>(), assets = new Map<string, Buffer>()
@@ -369,15 +459,17 @@ async function spool(prepared: Prepared, parent: Head | null): Promise<Spool> {
     remote: fromRemote(remote), state: prepared.state, baseRecords: prepared.baseRecords, authority: prepared.planningAuthority,
     keyGuards: local.keyGuards, stateRaw: local.stateRaw, plan,
     ...(prepared.engine === 2 ? {plannerVersion:'conflicts-v1',resolution:c.resolution,conflictSelections:c.selections}: {}),
+    ...(prepared.engine === 4 ? {plannerVersion:'tombstones-v1',localPhysical:prepared.localPhysical,remoteClosureHash:remote.closureHash}: {}),
     ...(prepared.engine === 3 ? {plannerVersion:'forks-v1',resolution:c.both!.resolution,bothSelections:storedBothSelections(c.both!.selections),bothLinks:prepared.bothLinks}: {}) }
   // assetNames is a Map and never crosses a JSON boundary. Full snapshots are reconstructed strictly on load.
   const storedInputs = { ...inputs, local: { manifest: inputs.local.manifest, records: inputs.local.records }, remote: { manifest: inputs.remote.manifest, records: inputs.remote.records },
-    plan: { ...plan, nextRemote: { manifest: plan.nextRemote.manifest, records: plan.nextRemote.records }, localFinal: { manifest: plan.localFinal.manifest, records: plan.localFinal.records } } }
+    plan: storedRuntimePlan(plan), ...(prepared.engine === 4 && prepared.localPhysical ? { localPhysical: { manifest: prepared.localPhysical.manifest, records: prepared.localPhysical.records } } : {}) }
   const inputBytes = Buffer.from(publicationJson(storedInputs)), spoolHash = publicationHash(publicationJson({ inputHash: publicationHash(inputBytes), descriptor }))
   const job = M.validateExchangeJob({ kind: 'synced-exchange-job', version: prepared.engine, request: c.request, requestHash: M.exchangeRequestHash(c.request),
     attemptId, parentAttemptId: parent?.attemptId ?? null, attemptIndex: parent ? parent.attemptIndex + 1 : 0, workspaceScope: c.workspaceScope,
     recoveryEpoch: c.recoveryEpoch, remoteWorkspaceId: remote.manifest.workspaceId, source: prepared.state.source, descriptor, components: plan.components, spoolHash, preparedAt: now,
     ...(prepared.engine === 2 ? {plannerVersion:'conflicts-v1',resolution:c.resolution,merges:plan.merges??[]}: {}),
+    ...(prepared.engine === 4 ? {plannerVersion:'tombstones-v1',merges:plan.merges??[],deletions:'deletions'in plan?plan.deletions:[]}: {}),
     ...(prepared.engine === 3 ? {plannerVersion:'forks-v1',resolution:c.both!.resolution,merges:plan.merges??[],forks:'forks' in plan ? plan.forks : []}: {}) })
   const dir = directory(c, attemptId); safe(dir, c.root); await mkdir(join(dir, 'objects'), { recursive: true, mode: 0o700 }); await mkdir(join(dir, 'assets'), { mode: 0o700 }); safe(dir, c.root)
   await durable(join(dir, 'inputs.json'), inputBytes); await durable(join(dir, 'manifest.json'), manifest)
@@ -386,7 +478,8 @@ async function spool(prepared: Prepared, parent: Head | null): Promise<Spool> {
   await durable(join(dir, 'job.json'), Buffer.from(publicationJson(job))); await durable(join(dir, 'ready.json'), Buffer.from(publicationJson({ jobHash: M.exchangeJobHash(job), spoolHash }))); await syncDirectory(dir)
   return { directory: dir, job, plan, state: prepared.state, localFingerprint: local.fingerprint, manifest, records, objects, assets,
     planning: { local: prepared.localWire, remote: fromRemote(remote), baseRecords: prepared.baseRecords, authority: prepared.planningAuthority, keyGuards: local.keyGuards, stateRaw: local.stateRaw,
-      engine:prepared.engine,conflictSelections:prepared.engine===2?c.selections:[],bothSelections:prepared.engine===3?c.both!.selections:[],bothLinks:prepared.bothLinks } }
+      engine:prepared.engine,conflictSelections:prepared.engine===2?c.selections:[],bothSelections:prepared.engine===3?c.both!.selections:[],bothLinks:prepared.bothLinks,
+      ...(prepared.engine===4?{localPhysical:prepared.localPhysical,remoteClosureHash:remote.closureHash}: {}) } }
 }
 function registerJob(db: Database.Database, c: Context, spool: Spool, parent: Head | null): boolean {
   return db.transaction(() => {
@@ -419,7 +512,7 @@ async function loadSpool(db: Database.Database, c: Context, head: Head): Promise
   if (!same(savedJob, job) || ready.jobHash !== head.jobHash || ready.spoolHash !== job.spoolHash) return publicationInvalid('exchange原spool/job原bytes已变。')
   const inputBytes = await read('inputs.json'), input = M.parseExchangeStored(inputBytes.toString('utf8'))
   assertSyncedShape(input, ['kind', 'version', 'request', 'target', 'local', 'remote', 'state', 'baseRecords', 'authority', 'keyGuards', 'stateRaw', 'plan',
-    ...(job.version===2?['plannerVersion','resolution','conflictSelections']:job.version===3?['plannerVersion','resolution','bothSelections','bothLinks']:[])])
+    ...(job.version===2?['plannerVersion','resolution','conflictSelections']:job.version===3?['plannerVersion','resolution','bothSelections','bothLinks']:job.version===4?['plannerVersion','localPhysical','remoteClosureHash']:[])])
   if (input.kind !== 'synced-exchange-private-inputs' || input.version !== job.version || !same(input.request, c.request) || !same(input.target, c.target)
     || publicationHash(publicationJson({ inputHash: publicationHash(inputBytes), descriptor: job.descriptor })) !== job.spoolHash) return publicationInvalid('exchange原spoolinput认证失败。')
   const decodeSnapshot = (value: unknown): SyncedProtocol5Snapshot => {
@@ -428,24 +521,33 @@ async function loadSpool(db: Database.Database, c: Context, head: Head): Promise
       if (typeof raw.key !== 'string' || typeof raw.hash !== 'string' || publicationHash(publicationJson(raw.record)) !== raw.hash) return publicationInvalid('exchange原snapshot hash不符。')
       return { key: raw.key, record: raw.record } }))
   }
-  const local = decodeSnapshot(input.local), remote = decodeSnapshot(input.remote), state = M.validateExchangeState(input.state)
+  const local = decodeSnapshot(input.local), remote = decodeSnapshot(input.remote), state = M.validateAnyExchangeState(input.state)
   if (!Array.isArray(input.baseRecords)) return publicationInvalid('exchange原B records无效。')
   const baseRecords = input.baseRecords.map(raw => { assertSyncedShape(raw, ['key', 'hash', 'record'])
     if (typeof raw.key !== 'string' || typeof raw.hash !== 'string') return publicationInvalid('exchange原B key/hash无效。')
     return { key: raw.key, hash: raw.hash, record: validateSyncedProtocol5Record(raw.record, raw.key) } })
-  assertSyncedShape(input.authority, ['catalogId', 'identities', 'occupiedDocumentIds', 'historyComponents', 'pinnedGroupIds', 'knownGroupIds', 'missingBaseKeys', 'deferredKeys'], ['keyGuards'])
+  assertSyncedShape(input.authority, ['catalogId', 'identities', 'occupiedDocumentIds', 'historyComponents', 'pinnedGroupIds', 'knownGroupIds', 'missingBaseKeys', 'deferredKeys', ...(job.version===4?['deletedFacts','pins']:[])], ['keyGuards'])
   // The authority was minted only by this module's original real capture and is authenticated by both immutable DB job and private spool hash.
   const originalAuthority = input.authority as unknown as ReturnType<typeof authority>
   const conflictSelections=job.version===2?readSelections(input.conflictSelections,c.request):[]
   const bothSelections=job.version===3?readBothSelections(input.bothSelections,c.request):[],bothLinks=job.version===3?B.validateBothSourceLinks(input.bothLinks):[]
   if(job.version===3&&(input.plannerVersion!=='forks-v1'||!same(B.validateBothResolution(input.resolution),job.resolution)))return publicationInvalid('both原job来源/算法损坏。')
   if(job.version===2&&(input.plannerVersion!=='conflicts-v1'||!same(C.validateExchangeResolutionBinding(input.resolution),job.resolution))) return publicationInvalid('原job决定来源/算法损坏。')
-  const plan = makePlan({ operationId: c.request.operationId, local, remote, baseRecords, state,
+  const localPhysical = job.version === 4 ? decodeSnapshot(input.localPhysical) : undefined
+  if (job.version === 4 && (input.plannerVersion !== 'tombstones-v1' || typeof input.remoteClosureHash !== 'string' || !/^[a-f0-9]{64}$/.test(input.remoteClosureHash))) return publicationInvalid('原删除job4私有来源版本/闭包hash损坏。')
+  let plan: RuntimePlan
+  if (job.version === 4) {
+    if (!localPhysical) return publicationInvalid('删除原job4缺真实physical snapshot。')
+    plan = makeTombstonePlan({ operationId: c.request.operationId, localKnowledge: local, localPhysical, remote, baseRecords,
+      state: M.validateTombstoneExchangeState(state), localFingerprint: job.descriptor.localFingerprint,
+      authority: input.authority as unknown as TombstonePlanInput['authority'] })
+  } else plan = makePlan({ operationId: c.request.operationId, local, remote, baseRecords, state: legacyState(state),
     localFingerprint: job.descriptor.localFingerprint, authority: originalAuthority,
     ...(job.version===2?{conflictSelections}: {}) },job.version,bothSelections,bothLinks)
-  const normalized = { ...plan, nextRemote: { manifest: plan.nextRemote.manifest, records: plan.nextRemote.records }, localFinal: { manifest: plan.localFinal.manifest, records: plan.localFinal.records } }
+  const normalized = storedRuntimePlan(plan)
   if (!same(input.plan, normalized) || plan.planHash !== job.descriptor.planHash) return publicationInvalid('exchange原planner结果与不可变job不符。')
   if(job.version===3&&(!('forks'in plan)||!same(plan.forks,job.forks)))return publicationInvalid('both原job fork/projection与原inputs不闭合。')
+  if(job.version===4&&(!('deletions'in plan)||!same(plan.deletions,job.deletions)))return publicationInvalid('删除job4 intent与真实原inputs/plan不闭合。')
   if(job.version>=2&&!same(plan.merges??[],job.merges))return publicationInvalid('原job merge来源与原inputs/plan不闭合。')
   const manifest = await read('manifest.json'), objects = new Map<string, Buffer>(), assets = new Map<string, Buffer>()
   if (publicationHash(manifest) !== job.descriptor.next.manifestHash || !same(decodePublicationJson(manifest), plan.nextRemote.manifest)) return publicationInvalid('exchange原Manifest bytes已变。')
@@ -462,7 +564,8 @@ async function loadSpool(db: Database.Database, c: Context, head: Head): Promise
   for (const [key, value] of Object.entries(input.keyGuards)) { if (typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)) return publicationInvalid('exchange原key guard损坏。'); keyGuards[key] = value }
   if (input.stateRaw !== null && typeof input.stateRaw !== 'string') return publicationInvalid('exchange原state raw损坏。')
   return { directory: dir, job, plan, state, localFingerprint: job.descriptor.localFingerprint, manifest, records: plan.nextRemote.records, objects, assets,
-    planning: { local, remote, baseRecords, authority: originalAuthority, keyGuards, stateRaw: input.stateRaw, engine:job.version,conflictSelections,bothSelections,bothLinks } }
+    planning: { local, remote, baseRecords, authority: originalAuthority, keyGuards, stateRaw: input.stateRaw, engine:job.version,conflictSelections,bothSelections,bothLinks,
+      ...(job.version===4?{localPhysical,remoteClosureHash:input.remoteClosureHash as string}: {}) } }
 }
 function claim(db: Database.Database, c: Context, saved: Spool): boolean {
   return db.transaction(() => {
@@ -595,7 +698,7 @@ function portableRecords(snapshot: ReturnType<typeof readSyncedPersistentPublica
   return mapPublicationCatalog(snapshot.records, snapshot.catalogId).map(record => record.kind === 'synced-group' ? rewriteSyncedGroupAssets(record, toPortable)
     : record.kind === 'document' ? rewriteSyncedPortableHostAssets(record, toPortable) : record)
 }
-type HistoryBoundaryEffects = { historyArchives: Array<{ groupId: string; indexHash: string }>; hostHistoryCuts: Array<{ historyToken: string; cutHash: string }> }
+type HistoryBoundaryEffects = { historyArchives: Array<{ groupId: string; indexHash: string }>; hostHistoryCuts: Array<{ historyToken: string; cutHash: string }>; deletions?: ReturnType<typeof logicalDeletionProofReference>[] }
 function historyBoundary(db: Database.Database, c: Context, plan: RuntimePlan, now: string): HistoryBoundaryEffects {
   const docs = new Set(plan.historyBoundaryKeys.filter(key => key.startsWith('doc:')).map(key => key.slice(4))), groups = plan.historyBoundaryKeys.filter(key => key.startsWith('group:')).map(key => key.slice(6))
   // Follow all mappings (executed and Redo) to a fixed point. Never strand the other half of AB/BC.
@@ -656,6 +759,23 @@ function writeCatalog(db: Database.Database, record: SyncDatabases, catalogId: s
 }
 function install(db: Database.Database, c: Context, saved: Spool, original: SyncedExchangeLocal, now: string): HistoryBoundaryEffects {
   const plan = saved.plan, records = localRecords(saved, c, original), paths = documentPaths(records), incoming = new Set(plan.incoming)
+  const deletionIntents = saved.job.version === 4 ? saved.job.deletions : []
+  const originalGroups = new Map(original.snapshot.groups.map(group => [group.wire.id,group])), remoteRecords = new Map(saved.planning.remote.records.map(row=>[row.key,row.record]))
+  const deletionBefore = new Map<string, SyncedLogicalDeletionProof['localBefore']>()
+  for (const intent of deletionIntents) {
+    if (intent.before.kind === 'document') {
+      const row = db.prepare('SELECT id,created_at,path,updated_at FROM documents WHERE id=?').get(intent.before.id) as { id:string;created_at:string;path:string;updated_at:string } | undefined
+      if (!row || row.created_at !== intent.before.createdAt || !original.keyGuards[intent.key]) return publicationInvalid('删除doc原birth/keyguard已失效。')
+      deletionBefore.set(intent.key, { kind:'document',documentId:row.id,createdAt:row.created_at,path:row.path,updatedAt:row.updated_at,keyGuard:original.keyGuards[intent.key] })
+    } else {
+      const row = db.prepare('SELECT creation_id,created_at,origin_json,revision,topology_revision,history_cursor,history_position FROM synced_groups WHERE id=?').get(intent.before.id) as
+        {creation_id:string;created_at:string;origin_json:string;revision:string;topology_revision:string;history_cursor:string;history_position:number}|undefined
+      const actual = originalGroups.get(intent.before.id)
+      if (!row || !actual || row.creation_id !== intent.before.creationId || row.created_at !== intent.before.createdAt || !same(M.parseExchangeStored(row.origin_json), intent.before.origin)) return publicationInvalid('删除group原tuple不符。')
+      deletionBefore.set(intent.key,{kind:'group',groupId:intent.before.id,creationId:row.creation_id,createdAt:row.created_at,origin:intent.before.origin,
+        revision:row.revision,topologyRevision:row.topology_revision,historyCursor:row.history_cursor,historyPosition:row.history_position,semanticHash:actual.semanticHash,keyGuard:original.keyGuards[intent.key]})
+    }
+  }
   const docs = records.filter(record => record.kind === 'document'), groups = records.filter(record => record.kind === 'synced-group')
   const changedDocs = docs.filter(doc => incoming.has('doc:' + doc.id)), changedGroups = groups.filter(group => incoming.has('group:' + group.id))
   const originalPaths = new Map((db.prepare('SELECT id,path FROM documents ORDER BY id').all() as Array<{ id: string; path: string }>).map(row => [row.id, row.path]))
@@ -685,6 +805,16 @@ function install(db: Database.Database, c: Context, saved: Spool, original: Sync
   // Release every selected physical source before the private ledger owner/birth transition. FK/identity guards stay enabled.
   for (const doc of changedDocs) { db.prepare('DELETE FROM synced_instances WHERE host_document_id=?').run(doc.id); db.prepare('DELETE FROM blocks WHERE document_id=?').run(doc.id) }
   for (const group of changedGroups) db.prepare('DELETE FROM synced_group_blocks WHERE group_id=?').run(group.id)
+  for (const intent of deletionIntents) {
+    if (intent.before.kind === 'document') {
+      db.prepare('DELETE FROM synced_instances WHERE host_document_id=?').run(intent.before.id)
+      db.prepare('DELETE FROM blocks WHERE document_id=?').run(intent.before.id)
+    } else {
+      if (db.prepare('SELECT 1 FROM synced_instances WHERE group_id=? LIMIT 1').get(intent.before.id)
+        || db.prepare('SELECT 1 FROM synced_group_pins WHERE group_id=? LIMIT 1').get(intent.before.id)) return publicationInvalid('删除group写前仍有真实ref/pin。')
+      db.prepare('DELETE FROM synced_group_blocks WHERE group_id=?').run(intent.before.id)
+    }
+  }
   for (const transfer of plan.transfers) {
     const row = db.prepare('SELECT last_owner_kind,last_owner_id,state,created_at FROM block_identities WHERE id=?').get(transfer.id) as
       { last_owner_kind: string; last_owner_id: string; state: string; created_at: string | null } | undefined
@@ -700,6 +830,11 @@ function install(db: Database.Database, c: Context, saved: Spool, original: Sync
   }
   // Parent rename paths affect descendants even when their portable content is unchanged.
   for (const doc of docs) db.prepare('UPDATE documents SET path=? WHERE id=? AND path<>?').run(paths.get(doc.id), doc.id, paths.get(doc.id))
+  for (const intent of deletionIntents) if (intent.before.kind === 'document') {
+    // The strict final catalog/parent graph was chosen before this statement;
+    // FK side effects are not used to invent that choice.
+    if (db.prepare('DELETE FROM documents WHERE id=?').run(intent.before.id).changes !== 1) return publicationInvalid('删除doc实际SQL闭集失效。')
+  }
   for (const group of groups) {
     const version = revisions.get(group.id)!, old = oldGroups.get(group.id)
     if (!old) {
@@ -759,6 +894,40 @@ function install(db: Database.Database, c: Context, saved: Spool, original: Sync
   for (const link of links) db.prepare('INSERT INTO links(id,source_document_id,target_document_id,label,created_at) VALUES(?,?,?,?,?)').run(randomUUID(), link.source_document_id, link.target_id, link.url, now)
   if (db.prepare(`SELECT 1 FROM documents d WHERE d.block_count<>(SELECT count(*) FROM blocks WHERE document_id=d.id)
     OR d.link_count<>(SELECT count(*) FROM links WHERE source_document_id=d.id) OR d.child_count<>(SELECT count(*) FROM documents WHERE parent_id=d.id) LIMIT 1`).get()) return publicationInvalid('exchange实际stats不完整。')
+  if (saved.job.version === 4) {
+    const refs: ReturnType<typeof logicalDeletionProofReference>[] = []
+    for (const intent of deletionIntents) {
+      const before = deletionBefore.get(intent.key)
+      const deletion = remoteRecords.get(intent.key)
+      if (!before || !deletion || (deletion.kind !== 'deleted' && deletion.kind !== 'synced-group-deleted') || !saved.planning.remoteClosureHash) return publicationInvalid('删除缺同次真实remote墓碑/原physical来源。')
+      let after: SyncedLogicalDeletionProof['localAfter']
+      if (intent.before.kind === 'synced-group') {
+        after = {kind:'group',groupId:intent.before.id,revision:randomUUID(),topologyRevision:randomUUID(),historyCursor:randomUUID(),historyPosition:0}
+        if (db.prepare('UPDATE synced_groups SET revision=?,topology_revision=?,history_cursor=?,history_position=0 WHERE id=?').run(after.revision,after.topologyRevision,after.historyCursor,after.groupId).changes !== 1) return publicationInvalid('删除group freshCAS屏障未准确落库。')
+      } else after = {kind:'document',documentId:intent.before.id}
+      for (const effect of intent.identities) {
+        const row = db.prepare('SELECT last_owner_kind,last_owner_id,state,created_at FROM block_identities WHERE id=?').get(effect.before.id) as
+          {last_owner_kind:string;last_owner_id:string;state:string;created_at:string|null}|undefined
+        const expected = effect.after.kind === 'retained' ? {last_owner_kind:effect.before.last_owner_kind,last_owner_id:effect.before.last_owner_id,state:'retained',created_at:effect.before.created_at}
+          : {last_owner_kind:effect.after.ownerKind,last_owner_id:effect.after.ownerId,state:'live',created_at:effect.after.createdAt}
+        if (!row || !same(row,expected)) return publicationInvalid('删除identity实际retained/transfer后果未闭合。')
+      }
+      const anchorId = logicalDeletionAnchorId(intent.before)
+      if (intent.before.kind === 'document') for (const groupId of sort(intent.before.content.blocks.flatMap(block => block.type === 'synced-block' ? [parseSyncedBlockPayload(block.content).groupId] : [])))
+        db.prepare('INSERT INTO synced_group_pins(group_id,kind,pin_id,created_at) VALUES(?,?,?,?)').run(groupId,'logical-deletion-document-archive',anchorId,now)
+      const proof = validateSyncedLogicalDeletionProof({kind:'synced-logical-deletion-proof',version:1,key:intent.key,intentHash:intent.intentHash,baseLiveHash:intent.baseLiveHash,tombstoneHash:intent.tombstoneHash,
+        deletion,before:intent.before,identities:intent.identities,localBefore:before,localAfter:after,
+        source:{targetFingerprint:c.request.targetFingerprint,workspaceId:saved.job.remoteWorkspaceId,manifestHash:saved.job.descriptor.expectedRemote.manifestHash,closureHash:saved.planning.remoteClosureHash},
+        scopeAtApply:{workspaceScope:c.workspaceScope,recoveryEpoch:c.recoveryEpoch},application:{operationId:c.request.operationId,requestHash:M.exchangeRequestHash(c.request),acceptedAt:now},
+        persistence:{kind:'logical-deletion-denial',anchorId}})
+      const requestHash = logicalDeletionRequestHash(proof)
+      db.prepare('INSERT INTO synced_operations(client_operation_id,request_hash,result_json,created_at) VALUES(?,?,?,?)').run(anchorId,requestHash,publicationJson(proof),now)
+      db.prepare("INSERT INTO synced_exposure_attempts(id,request_hash,channel,target_fingerprint,publication_hash,state,created_at,confirmed_at) VALUES(?,?,?,?,?,'possible',?,NULL)")
+        .run(anchorId,requestHash,LOGICAL_DELETION_CHANNEL,c.request.targetFingerprint,intent.tombstoneHash,now)
+      refs.push(logicalDeletionProofReference(proof))
+    }
+    return {...archives,deletions:refs}
+  }
   const actual = wire(portableRecords(readSyncedPersistentPublicationSnapshot(db), c), c.workspaceScope)
   if (!same(actual.manifest.entries, plan.localFinal.manifest.entries) || !same(actual.manifest.syncedInstances, plan.localFinal.manifest.syncedInstances)) return publicationInvalid('exchange actual SQL→portable全图/hash/Key未精确闭合。')
   return archives
@@ -771,8 +940,10 @@ function settle(db: Database.Database, c: Context, saved: Spool, etag: string): 
     if (local.fingerprint !== saved.localFingerprint || local.stateRaw !== saved.planning.stateRaw) return null
     const actualLocal = wire(portableRecords(local.snapshot, c), c.workspaceScope)
     if(saved.job.version===3&&bothCollisions(db,c,saved).length)return null
-    const checked = makePlan({ operationId: c.request.operationId, local: actualLocal, remote: saved.planning.remote,
-      baseRecords: saved.planning.baseRecords, state: saved.state, localFingerprint: local.fingerprint,
+    const checked = saved.job.version === 4 ? makeTombstonePlan({operationId:c.request.operationId,localPhysical:actualLocal,localKnowledge:knowledge(actualLocal,local),remote:saved.planning.remote,
+      baseRecords:saved.planning.baseRecords,state:M.validateTombstoneExchangeState(saved.state),localFingerprint:local.fingerprint,
+      authority:deletionAuthority(local,saved.planning.authority.missingBaseKeys,saved.planning.authority.deferredKeys)}) : makePlan({ operationId: c.request.operationId, local: actualLocal, remote: saved.planning.remote,
+      baseRecords: saved.planning.baseRecords, state: legacyState(saved.state), localFingerprint: local.fingerprint,
       authority: authority(local, saved.planning.authority.missingBaseKeys, saved.planning.authority.deferredKeys),
       ...(saved.job.version===2?{conflictSelections:saved.planning.conflictSelections}: {}) },saved.job.version,saved.planning.bothSelections,saved.job.version===3?captureBothSources(db,c,actualLocal):[])
     if (checked.planHash !== saved.plan.planHash || !same(checked.localFinal.manifest.entries, saved.plan.localFinal.manifest.entries)
@@ -783,12 +954,14 @@ function settle(db: Database.Database, c: Context, saved: Spool, etag: string): 
       remoteWorkspaceId: saved.job.remoteWorkspaceId, beforeManifestHash: checked.beforeManifestHash, afterManifestHash: checked.afterManifestHash,
       publishedKeys: checked.writes, appliedKeys: checked.incoming, acceptedKeys: checked.accepted, deferred: checked.deferred, acceptedAt: now })
     const result = saved.job.version===3 ? {...resultBase,forks:('forks'in checked?checked.forks:[]).map(row=>row.summary)} : resultBase
-    const state = M.validateExchangeState({ ...saved.state, currentOperationId: c.request.operationId, generation: randomUUID(), baseline: checked.nextBaseline, deferred: checked.deferred, lastSyncAt: now })
+    const state = saved.job.version===4 ? M.validateTombstoneExchangeState({...saved.state,version:2,currentOperationId:c.request.operationId,generation:randomUUID(),baseline:checked.nextBaseline,deferred:checked.deferred,lastSyncAt:now})
+      : M.validateExchangeState({ ...legacyState(saved.state), currentOperationId: c.request.operationId, generation: randomUUID(), baseline: checked.nextBaseline, deferred: checked.deferred, lastSyncAt: now })
     const receipt = M.validateExchangeReceipt({ kind: 'synced-exchange-operation', version: saved.job.version, request: c.request, result, provenance: {
       beforeManifestHash: result.beforeManifestHash, afterManifestHash: result.afterManifestHash, beforeManifestEtag: saved.job.descriptor.expectedRemote.etag,
       afterManifestEtag: etag, planHash: checked.planHash, source: saved.state.source, accepted: checked.acceptedSides, transfers: checked.transfers, historyArchives: historyEffects.historyArchives,
       hostHistoryCuts: historyEffects.hostHistoryCuts,
       afterStateHash: publicationHash(publicationJson(state)),
+      ...(saved.job.version===4?{plannerVersion:'tombstones-v1',merges:checked.merges??[],attemptId:saved.job.attemptId,deletions:historyEffects.deletions??[]}: {}),
       ...(saved.job.version===2?{plannerVersion:'conflicts-v1',resolution:saved.job.resolution,merges:checked.merges??[],attemptId:saved.job.attemptId}: {}),
       ...(saved.job.version===3?{plannerVersion:'forks-v1',resolution:saved.job.resolution,merges:checked.merges??[],forks:'forks'in checked?checked.forks:[],attemptId:saved.job.attemptId}: {}) } })
     db.prepare('INSERT INTO synced_operations(client_operation_id,request_hash,result_json,created_at) VALUES(?,?,?,?)')
@@ -797,7 +970,14 @@ function settle(db: Database.Database, c: Context, saved: Spool, etag: string): 
     db.prepare('INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at')
       .run(M.exchangeStateKey(c.request.targetFingerprint), publicationJson(state), now)
     phase(db, saved.job, 'settled', etag)
-    readSyncedExchangeLocal(db, { request: c.request, initialTargetFingerprint: c.initialTargetFingerprint })
+    const final = readSyncedExchangeLocal(db, { request: c.request, initialTargetFingerprint: c.initialTargetFingerprint })
+    if (saved.job.version === 4) {
+      if (!('localKnowledgeFinal' in checked)) return publicationInvalid('删除settle缺准确planner4两图。')
+      const physical = wire(portableRecords(final.snapshot,c),c.workspaceScope), known = knowledge(physical,final)
+      if (!same(physical.manifest.entries,checked.localPhysicalFinal.manifest.entries) || !same(physical.manifest.syncedInstances,checked.localPhysicalFinal.manifest.syncedInstances)
+        || !same(known.manifest.entries,checked.localKnowledgeFinal.manifest.entries) || !same(known.manifest.syncedInstances,checked.localKnowledgeFinal.manifest.syncedInstances))
+        return publicationInvalid('删除 actual SQL physical/knowledge 两图/hash/Key未精确闭合。')
+    }
     return receipt.result
   }).immediate()
 }
@@ -887,12 +1067,13 @@ async function createPreview(db:Database.Database,c:Context,previewId:string,run
     if(prepared.status==='missing'||prepared.status==='unsupported'||prepared.status==='stale')return frozenPublicationFacts(prepared)
     return publicationInvalid('preview不接受exchange结果冒充读取结果。')
   }
+  if (!('conflictPreviews' in prepared.plan)) return publicationInvalid('旧手工preview必须来自准确live conflict planner。')
   const now=new Date().toISOString(),dir=previewDirectory(c,previewId)
   const payload={kind:'synced-exchange-conflict-preview-inputs',version:1,previewId,databasePath:c.databasePath,target:c.target,
     workspaceScope:c.workspaceScope,recoveryEpoch:c.recoveryEpoch,remoteWorkspaceId:prepared.remote.manifest.workspaceId,stateGeneration:prepared.state.generation,
     remoteManifestHash:prepared.remote.manifestHash,remoteEtag:prepared.remote.manifestEtag,createdAt:now,
     local:{manifest:prepared.localWire.manifest,records:prepared.localWire.records},remote:{manifest:prepared.remote.manifest,records:fromRemote(prepared.remote).records},
-    baseRecords:prepared.baseRecords,state:prepared.state,authority:prepared.planningAuthority,keyGuards:prepared.local.keyGuards,stateRaw:prepared.local.stateRaw,localFingerprint:prepared.local.fingerprint,
+    baseRecords:prepared.baseRecords,state:legacyState(prepared.state),authority:prepared.planningAuthority,keyGuards:prepared.local.keyGuards,stateRaw:prepared.local.stateRaw,localFingerprint:prepared.local.fingerprint,
     components:prepared.plan.conflictPreviews??[]}
   const bytes=Buffer.from(publicationJson(payload)),previewHash=publicationHash(bytes)
   const index=C.validateConflictPreviewIndex({kind:'synced-exchange-conflict-preview-index',version:1,previewId,databasePath:c.databasePath,
@@ -916,14 +1097,14 @@ async function run(db: Database.Database, c: Context, runtime: SyncedExchangeRun
   if (db.pragma('user_version', { simple: true }) !== 27) return publicationInvalid('exchange未知/未来schema不是普通unsupported。')
   const first = capture(db, c), originalGuards = first.keyGuards
   let deferredKeys: string[] = [], head = db.transaction(() => readHead(db, c))(), saved: Spool | null = head ? await loadSpool(db, c, head) : null
-  const engine=saved?.job.version??2
+  let engine: Engine=saved?.job.version??(c.request.method==='exchangeSyncedSnapshot'?4:2)
   if(saved&&engine===2) {c.resolution=C.validateExchangeResolutionBinding(saved.job.resolution??null);c.selections=saved.planning.conflictSelections}
   else if(c.request.method==='resolveSyncedExchangeConflicts') await attachPreview(db,c,c.request)
   // A bounded set of real competing snapshots; each retry gets a new immutable attempt and fresh original ETag.
   for (let turn = 0; turn < 8; turn++) {
     aborted(runtime.signal)
     if (!saved) {
-      const prepared = await prepare(db, c, runtime, deferredKeys,engine)
+      const prepared = engine === 4 && !head ? await prepareTombstone(db,c,runtime,deferredKeys,true) : await prepare(db, c, runtime, deferredKeys,engine)
       if (!('plan' in prepared)) {
         if (prepared.status === 'stale' && prepared.side === 'local') { deferredKeys = sort([...deferredKeys, ...changedKeys(originalGuards, capture(db, c).keyGuards)]); continue }
         return frozenPublicationFacts(prepared)
@@ -932,6 +1113,7 @@ async function run(db: Database.Database, c: Context, runtime: SyncedExchangeRun
       if (raced.some(key => !deferredKeys.includes(key))) { deferredKeys = sort([...deferredKeys, ...raced]); continue }
       saved = await spool(prepared, head)
       if (!registerJob(db, c, saved, head)) { saved = null; deferredKeys = sort([...deferredKeys, ...changedKeys(originalGuards, capture(db, c).keyGuards)]); head = db.transaction(() => readHead(db, c))(); continue }
+      engine = saved.job.version
       head = db.transaction(() => readHead(db, c))()
     }
     current(db, c)
@@ -1040,7 +1222,7 @@ function captureBothSources(db: Database.Database, c: Context, local: SyncedProt
 }
 function planInput(prepared:Prepared):ExchangePlanInput {
   return {operationId:prepared.context.request.operationId,local:prepared.localWire,remote:fromRemote(prepared.remote),baseRecords:prepared.baseRecords,
-    state:prepared.state,localFingerprint:prepared.local.fingerprint,authority:prepared.planningAuthority}
+    state:legacyState(prepared.state),localFingerprint:prepared.local.fingerprint,authority:prepared.planningAuthority}
 }
 function snapshotData(value:SyncedProtocol5Snapshot):unknown{return {manifest:value.manifest,records:value.records}}
 function strictBothSnapshot(value:unknown):SyncedProtocol5Snapshot {

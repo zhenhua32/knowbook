@@ -15,6 +15,7 @@ export type { SyncedInitialIncomingInput, SyncedInitialIncomingResult, SyncedIni
   SyncedInitialIncomingConflictReason, SyncedInitialIncomingComponent } from './synced-initial-incoming-model'
 import { assertSyncedLifecycleSchema } from '../database/synced-lifecycle-schema'
 import { readSyncedGroupLifecycles, syncedLifecycleSemanticHash } from '../database/synced-lifecycle-state'
+import { assertSyncedLogicalDeletionRecords } from '../database/synced-logical-deletion-read'
 import { getSyncedGroupSnapshots } from '../database/synced-blocks-read'
 import { assertSyncedRemoteObservationRecords, readObservedLocalIncarnation, readSyncedRemoteObservation } from '../database/synced-remote-observation-read'
 import { holdSyncedObservationPending, releaseSyncedObservationPending, observationDatabasePath, type SyncedObservationPendingLease } from '../database/synced-remote-observation-pending'
@@ -481,12 +482,14 @@ function knownObservationIncarnations(data: Observation): Map<string, SyncedObse
   databaseBoundary(data.db)
   return data.db.transaction(() => {
     currentObservation(data)
+    const deleted = assertSyncedLogicalDeletionRecords(data.db)
     const ids = (data.db.prepare('SELECT id FROM synced_groups ORDER BY id').all() as Array<{ id: unknown }>).map(row => {
       if (!isSyncedUuid(row.id)) return publicationInvalid('本机观察索引的 group UUID 损坏。'); return row.id
     })
     for (let from = 0; from < ids.length; from += SYNCED_MAX_BLOCKS) readSyncedGroupLifecycles(data.db, ids.slice(from, from + SYNCED_MAX_BLOCKS))
     const tuples = new Map<string, SyncedObservedIncarnation>()
     for (const id of ids) {
+      if (deleted.has('group:' + id)) continue
       const tuple = readObservedLocalIncarnation(data.db, id)
       if (!tuple) return publicationInvalid('原本机 incarnation 在同一读取中缺失。')
       tuples.set(id, tuple)

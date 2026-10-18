@@ -8,6 +8,16 @@ import { publicationHash, publicationInvalid, publicationJson } from '../sync/sy
 export function readSyncedExchangeReceiptById(db: Database.Database, operationId: string): ExchangeReceipt | null {
   if (!db.open || !db.inTransaction || db.pragma('foreign_keys', { simple: true }) !== 1 || !isSyncedUuid(operationId))
     return publicationInvalid('exchange历史receipt只允许owned/FK准确ID读取。')
+  return readStoredReceipt(db,operationId)
+}
+/** Strict denial facts are read before startup enables connection FK enforcement.
+ * This separate read-only snapshot entry grants no mutation authority, while the
+ * ordinary historical entry above retains its original owned/FK requirement. */
+export function readSyncedExchangeDenialReceiptById(db: Database.Database, operationId: string): ExchangeReceipt | null {
+  if (!db.open || !db.inTransaction || !isSyncedUuid(operationId)) return publicationInvalid('删除否权历史认证只允许真实owned只读快照/准确ID。')
+  return readStoredReceipt(db,operationId)
+}
+function readStoredReceipt(db: Database.Database, operationId: string): ExchangeReceipt | null {
   const row = db.prepare('SELECT request_hash,result_json,created_at FROM synced_operations WHERE client_operation_id=?')
     .get(operationId) as { request_hash: string; result_json: string; created_at: string } | undefined
   if (!row) return null
@@ -15,7 +25,7 @@ export function readSyncedExchangeReceiptById(db: Database.Database, operationId
   if (receipt.request.operationId !== operationId || receipt.result.operationId !== operationId || receipt.result.replayed
     || row.request_hash !== exchangeRequestHash(receipt.request) || row.created_at !== receipt.result.acceptedAt)
     return publicationInvalid('exchange原request/method/hash/createdAt/replay损坏。')
-  if (receipt.version === 2 || receipt.version === 3) {
+  if (receipt.version === 2 || receipt.version === 3 || receipt.version === 4) {
     const proof = receipt.provenance
     if(!proof.attemptId)return publicationInvalid('v2 receipt缺准确attemptId。')
     const source = db.prepare('SELECT value,updated_at FROM app_settings WHERE key=?')
@@ -25,10 +35,16 @@ export function readSyncedExchangeReceiptById(db: Database.Database, operationId
     if (job.version !== receipt.version || source.updated_at !== job.preparedAt || publicationJson(job.request) !== publicationJson(receipt.request)
       || job.attemptId !== proof.attemptId || job.descriptor.planHash !== proof.planHash || job.descriptor.next.manifestHash !== proof.afterManifestHash
       || job.descriptor.expectedRemote.manifestHash !== proof.beforeManifestHash || job.descriptor.expectedRemote.etag !== proof.beforeManifestEtag
-      || publicationJson(job.resolution) !== publicationJson(proof.resolution) || publicationJson(job.merges) !== publicationJson(proof.merges)
+      || (job.version !== 4 && receipt.version !== 4 && publicationJson(job.resolution) !== publicationJson(proof.resolution)) || publicationJson(job.merges) !== publicationJson(proof.merges)
       || receipt.version === 3 && publicationJson(job.forks) !== publicationJson(proof.forks)
       || job.workspaceScope !== receipt.result.workspaceScope || job.recoveryEpoch !== receipt.result.recoveryEpoch || job.remoteWorkspaceId !== receipt.result.remoteWorkspaceId)
       return publicationInvalid('v2 receipt的merge/决定来源不属于准确原job/plan。')
+    if (receipt.version === 4) {
+      if (job.version !== 4) return publicationInvalid('删除receipt缺原job4。')
+      const refs = new Map(receipt.provenance.deletions.map(ref => [ref.key, ref]))
+      if (refs.size !== job.deletions.length || job.deletions.some(intent => refs.get(intent.key)?.intentHash !== intent.intentHash))
+        return publicationInvalid('删除receipt没有准确认证原job4完整intent集合。')
+    }
     const jobHash = exchangeJobHash(job)
     if(source.value !== publicationJson(job) || publicationHash(source.value) !== jobHash)
       return publicationInvalid('v2 receipt的job不是准确原规范bytes。')

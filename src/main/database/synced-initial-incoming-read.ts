@@ -52,6 +52,7 @@ export function readInitialIncomingLocal(db: Database.Database, request: Initial
     identities.set(row.id, row)
   }
   const historyDocuments = new Set<string>(), historyBlocks = new Set<string>(), historyRows: unknown[] = []
+  for (const proof of snapshot.deletions ?? []) if (proof.before.kind === 'document') historyDocuments.add(proof.before.id)
   for (const row of rawIdentities) if (row.last_owner_kind === 'document') historyDocuments.add(row.last_owner_id)
   const document = (value: unknown): string => { const key = id(value); historyDocuments.add(key); return key }
   const block = (value: unknown): void => {
