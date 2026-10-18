@@ -65,6 +65,23 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      - name: Fetch pinned protocol5 v2 conflict source
+        run: git fetch --no-tags --depth=1 origin 0be1dc11603d2e6850338d6ad7a15d644a7624a8
+
+      - name: Verify genuine protocol5 v2 conflict recovery compatibility
+        run: npm run test:synced-exchange-v2-compat
+
+      - name: Upload protocol5 v2 conflict compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: synced-exchange-v2-compat-evidence
+          path: |
+            test-results/synced-exchange-v2-compat/**
+            !test-results/synced-exchange-v2-compat/**/legacy-0be1dc1/**
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Fetch pinned schema26 reader source
         run: git fetch --no-tags --depth=1 origin 6d61134b917d88753bdbc72a5cafe6e3d81fc216
 

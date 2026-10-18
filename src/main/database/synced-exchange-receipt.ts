@@ -15,17 +15,18 @@ export function readSyncedExchangeReceiptById(db: Database.Database, operationId
   if (receipt.request.operationId !== operationId || receipt.result.operationId !== operationId || receipt.result.replayed
     || row.request_hash !== exchangeRequestHash(receipt.request) || row.created_at !== receipt.result.acceptedAt)
     return publicationInvalid('exchange原request/method/hash/createdAt/replay损坏。')
-  if (receipt.version === 2) {
+  if (receipt.version === 2 || receipt.version === 3) {
     const proof = receipt.provenance
     if(!proof.attemptId)return publicationInvalid('v2 receipt缺准确attemptId。')
     const source = db.prepare('SELECT value,updated_at FROM app_settings WHERE key=?')
       .get(exchangeJobKey(operationId, proof.attemptId)) as { value: string; updated_at: string } | undefined
     if (!source) return publicationInvalid('v2 receipt缺准确immutable attempt。')
     const job = validateExchangeJob(parseExchangeStored(source.value))
-    if (job.version !== 2 || source.updated_at !== job.preparedAt || publicationJson(job.request) !== publicationJson(receipt.request)
+    if (job.version !== receipt.version || source.updated_at !== job.preparedAt || publicationJson(job.request) !== publicationJson(receipt.request)
       || job.attemptId !== proof.attemptId || job.descriptor.planHash !== proof.planHash || job.descriptor.next.manifestHash !== proof.afterManifestHash
       || job.descriptor.expectedRemote.manifestHash !== proof.beforeManifestHash || job.descriptor.expectedRemote.etag !== proof.beforeManifestEtag
       || publicationJson(job.resolution) !== publicationJson(proof.resolution) || publicationJson(job.merges) !== publicationJson(proof.merges)
+      || receipt.version === 3 && publicationJson(job.forks) !== publicationJson(proof.forks)
       || job.workspaceScope !== receipt.result.workspaceScope || job.recoveryEpoch !== receipt.result.recoveryEpoch || job.remoteWorkspaceId !== receipt.result.remoteWorkspaceId)
       return publicationInvalid('v2 receipt的merge/决定来源不属于准确原job/plan。')
     const jobHash = exchangeJobHash(job)
@@ -38,7 +39,7 @@ export function readSyncedExchangeReceiptById(db: Database.Database, operationId
       .all(prefix.length, prefix) as Array<{key:string;value:string;updated_at:string}>
     const phases = rows.map(row=>{
       const fact = validateExchangeJobPhase(parseExchangeStored(row.value))
-      if(row.key !== exchangeJobPhaseKey(operationId, job.attemptId, fact.sequence) || row.updated_at !== fact.recordedAt
+      if(fact.version !== (job.version === 3 ? 2 : 1) || row.key !== exchangeJobPhaseKey(operationId, job.attemptId, fact.sequence) || row.updated_at !== fact.recordedAt
         || row.value !== publicationJson(fact) || fact.operationId !== operationId || fact.attemptId !== job.attemptId
         || fact.requestHash !== job.requestHash || fact.jobHash !== jobHash)
         return publicationInvalid('v2 receipt原attempt phase/key/hash损坏。')

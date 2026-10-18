@@ -7,6 +7,8 @@ import { publicationCompare, publicationHash, publicationInvalid, publicationJso
   type PublicationAssetDescriptor, type PublicationObjectDescriptor } from './synced-publication-model'
 import { validateConflictDecisions, validateExchangeResolutionBinding, validateExchangeMerges,
   type SyncedExchangeConflictDecision, type ExchangeResolutionBinding, type ExchangeMergeProvenance } from './synced-exchange-conflict-model'
+import * as B from './synced-exchange-both-model'
+import type { SyncedExchangeBothForkSummary, SyncedExchangeBothPublishedBlock, SyncedBothForkProof } from './synced-exchange-both-types'
 
 export type ExchangeHash = string
 export type ExchangeDeferredReason = 'diverged' | 'incarnation' | 'owner-source' | 'unknown-birth' | 'history-pin'
@@ -35,12 +37,13 @@ export interface ExchangeResolveRequest {
   method: 'resolveSyncedExchangeConflicts'; operationId: string; databasePath: string; targetFingerprint: string
   previewId: string; decisions: SyncedExchangeConflictDecision[]
 }
-export type ExchangeRequest = ExchangeRequestV1 | ExchangeResolveRequest
+export type ExchangeRequest = ExchangeRequestV1 | ExchangeResolveRequest | B.BothRequest
 export interface SyncedExchangeAccepted {
   status: 'applied' | 'noop' | 'deferred'; operationId: string; replayed: boolean
   workspaceScope: string; recoveryEpoch: string; remoteWorkspaceId: string
   beforeManifestHash: string; afterManifestHash: string; publishedKeys: string[]; appliedKeys: string[]; acceptedKeys: string[]
   deferred: DeferredExchangeComponent[]; acceptedAt: string
+  forks?: SyncedExchangeBothForkSummary[]
 }
 export type SyncedExchangeResult = SyncedExchangeAccepted | { status: 'missing' }
   | { status: 'unsupported'; reason: 'schema-27-required' | 'protocol5-required' }
@@ -58,14 +61,15 @@ export interface ExchangeProvenance {
   planHash: string; source: ExchangeSeedProof; accepted: ExchangeAcceptedSide[]; transfers: ExchangeTransfer[]
   afterStateHash: string; historyArchives: Array<{ groupId: string; indexHash: string }>
   hostHistoryCuts: Array<{ historyToken: string; cutHash: string }>
-  plannerVersion?: 'conflicts-v1'; resolution?: ExchangeResolutionBinding | null; merges?: ExchangeMergeProvenance[]; attemptId?: string
+  plannerVersion?: 'conflicts-v1' | 'forks-v1'; resolution?: ExchangeResolutionBinding | B.BothResolution | null; merges?: ExchangeMergeProvenance[]; attemptId?: string
+  forks?: SyncedBothForkProof[]
 }
 export interface ExchangeHostCut {
   kind: 'synced-exchange-host-cut'; version: 1; operationId: string; historyToken: string; journalHash: string
   participants: Array<{ documentId: string; position: number }>; cutAt: string
 }
 export interface ExchangeReceipt {
-  kind: 'synced-exchange-operation'; version: 1 | 2; request: ExchangeRequest; result: SyncedExchangeAccepted; provenance: ExchangeProvenance
+  kind: 'synced-exchange-operation'; version: 1 | 2 | 3; request: ExchangeRequest; result: SyncedExchangeAccepted; provenance: ExchangeProvenance
 }
 export interface ExchangePublicationMember {
   groupId: string; creationId: string; revision: string; topologyRevision: string; semanticHash: string; nextPortableHash: string
@@ -78,18 +82,20 @@ export interface ExchangePublicationDescriptor {
 }
 /** Immutable original job. Progress is a separate fact; never rewrite these bytes after a 412/possible. */
 export interface ExchangeJob {
-  kind: 'synced-exchange-job'; version: 1 | 2; request: ExchangeRequest; requestHash: string
+  kind: 'synced-exchange-job'; version: 1 | 2 | 3; request: ExchangeRequest; requestHash: string
   attemptId: string; parentAttemptId: string | null; attemptIndex: number
   workspaceScope: string; recoveryEpoch: string; remoteWorkspaceId: string; source: ExchangeSeedProof
   descriptor: ExchangePublicationDescriptor; components: ExchangeComponent[]; spoolHash: string; preparedAt: string
-  plannerVersion?: 'conflicts-v1'; resolution?: ExchangeResolutionBinding | null
+  plannerVersion?: 'conflicts-v1' | 'forks-v1'; resolution?: ExchangeResolutionBinding | B.BothResolution | null
   merges?: ExchangeMergeProvenance[]
+  forks?: SyncedBothForkProof[]
 }
-export type ExchangeJobPhase = 'prepared' | 'possible' | 'remote-confirmed' | 'settled' | 'remote-uncertain' | 'published-local-deferred'
+export type ExchangeJobPhase = 'prepared' | 'possible' | 'remote-confirmed' | 'settled' | 'remote-uncertain' | 'published-local-deferred' | 'blocked'
 export interface ExchangeJobPhaseFact {
-  kind: 'synced-exchange-job-phase'; version: 1; operationId: string; requestHash: string; jobHash: string
+  kind: 'synced-exchange-job-phase'; version: 1 | 2; operationId: string; requestHash: string; jobHash: string
   attemptId: string; sequence: number; previousFactHash: string | null
   phase: ExchangeJobPhase; remoteEtag: string | null; recordedAt: string
+  blocked?: SyncedExchangeBothPublishedBlock | null
 }
 
 const reasons: readonly ExchangeDeferredReason[] = ['diverged', 'incarnation', 'owner-source', 'unknown-birth', 'history-pin', 'catalog', 'path', 'dependency', 'tombstone', 'local-removal', 'baseline-missing']
@@ -151,11 +157,11 @@ function ordered<T>(items: T[], key: (item: T) => string): T[] {
 export function exchangeKeys(v: unknown): string[] { assertExchangeData(v); return ordered(list(v, exchangeRecordKey), value => value) }
 function root(value: unknown, required: readonly string[]): asserts value is Record<string, unknown> { assertExchangeData(value); assertSyncedShape(value, required) }
 function version(value: Record<string, unknown>, kind: string): void { if (value.kind !== kind || value.version !== 1) return publicationInvalid('exchange finite版本无效。') }
-function versionedRoot(value: unknown, kind: string, fields: string[], extras: string[]): asserts value is Record<string, unknown> {
+function versionedRoot(value: unknown, kind: string, fields: string[], extras: string[], third: string[] = []): asserts value is Record<string, unknown> {
   assertExchangeData(value)
   const revision = value !== null && typeof value === 'object' ? Object.getOwnPropertyDescriptor(value, 'version')?.value : undefined
-  root(value, revision === 2 ? [...fields, ...extras] : fields)
-  if (value.kind !== kind || (revision !== 1 && revision !== 2)) return publicationInvalid('exchange finite版本无效。')
+  root(value, revision === 2 ? [...fields, ...extras] : revision === 3 ? [...fields, ...third] : fields)
+  if (value.kind !== kind || (revision !== 1 && revision !== 2 && revision !== 3)) return publicationInvalid('exchange finite版本无效。')
 }
 function resolutionFor(request: ExchangeRequest, binding: ExchangeResolutionBinding | null): void {
   if (request.method === 'exchangeSyncedSnapshot') { if (binding !== null) return publicationInvalid('自动exchange不能借显式决定来源。'); return }
@@ -164,6 +170,7 @@ function resolutionFor(request: ExchangeRequest, binding: ExchangeResolutionBind
 }
 export function validateExchangeRequest(value: unknown): ExchangeRequest {
   assertExchangeData(value)
+  if (value !== null && typeof value === 'object' && Object.getOwnPropertyDescriptor(value, 'method')?.value === 'resolveSyncedExchangeBoth') return B.validateBothRequest(value)
   if (!value || typeof value !== 'object' || !('method' in value)) return publicationInvalid('exchange method不符。')
   const raw: unknown = value
   if (value.method === 'exchangeSyncedSnapshot') {
@@ -227,15 +234,23 @@ function acceptedSide(value: unknown): ExchangeAcceptedSide {
 }
 export function validateExchangeReceipt(value: unknown): ExchangeReceipt {
   versionedRoot(value, 'synced-exchange-operation', ['kind', 'version', 'request', 'result', 'provenance'], [])
-  const request = validateExchangeRequest(value.request), result = validateExchangeAccepted(value.result), p = value.provenance
+  let result: SyncedExchangeAccepted
+  if (value.version === 3) {
+    assertExchangeData(value.result)
+    assertSyncedShape(value.result, ['status', 'operationId', 'replayed', 'workspaceScope', 'recoveryEpoch', 'remoteWorkspaceId', 'beforeManifestHash', 'afterManifestHash', 'publishedKeys', 'appliedKeys', 'acceptedKeys', 'deferred', 'acceptedAt', 'forks'])
+    const { forks, ...original } = value.result
+    result = { ...validateExchangeAccepted(original), forks: B.validateBothSummaries(forks) }
+  } else result = validateExchangeAccepted(value.result)
+  const request = validateExchangeRequest(value.request), p = value.provenance
   root(p, ['beforeManifestHash', 'afterManifestHash', 'beforeManifestEtag', 'afterManifestEtag', 'planHash', 'source', 'accepted', 'transfers', 'afterStateHash', 'historyArchives', 'hostHistoryCuts',
-    ...(value.version === 2 ? ['plannerVersion', 'resolution', 'merges', 'attemptId'] : [])])
+    ...(value.version === 2 ? ['plannerVersion', 'resolution', 'merges', 'attemptId'] : value.version === 3 ? ['plannerVersion', 'resolution', 'merges', 'forks', 'attemptId'] : [])])
   const historyArchives = ordered(list(p.historyArchives, raw => { root(raw, ['groupId', 'indexHash']); return { groupId: uuid(raw.groupId), indexHash: hash(raw.indexHash) } }), row => row.groupId)
   // Execution history length has no wire-record count gate. This is a private finite index, not a new wire budget.
   const hostHistoryCuts = ordered(list(p.hostHistoryCuts, raw => { root(raw, ['historyToken', 'cutHash']); return { historyToken: uuid(raw.historyToken), cutHash: hash(raw.cutHash) } }, Number.MAX_SAFE_INTEGER), row => row.historyToken)
   const provenance: ExchangeProvenance = { beforeManifestHash: hash(p.beforeManifestHash), afterManifestHash: hash(p.afterManifestHash), beforeManifestEtag: opaque(p.beforeManifestEtag), afterManifestEtag: maybeString(p.afterManifestEtag), planHash: hash(p.planHash), afterStateHash: hash(p.afterStateHash), source: validateExchangeSeedProof(p.source), accepted: ordered(list(p.accepted, acceptedSide), row => row.key), transfers: ordered(list(p.transfers, validateExchangeTransfer), row => row.id), historyArchives, hostHistoryCuts }
   if (value.version === 1 && request.method !== 'exchangeSyncedSnapshot') return publicationInvalid('原v1不能伪成resolve。')
   if (value.version === 2) {
+    if (request.method !== 'exchangeSyncedSnapshot' && request.method !== 'resolveSyncedExchangeConflicts') return publicationInvalid('原v2收据不接受both方法。')
     if (p.plannerVersion !== 'conflicts-v1') return publicationInvalid('未知conflict planner。')
     provenance.plannerVersion = 'conflicts-v1'; provenance.resolution = validateExchangeResolutionBinding(p.resolution); provenance.merges = validateExchangeMerges(p.merges)
     provenance.attemptId = uuid(p.attemptId)
@@ -245,8 +260,21 @@ export function validateExchangeReceipt(value: unknown): ExchangeReceipt {
       if (!side || side.afterHash !== merge.resultHash || side.beforeLocalHash !== merge.localHash || side.beforeRemoteHash !== merge.remoteHash)
         return publicationInvalid('merge来源必须属于准确accepted结果。') }
   }
+  if (value.version === 3) {
+    if (request.method !== 'resolveSyncedExchangeBoth' || p.plannerVersion !== 'forks-v1') return publicationInvalid('v3只能消费原both方法/算法。')
+    const binding = B.validateBothResolution(p.resolution), forks = B.validateBothForkProofs(p.forks)
+    if (binding.previewId !== request.previewId || binding.decisionsHash !== publicationHash(publicationJson(request.decisions))
+      || forks.some(row => row.allocationHash !== binding.allocationHash) || publicationJson(forks.map(row => row.summary)) !== publicationJson(result.forks))
+      return publicationInvalid('v3决定/分配/实际fork summary不闭合。')
+    provenance.plannerVersion = 'forks-v1'; provenance.resolution = binding; provenance.forks = forks
+    provenance.merges = validateExchangeMerges(p.merges); provenance.attemptId = uuid(p.attemptId)
+    const accepted = new Map(provenance.accepted.map(row => [row.key, row]))
+    for (const proof of forks) for (const row of proof.results) if (accepted.get(row.key)?.afterHash !== row.hash) return publicationInvalid('v3 fork结果不属于原accepted图。')
+    for (const merge of provenance.merges) { const side = accepted.get(merge.key)
+      if (!side || side.afterHash !== merge.resultHash || side.beforeLocalHash !== merge.localHash || side.beforeRemoteHash !== merge.remoteHash) return publicationInvalid('v3无关merge来源不闭合。') }
+  }
   if (request.operationId !== result.operationId || provenance.beforeManifestHash !== result.beforeManifestHash || provenance.afterManifestHash !== result.afterManifestHash || publicationJson(provenance.accepted.map(row => row.key)) !== publicationJson(result.acceptedKeys)) return publicationInvalid('exchange原收据没有准确闭合结果。')
-  return { kind: 'synced-exchange-operation', version: value.version === 2 ? 2 : 1, request, result, provenance }
+  return { kind: 'synced-exchange-operation', version: value.version === 3 ? 3 : value.version === 2 ? 2 : 1, request, result, provenance }
 }
 export const exchangeHostCutKey = (historyToken: string): string => 'sync.webdav.protocol5.exchange-host-cut.v1.' + uuid(historyToken)
 export function validateExchangeHostCut(value: unknown): ExchangeHostCut {
@@ -287,19 +315,36 @@ export function validateExchangeDescriptor(value: unknown): ExchangePublicationD
   return { kind: 'synced-exchange-publication', version: 1, attemptId: uuid(value.attemptId), workspaceScope: uuid(value.workspaceScope), recoveryEpoch: uuid(value.recoveryEpoch), targetFingerprint: hash(value.targetFingerprint), localFingerprint: hash(value.localFingerprint), planHash: hash(value.planHash), expectedRemote: { etag: opaque(expected.etag), manifestHash: hash(expected.manifestHash) }, next: { manifestHash: hash(next.manifestHash), objects, assets }, members }
 }
 export function validateExchangeJob(value: unknown): ExchangeJob {
-  versionedRoot(value, 'synced-exchange-job', ['kind', 'version', 'request', 'requestHash', 'attemptId', 'parentAttemptId', 'attemptIndex', 'workspaceScope', 'recoveryEpoch', 'remoteWorkspaceId', 'source', 'descriptor', 'components', 'spoolHash', 'preparedAt'], ['plannerVersion', 'resolution', 'merges'])
+  versionedRoot(value, 'synced-exchange-job', ['kind', 'version', 'request', 'requestHash', 'attemptId', 'parentAttemptId', 'attemptIndex', 'workspaceScope', 'recoveryEpoch', 'remoteWorkspaceId', 'source', 'descriptor', 'components', 'spoolHash', 'preparedAt'], ['plannerVersion', 'resolution', 'merges'], ['plannerVersion', 'resolution', 'merges', 'forks'])
   const request = validateExchangeRequest(value.request), descriptor = validateExchangeDescriptor(value.descriptor), workspaceScope = uuid(value.workspaceScope), recoveryEpoch = uuid(value.recoveryEpoch)
   const attemptId = uuid(value.attemptId), parentAttemptId = value.parentAttemptId === null ? null : uuid(value.parentAttemptId), attemptIndex = integer(value.attemptIndex)
   if ((attemptIndex === 0) !== (parentAttemptId === null) || parentAttemptId === attemptId || descriptor.attemptId !== attemptId) return publicationInvalid('exchange原attempt父链无效。')
   if (exchangeRequestHash(request) !== value.requestHash || request.targetFingerprint !== descriptor.targetFingerprint || workspaceScope !== descriptor.workspaceScope || recoveryEpoch !== descriptor.recoveryEpoch) return publicationInvalid('exchange immutable job与原请求不闭合。')
   const components = ordered(list(value.components, validateExchangeComponent), row => publicationJson(row.keys)); disjoint(components)
-  const result: ExchangeJob = { kind: 'synced-exchange-job', version: value.version === 2 ? 2 : 1, request, requestHash: hash(value.requestHash), attemptId, parentAttemptId, attemptIndex, workspaceScope, recoveryEpoch, remoteWorkspaceId: uuid(value.remoteWorkspaceId), source: validateExchangeSeedProof(value.source), descriptor, components, spoolHash: hash(value.spoolHash), preparedAt: time(value.preparedAt) }
+  const result: ExchangeJob = { kind: 'synced-exchange-job', version: value.version === 3 ? 3 : value.version === 2 ? 2 : 1, request, requestHash: hash(value.requestHash), attemptId, parentAttemptId, attemptIndex, workspaceScope, recoveryEpoch, remoteWorkspaceId: uuid(value.remoteWorkspaceId), source: validateExchangeSeedProof(value.source), descriptor, components, spoolHash: hash(value.spoolHash), preparedAt: time(value.preparedAt) }
   if (value.version === 1 && request.method !== 'exchangeSyncedSnapshot') return publicationInvalid('原v1 job不能伪成resolve。')
   if (value.version === 2) { if (value.plannerVersion !== 'conflicts-v1') return publicationInvalid('未知job planner。')
+    if (request.method !== 'exchangeSyncedSnapshot' && request.method !== 'resolveSyncedExchangeConflicts') return publicationInvalid('原v2 job不接受both方法。')
     result.plannerVersion = 'conflicts-v1'; result.resolution = validateExchangeResolutionBinding(value.resolution); result.merges = validateExchangeMerges(value.merges); resolutionFor(request, result.resolution) }
+  if (value.version === 3) {
+    if (request.method !== 'resolveSyncedExchangeBoth' || value.plannerVersion !== 'forks-v1') return publicationInvalid('v3 job算法/方法不一致。')
+    const binding = B.validateBothResolution(value.resolution), forks = B.validateBothForkProofs(value.forks)
+    if (binding.previewId !== request.previewId || binding.decisionsHash !== publicationHash(publicationJson(request.decisions)) || forks.some(row => row.allocationHash !== binding.allocationHash)) return publicationInvalid('v3 immutable allocation/selector来源不闭合。')
+    result.plannerVersion = 'forks-v1'; result.resolution = binding; result.forks = forks; result.merges = validateExchangeMerges(value.merges)
+  }
   return result
 }
 export function validateExchangeJobPhase(value: unknown): ExchangeJobPhaseFact {
+  assertExchangeData(value)
+  if (value !== null && typeof value === 'object' && Object.getOwnPropertyDescriptor(value, 'version')?.value === 2) {
+    root(value, ['kind', 'version', 'operationId', 'requestHash', 'jobHash', 'attemptId', 'sequence', 'previousFactHash', 'phase', 'remoteEtag', 'recordedAt', 'blocked'])
+    if (value.kind !== 'synced-exchange-job-phase' || ![...phases, 'blocked'].includes(value.phase as ExchangeJobPhase)) return publicationInvalid('v3 phase版本/状态无效。')
+    const sequence = integer(value.sequence), previousFactHash = maybeHash(value.previousFactHash), blocked = value.blocked === null ? null : B.validateBothPublishedBlock(value.blocked)
+    if ((sequence === 0) !== (previousFactHash === null) || sequence === 0 && value.phase !== 'prepared' || (value.phase === 'blocked') !== (blocked !== null)) return publicationInvalid('v3追加phase/block不闭合。')
+    const result: ExchangeJobPhaseFact = { kind: 'synced-exchange-job-phase', version: 2, operationId: uuid(value.operationId), requestHash: hash(value.requestHash), jobHash: hash(value.jobHash), attemptId: uuid(value.attemptId), sequence, previousFactHash, phase: value.phase as ExchangeJobPhase, remoteEtag: maybeString(value.remoteEtag), recordedAt: time(value.recordedAt), blocked }
+    if (blocked && (blocked.operationId !== result.operationId || blocked.attemptId !== result.attemptId || blocked.publishedManifestETag !== result.remoteEtag)) return publicationInvalid('v3 blocked不是该原attempt事实。')
+    return result
+  }
   root(value, ['kind', 'version', 'operationId', 'requestHash', 'jobHash', 'attemptId', 'sequence', 'previousFactHash', 'phase', 'remoteEtag', 'recordedAt']); version(value, 'synced-exchange-job-phase')
   if (!phases.includes(value.phase as ExchangeJobPhase)) return publicationInvalid('exchange job phase未知。')
   const sequence = integer(value.sequence), previousFactHash = maybeHash(value.previousFactHash)

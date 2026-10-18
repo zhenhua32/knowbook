@@ -8,8 +8,9 @@ import { BlockIdentityRepository } from './block-identities'
 import { decodeMarkdownFormat } from '../../shared/markdownFormat'
 import { validateSyncedBindingClaims } from '../../shared/syncedBlockInputs'
 import type { SyncedStableBlockDraft } from '../../shared/synced-blocks'
-import { captureSyncedCreateSourceFacts } from './synced-host-create-plan'
+import { captureSyncedCreateSourceFacts, UnsupportedSyncedHostCreate } from './synced-host-create-plan'
 import type { CreateCapturedBinding } from './synced-host-create-codec'
+import type { SyncedBothOwnerSourceLinks, SyncedBothSourceKey } from '../sync/synced-exchange-both-types'
 
 type Occurrence = Omit<SyncedLinkBinding, 'target'> & { url: string }
 type DocumentRow = { id: string; path: string; title: string }
@@ -84,7 +85,10 @@ export function readSyncedBindingSources(db: Database.Database, origin: SyncedOr
   })
 }
 
-function targetFor(db: Database.Database, origin: SyncedOriginV1, occurrence: Occurrence,
+class UnprovedSyncedDocumentHeading extends SyncedValidationError {
+  constructor() { super('binding', 'prospective heading 仍需完整同步投影，保留原稿。') }
+}
+function targetFor(db: Database.Database, origin: Pick<SyncedOriginV1, 'documentId' | 'pathAtCreation'>, occurrence: Occurrence,
   candidate?: { groupId: string; ids: ReadonlySet<string> }, prospective?: ProspectiveHost): SyncedLinkTarget {
   const wiki = occurrence.syntax === 'wiki'
   const byPath = db.prepare('SELECT id,path,title FROM documents WHERE path=?')
@@ -148,7 +152,7 @@ function targetFor(db: Database.Database, origin: SyncedOriginV1, occurrence: Oc
   if (!document) return bare ? { kind: 'heading', documentId: origin.documentId, slug: fragment, state: 'missing' } : unresolved()
   if (document.id === origin.documentId && prospective) {
     if (!prospective.headings) {
-      if (prospective.blocks.some(block => block.type === 'synced-block')) fail('prospective heading 仍需完整同步投影，保留原稿。')
+      if (prospective.blocks.some(block => block.type === 'synced-block')) throw new UnprovedSyncedDocumentHeading()
       const slug = new Map<string, { slug: string; text: string }>(), text = new Map<string, { slug: string; text: string }>()
       for (const heading of getMarkdownHeadingTargets([...prospective.blocks], document.title)) {
         if (!slug.has(heading.slug)) slug.set(heading.slug, heading)
@@ -194,6 +198,45 @@ export function captureSyncedCreateBindings(db: Database.Database, origin: Synce
   const prospective: ProspectiveHost = { ids, blocks }
   return captureSyncedCreateSourceFacts(blocks).links.filter(item => !item.image && (item.key.syntax === 'wiki' || resolveMarkdownDocumentPath(checked.pathAtCreation, item.url))).map(item => ({ key: item.key, url: item.url,
     target: targetFor(db, checked, { ...item.key, url: item.url }, undefined, prospective) }))
+}
+
+/** Read-only current plain-source targets for the actual Main-owned portable capture.
+ * The caller proves its body/asset projection against the exact snapshot; this helper never mints a ticket or write permit. */
+export function captureSyncedExchangeDocumentLinks(db: Database.Database, document: { id: string; path: string },
+  blocks: readonly SyncedStableBlockDraft[], summary: string, recordHash: string): SyncedBothOwnerSourceLinks {
+  if (!db.open || !db.inTransaction || db.pragma('foreign_keys', { simple: true }) !== 1) fail('both来源读取需要真实owned/FK事务。')
+  const row = db.prepare('SELECT id,path FROM documents WHERE id=?').get(document.id) as { id: string; path: string } | undefined
+  if (!row || row.path !== document.path) fail('both来源文档实际路径已变。')
+  const result: SyncedBothOwnerSourceLinks = { ownerKey: 'doc:' + document.id, recordHash, path: document.path, complete: true, links: [], images: [] }
+  const prospective: ProspectiveHost = { ids: new Set(blocks.filter(block => block.type !== 'synced-block').map(block => block.id)), blocks }
+  const origin = { documentId: document.id, pathAtCreation: document.path }
+  try {
+    for (const field of ['block', 'summary'] as const) {
+      // The summary parser's temporary block ID is never a target namespace and is mapped back to null.
+      const source: readonly SyncedStableBlockDraft[] = field === 'block' ? blocks : [{ id: document.id, parentBlockId: null, type: 'paragraph', content: summary, checked: false, depth: 0 }]
+      for (const item of captureSyncedCreateSourceFacts(source).links) {
+        const sourceKey: SyncedBothSourceKey = { field, blockId: field === 'summary' ? null : item.key.blockId,
+          from: item.key.from, to: item.key.to, raw: item.key.raw, syntax: item.key.syntax }
+        if (item.image) { result.images.push({ key: sourceKey, url: item.url }); continue }
+        if (item.key.syntax !== 'wiki' && !resolveMarkdownDocumentPath(document.path, item.url)) continue
+        const target = targetFor(db, origin, { ...item.key, url: item.url }, undefined, prospective)
+        // The existing cold resolver does not expand other hosts' synced headings. It is
+        // not evidence that a real expanded heading is missing; deny this copy scope.
+        if (target.kind === 'heading' && db.prepare('SELECT 1 FROM synced_instances WHERE host_document_id=? LIMIT 1').get(target.documentId))
+          throw new UnprovedSyncedDocumentHeading()
+        result.links.push({ key: sourceKey, url: item.url, target })
+      }
+    }
+  } catch (cause) {
+    if (!(cause instanceof UnprovedSyncedDocumentHeading) && !(cause instanceof UnsupportedSyncedHostCreate)) throw cause
+    result.complete = false; result.links = []; result.images = []
+  }
+  const compare = (a: { key: SyncedBothSourceKey }, b: { key: SyncedBothSourceKey }) => {
+    const left = JSON.stringify([a.key.field, a.key.blockId, a.key.from, a.key.to, a.key.raw, a.key.syntax]), right = JSON.stringify([b.key.field, b.key.blockId, b.key.from, b.key.to, b.key.raw, b.key.syntax])
+    return left < right ? -1 : left > right ? 1 : 0
+  }
+  result.links.sort(compare); result.images.sort(compare)
+  return result
 }
 
 type Change = { prefix: number; oldEnd: number; newEnd: number; delta: number }

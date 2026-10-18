@@ -15,7 +15,7 @@ import { MarkdownLinkIndex } from '../database/markdown-link-index'
 import { assertSyncedBlockSchema } from '../database/synced-schema'
 import { assertSyncedLifecycleSchema } from '../database/synced-lifecycle-schema'
 import { readSyncedGroupLifecycles, syncedLifecycleSemanticHash } from '../database/synced-lifecycle-state'
-import { assertSyncedStoredBindings } from '../database/synced-block-links'
+import { captureSyncedExchangeDocumentLinks, collectSyncedBindingOccurrences, assertSyncedStoredBindings } from '../database/synced-block-links'
 import { readSyncedPersistentPublicationSnapshot } from '../database/synced-publication'
 import { observationDatabasePath } from '../database/synced-remote-observation-pending'
 import { readSyncedExchangeCutJournal } from '../database/synced-exchange-host-cut'
@@ -37,24 +37,33 @@ import { readObservedSyncedProtocol5, readObservedSyncedProtocol5Facts, readObse
 import * as M from './synced-exchange-model'
 import { planSyncedExchange, planSyncedExchangeV1, deriveSyncedExchangeDependencyFacts, type ExchangePlan, type ExchangePlanInput } from './synced-exchange-plan'
 import * as C from './synced-exchange-conflict-model'
+import * as B from './synced-exchange-both-model'
+import type * as T from './synced-exchange-both-types'
+import { deriveBothComponents, planSyncedBothExchange, type BothExchangePlan } from './synced-exchange-both-plan'
+import { describeSyncedBothComponent, planSyncedBothFork } from './synced-exchange-fork'
+import { captureSyncedCreateSourceFacts } from '../database/synced-host-create-plan'
+import { readSyncedBothPreviewIndex, readSyncedBothIdentityCollisions } from '../database/synced-exchange-both-read'
 
+export type { SyncedExchangeBothPreviewInput, SyncedExchangeBothResolveInput, SyncedExchangeBothPreviewResult, SyncedExchangeBothResult } from './synced-exchange-both-types'
 export type { SyncedExchangeResult } from './synced-exchange-model'
 export interface SyncedExchangeInput { operationId: string; userDataRoot: string; target: WebDavSyncConfig }
 export interface SyncedExchangeRuntime { password: string; signal?: AbortSignal }
 export interface SyncedExchangeConflictPreviewInput { previewId: string; userDataRoot: string; target: WebDavSyncConfig }
 export interface SyncedExchangeConflictResolveInput extends SyncedExchangeInput { previewId: string; decisions: C.SyncedExchangeConflictDecision[] }
 export type { SyncedExchangeConflictPreviewResult, SyncedExchangeConflictDecision } from './synced-exchange-conflict-model'
+type RuntimePlan = ExchangePlan | BothExchangePlan
+type BothSource = { resolution: B.BothResolution; selections: B.BothPrivateSelection[] }
 type Context = { root: string; databasePath: string; target: WebDavSyncConfig; request: M.ExchangeRequest;
   workspaceScope: string; recoveryEpoch: string; initialTargetFingerprint: string;
-  resolution: C.ExchangeResolutionBinding | null; selections: NonNullable<ExchangePlanInput['conflictSelections']> }
+  resolution: C.ExchangeResolutionBinding | null; selections: NonNullable<ExchangePlanInput['conflictSelections']>; both: BothSource | null }
 type Prepared = { context: Context; local: SyncedExchangeLocal; localMaterial: SyncedExchangeLocalMaterial;
   localWire: SyncedProtocol5Snapshot; source: SyncedExchangeRemoteSource; remote: SyncedExchangeRemoteFacts;
-  state: M.ExchangeState; baseRecords: SyncedProtocol5Snapshot['records']; plan: ExchangePlan; planningAuthority: ReturnType<typeof authority>; engine: 1 | 2 }
-type Spool = { directory: string; job: M.ExchangeJob; plan: ExchangePlan; state: M.ExchangeState;
+  state: M.ExchangeState; baseRecords: SyncedProtocol5Snapshot['records']; plan: RuntimePlan; planningAuthority: ReturnType<typeof authority>; engine: 1 | 2 | 3; bothLinks: T.SyncedBothOwnerSourceLinks[] }
+type Spool = { directory: string; job: M.ExchangeJob; plan: RuntimePlan; state: M.ExchangeState;
   localFingerprint: string; manifest: Buffer; records: SyncedProtocol5Snapshot['records']; objects: Map<string, Buffer>; assets: Map<string, Buffer>;
   planning: { local: SyncedProtocol5Snapshot; remote: SyncedProtocol5Snapshot; baseRecords: SyncedProtocol5Snapshot['records'];
     authority: ReturnType<typeof authority>; keyGuards: Record<string, string>; stateRaw: string | null;
-    engine: 1 | 2; conflictSelections: NonNullable<ExchangePlanInput['conflictSelections']> } }
+    engine: 1 | 2 | 3; conflictSelections: NonNullable<ExchangePlanInput['conflictSelections']>; bothSelections: B.BothPrivateSelection[]; bothLinks: T.SyncedBothOwnerSourceLinks[] } }
 type Head = { kind: 'synced-exchange-job-head'; version: 1; operationId: string; requestHash: string;
   attemptId: string; attemptIndex: number; jobHash: string }
 const running = new Set<string>()
@@ -89,7 +98,7 @@ function context(db: Database.Database, input: SyncedExchangeInput): Context {
     || spelling(realpathSync(file)) !== spelling(file) || spelling(realpathSync(root)) !== spelling(root)) return unavailable('exchange connection/root不是Main真实knowbook.db。')
   const databasePath = observationDatabasePath(file), request = M.validateExchangeRequest({ method: 'exchangeSyncedSnapshot', operationId: input.operationId,
     databasePath, targetFingerprint: M.exchangeTargetFingerprint(target) })
-  return { root, databasePath, target, request, ...identity(db), initialTargetFingerprint: initialIncomingTargetFingerprint(target), resolution: null, selections: [] }
+  return { root, databasePath, target, request, ...identity(db), initialTargetFingerprint: initialIncomingTargetFingerprint(target), resolution: null, selections: [], both: null }
 }
 function current(db: Database.Database, c: Context): void {
   if (!db.open || db.readonly) return unavailable('exchange原writable connection已失效。')
@@ -219,10 +228,10 @@ function authority(local: SyncedExchangeLocal, missingBaseKeys: string[], deferr
     historyComponents: local.historyComponents, pinnedGroupIds: local.pinnedGroupIds, knownGroupIds: local.knownGroupIds, missingBaseKeys, deferredKeys,
     keyGuards: Object.entries(local.keyGuards).map(([key, fingerprint]) => ({ key, fingerprint })) }
 }
-function makePlan(input: ExchangePlanInput, engine: 1 | 2): ExchangePlan {
-  return engine === 1 ? planSyncedExchangeV1(input) : planSyncedExchange(input)
+function makePlan(input: ExchangePlanInput, engine: 1 | 2 | 3, selections: B.BothPrivateSelection[] = [], links: T.SyncedBothOwnerSourceLinks[] = []): RuntimePlan {
+  return engine === 1 ? planSyncedExchangeV1(input) : engine === 2 ? planSyncedExchange(input) : planSyncedBothExchange(input, selections, links)
 }
-async function prepare(db: Database.Database, c: Context, runtime: SyncedExchangeRuntime, deferredKeys: string[] = [], engine: 1 | 2 = 2): Promise<Prepared | M.SyncedExchangeResult> {
+async function prepare(db: Database.Database, c: Context, runtime: SyncedExchangeRuntime, deferredKeys: string[] = [], engine: 1 | 2 | 3 = 2): Promise<Prepared | M.SyncedExchangeResult> {
   const loaded = await readObservedSyncedProtocol5(db, { userDataRoot: c.root, target: c.target }, runtime)
   if (loaded.status !== 'ready') return loaded
   const source = loaded.source, remote = readObservedSyncedProtocol5Facts(source)
@@ -272,10 +281,11 @@ async function prepare(db: Database.Database, c: Context, runtime: SyncedExchang
   const now = capture(db, c)
   if (now.fingerprint !== local.fingerprint) return { status: 'stale', side: 'local' }
   const planningAuthority = authority(local, sort(common.missing), deferredKeys)
+  const bothLinks = engine === 3 ? captureBothSources(db, c, localWire) : []
   const plan = makePlan({ operationId: c.request.operationId, local: localWire, remote: remoteWire,
     baseRecords: common.records, state, localFingerprint: local.fingerprint, authority: planningAuthority,
-    ...(engine === 2 ? {conflictSelections:c.selections} : {}) },engine)
-  return { context: c, local, localMaterial, localWire, source, remote, state, baseRecords: common.records, plan, planningAuthority, engine }
+    ...(engine === 2 ? {conflictSelections:c.selections} : {}) },engine,c.both?.selections??[],bothLinks)
+  return { context: c, local, localMaterial, localWire, source, remote, state, baseRecords: common.records, plan, planningAuthority, engine, bothLinks }
 }
 function directory(c: Context, attemptId: string): string { return join(c.root, 'storage', 'synced-exchanges-v1', c.request.operationId, attemptId) }
 async function durable(file: string, bytes: Uint8Array): Promise<void> {
@@ -318,19 +328,19 @@ function phases(db: Database.Database, job: M.ExchangeJob): M.ExchangeJobPhaseFa
   const rows = db.prepare('SELECT key,value,updated_at FROM app_settings WHERE substr(key,1,?)=?').all(prefix.length, prefix) as Array<{ key: string; value: string; updated_at: string }>
   const facts = rows.map(row => { const fact = M.validateExchangeJobPhase(M.parseExchangeStored(row.value))
     if (row.key !== M.exchangeJobPhaseKey(job.request.operationId, job.attemptId, fact.sequence) || row.updated_at !== fact.recordedAt
-      || fact.requestHash !== job.requestHash || fact.jobHash !== M.exchangeJobHash(job) || fact.operationId !== job.request.operationId || fact.attemptId !== job.attemptId) return publicationInvalid('exchange原phase不属于实际job。')
+      || fact.version !== (job.version === 3 ? 2 : 1) || fact.requestHash !== job.requestHash || fact.jobHash !== M.exchangeJobHash(job) || fact.operationId !== job.request.operationId || fact.attemptId !== job.attemptId) return publicationInvalid('exchange原phase不属于实际job。')
     return fact }).sort((a, b) => a.sequence - b.sequence)
   let previous: string | null = null
   for (const [index, fact] of facts.entries()) { if (fact.sequence !== index || fact.previousFactHash !== previous) return publicationInvalid('exchange phase追加链不连续。'); previous = publicationHash(publicationJson(fact)) }
   if (!facts.length) return publicationInvalid('exchange job缺prepared事实。')
   return facts
 }
-function phase(db: Database.Database, job: M.ExchangeJob, value: M.ExchangeJobPhase, remoteEtag: string | null): void {
+function phase(db: Database.Database, job: M.ExchangeJob, value: M.ExchangeJobPhase, remoteEtag: string | null, blocked: T.SyncedExchangeBothPublishedBlock | null = null): void {
   const previous = phases(db, job), last = previous.at(-1)!
   if (last.phase === value && last.remoteEtag === remoteEtag) return
-  const fact = M.validateExchangeJobPhase({ kind: 'synced-exchange-job-phase', version: 1, operationId: job.request.operationId,
+  const fact = M.validateExchangeJobPhase({ kind: 'synced-exchange-job-phase', version: job.version === 3 ? 2 : 1, operationId: job.request.operationId,
     requestHash: job.requestHash, jobHash: M.exchangeJobHash(job), attemptId: job.attemptId, sequence: previous.length,
-    previousFactHash: publicationHash(publicationJson(last)), phase: value, remoteEtag, recordedAt: new Date().toISOString() })
+    previousFactHash: publicationHash(publicationJson(last)), phase: value, remoteEtag, recordedAt: new Date().toISOString(), ...(job.version === 3 ? { blocked } : {}) })
   putImmutable(db, M.exchangeJobPhaseKey(job.request.operationId, job.attemptId, fact.sequence), fact, fact.recordedAt)
 }
 async function spool(prepared: Prepared, parent: Head | null): Promise<Spool> {
@@ -358,7 +368,8 @@ async function spool(prepared: Prepared, parent: Head | null): Promise<Spool> {
   const inputs = { kind: 'synced-exchange-private-inputs', version: prepared.engine, request: c.request, target: c.target, local: prepared.localWire,
     remote: fromRemote(remote), state: prepared.state, baseRecords: prepared.baseRecords, authority: prepared.planningAuthority,
     keyGuards: local.keyGuards, stateRaw: local.stateRaw, plan,
-    ...(prepared.engine === 2 ? {plannerVersion:'conflicts-v1',resolution:c.resolution,conflictSelections:c.selections}: {}) }
+    ...(prepared.engine === 2 ? {plannerVersion:'conflicts-v1',resolution:c.resolution,conflictSelections:c.selections}: {}),
+    ...(prepared.engine === 3 ? {plannerVersion:'forks-v1',resolution:c.both!.resolution,bothSelections:storedBothSelections(c.both!.selections),bothLinks:prepared.bothLinks}: {}) }
   // assetNames is a Map and never crosses a JSON boundary. Full snapshots are reconstructed strictly on load.
   const storedInputs = { ...inputs, local: { manifest: inputs.local.manifest, records: inputs.local.records }, remote: { manifest: inputs.remote.manifest, records: inputs.remote.records },
     plan: { ...plan, nextRemote: { manifest: plan.nextRemote.manifest, records: plan.nextRemote.records }, localFinal: { manifest: plan.localFinal.manifest, records: plan.localFinal.records } } }
@@ -366,7 +377,8 @@ async function spool(prepared: Prepared, parent: Head | null): Promise<Spool> {
   const job = M.validateExchangeJob({ kind: 'synced-exchange-job', version: prepared.engine, request: c.request, requestHash: M.exchangeRequestHash(c.request),
     attemptId, parentAttemptId: parent?.attemptId ?? null, attemptIndex: parent ? parent.attemptIndex + 1 : 0, workspaceScope: c.workspaceScope,
     recoveryEpoch: c.recoveryEpoch, remoteWorkspaceId: remote.manifest.workspaceId, source: prepared.state.source, descriptor, components: plan.components, spoolHash, preparedAt: now,
-    ...(prepared.engine === 2 ? {plannerVersion:'conflicts-v1',resolution:c.resolution,merges:plan.merges??[]}: {}) })
+    ...(prepared.engine === 2 ? {plannerVersion:'conflicts-v1',resolution:c.resolution,merges:plan.merges??[]}: {}),
+    ...(prepared.engine === 3 ? {plannerVersion:'forks-v1',resolution:c.both!.resolution,merges:plan.merges??[],forks:'forks' in plan ? plan.forks : []}: {}) })
   const dir = directory(c, attemptId); safe(dir, c.root); await mkdir(join(dir, 'objects'), { recursive: true, mode: 0o700 }); await mkdir(join(dir, 'assets'), { mode: 0o700 }); safe(dir, c.root)
   await durable(join(dir, 'inputs.json'), inputBytes); await durable(join(dir, 'manifest.json'), manifest)
   for (const item of descriptor.next.objects) { const file = join(dir, item.path); if (!lstatSync(file, { throwIfNoEntry: false })) await durable(file, objects.get(item.key)!) }
@@ -374,7 +386,7 @@ async function spool(prepared: Prepared, parent: Head | null): Promise<Spool> {
   await durable(join(dir, 'job.json'), Buffer.from(publicationJson(job))); await durable(join(dir, 'ready.json'), Buffer.from(publicationJson({ jobHash: M.exchangeJobHash(job), spoolHash }))); await syncDirectory(dir)
   return { directory: dir, job, plan, state: prepared.state, localFingerprint: local.fingerprint, manifest, records, objects, assets,
     planning: { local: prepared.localWire, remote: fromRemote(remote), baseRecords: prepared.baseRecords, authority: prepared.planningAuthority, keyGuards: local.keyGuards, stateRaw: local.stateRaw,
-      engine:prepared.engine,conflictSelections:prepared.engine===2?c.selections:[] } }
+      engine:prepared.engine,conflictSelections:prepared.engine===2?c.selections:[],bothSelections:prepared.engine===3?c.both!.selections:[],bothLinks:prepared.bothLinks } }
 }
 function registerJob(db: Database.Database, c: Context, spool: Spool, parent: Head | null): boolean {
   return db.transaction(() => {
@@ -382,9 +394,9 @@ function registerJob(db: Database.Database, c: Context, spool: Spool, parent: He
     if (!same(readHead(db, c), parent)) return false
     const job = spool.job, now = job.preparedAt
     putImmutable(db, M.exchangeJobKey(c.request.operationId, job.attemptId), job, now)
-    const first = M.validateExchangeJobPhase({ kind: 'synced-exchange-job-phase', version: 1, operationId: c.request.operationId,
+    const first = M.validateExchangeJobPhase({ kind: 'synced-exchange-job-phase', version: job.version === 3 ? 2 : 1, operationId: c.request.operationId,
       requestHash: job.requestHash, jobHash: M.exchangeJobHash(job), attemptId: job.attemptId, sequence: 0, previousFactHash: null,
-      phase: 'prepared', remoteEtag: null, recordedAt: now })
+      phase: 'prepared', remoteEtag: null, recordedAt: now, ...(job.version === 3 ? { blocked: null } : {}) })
     putImmutable(db, M.exchangeJobPhaseKey(c.request.operationId, job.attemptId, 0), first, now)
     const head: Head = { kind: 'synced-exchange-job-head', version: 1, operationId: c.request.operationId, requestHash: job.requestHash,
       attemptId: job.attemptId, attemptIndex: job.attemptIndex, jobHash: M.exchangeJobHash(job) }
@@ -407,7 +419,7 @@ async function loadSpool(db: Database.Database, c: Context, head: Head): Promise
   if (!same(savedJob, job) || ready.jobHash !== head.jobHash || ready.spoolHash !== job.spoolHash) return publicationInvalid('exchange原spool/job原bytes已变。')
   const inputBytes = await read('inputs.json'), input = M.parseExchangeStored(inputBytes.toString('utf8'))
   assertSyncedShape(input, ['kind', 'version', 'request', 'target', 'local', 'remote', 'state', 'baseRecords', 'authority', 'keyGuards', 'stateRaw', 'plan',
-    ...(job.version===2?['plannerVersion','resolution','conflictSelections']:[])])
+    ...(job.version===2?['plannerVersion','resolution','conflictSelections']:job.version===3?['plannerVersion','resolution','bothSelections','bothLinks']:[])])
   if (input.kind !== 'synced-exchange-private-inputs' || input.version !== job.version || !same(input.request, c.request) || !same(input.target, c.target)
     || publicationHash(publicationJson({ inputHash: publicationHash(inputBytes), descriptor: job.descriptor })) !== job.spoolHash) return publicationInvalid('exchange原spoolinput认证失败。')
   const decodeSnapshot = (value: unknown): SyncedProtocol5Snapshot => {
@@ -425,13 +437,16 @@ async function loadSpool(db: Database.Database, c: Context, head: Head): Promise
   // The authority was minted only by this module's original real capture and is authenticated by both immutable DB job and private spool hash.
   const originalAuthority = input.authority as unknown as ReturnType<typeof authority>
   const conflictSelections=job.version===2?readSelections(input.conflictSelections,c.request):[]
+  const bothSelections=job.version===3?readBothSelections(input.bothSelections,c.request):[],bothLinks=job.version===3?B.validateBothSourceLinks(input.bothLinks):[]
+  if(job.version===3&&(input.plannerVersion!=='forks-v1'||!same(B.validateBothResolution(input.resolution),job.resolution)))return publicationInvalid('both原job来源/算法损坏。')
   if(job.version===2&&(input.plannerVersion!=='conflicts-v1'||!same(C.validateExchangeResolutionBinding(input.resolution),job.resolution))) return publicationInvalid('原job决定来源/算法损坏。')
   const plan = makePlan({ operationId: c.request.operationId, local, remote, baseRecords, state,
     localFingerprint: job.descriptor.localFingerprint, authority: originalAuthority,
-    ...(job.version===2?{conflictSelections}: {}) },job.version)
+    ...(job.version===2?{conflictSelections}: {}) },job.version,bothSelections,bothLinks)
   const normalized = { ...plan, nextRemote: { manifest: plan.nextRemote.manifest, records: plan.nextRemote.records }, localFinal: { manifest: plan.localFinal.manifest, records: plan.localFinal.records } }
   if (!same(input.plan, normalized) || plan.planHash !== job.descriptor.planHash) return publicationInvalid('exchange原planner结果与不可变job不符。')
-  if(job.version===2&&!same(plan.merges??[],job.merges))return publicationInvalid('原job merge来源与原inputs/plan不闭合。')
+  if(job.version===3&&(!('forks'in plan)||!same(plan.forks,job.forks)))return publicationInvalid('both原job fork/projection与原inputs不闭合。')
+  if(job.version>=2&&!same(plan.merges??[],job.merges))return publicationInvalid('原job merge来源与原inputs/plan不闭合。')
   const manifest = await read('manifest.json'), objects = new Map<string, Buffer>(), assets = new Map<string, Buffer>()
   if (publicationHash(manifest) !== job.descriptor.next.manifestHash || !same(decodePublicationJson(manifest), plan.nextRemote.manifest)) return publicationInvalid('exchange原Manifest bytes已变。')
   const objectNames = new Set<string>(), assetNames = new Set<string>()
@@ -447,7 +462,7 @@ async function loadSpool(db: Database.Database, c: Context, head: Head): Promise
   for (const [key, value] of Object.entries(input.keyGuards)) { if (typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)) return publicationInvalid('exchange原key guard损坏。'); keyGuards[key] = value }
   if (input.stateRaw !== null && typeof input.stateRaw !== 'string') return publicationInvalid('exchange原state raw损坏。')
   return { directory: dir, job, plan, state, localFingerprint: job.descriptor.localFingerprint, manifest, records: plan.nextRemote.records, objects, assets,
-    planning: { local, remote, baseRecords, authority: originalAuthority, keyGuards, stateRaw: input.stateRaw, engine:job.version,conflictSelections } }
+    planning: { local, remote, baseRecords, authority: originalAuthority, keyGuards, stateRaw: input.stateRaw, engine:job.version,conflictSelections,bothSelections,bothLinks } }
 }
 function claim(db: Database.Database, c: Context, saved: Spool): boolean {
   return db.transaction(() => {
@@ -581,7 +596,7 @@ function portableRecords(snapshot: ReturnType<typeof readSyncedPersistentPublica
     : record.kind === 'document' ? rewriteSyncedPortableHostAssets(record, toPortable) : record)
 }
 type HistoryBoundaryEffects = { historyArchives: Array<{ groupId: string; indexHash: string }>; hostHistoryCuts: Array<{ historyToken: string; cutHash: string }> }
-function historyBoundary(db: Database.Database, c: Context, plan: ExchangePlan, now: string): HistoryBoundaryEffects {
+function historyBoundary(db: Database.Database, c: Context, plan: RuntimePlan, now: string): HistoryBoundaryEffects {
   const docs = new Set(plan.historyBoundaryKeys.filter(key => key.startsWith('doc:')).map(key => key.slice(4))), groups = plan.historyBoundaryKeys.filter(key => key.startsWith('group:')).map(key => key.slice(6))
   // Follow all mappings (executed and Redo) to a fixed point. Never strand the other half of AB/BC.
   const mappings = db.prepare('SELECT history_id,document_id,position FROM synced_host_history_documents').all() as Array<{ history_id: string; document_id: string; position: number }>
@@ -703,7 +718,7 @@ function install(db: Database.Database, c: Context, saved: Spool, original: Sync
       const old = db.prepare('SELECT last_owner_kind,last_owner_id,created_at,state FROM block_identities WHERE id=?').get(block.id) as { last_owner_kind: string; last_owner_id: string; created_at: string | null; state: string } | undefined
       if (old && (old.last_owner_kind !== 'document' || old.last_owner_id !== doc.id || !old.created_at || old.state !== 'retained')) return publicationInvalid('exchange普通块旧owner/birth不能猜。')
       insertBlock.run(block.id, doc.id, block.parentBlockId, index, block.type, block.content, block.checked ? 1 : 0, block.depth, publicationJson(block.tags ?? []), block.language ?? null, block.listStart ?? null,
-        block.markdownFormat === undefined ? null : publicationJson(block.markdownFormat), block.highlight ?? null, old?.created_at ?? now, now)
+        block.markdownFormat === undefined ? null : publicationJson(block.markdownFormat), block.highlight ?? null, old?.created_at ?? allocatedPhysicalBirth(saved, block.id, now), now)
       const p = positions.get(block.id)
       if (p) db.prepare('INSERT INTO synced_instances(instance_id,group_id,host_document_id,binding_version,parent_block_id,depth) VALUES(?,?,?,?,?,?)').run(block.id, p.groupId, p.documentId, p.bindingVersion, p.parentBlockId, p.depth)
     }
@@ -728,6 +743,11 @@ function install(db: Database.Database, c: Context, saved: Spool, original: Sync
     const sourceKey = 'sync.webdav.protocol5.exchange-reservation.v1.' + c.request.operationId
     db.prepare("INSERT INTO block_identities(id,last_owner_kind,last_owner_id,state,created_at) VALUES(?,'reserved',?,'retained',NULL)").run(binding.target.id, sourceKey)
   }
+  if (saved.job.version === 3) for (const row of usedBothAllocation(saved)?.missing ?? []) {
+    if (!db.prepare('SELECT 1 FROM block_identities WHERE id=?').get(row.id))
+      db.prepare("INSERT INTO block_identities(id,last_owner_kind,last_owner_id,state,created_at) VALUES(?,'reserved',?,'retained',NULL)")
+        .run(row.id, 'sync.webdav.protocol5.exchange-reservation.v1.' + c.request.operationId)
+  }
   if (incoming.has('databases')) writeCatalog(db, records.find((record): record is SyncDatabases => record.kind === 'databases')!, original.snapshot.catalogId, now)
   for (const group of groups) assertSyncedStoredBindings(db, group.origin, group.blocks, group.bindings)
   const index = new MarkdownLinkIndex(db)
@@ -750,24 +770,27 @@ function settle(db: Database.Database, c: Context, saved: Spool, etag: string): 
     const local = capture(db, c)
     if (local.fingerprint !== saved.localFingerprint || local.stateRaw !== saved.planning.stateRaw) return null
     const actualLocal = wire(portableRecords(local.snapshot, c), c.workspaceScope)
+    if(saved.job.version===3&&bothCollisions(db,c,saved).length)return null
     const checked = makePlan({ operationId: c.request.operationId, local: actualLocal, remote: saved.planning.remote,
       baseRecords: saved.planning.baseRecords, state: saved.state, localFingerprint: local.fingerprint,
       authority: authority(local, saved.planning.authority.missingBaseKeys, saved.planning.authority.deferredKeys),
-      ...(saved.job.version===2?{conflictSelections:saved.planning.conflictSelections}: {}) },saved.job.version)
+      ...(saved.job.version===2?{conflictSelections:saved.planning.conflictSelections}: {}) },saved.job.version,saved.planning.bothSelections,saved.job.version===3?captureBothSources(db,c,actualLocal):[])
     if (checked.planHash !== saved.plan.planHash || !same(checked.localFinal.manifest.entries, saved.plan.localFinal.manifest.entries)
       || !same(checked.nextRemote.manifest.entries, saved.plan.nextRemote.manifest.entries)) return publicationInvalid('exchange最后owned SQL全图planner复核不闭合。')
     const now = new Date().toISOString(), historyEffects = checked.incoming.length ? install(db, c, saved, local, now) : { historyArchives: [], hostHistoryCuts: [] }
-    const result = M.validateExchangeAccepted({ status: checked.writes.length || checked.incoming.length ? 'applied' : checked.deferred.length ? 'deferred' : 'noop',
+    const resultBase = M.validateExchangeAccepted({ status: checked.writes.length || checked.incoming.length ? 'applied' : checked.deferred.length ? 'deferred' : 'noop',
       operationId: c.request.operationId, replayed: false, workspaceScope: c.workspaceScope, recoveryEpoch: c.recoveryEpoch,
       remoteWorkspaceId: saved.job.remoteWorkspaceId, beforeManifestHash: checked.beforeManifestHash, afterManifestHash: checked.afterManifestHash,
       publishedKeys: checked.writes, appliedKeys: checked.incoming, acceptedKeys: checked.accepted, deferred: checked.deferred, acceptedAt: now })
+    const result = saved.job.version===3 ? {...resultBase,forks:('forks'in checked?checked.forks:[]).map(row=>row.summary)} : resultBase
     const state = M.validateExchangeState({ ...saved.state, currentOperationId: c.request.operationId, generation: randomUUID(), baseline: checked.nextBaseline, deferred: checked.deferred, lastSyncAt: now })
     const receipt = M.validateExchangeReceipt({ kind: 'synced-exchange-operation', version: saved.job.version, request: c.request, result, provenance: {
       beforeManifestHash: result.beforeManifestHash, afterManifestHash: result.afterManifestHash, beforeManifestEtag: saved.job.descriptor.expectedRemote.etag,
       afterManifestEtag: etag, planHash: checked.planHash, source: saved.state.source, accepted: checked.acceptedSides, transfers: checked.transfers, historyArchives: historyEffects.historyArchives,
       hostHistoryCuts: historyEffects.hostHistoryCuts,
       afterStateHash: publicationHash(publicationJson(state)),
-      ...(saved.job.version===2?{plannerVersion:'conflicts-v1',resolution:saved.job.resolution,merges:checked.merges??[],attemptId:saved.job.attemptId}: {}) } })
+      ...(saved.job.version===2?{plannerVersion:'conflicts-v1',resolution:saved.job.resolution,merges:checked.merges??[],attemptId:saved.job.attemptId}: {}),
+      ...(saved.job.version===3?{plannerVersion:'forks-v1',resolution:saved.job.resolution,merges:checked.merges??[],forks:'forks'in checked?checked.forks:[],attemptId:saved.job.attemptId}: {}) } })
     db.prepare('INSERT INTO synced_operations(client_operation_id,request_hash,result_json,created_at) VALUES(?,?,?,?)')
       .run(c.request.operationId, M.exchangeRequestHash(c.request), publicationJson(receipt), now)
     // Baseline is the last knowledge write, in the very same transaction as actual graph/owner/history and exact receipt.
@@ -789,7 +812,7 @@ function readSelections(value: unknown, request: M.ExchangeRequest): NonNullable
     if(decisions[0].componentId!==preview.componentId)return publicationInvalid('selector与原component身份不等。')
     return {preview,decision:decisions[0]} })
   const decisions=C.validateConflictDecisions(selections.map(row=>row.decision))
-  if(request.method==='exchangeSyncedSnapshot' ? decisions.length!==0 : !same(decisions,request.decisions)) return publicationInvalid('原inputs selectors与完整request不闭合。')
+  if(request.method!=='resolveSyncedExchangeConflicts' ? decisions.length!==0 : !same(decisions,request.decisions)) return publicationInvalid('原inputs selectors与完整request不闭合。')
   return selections
 }
 function previewDirectory(c: Context, previewId: string): string { return join(c.root,'storage','synced-exchange-previews-v1',previewId) }
@@ -894,7 +917,7 @@ async function run(db: Database.Database, c: Context, runtime: SyncedExchangeRun
   const first = capture(db, c), originalGuards = first.keyGuards
   let deferredKeys: string[] = [], head = db.transaction(() => readHead(db, c))(), saved: Spool | null = head ? await loadSpool(db, c, head) : null
   const engine=saved?.job.version??2
-  if(saved&&engine===2) {c.resolution=saved.job.resolution??null;c.selections=saved.planning.conflictSelections}
+  if(saved&&engine===2) {c.resolution=C.validateExchangeResolutionBinding(saved.job.resolution??null);c.selections=saved.planning.conflictSelections}
   else if(c.request.method==='resolveSyncedExchangeConflicts') await attachPreview(db,c,c.request)
   // A bounded set of real competing snapshots; each retry gets a new immutable attempt and fresh original ETag.
   for (let turn = 0; turn < 8; turn++) {
@@ -987,5 +1010,362 @@ export async function resolveSyncedExchangeConflicts(db:Database.Database,input:
     return await run(db,c,runtime)
   }catch(cause){if(cause instanceof SyncedPublicationError)throw cause
     throw new SyncedPublicationError(cause instanceof Error&&/SQLITE|sqlite|database|constraint|trigger|exchange exact late receipt/i.test(cause.message)?'database':'invalid','真实冲突resolve失败；原job/possible保持。',cause)}
+  finally{if(key&&owns)running.delete(key);if(c)connections.delete(c)}
+}
+
+function captureBothSources(db: Database.Database, c: Context, local: SyncedProtocol5Snapshot): T.SyncedBothOwnerSourceLinks[] {
+  return db.transaction(() => {
+    current(db,c)
+    const paths=new Map((db.prepare('SELECT id,path FROM documents').all() as Array<{id:string;path:string}>).map(row=>[row.id,row.path]))
+    const result:T.SyncedBothOwnerSourceLinks[]=[]
+    for(const {key,hash,record} of local.records) {
+      if(record.kind==='document') {
+        const path=paths.get(record.id);if(path===undefined)return publicationInvalid('both真实portable宿主缺原SQL path。')
+        result.push(captureSyncedExchangeDocumentLinks(db,{id:record.id,path},record.content.blocks,record.content.summary,hash))
+      } else if(record.kind==='synced-group') {
+        const bindings=new Map(record.bindings.map(binding=>[publicationJson([binding.blockId,binding.from,binding.to,binding.raw,binding.syntax]),binding]))
+        const links=collectSyncedBindingOccurrences(record.origin,record.blocks).map(item=>{
+          const binding=bindings.get(publicationJson([item.blockId,item.from,item.to,item.raw,item.syntax]))
+          if(!binding)return publicationInvalid('both原portable canonical物理Key缺binding。')
+          return {key:{field:'block' as const,blockId:item.blockId,from:item.from,to:item.to,raw:item.raw,syntax:item.syntax},url:item.url,target:binding.target}
+        })
+        if(links.length!==record.bindings.length)return publicationInvalid('both原portable canonical Key并非闭集。')
+        const images=captureSyncedCreateSourceFacts(record.blocks.map(({createdAt:_createdAt,...block})=>block)).links.filter(item=>item.image).map(item=>({key:{field:'block' as const,...item.key},url:item.url}))
+        links.sort((a,b)=>publicationCompare(B.bothSourceKey(a.key),B.bothSourceKey(b.key)));images.sort((a,b)=>publicationCompare(B.bothSourceKey(a.key),B.bothSourceKey(b.key)))
+        result.push({ownerKey:key,recordHash:hash,path:null,complete:true,links,images})
+      }
+    }
+    return B.validateBothSourceLinks(result.sort((a,b)=>publicationCompare(a.ownerKey,b.ownerKey)))
+  })()
+}
+function planInput(prepared:Prepared):ExchangePlanInput {
+  return {operationId:prepared.context.request.operationId,local:prepared.localWire,remote:fromRemote(prepared.remote),baseRecords:prepared.baseRecords,
+    state:prepared.state,localFingerprint:prepared.local.fingerprint,authority:prepared.planningAuthority}
+}
+function snapshotData(value:SyncedProtocol5Snapshot):unknown{return {manifest:value.manifest,records:value.records}}
+function strictBothSnapshot(value:unknown):SyncedProtocol5Snapshot {
+  assertSyncedShape(value,['manifest','records']);if(!Array.isArray(value.records))return publicationInvalid('both原snapshot records损坏。')
+  return validateSyncedProtocol5Snapshot(value.manifest,value.records.map(row=>{assertSyncedShape(row,['key','hash','record'])
+    if(typeof row.key!=='string'||row.hash!==publicationHash(publicationJson(row.record)))return publicationInvalid('both原snapshot hash不符。')
+    return {key:row.key,record:row.record}}))
+}
+function bothDirectory(c:Context,previewId:string):string{return join(c.root,'storage','synced-exchange-both-previews-v1',previewId)}
+type BothStoredPreview={index:B.BothPreviewIndex;facts:T.SyncedExchangeBothPreview;allocation:T.SyncedBothAllocation;selections:B.BothPrivateSelection[]}
+function buildBothPreview(prepared:Prepared,previewId:string,now:string):{components:T.SyncedExchangeBothPreviewComponent[];allocation:T.SyncedBothAllocation;selections:B.BothPrivateSelection[]} {
+  const input=planInput(prepared),sourceLinks=captureBothSources(captureConnection(prepared.context),prepared.context,prepared.localWire)
+  const facts=deriveBothComponents(input,sourceLinks),local=new Map(prepared.localWire.records.map(row=>[row.key,row]))
+  const descriptions=new Map(facts.filter(row=>row.conflictedKeys.length&&row.selectedOriginal&&!row.reason).map(row=>[row.component.componentId,describeSyncedBothComponent({
+    local:input.local,remote:input.remote,selectedOriginal:row.selectedOriginal!,conflictedKeys:row.conflictedKeys,component:row.component,sourceLinks})]))
+  const allocation:T.SyncedBothAllocation={kind:'synced-exchange-both-allocation',version:1,previewId,allocatedAt:now,documents:[],groups:[],blocks:[],instances:[],entities:[],missing:[]}
+  // No reservation or physical row is created. These UUIDs are merely stable private candidates.
+  const offeredDocs=new Map<string,Extract<ReturnType<typeof describeSyncedBothComponent>,{status:'eligible'}>['copyDocuments'][number]>(),offeredGroups=new Map<string,Extract<ReturnType<typeof describeSyncedBothComponent>,{status:'eligible'}>['groups'][number]>()
+  for(const description of descriptions.values())if(description.status==='eligible') {for(const row of description.copyDocuments)offeredDocs.set(row.sourceDocumentId,row);for(const row of description.groups)offeredGroups.set(row.sourceGroupId,row)}
+  const docIds=new Map(sort(offeredDocs.keys()).map(id=>[id,randomUUID()])),groupIds=new Map(sort(offeredGroups.keys()).map(id=>[id,randomUUID()]))
+  const used=new Set<string>()
+  for(const {record} of input.local.records)if(record.kind==='document')used.add(publicationJson([record.parentId,record.content.title.replace(/[A-Z]/g,v=>v.toLowerCase())]))
+  for(const {record} of input.remote.records)if(record.kind==='document')used.add(publicationJson([record.parentId,record.content.title.replace(/[A-Z]/g,v=>v.toLowerCase())]))
+  const documents=new Map<string,T.SyncedBothAllocation['documents'][number]>()
+  function allocateDoc(id:string):T.SyncedBothAllocation['documents'][number] {
+    const old=documents.get(id);if(old)return old
+    const record=local.get('doc:'+id)?.record;if(record?.kind!=='document')return publicationInvalid('both copy来源缺实际L。')
+    const documentId=docIds.get(id)!,parentId=record.parentId===null?null:offeredDocs.has(record.parentId)?allocateDoc(record.parentId).documentId:record.parentId
+    const suffix='（本机分叉）',base=record.content.title.length+suffix.length<=500?record.content.title+suffix:'本机分叉 '+documentId
+    let title=base,index=0
+    while(used.has(publicationJson([parentId,title.replace(/[A-Z]/g,v=>v.toLowerCase())]))) {index++;title=base+' '+index;if(title.length>500)title='本机分叉 '+documentId+' '+index}
+    used.add(publicationJson([parentId,title.replace(/[A-Z]/g,v=>v.toLowerCase())]))
+    const row={sourceDocumentId:id,documentId,createdAt:now,title,parentId,path:''};documents.set(id,row);return row
+  }
+  for(const id of docIds.keys())allocateDoc(id)
+  const originalPaths=documentPaths(input.remote.records.map(row=>row.record))
+  const byNewId=new Map([...documents.values()].map(row=>[row.documentId,row]))
+  function copyPath(row:T.SyncedBothAllocation['documents'][number]):string {if(row.path)return row.path
+    const parent=row.parentId===null?'':byNewId.has(row.parentId)?copyPath(byNewId.get(row.parentId)!):originalPaths.get(row.parentId)
+    if(parent===undefined)return publicationInvalid('both copy parent没有真实最终path。')
+    return row.path=parent?parent+'/'+row.title:row.title}
+  for(const row of documents.values())copyPath(row)
+  allocation.documents=[...documents.values()].sort((a,b)=>publicationCompare(a.sourceDocumentId,b.sourceDocumentId))
+  const missing=new Map<string,string>(),missingId=(id:string):string=>{let value=missing.get(id);if(!value){value=randomUUID();missing.set(id,value)}return value}
+  for(const id of sort(groupIds.keys())) {const group=local.get('group:'+id)?.record;if(group?.kind!=='synced-group')return publicationInvalid('both group来源缺L。')
+    allocation.groups.push({sourceGroupId:id,groupId:groupIds.get(id)!,creationId:randomUUID(),createdAt:now,firstInstanceId:missingId(group.origin.firstInstanceId)})
+    for(const block of group.blocks)allocation.blocks.push({sourceOwnerKey:'group:'+id,sourceBlockId:block.id,ownerKey:'group:'+groupIds.get(id)!,blockId:randomUUID(),createdAt:now})
+    for(const binding of group.bindings)if(binding.target.kind==='block'&&binding.target.state==='missing')missingId(binding.target.id)
+  }
+  for(const owner of sourceLinks)for(const link of owner.links)if(link.target.kind==='block'&&link.target.state==='missing')missingId(link.target.id)
+  const instances=new Map<string,T.SyncedBothAllocation['instances'][number]>()
+  function addInstance(id:string,child:{id:string;content:string},destination:'existing'|'copied'):void {
+    const sourceGroupId=parseSyncedBlockPayload(child.content).groupId,groupId=groupIds.get(sourceGroupId)??sourceGroupId
+    const selector={sourceDocumentId:id,sourceInstanceId:child.id,destination},key=B.bothHostSelectorKey(selector)
+    if(instances.has(key))return
+    instances.set(key,{...selector,documentId:destination==='copied'?docIds.get(id)!:id,instanceId:randomUUID(),groupId,createdAt:now})
+  }
+  for(const [id,copy]of documents){const record=local.get('doc:'+id)!.record;if(record.kind!=='document')return publicationInvalid('both doc来源kind改变。')
+    for(const block of record.content.blocks)if(block.type==='synced-block')addInstance(id,block,'copied')
+    else allocation.blocks.push({sourceOwnerKey:'doc:'+id,sourceBlockId:block.id,ownerKey:'doc:'+copy.documentId,blockId:randomUUID(),createdAt:now})}
+  for(const group of offeredGroups.values())for(const host of group.hosts)if(host.destination==='existing'){const doc=local.get('doc:'+host.sourceDocumentId)?.record
+    if(doc?.kind!=='document')return publicationInvalid('both occurrence来源宿主缺失。')
+    const child=doc.content.blocks.find(row=>row.id===host.sourceInstanceId);if(!child||child.type!=='synced-block')return publicationInvalid('both occurrence来源不真实。')
+    addInstance(doc.id,child,'existing')}
+  allocation.instances=[...instances.values()].sort((a,b)=>publicationCompare(B.bothHostSelectorKey(a),B.bothHostSelectorKey(b)))
+  const catalog=local.get('databases')?.record
+  if(catalog?.kind!=='databases')return publicationInvalid('both缺完整实际catalog。')
+  for(const row of catalog.tables.database_entities)if(typeof row.document_id==='string'&&documents.has(row.document_id)) {
+    if(typeof row.id!=='string')return publicationInvalid('both entity源ID损坏。')
+    allocation.entities.push({sourceEntityId:row.id,entityId:randomUUID(),createdAt:now})}
+  allocation.entities.sort((a,b)=>publicationCompare(a.sourceEntityId,b.sourceEntityId));allocation.blocks.sort((a,b)=>publicationCompare(publicationJson([a.sourceOwnerKey,a.sourceBlockId]),publicationJson([b.sourceOwnerKey,b.sourceBlockId])))
+  allocation.missing=[...missing].map(([sourceId,id])=>({sourceId,id})).sort((a,b)=>publicationCompare(a.sourceId,b.sourceId))
+  const checked=B.validateBothAllocation(allocation),entityMaps=new Map(checked.entities.map(row=>[row.sourceEntityId,row])),groupMaps=new Map(checked.groups.map(row=>[row.sourceGroupId,row]))
+  const components:T.SyncedExchangeBothPreviewComponent[]=[],selections:B.BothPrivateSelection[]=[]
+  for(const fact of facts) {
+    if(!fact.conflictedKeys.length&&!fact.reason)continue
+    const description=descriptions.get(fact.component.componentId),eligible=description?.status==='eligible'
+    const component:T.SyncedExchangeBothPreviewComponent={...fact.component,records:fact.records,reason:fact.reason??(description?.status==='blocked'?description.reason:null),choices:eligible?['both']:[],copyDocuments:[],groups:[],entities:[]}
+    if(eligible){
+      for(const source of description.copyDocuments){const copy=documents.get(source.sourceDocumentId)!,doc=local.get('doc:'+source.sourceDocumentId)!.record
+        if(doc.kind!=='document')return publicationInvalid('both copy来源不真实。')
+        const requiredCopyDocumentIds=sort([...source.requiredCopyDocumentIds,...(doc.parentId!==null&&offeredDocs.has(doc.parentId)?[doc.parentId]:[])])
+        component.copyDocuments.push({...source,...copy,sourceTitle:doc.content.title,requiredCopyDocumentIds})
+      }
+      for(const source of description.groups){const group=groupMaps.get(source.sourceGroupId)!
+        component.groups.push({...source,...group,hosts:source.hosts.map(host=>{const mapped=instances.get(B.bothHostSelectorKey(host))!
+          return {...host,documentId:mapped.documentId,instanceId:mapped.instanceId}})})}
+      const copied=new Set(component.copyDocuments.map(row=>row.sourceDocumentId))
+      component.entities=catalog.tables.database_entities.filter(row=>typeof row.document_id==='string'&&copied.has(row.document_id)).map(row=>{
+        if(typeof row.id!=='string'||typeof row.document_id!=='string'||typeof row.database_id!=='string'||typeof row.title!=='string')return publicationInvalid('both display entity来源损坏。')
+        return {sourceEntityId:row.id,entityId:entityMaps.get(row.id)!.entityId,sourceDocumentId:row.document_id,databaseId:row.database_id,title:row.title}}).sort((a,b)=>publicationCompare(a.sourceEntityId,b.sourceEntityId))
+    }
+    // The public destination fields are exact; private birth/Origin fields never leak into the DTO.
+    component.copyDocuments=component.copyDocuments.map(row=>({sourceDocumentId:row.sourceDocumentId,sourceHash:row.sourceHash,sourceTitle:row.sourceTitle,documentId:row.documentId,title:row.title,parentId:row.parentId,path:row.path,required:row.required,requiredCopyDocumentIds:row.requiredCopyDocumentIds,requiredGroupIds:row.requiredGroupIds}))
+    component.groups=component.groups.map(row=>({sourceGroupId:row.sourceGroupId,sourceHash:row.sourceHash,groupId:row.groupId,creationId:row.creationId,createdAt:row.createdAt,required:row.required,hosts:row.hosts}))
+    // A required catalog copy is trialled through the actual typed transformer before it is advertised.
+    if(eligible&&fact.selectedOriginal){
+      const copies=new Set(component.copyDocuments.filter(row=>row.required).map(row=>row.sourceDocumentId));let expanded=true
+      while(expanded){expanded=false;for(const copy of component.copyDocuments)if(copies.has(copy.sourceDocumentId))for(const id of copy.requiredCopyDocumentIds)if(!copies.has(id)){copies.add(id);expanded=true}}
+      const needed=new Set(component.groups.filter(row=>row.required).map(row=>row.sourceGroupId))
+      for(const doc of component.copyDocuments)if(copies.has(doc.sourceDocumentId))doc.requiredGroupIds.forEach(id=>needed.add(id))
+      const decision:T.SyncedExchangeBothDecision={componentId:component.componentId,copyDocumentIds:sort(copies),groups:component.groups.filter(row=>needed.has(row.sourceGroupId)).map(row=>({groupId:row.sourceGroupId,hosts:row.hosts.filter(host=>host.destination==='copied'&&copies.has(host.sourceDocumentId)).map(({required:_required,documentId:_doc,instanceId:_instance,...host})=>host)}))}
+      const trialSelection:B.BothPrivateSelection={preview:component,decision,component:fact.component,allocation:checked,poolAllocation:checked,sourceLinks,conflictedKeys:fact.conflictedKeys}
+      const trialAllocation=effectiveBothAllocation([trialSelection])
+      const trial=planSyncedBothFork({local:input.local,remote:input.remote,component:fact.component,selectedOriginal:fact.selectedOriginal,conflictedKeys:fact.conflictedKeys,sourceLinks,
+        retainedLocal:input.local,retainedRemote:input.remote,decision,allocation:trialAllocation})
+      if(trial.status==='blocked'){component.reason=trial.reason;component.choices=[]}
+    }
+    const final=B.validateBothPreviewComponent(component);components.push(final)
+    if(final.choices.includes('both'))selections.push({preview:final,decision:{componentId:final.componentId,copyDocumentIds:[],groups:[]},component:fact.component,allocation:checked,poolAllocation:checked,sourceLinks,conflictedKeys:fact.conflictedKeys})
+  }
+  components.sort((a,b)=>publicationCompare(a.componentId,b.componentId));selections.sort((a,b)=>publicationCompare(a.component.componentId,b.component.componentId))
+  return {components,allocation:checked,selections}
+}
+function validateBothSelector(preview:T.SyncedExchangeBothPreviewComponent,decision:T.SyncedExchangeBothDecision):void {
+  if(!preview.choices.includes('both')||preview.componentId!==decision.componentId)return publicationInvalid('both决定不属于原可执行组件。')
+  const docs=new Map(preview.copyDocuments.map(row=>[row.sourceDocumentId,row])),copied=new Set(decision.copyDocumentIds),groups=new Map(preview.groups.map(row=>[row.sourceGroupId,row])),selectedGroups=new Map(decision.groups.map(row=>[row.groupId,row]))
+  if(decision.copyDocumentIds.some(id=>!docs.has(id))||preview.copyDocuments.some(row=>row.required&&!copied.has(row.sourceDocumentId)))return publicationInvalid('both copy selectors遗漏/超出原展示。')
+  for(const id of copied){const row=docs.get(id)!
+    if(row.requiredCopyDocumentIds.some(id=>!copied.has(id))||row.requiredGroupIds.some(id=>!selectedGroups.has(id)))return publicationInvalid('both copy closure未显式完整选择。')}
+  if(decision.groups.some(row=>!groups.has(row.groupId))||preview.groups.some(row=>row.required&&!selectedGroups.has(row.sourceGroupId)))return publicationInvalid('both group selectors遗漏/超出原展示。')
+  for(const selected of decision.groups){const shown=groups.get(selected.groupId)!,hosts=new Map(shown.hosts.map(row=>[B.bothHostSelectorKey(row),row])),keys=new Set(selected.hosts.map(B.bothHostSelectorKey))
+    if(selected.hosts.some(row=>!hosts.has(B.bothHostSelectorKey(row))||row.destination==='copied'&&!copied.has(row.sourceDocumentId))||shown.hosts.some(row=>row.required&&!keys.has(B.bothHostSelectorKey(row))))return publicationInvalid('both宿主selectors不在准确闭合集合。')
+    for(const doc of copied)for(const row of shown.hosts)if(row.sourceDocumentId===doc&&row.destination==='copied'&&!keys.has(B.bothHostSelectorKey(row)))return publicationInvalid('both复制宿主的fork occurrence未显式选择。')
+  }
+}
+function readBothSelections(value:unknown,request:M.ExchangeRequest):B.BothPrivateSelection[] {
+  M.assertExchangeData(value);assertSyncedShape(value,['allocation','poolAllocation','sourceLinks','selections'])
+  if(!Array.isArray(value.selections)||request.method!=='resolveSyncedExchangeBoth')return publicationInvalid('both私有selector来源不符。')
+  const allocation=B.validateBothAllocation(value.allocation),poolAllocation=B.validateBothAllocation(value.poolAllocation),sourceLinks=B.validateBothSourceLinks(value.sourceLinks)
+  const result=value.selections.map(raw=>{assertSyncedShape(raw,['preview','decision','component','conflictedKeys'])
+    const preview=B.validateBothPreviewComponent(raw.preview),decision=B.validateBothDecisions([raw.decision])[0],componentRaw=raw.component
+    assertSyncedShape(componentRaw,['keys','localSignature','remoteSignature','dependencySignature','componentId'])
+    const component={...M.validateExchangeComponent({keys:componentRaw.keys,localSignature:componentRaw.localSignature,remoteSignature:componentRaw.remoteSignature,dependencySignature:componentRaw.dependencySignature}),componentId:preview.componentId}
+    if(componentRaw.componentId!==preview.componentId||!same(component.keys,preview.keys))return publicationInvalid('both原component身份不闭合。')
+    validateBothSelector(preview,decision)
+    return {preview,decision,component,allocation,poolAllocation,sourceLinks,conflictedKeys:M.exchangeKeys(raw.conflictedKeys)}})
+  if(!same(B.validateBothDecisions(result.map(row=>row.decision)),request.decisions))return publicationInvalid('both原request selectors与inputs不等。')
+  const effective=effectiveBothAllocation(result)
+  if(result.some(row=>!same(row.allocation,effective)))return publicationInvalid('both effective Origin不是原候选池与selectors的唯一派生。')
+  return result
+}
+function storedBothSelections(selections:B.BothPrivateSelection[]):unknown {
+  const first=selections[0];if(!first)return publicationInvalid('both缺原已接受selector。')
+  if(selections.some(row=>row.allocation!==first.allocation&&!same(row.allocation,first.allocation)||row.poolAllocation!==first.poolAllocation&&!same(row.poolAllocation,first.poolAllocation)||row.sourceLinks!==first.sourceLinks&&!same(row.sourceLinks,first.sourceLinks)))return publicationInvalid('both多个组件混用私有候选来源。')
+  return {allocation:first.allocation,poolAllocation:first.poolAllocation,sourceLinks:first.sourceLinks,selections:selections.map(({preview,decision,component,conflictedKeys})=>({preview,decision,component,conflictedKeys}))}
+}
+function effectiveBothAllocation(selections:B.BothPrivateSelection[]):T.SyncedBothAllocation {
+  const pool=selections[0]?.poolAllocation;if(!pool)return publicationInvalid('both无真实候选池。')
+  if(selections.some(row=>!same(row.poolAllocation,pool)))return publicationInvalid('both不同selector混用候选池。')
+  const groups=pool.groups.map(group=>{
+    const chosen=selections.flatMap(row=>row.decision.groups.filter(row=>row.groupId===group.sourceGroupId).flatMap(row=>row.hosts))
+    const sourceFirst=pool.missing.find(row=>row.id===group.firstInstanceId)?.sourceId
+    if(sourceFirst===undefined)return publicationInvalid('both原first fallback缺真实来源。')
+    const candidates=pool.instances.filter(row=>row.groupId===group.groupId&&row.sourceInstanceId===sourceFirst&&chosen.some(host=>B.bothHostSelectorKey(host)===B.bothHostSelectorKey(row)))
+    candidates.sort((a,b)=>(a.destination==='copied'?0:1)-(b.destination==='copied'?0:1)||publicationCompare(B.bothHostSelectorKey(a),B.bothHostSelectorKey(b)))
+    return {...group,firstInstanceId:candidates[0]?.instanceId??group.firstInstanceId}
+  })
+  return B.validateBothAllocation({...pool,groups})
+}
+async function loadBothPreview(db:Database.Database,c:Context,previewId:string):Promise<BothStoredPreview|null> {
+  const index=db.transaction(()=>{current(db,c);return readSyncedBothPreviewIndex(db,previewId,c.request)})()
+  if(!index)return null
+  if(index.workspaceScope!==c.workspaceScope||index.recoveryEpoch!==c.recoveryEpoch)return unavailable('both原preview属于其它scope/epoch。')
+  const dir=bothDirectory(c,previewId),file=join(dir,'preview.json');safe(file,c.root)
+  if(!lstatSync(file).isFile())return publicationInvalid('both原preview不是regular文件。')
+  const bytes=await readFile(file);if(publicationHash(bytes)!==index.previewHash)return publicationInvalid('both原preview bytes/index不闭合。')
+  const value=M.parseExchangeStored(bytes.toString('utf8'))
+  assertSyncedShape(value,['kind','version','previewId','databasePath','target','workspaceScope','recoveryEpoch','createdAt','local','remote','baseRecords','state','authority','keyGuards','stateRaw','localFingerprint','components','allocation','sourceLinks','componentFacts'])
+  if(value.kind!=='synced-exchange-both-preview-inputs'||value.version!==1||value.previewId!==previewId||value.databasePath!==c.databasePath||!same(value.target,c.target)
+    ||value.workspaceScope!==index.workspaceScope||value.recoveryEpoch!==index.recoveryEpoch||value.createdAt!==index.createdAt)return publicationInvalid('both原preview来源损坏。')
+  const allocation=B.validateBothAllocation(value.allocation),sourceLinks=B.validateBothSourceLinks(value.sourceLinks),local=strictBothSnapshot(value.local),remote=strictBothSnapshot(value.remote),state=M.validateExchangeState(value.state)
+  if(B.bothAllocationHash(allocation)!==index.allocationHash||!Array.isArray(value.baseRecords)||typeof value.localFingerprint!=='string')return publicationInvalid('both原allocation/B损坏。')
+  const baseRecords=value.baseRecords.map(row=>{assertSyncedShape(row,['key','hash','record']);if(typeof row.key!=='string'||typeof row.hash!=='string'||publicationHash(publicationJson(row.record))!==row.hash)return publicationInvalid('both原B对象损坏。');return {key:row.key,hash:row.hash,record:validateSyncedProtocol5Record(row.record,row.key)}})
+  assertSyncedShape(value.authority,['catalogId','identities','occupiedDocumentIds','historyComponents','pinnedGroupIds','knownGroupIds','missingBaseKeys','deferredKeys'],['keyGuards'])
+  const authorityData=value.authority as unknown as ReturnType<typeof authority>,componentFacts=deriveBothComponents({operationId:previewId,local,remote,baseRecords,state,localFingerprint:value.localFingerprint,authority:authorityData},sourceLinks)
+  if(!same(value.componentFacts,componentFacts.map(row=>({component:row.component,records:row.records,conflictedKeys:row.conflictedKeys,reason:row.reason}))))return publicationInvalid('both原组件/真实B来源不符。')
+  if(!Array.isArray(value.components))return publicationInvalid('both原展示缺失。')
+  const components=value.components.map(B.validateBothPreviewComponent).sort((a,b)=>publicationCompare(a.componentId,b.componentId))
+  const byComponent=new Map(componentFacts.map(row=>[row.component.componentId,row]))
+  const selections:B.BothPrivateSelection[]=components.filter(row=>row.choices.includes('both')).map(preview=>{
+    const facts=byComponent.get(preview.componentId);if(!facts?.selectedOriginal||facts.reason)return publicationInvalid('both原展示无合法来源。')
+    const described=describeSyncedBothComponent({local,remote,component:facts.component,selectedOriginal:facts.selectedOriginal,conflictedKeys:facts.conflictedKeys,sourceLinks})
+    if(described.status!=='eligible')return publicationInvalid('both原展示不再可重现。')
+    if(!same(described.groups.map(row=>[row.sourceGroupId,row.sourceHash,row.required,row.hosts]),preview.groups.map(row=>[row.sourceGroupId,row.sourceHash,row.required,row.hosts.map(({documentId:_doc,instanceId:_instance,...row})=>row)])))return publicationInvalid('both原宿主闭集展示损坏。')
+    return {preview,decision:{componentId:preview.componentId,copyDocumentIds:[],groups:[]},component:facts.component,allocation,poolAllocation:allocation,sourceLinks,conflictedKeys:facts.conflictedKeys}})
+  const facts=B.validateBothPreview({kind:'synced-exchange-both-preview',version:1,previewId,previewHash:index.previewHash,workspaceScope:index.workspaceScope,recoveryEpoch:index.recoveryEpoch,
+    remoteWorkspaceId:remote.manifest.workspaceId,targetFingerprint:index.targetFingerprint,stateGeneration:state.generation,remoteManifestHash:publicationHash(publicationJson(remote.manifest)),createdAt:index.createdAt,components})
+  const final=db.transaction(()=>{current(db,c);return readSyncedBothPreviewIndex(db,previewId,c.request)})()
+  if(!same(final,index))return publicationInvalid('both读取期间原index变更。')
+  return {index,facts,allocation,selections}
+}
+async function attachBothPreview(db:Database.Database,c:Context,request:B.BothRequest):Promise<void> {
+  const loaded=await loadBothPreview(db,c,request.previewId);if(!loaded)return unavailable('both缺真实Main私有preview。')
+  const byId=new Map(loaded.selections.map(row=>[row.component.componentId,row]))
+  const selections=request.decisions.map(decision=>{const source=byId.get(decision.componentId);if(!source)return publicationInvalid('both selector不在原可执行preview。');validateBothSelector(source.preview,decision);return {...source,decision}})
+  const allocation=effectiveBothAllocation(selections)
+  c.both={resolution:B.validateBothResolution({previewId:request.previewId,previewHash:loaded.index.previewHash,decisionsHash:publicationHash(publicationJson(request.decisions)),allocationHash:B.bothAllocationHash(allocation)}),selections:selections.map(row=>({...row,allocation}))}
+}
+async function createBothPreview(db:Database.Database,c:Context,previewId:string,runtime:SyncedExchangeRuntime):Promise<T.SyncedExchangeBothPreviewResult> {
+  if(db.pragma('user_version',{simple:true})===26)return Object.freeze({status:'unsupported',reason:'schema-27-required'})
+  if(db.pragma('user_version',{simple:true})!==27)return publicationInvalid('both preview schema无效。')
+  const existing=await loadBothPreview(db,c,previewId);if(existing)return frozenPublicationFacts({status:'ready',preview:existing.facts})
+  const prepared=await prepare(db,c,runtime);if(!('plan'in prepared)) {
+    if(prepared.status==='missing'||prepared.status==='unsupported'||prepared.status==='stale')return frozenPublicationFacts(prepared)
+    return publicationInvalid('both preview不接受已有结算结果。')}
+  const now=new Date().toISOString(),built=buildBothPreview(prepared,previewId,now),sourceLinks=captureBothSources(db,c,prepared.localWire),input=planInput(prepared),dir=bothDirectory(c,previewId)
+  const payload={kind:'synced-exchange-both-preview-inputs',version:1,previewId,databasePath:c.databasePath,target:c.target,workspaceScope:c.workspaceScope,recoveryEpoch:c.recoveryEpoch,createdAt:now,
+    local:snapshotData(input.local),remote:snapshotData(input.remote),baseRecords:input.baseRecords,state:input.state,authority:input.authority,keyGuards:prepared.local.keyGuards,stateRaw:prepared.local.stateRaw,localFingerprint:prepared.local.fingerprint,
+    components:built.components,allocation:built.allocation,sourceLinks,componentFacts:deriveBothComponents(input,sourceLinks).map(row=>({component:row.component,records:row.records,conflictedKeys:row.conflictedKeys,reason:row.reason}))}
+  const bytes=Buffer.from(publicationJson(payload)),previewHash=publicationHash(bytes),index=B.validateBothPreviewIndex({kind:'synced-exchange-both-preview-index',version:1,previewId,databasePath:c.databasePath,
+    targetFingerprint:c.request.targetFingerprint,workspaceScope:c.workspaceScope,recoveryEpoch:c.recoveryEpoch,previewHash,allocationHash:B.bothAllocationHash(built.allocation),createdAt:now})
+  const facts=B.validateBothPreview({kind:'synced-exchange-both-preview',version:1,previewId,previewHash,workspaceScope:c.workspaceScope,recoveryEpoch:c.recoveryEpoch,remoteWorkspaceId:prepared.remote.manifest.workspaceId,
+    targetFingerprint:c.request.targetFingerprint,stateGeneration:prepared.state.generation,remoteManifestHash:prepared.remote.manifestHash,createdAt:now,components:built.components})
+  safe(dir,c.root);await mkdir(join(c.root,'storage','synced-exchange-both-previews-v1'),{recursive:true,mode:0o700});await mkdir(dir,{mode:0o700});safe(dir,c.root)
+  await durable(join(dir,'preview.json'),bytes);await syncDirectory(dir)
+  const installed=db.transaction(()=>{current(db,c);if(capture(db,c).fingerprint!==prepared.local.fingerprint)return false;putImmutable(db,B.bothPreviewKey(previewId),index,now);return true}).immediate()
+  return installed?frozenPublicationFacts({status:'ready',preview:facts}):Object.freeze({status:'stale',side:'local'})
+}
+function usedBothAllocation(saved:Spool):T.SyncedBothAllocation|null {
+  if(saved.job.version!==3)return null
+  const allocation=saved.planning.bothSelections[0]?.allocation;if(!allocation)return publicationInvalid('both原job缺固定map。')
+  const summaries=saved.job.forks?.map(row=>row.summary)??[],docs=new Set(summaries.flatMap(row=>row.documents.map(row=>row.documentId))),groups=new Set(summaries.flatMap(row=>row.groups.map(row=>row.groupId))),instances=new Set(summaries.flatMap(row=>row.instances.map(row=>row.instanceId))),entities=new Set(summaries.flatMap(row=>row.entities.map(row=>row.entityId)))
+  const used=new Set<string>()
+  for(const {record}of saved.plan.localFinal.records)if(record.kind==='synced-group'&&groups.has(record.id)) {used.add(record.origin.firstInstanceId);for(const binding of record.bindings)if(binding.target.kind==='block'&&binding.target.state==='missing')used.add(binding.target.id)}
+  return {...allocation,documents:allocation.documents.filter(row=>docs.has(row.documentId)),groups:allocation.groups.filter(row=>groups.has(row.groupId)),
+    blocks:allocation.blocks.filter(row=>row.ownerKey.startsWith('doc:')?docs.has(row.ownerKey.slice(4)):groups.has(row.ownerKey.slice(6))),instances:allocation.instances.filter(row=>instances.has(row.instanceId)),entities:allocation.entities.filter(row=>entities.has(row.entityId)),missing:allocation.missing.filter(row=>used.has(row.id))}
+}
+const bothBirths=new WeakMap<Spool,Map<string,string>>()
+function allocatedPhysicalBirth(saved:Spool,id:string,fallback:string):string {
+  if(saved.job.version!==3)return fallback
+  let births=bothBirths.get(saved)
+  if(!births){const allocation=saved.planning.bothSelections[0]?.allocation;births=new Map([...(allocation?.blocks??[]).map(row=>[row.blockId,row.createdAt] as const),...(allocation?.instances??[]).map(row=>[row.instanceId,row.createdAt] as const)]);bothBirths.set(saved,births)}
+  // Only truly new fork IDs require a fixed birth. Unrelated ordinary incoming IDs retain the old bounded behavior.
+  return births.get(id)??fallback
+}
+function bothCollisions(db:Database.Database,c:Context,saved:Spool):T.SyncedExchangeBothPublishedBlock['collisions'] {
+  const allocation=usedBothAllocation(saved);if(!allocation)return []
+  return db.transaction(()=>{current(db,c);const local=capture(db,c),result=readSyncedBothIdentityCollisions(db,allocation,local.occupiedDocumentIds)
+    const finalPaths=documentPaths(saved.plan.localFinal.records.map(row=>row.record)),incoming=new Set(saved.plan.incoming)
+    const wanted=new Map(allocation.documents.map(row=>[row.path,row]))
+    for(const row of db.prepare('SELECT id,path FROM documents').all() as Array<{id:string;path:string}>){const target=wanted.get(row.path)
+      if(target&&row.id!==target.documentId&&!(incoming.has('doc:'+row.id)&&finalPaths.get(row.id)!==row.path))result.push({kind:'path',id:target.path})}
+    return [...new Map(result.map(row=>[publicationJson([row.kind,row.id]),row])).values()].sort((a,b)=>publicationCompare(publicationJson([a.kind,a.id]),publicationJson([b.kind,b.id])))})()
+}
+function blockPublishedBoth(db:Database.Database,c:Context,saved:Spool,etag:string,collisions:T.SyncedExchangeBothPublishedBlock['collisions']):T.SyncedExchangeBothPublishedBlock {
+  if(saved.job.version!==3||!saved.job.resolution)return publicationInvalid('旧job不能伪both blocker。')
+  const resolution=B.validateBothResolution(saved.job.resolution),reason=collisions.some(row=>row.kind==='path')?'path-collision':collisions.some(row=>row.kind==='entity')?'catalog-collision':collisions.length?'identity-collision':'source-stale'
+  const result=B.validateBothPublishedBlock({status:'blocked',stage:'published-local',reason,operationId:c.request.operationId,attemptId:saved.job.attemptId,allocationHash:resolution.allocationHash,
+    publishedManifestHash:saved.job.descriptor.next.manifestHash,publishedManifestETag:etag,componentIds:sort(saved.job.forks?.map(row=>row.componentId)??[]),collisions})
+  db.transaction(()=>{current(db,c);phase(db,saved.job,'blocked',etag,result)}).immediate()
+  return frozenPublicationFacts(result)
+}
+async function historicalBothPublication(db:Database.Database,c:Context,saved:Spool,runtime:SyncedExchangeRuntime):Promise<{etag:string;blocked:T.SyncedExchangeBothPublishedBlock|null}|null> {
+  const facts=db.transaction(()=>{current(db,c);return phases(db,saved.job)})()
+  const confirmed=[...facts].reverse().find(row=>['remote-confirmed','published-local-deferred','blocked','settled'].includes(row.phase)&&row.remoteEtag!==null)
+  if(confirmed)return {etag:confirmed.remoteEtag!,blocked:confirmed.phase==='blocked'?confirmed.blocked??null:null}
+  if(facts.at(-1)!.phase==='prepared')return null
+  const client=new WebDavClient(c.target,runtime.password,runtime.signal),actual=await network(()=>client.getVersioned('manifest.json',PUBLICATION_RECORD_MAX_BYTES))
+  if(actual&&publicationHash(actual.bytes)===saved.job.descriptor.next.manifestHash){confirm(db,c,saved,actual.etag);return {etag:actual.etag,blocked:null}}
+  return null
+}
+async function runBoth(db:Database.Database,c:Context,runtime:SyncedExchangeRuntime):Promise<T.SyncedExchangeBothResult> {
+  const replay=db.transaction(()=>readSyncedExchangeReceipt(db,c.request))()
+  if(replay){if(replay.version!==3||!replay.result.forks)return publicationInvalid('both原收据不能跨版本授票。');return frozenPublicationFacts({...replay.result,replayed:true,forks:replay.result.forks})}
+  if(db.pragma('user_version',{simple:true})===26)return Object.freeze({status:'unsupported',reason:'schema-27-required'})
+  if(db.pragma('user_version',{simple:true})!==27)return publicationInvalid('both未知schema。')
+  const first=capture(db,c),originalGuards=first.keyGuards
+  let head=db.transaction(()=>readHead(db,c))(),saved=head?await loadSpool(db,c,head):null,deferredKeys:string[]=[]
+  if(saved){if(saved.job.version!==3||!saved.job.resolution)return publicationInvalid('both不能继承旧版本job。');c.both={resolution:B.validateBothResolution(saved.job.resolution),selections:saved.planning.bothSelections}}
+  else {if(c.request.method!=='resolveSyncedExchangeBoth')return publicationInvalid('both方法不一致。');await attachBothPreview(db,c,c.request)}
+  for(let turn=0;turn<8;turn++) {
+    aborted(runtime.signal)
+    if(!saved){const prepared=await prepare(db,c,runtime,deferredKeys,3)
+      if(!('plan'in prepared)){if(prepared.status==='stale'&&prepared.side==='local'){deferredKeys=sort([...deferredKeys,...changedKeys(originalGuards,capture(db,c).keyGuards)]);continue}
+        if(prepared.status==='missing'||prepared.status==='unsupported'||prepared.status==='stale')return frozenPublicationFacts(prepared)
+        return publicationInvalid('both prepare返回非读取结果。')}
+      const raced=changedKeys(originalGuards,prepared.local.keyGuards)
+      if(raced.some(key=>!deferredKeys.includes(key))){deferredKeys=sort([...deferredKeys,...raced]);continue}
+      saved=await spool(prepared,head)
+      if(!registerJob(db,c,saved,head)){saved=null;deferredKeys=sort([...deferredKeys,...changedKeys(originalGuards,capture(db,c).keyGuards)]);head=db.transaction(()=>readHead(db,c))();continue}
+      head=db.transaction(()=>readHead(db,c))()
+    }
+    // Historical confirmation precedes any temptation to discard the fixed allocation after local drift.
+    const historical=await historicalBothPublication(db,c,saved,runtime)
+    if(historical?.blocked)return frozenPublicationFacts(historical.blocked)
+    const now=capture(db,c),collisions=bothCollisions(db,c,saved)
+    if(historical&&(now.fingerprint!==saved.localFingerprint||collisions.length))return blockPublishedBoth(db,c,saved,historical.etag,collisions)
+    if(!historical&&now.fingerprint!==saved.localFingerprint){deferredKeys=sort([...deferredKeys,...changedKeys(saved.planning.keyGuards,now.keyGuards)]);saved=null;continue}
+    let remote:{status:'confirmed';etag:string}|{status:'retry'}|{status:'stale'}
+    if(historical)remote={status:'confirmed',etag:historical.etag}
+    else if(!saved.plan.writes.length){const client=new WebDavClient(c.target,runtime.password,runtime.signal),actual=await network(()=>client.getVersioned('manifest.json',PUBLICATION_RECORD_MAX_BYTES))
+      remote=actual&&publicationHash(actual.bytes)===saved.job.descriptor.expectedRemote.manifestHash&&actual.etag===saved.job.descriptor.expectedRemote.etag?{status:'confirmed',etag:actual.etag}:{status:'retry'}}
+    else remote=await publish(db,c,saved,runtime)
+    if(remote.status!=='confirmed'){if(remote.status==='stale')deferredKeys=sort([...deferredKeys,...changedKeys(saved.planning.keyGuards,capture(db,c).keyGuards)]);saved=null;continue}
+    aborted(runtime.signal)
+    const finalCollisions=bothCollisions(db,c,saved),final=capture(db,c)
+    if(finalCollisions.length||final.fingerprint!==saved.localFingerprint)return blockPublishedBoth(db,c,saved,remote.etag,finalCollisions)
+    publishAliases(c,saved);verifyAliases(c,saved.job.descriptor.next.assets)
+    let settled:M.SyncedExchangeAccepted|null
+    try{settled=settle(db,c,saved,remote.etag)}catch(cause){
+      try{db.transaction(()=>{current(db,c);phase(db,saved!.job,'published-local-deferred',remote.etag)}).immediate()}
+      catch(recording){throw new SyncedPublicationError('database','both远端已发布；本机SQL与失败记录均失败，固定原job保持。',{cause,recording})}
+      throw cause instanceof SyncedPublicationError?cause:new SyncedPublicationError('database','both远端已发布但本机SQL回滚；固定map可原operation重开。',cause)}
+    if(settled){if(!settled.forks)return publicationInvalid('both真实结算缺fork摘要。');return frozenPublicationFacts({...settled,forks:settled.forks})}
+    return blockPublishedBoth(db,c,saved,remote.etag,bothCollisions(db,c,saved))
+  }
+  return Object.freeze({status:'stale',side:'remote'})
+}
+export async function previewSyncedExchangeBoth(db:Database.Database,input:T.SyncedExchangeBothPreviewInput,options:SyncedExchangeRuntime):Promise<T.SyncedExchangeBothPreviewResult> {
+  let c:Context|null=null,key:string|null=null,owns=false
+  try{M.assertExchangeData(input);assertSyncedShape(input,['previewId','userDataRoot','target']);if(!isSyncedUuid(input.previewId))return publicationInvalid('both previewId无效。')
+    c=context(db,{operationId:input.previewId,userDataRoot:input.userDataRoot,target:input.target});const runtime=credentials(options);connections.set(c,db)
+    key=publicationJson([c.databasePath,c.workspaceScope,c.recoveryEpoch,c.request.targetFingerprint]);if(running.has(key))return unavailable('原本机/target已有真实exchange在途。');running.add(key);owns=true
+    return await createBothPreview(db,c,input.previewId,runtime)
+  }catch(cause){if(cause instanceof SyncedPublicationError)throw cause;throw new SyncedPublicationError(cause instanceof Error&&/SQLITE|sqlite|database|constraint|trigger/i.test(cause.message)?'database':'invalid','both真实预览失败；已完成观察事实不撤回。',cause)}
+  finally{if(key&&owns)running.delete(key);if(c)connections.delete(c)}
+}
+export async function resolveSyncedExchangeBoth(db:Database.Database,input:T.SyncedExchangeBothResolveInput,options:SyncedExchangeRuntime):Promise<T.SyncedExchangeBothResult> {
+  let c:Context|null=null,key:string|null=null,owns=false
+  try{M.assertExchangeData(input);assertSyncedShape(input,['operationId','userDataRoot','target','previewId','decisions']);const decisions=B.validateBothDecisions(input.decisions)
+    c=context(db,{operationId:input.operationId,userDataRoot:input.userDataRoot,target:input.target});c.request=M.validateExchangeRequest({...c.request,method:'resolveSyncedExchangeBoth',previewId:input.previewId,decisions})
+    const runtime=credentials(options);connections.set(c,db);key=publicationJson([c.databasePath,c.workspaceScope,c.recoveryEpoch,c.request.targetFingerprint])
+    if(running.has(key))return unavailable('原本机/target已有真实both/exchange在途。');running.add(key);owns=true
+    return await runBoth(db,c,runtime)
+  }catch(cause){if(cause instanceof SyncedPublicationError)throw cause;throw new SyncedPublicationError(cause instanceof Error&&/SQLITE|sqlite|database|constraint|trigger|exchange exact late receipt/i.test(cause.message)?'database':'invalid','both真实发布/安装失败；原固定job和曝光事实保持。',cause)}
   finally{if(key&&owns)running.delete(key);if(c)connections.delete(c)}
 }
