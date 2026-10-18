@@ -7,6 +7,7 @@ import { assertSyncedLifecycleCoverage, readSyncedGroupLifecycles, syncedLifecyc
 import { getSyncedGroupSnapshots } from './synced-blocks-read'
 import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-read'
 import type { SyncedLogicalDeletionProof } from '../sync/synced-logical-deletion-model'
+import type { SyncedLogicalDeletionChoiceProof } from '../sync/synced-logical-deletion-choice-model'
 import { readStrictHostDocument } from './synced-host-document-read'
 import { assertSyncedStoredBindings } from './synced-block-links'
 import { SYNC_TABLE_COLUMNS, SYNC_TABLES, type SyncDatabases } from '../sync/model'
@@ -20,7 +21,7 @@ export interface SyncedPublicationLocalSnapshot {
   workspaceScope: string; recoveryEpoch: string; localFingerprint: string; catalogId: string
   records: InitialPublicationRecord[]
   groups: Array<{ wire: SyncedGroupWire; revision: string; topologyRevision: string; semanticHash: string }>
-  deletions?: SyncedLogicalDeletionProof[]
+  deletions?: Array<SyncedLogicalDeletionProof | SyncedLogicalDeletionChoiceProof>
 }
 type Identity = { workspaceScope: string; recoveryEpoch: string }
 type Capture = { db: Database.Database; snapshot: SyncedPublicationLocalSnapshot }

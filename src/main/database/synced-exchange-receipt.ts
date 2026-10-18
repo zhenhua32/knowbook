@@ -1,4 +1,7 @@
+import { assertHistoricalDeletionChoiceProofs } from './synced-exchange-deletion-choice-proof-read'
 import { knowledgeSourceHash } from '../sync/synced-exchange-knowledge-model'
+import { planSyncedDeletionChoicesFromSource } from '../sync/synced-exchange-deletion-choice-plan'
+import { deletionDecisionSourceHash } from '../sync/synced-exchange-deletion-choice-model'
 import type Database from 'better-sqlite3'
 import { isSyncedUuid } from '../../shared/syncedBlockValidation'
 import { exchangeJobKey, exchangeJobHash, exchangeJobPhaseKey, exchangeRequestHash, parseExchangeStored, validateExchangeJob, validateExchangeJobPhase, validateExchangeReceipt,
@@ -26,7 +29,7 @@ function readStoredReceipt(db: Database.Database, operationId: string): Exchange
   if (receipt.request.operationId !== operationId || receipt.result.operationId !== operationId || receipt.result.replayed
     || row.request_hash !== exchangeRequestHash(receipt.request) || row.created_at !== receipt.result.acceptedAt)
     return publicationInvalid('exchange原request/method/hash/createdAt/replay损坏。')
-  if (receipt.version === 2 || receipt.version === 3 || receipt.version === 4 || receipt.version === 5 || receipt.version === 6) {
+  if (receipt.version === 2 || receipt.version === 3 || receipt.version === 4 || receipt.version === 5 || receipt.version === 6 || receipt.version === 7) {
     const proof = receipt.provenance
     if(!proof.attemptId)return publicationInvalid('v2 receipt缺准确attemptId。')
     const source = db.prepare('SELECT value,updated_at FROM app_settings WHERE key=?')
@@ -40,8 +43,8 @@ function readStoredReceipt(db: Database.Database, operationId: string): Exchange
       || (receipt.version === 3 || receipt.version === 6) && publicationJson(job.forks) !== publicationJson(proof.forks)
       || job.workspaceScope !== receipt.result.workspaceScope || job.recoveryEpoch !== receipt.result.recoveryEpoch || job.remoteWorkspaceId !== receipt.result.remoteWorkspaceId)
       return publicationInvalid('v2 receipt的merge/决定来源不属于准确原job/plan。')
-    if (receipt.version === 4) {
-      if (job.version !== 4) return publicationInvalid('删除receipt缺原job4。')
+    if (receipt.version === 4 || receipt.version === 7) {
+      if (job.version !== receipt.version) return publicationInvalid('删除receipt缺准确原版本job。')
       const refs = new Map(receipt.provenance.deletions.map(ref => [ref.key, ref]))
       if (refs.size !== job.deletions.length || job.deletions.some(intent => refs.get(intent.key)?.intentHash !== intent.intentHash))
         return publicationInvalid('删除receipt没有准确认证原job4完整intent集合。')
@@ -50,6 +53,14 @@ function readStoredReceipt(db: Database.Database, operationId: string): Exchange
       if (job.version !== receipt.version || !('knowledgeSource' in job) || !('knowledgeHash' in proof)
         || knowledgeSourceHash(job.knowledgeSource) !== job.knowledgeHash || job.knowledgeHash !== proof.knowledgeHash)
         return publicationInvalid('knowledge receipt缺历史原preimage/准确jobHash认证；不借今日state或spool。')
+    }
+    if (receipt.version === 7) {
+      if(job.version!==7||deletionDecisionSourceHash(job.decisionSource)!==job.decisionSourceHash||job.decisionSourceHash!==receipt.provenance.decisionSourceHash)
+        return publicationInvalid('删除选择receipt缺准确历史原像。')
+      const plan=planSyncedDeletionChoicesFromSource(job.decisionSource,operationId)
+      for(const [actual,expected]of [[proof.accepted,plan.acceptedSides],[proof.transfers,plan.transfers],[receipt.result.publishedKeys,plan.writes],[receipt.result.appliedKeys,plan.incoming],[receipt.result.deferred,plan.deferred]])
+        if(publicationJson(actual)!==publicationJson(expected))return publicationInvalid('删除选择历史receipt不是原完整planner结果。')
+      assertHistoricalDeletionChoiceProofs(db,job,receipt)
     }
     const jobHash = exchangeJobHash(job)
     if(source.value !== publicationJson(job) || publicationHash(source.value) !== jobHash)

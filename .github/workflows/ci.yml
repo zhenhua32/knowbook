@@ -116,6 +116,22 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Fetch pinned protocol5 v5 and v6 knowledge selection source
+        run: git fetch --no-tags --depth=1 origin 9e9bc7d6f135b55bf37604466fe0867396b03a85
+
+      - name: Verify genuine protocol5 v5 and v6 recovery compatibility
+        run: npm run test:synced-exchange-v56-compat
+
+      - name: Upload protocol5 v5 and v6 recovery compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: synced-exchange-v56-compat
+          path: |
+            test-results/synced-exchange-v56-compat/**
+            !test-results/synced-exchange-v56-compat/**/legacy-9e9bc7d/**
+          if-no-files-found: error
+
       - name: Verify schema27 logical deletion with genuine old Main readers
         run: npm run test:synced-tombstone-legacy-readers
 

@@ -36,6 +36,10 @@ import { readObservedSyncedProtocol5, readObservedSyncedProtocol5Facts, readObse
   type SyncedExchangeRemoteSource, type SyncedExchangeLocalMaterial, type SyncedExchangeRemoteFacts } from './synced-publication'
 import * as M from './synced-exchange-model'
 import * as K from './synced-exchange-knowledge-model'
+import * as DC from './synced-exchange-deletion-choice-model'
+import { planSyncedDeletionChoices, planSyncedDeletionChoicesFromSource } from './synced-exchange-deletion-choice-plan'
+import { validateSyncedLogicalDeletionChoiceProof, logicalDeletionChoiceRequestHash, logicalDeletionChoiceProofReference, type DeletionChoiceIntent } from './synced-logical-deletion-choice-model'
+import { readDeletionChoicePreviewIndex, validateDeletionChoicePreviewIndex, deletionChoicePreviewKey, type DeletionChoicePreviewIndex } from '../database/synced-exchange-deletion-choice-read'
 import { planSyncedKnowledgeConflicts, planSyncedKnowledgeForks, deriveKnowledgeBothComponents } from './synced-exchange-knowledge-plan'
 import { readKnowledgePreviewIndex, validateKnowledgePreviewIndex, knowledgePreviewKey, type KnowledgePreviewIndex, type KnowledgePreviewMode } from '../database/synced-exchange-knowledge-read'
 import { planSyncedExchange, planSyncedExchangeV1, deriveSyncedExchangeDependencyFacts, type ExchangePlan, type ExchangePlanInput } from './synced-exchange-plan'
@@ -61,12 +65,14 @@ export interface SyncedExchangeConflictResolveInput extends SyncedExchangeInput 
 export type { SyncedExchangeConflictPreviewResult, SyncedExchangeConflictDecision } from './synced-exchange-conflict-model'
 type TombstoneRuntimePlan = TombstoneExchangePlan & { localFinal: SyncedProtocol5Snapshot }
 type KnowledgeRuntimePlan = (K.KnowledgeConflictPlan | K.KnowledgeForkPlan) & { localFinal: SyncedProtocol5Snapshot }
-type RuntimePlan = ExchangePlan | BothExchangePlan | TombstoneRuntimePlan | KnowledgeRuntimePlan
-type Engine = 1 | 2 | 3 | 4 | 5 | 6
+type DeletionChoiceRuntimePlan = DC.DeletionChoicePlan & { localFinal: SyncedProtocol5Snapshot }
+type RuntimePlan = ExchangePlan | BothExchangePlan | TombstoneRuntimePlan | KnowledgeRuntimePlan | DeletionChoiceRuntimePlan
+type Engine = 1 | 2 | 3 | 4 | 5 | 6 | 7
 type BothSource = { resolution: B.BothResolution; selections: B.BothPrivateSelection[] }
 type Context = { root: string; databasePath: string; target: WebDavSyncConfig; request: M.ExchangeRequest;
   workspaceScope: string; recoveryEpoch: string; initialTargetFingerprint: string;
-  resolution: C.ExchangeResolutionBinding | null; selections: NonNullable<ExchangePlanInput['conflictSelections']>; both: BothSource | null; knowledgeMode: 5 | 6 | null }
+  resolution: C.ExchangeResolutionBinding | null; selections: NonNullable<ExchangePlanInput['conflictSelections']>; both: BothSource | null; knowledgeMode: 5 | 6 | null;
+  deletionChoice: {resolution:DC.DeletionChoiceResolution;selections:NonNullable<DC.DeletionChoicePlanInput['selections']>} | null }
 type Prepared = { context: Context; local: SyncedExchangeLocal; localMaterial: SyncedExchangeLocalMaterial;
   localWire: SyncedProtocol5Snapshot; source: SyncedExchangeRemoteSource; remote: SyncedExchangeRemoteFacts;
   state: M.AnyExchangeState; baseRecords: SyncedProtocol5Snapshot['records']; plan: RuntimePlan; planningAuthority: ReturnType<typeof authority> | ReturnType<typeof knowledgeAuthority>; engine: Engine; bothLinks: T.SyncedBothOwnerSourceLinks[];
@@ -76,7 +82,7 @@ type Spool = { directory: string; job: M.ExchangeJob; plan: RuntimePlan; state: 
   planning: { local: SyncedProtocol5Snapshot; remote: SyncedProtocol5Snapshot; baseRecords: SyncedProtocol5Snapshot['records'];
     authority: ReturnType<typeof authority>; keyGuards: Record<string, string>; stateRaw: string | null;
     engine: Engine; conflictSelections: NonNullable<ExchangePlanInput['conflictSelections']>; bothSelections: B.BothPrivateSelection[]; bothLinks: T.SyncedBothOwnerSourceLinks[];
-    localPhysical?: SyncedProtocol5Snapshot; remoteClosureHash?: string } }
+    localPhysical?: SyncedProtocol5Snapshot; remoteClosureHash?: string; deletionSelections?: NonNullable<DC.DeletionChoicePlanInput['selections']> } }
 type Head = { kind: 'synced-exchange-job-head'; version: 1; operationId: string; requestHash: string;
   attemptId: string; attemptIndex: number; jobHash: string }
 const running = new Set<string>()
@@ -111,7 +117,7 @@ function context(db: Database.Database, input: SyncedExchangeInput): Context {
     || spelling(realpathSync(file)) !== spelling(file) || spelling(realpathSync(root)) !== spelling(root)) return unavailable('exchange connection/root不是Main真实knowbook.db。')
   const databasePath = observationDatabasePath(file), request = M.validateExchangeRequest({ method: 'exchangeSyncedSnapshot', operationId: input.operationId,
     databasePath, targetFingerprint: M.exchangeTargetFingerprint(target) })
-  return { root, databasePath, target, request, ...identity(db), initialTargetFingerprint: initialIncomingTargetFingerprint(target), resolution: null, selections: [], both: null, knowledgeMode: null }
+  return { root, databasePath, target, request, ...identity(db), initialTargetFingerprint: initialIncomingTargetFingerprint(target), resolution: null, selections: [], both: null, knowledgeMode: null, deletionChoice:null }
 }
 function current(db: Database.Database, c: Context): void {
   if (!db.open || db.readonly) return unavailable('exchange原writable connection已失效。')
@@ -267,6 +273,7 @@ function makePlan(input: ExchangePlanInput, engine: 1 | 2 | 3, selections: B.Bot
 }
 type PrivatePreparedRead = { source: SyncedExchangeRemoteSource; localMaterial: SyncedExchangeLocalMaterial; local: SyncedExchangeLocal }
 async function prepare(db: Database.Database, c: Context, runtime: SyncedExchangeRuntime, deferredKeys: string[] = [], engine: Engine = 2, captured?: PrivatePreparedRead): Promise<Prepared | M.SyncedExchangeResult> {
+  if (engine === 7) return prepareDeletionChoices(db,c,runtime,deferredKeys)
   if (engine === 5 || engine === 6) return prepareKnowledge(db,c,runtime,deferredKeys,engine)
   if (engine === 4) return prepareTombstone(db, c, runtime, deferredKeys)
   let source = captured?.source
@@ -465,19 +472,24 @@ async function spool(prepared: Prepared, parent: Head | null): Promise<Spool> {
     keyGuards: local.keyGuards, stateRaw: local.stateRaw, plan,
     ...(prepared.engine === 2 ? {plannerVersion:'conflicts-v1',resolution:c.resolution,conflictSelections:c.selections}: {}),
     ...(prepared.engine === 4 ? {plannerVersion:'tombstones-v1',localPhysical:prepared.localPhysical,remoteClosureHash:remote.closureHash}: {}),
+    ...(prepared.engine === 7 ? {plannerVersion:'delete-choices-v1',localPhysical:prepared.localPhysical,remoteClosureHash:remote.closureHash,
+      decisionSource:'decisionSource'in plan?plan.decisionSource:null,decisionSourceHash:'decisionSourceHash'in plan?plan.decisionSourceHash:null,
+      resolution:c.deletionChoice?.resolution??null,deletionSelections:c.deletionChoice?.selections??[]}: {}),
     ...(prepared.engine === 5 || prepared.engine === 6 ? {plannerVersion:prepared.engine===5?'knowledge-conflicts-v1':'knowledge-forks-v1',
       localPhysical:prepared.localPhysical,knowledgeSource:'knowledgeSource'in plan?plan.knowledgeSource:null,knowledgeHash:'knowledgeHash'in plan?plan.knowledgeHash:null,
       resolution:prepared.engine===5?c.resolution:c.both!.resolution,...(prepared.engine===5?{conflictSelections:c.selections}:{bothSelections:storedBothSelections(c.both!.selections),bothLinks:prepared.bothLinks})}: {}),
     ...(prepared.engine === 3 ? {plannerVersion:'forks-v1',resolution:c.both!.resolution,bothSelections:storedBothSelections(c.both!.selections),bothLinks:prepared.bothLinks}: {}) }
   // assetNames is a Map and never crosses a JSON boundary. Full snapshots are reconstructed strictly on load.
   const storedInputs = { ...inputs, local: { manifest: inputs.local.manifest, records: inputs.local.records }, remote: { manifest: inputs.remote.manifest, records: inputs.remote.records },
-    plan: storedRuntimePlan(plan), ...((prepared.engine === 4 || prepared.engine === 5 || prepared.engine === 6) && prepared.localPhysical ? { localPhysical: { manifest: prepared.localPhysical.manifest, records: prepared.localPhysical.records } } : {}) }
+    plan: storedRuntimePlan(plan), ...((prepared.engine === 4 || prepared.engine === 5 || prepared.engine === 6 || prepared.engine === 7) && prepared.localPhysical ? { localPhysical: { manifest: prepared.localPhysical.manifest, records: prepared.localPhysical.records } } : {}) }
   const inputBytes = Buffer.from(publicationJson(storedInputs)), spoolHash = publicationHash(publicationJson({ inputHash: publicationHash(inputBytes), descriptor }))
   const job = M.validateExchangeJob({ kind: 'synced-exchange-job', version: prepared.engine, request: c.request, requestHash: M.exchangeRequestHash(c.request),
     attemptId, parentAttemptId: parent?.attemptId ?? null, attemptIndex: parent ? parent.attemptIndex + 1 : 0, workspaceScope: c.workspaceScope,
     recoveryEpoch: c.recoveryEpoch, remoteWorkspaceId: remote.manifest.workspaceId, source: prepared.state.source, descriptor, components: plan.components, spoolHash, preparedAt: now,
     ...(prepared.engine === 2 ? {plannerVersion:'conflicts-v1',resolution:c.resolution,merges:plan.merges??[]}: {}),
     ...(prepared.engine === 4 ? {plannerVersion:'tombstones-v1',merges:plan.merges??[],deletions:'deletions'in plan?plan.deletions:[]}: {}),
+    ...(prepared.engine === 7 ? {plannerVersion:'delete-choices-v1',merges:plan.merges??[],deletions:'deletions'in plan?plan.deletions:[],resolution:c.deletionChoice?.resolution??null,
+      decisionSource:'decisionSource'in plan?plan.decisionSource:null,decisionSourceHash:'decisionSourceHash'in plan?plan.decisionSourceHash:null}: {}),
     ...(prepared.engine === 5 || prepared.engine === 6 ? {plannerVersion:prepared.engine===5?'knowledge-conflicts-v1':'knowledge-forks-v1',
       knowledgeSource:'knowledgeSource'in plan?plan.knowledgeSource:null,knowledgeHash:'knowledgeHash'in plan?plan.knowledgeHash:null,
       resolution:prepared.engine===5?c.resolution:c.both!.resolution,merges:plan.merges??[],...(prepared.engine===6?{forks:'forks'in plan?plan.forks:[]}: {})}: {}),
@@ -490,7 +502,8 @@ async function spool(prepared: Prepared, parent: Head | null): Promise<Spool> {
   return { directory: dir, job, plan, state: prepared.state, localFingerprint: local.fingerprint, manifest, records, objects, assets,
     planning: { local: prepared.localWire, remote: fromRemote(remote), baseRecords: prepared.baseRecords, authority: prepared.planningAuthority, keyGuards: local.keyGuards, stateRaw: local.stateRaw,
       engine:prepared.engine,conflictSelections:prepared.engine===2||prepared.engine===5?c.selections:[],bothSelections:prepared.engine===3||prepared.engine===6?c.both!.selections:[],bothLinks:prepared.bothLinks,
-      ...((prepared.engine===4||prepared.engine===5||prepared.engine===6)?{localPhysical:prepared.localPhysical,...(prepared.engine===4?{remoteClosureHash:remote.closureHash}:{})}: {}) } }
+      ...((prepared.engine===4||prepared.engine===5||prepared.engine===6||prepared.engine===7)?{localPhysical:prepared.localPhysical,...(prepared.engine===4||prepared.engine===7?{remoteClosureHash:remote.closureHash}:{})}: {}),
+      ...(prepared.engine===7?{deletionSelections:c.deletionChoice?.selections??[]}:{}) } }
 }
 function registerJob(db: Database.Database, c: Context, spool: Spool, parent: Head | null): boolean {
   return db.transaction(() => {
@@ -523,7 +536,7 @@ async function loadSpool(db: Database.Database, c: Context, head: Head): Promise
   if (!same(savedJob, job) || ready.jobHash !== head.jobHash || ready.spoolHash !== job.spoolHash) return publicationInvalid('exchange原spool/job原bytes已变。')
   const inputBytes = await read('inputs.json'), input = M.parseExchangeStored(inputBytes.toString('utf8'))
   assertSyncedShape(input, ['kind', 'version', 'request', 'target', 'local', 'remote', 'state', 'baseRecords', 'authority', 'keyGuards', 'stateRaw', 'plan',
-    ...(job.version===2?['plannerVersion','resolution','conflictSelections']:job.version===3?['plannerVersion','resolution','bothSelections','bothLinks']:job.version===4?['plannerVersion','localPhysical','remoteClosureHash']:job.version===5?['plannerVersion','localPhysical','knowledgeSource','knowledgeHash','resolution','conflictSelections']:job.version===6?['plannerVersion','localPhysical','knowledgeSource','knowledgeHash','resolution','bothSelections','bothLinks']:[])])
+    ...(job.version===2?['plannerVersion','resolution','conflictSelections']:job.version===3?['plannerVersion','resolution','bothSelections','bothLinks']:job.version===4?['plannerVersion','localPhysical','remoteClosureHash']:job.version===5?['plannerVersion','localPhysical','knowledgeSource','knowledgeHash','resolution','conflictSelections']:job.version===6?['plannerVersion','localPhysical','knowledgeSource','knowledgeHash','resolution','bothSelections','bothLinks']:job.version===7?['plannerVersion','localPhysical','remoteClosureHash','decisionSource','decisionSourceHash','resolution','deletionSelections']:[])])
   if (input.kind !== 'synced-exchange-private-inputs' || input.version !== job.version || !same(input.request, c.request) || !same(input.target, c.target)
     || publicationHash(publicationJson({ inputHash: publicationHash(inputBytes), descriptor: job.descriptor })) !== job.spoolHash) return publicationInvalid('exchange原spoolinput认证失败。')
   const decodeSnapshot = (value: unknown): SyncedProtocol5Snapshot => {
@@ -537,17 +550,24 @@ async function loadSpool(db: Database.Database, c: Context, head: Head): Promise
   const baseRecords = input.baseRecords.map(raw => { assertSyncedShape(raw, ['key', 'hash', 'record'])
     if (typeof raw.key !== 'string' || typeof raw.hash !== 'string') return publicationInvalid('exchange原B key/hash无效。')
     return { key: raw.key, hash: raw.hash, record: validateSyncedProtocol5Record(raw.record, raw.key) } })
-  assertSyncedShape(input.authority, ['catalogId', 'identities', 'occupiedDocumentIds', 'historyComponents', 'pinnedGroupIds', 'knownGroupIds', 'missingBaseKeys', 'deferredKeys', ...(job.version===4?['deletedFacts','pins']:job.version===5||job.version===6?['deletedFacts','pins','deletionProofReferences']:[])], ['keyGuards'])
+  assertSyncedShape(input.authority, ['catalogId', 'identities', 'occupiedDocumentIds', 'historyComponents', 'pinnedGroupIds', 'knownGroupIds', 'missingBaseKeys', 'deferredKeys', ...(job.version===4?['deletedFacts','pins']:job.version===5||job.version===6||job.version===7?['deletedFacts','pins','deletionProofReferences']:[])], ['keyGuards'])
   // The authority was minted only by this module's original real capture and is authenticated by both immutable DB job and private spool hash.
   const originalAuthority = input.authority as unknown as ReturnType<typeof authority>
   const conflictSelections=job.version===2||job.version===5?readSelections(input.conflictSelections,c.request):[]
   const bothSelections=job.version===3||job.version===6?readBothSelections(input.bothSelections,c.request):[],bothLinks=job.version===3||job.version===6?B.validateBothSourceLinks(input.bothLinks):[]
   if(job.version===3&&(input.plannerVersion!=='forks-v1'||!same(B.validateBothResolution(input.resolution),job.resolution)))return publicationInvalid('both原job来源/算法损坏。')
   if(job.version===2&&(input.plannerVersion!=='conflicts-v1'||!same(C.validateExchangeResolutionBinding(input.resolution),job.resolution))) return publicationInvalid('原job决定来源/算法损坏。')
-  const localPhysical = job.version === 4 || job.version === 5 || job.version === 6 ? decodeSnapshot(input.localPhysical) : undefined
+  const localPhysical = job.version === 4 || job.version === 5 || job.version === 6 || job.version === 7 ? decodeSnapshot(input.localPhysical) : undefined
   if (job.version === 4 && (input.plannerVersion !== 'tombstones-v1' || typeof input.remoteClosureHash !== 'string' || !/^[a-f0-9]{64}$/.test(input.remoteClosureHash))) return publicationInvalid('原删除job4私有来源版本/闭包hash损坏。')
   let plan: RuntimePlan
-  if (job.version === 4) {
+  const deletionSelections=job.version===7?readDeletionSelections(input.deletionSelections,c.request):[]
+  if (job.version === 7) {
+    if(!localPhysical||input.plannerVersion!==job.plannerVersion||!same(input.resolution,job.resolution)||!same(DC.validateDeletionDecisionSource(input.decisionSource),job.decisionSource)
+      ||input.decisionSourceHash!==job.decisionSourceHash||input.remoteClosureHash!==job.decisionSource.remoteSource.closureHash)return publicationInvalid('删除选择原spool preimage/preview来源损坏。')
+    plan=makeDeletionChoicePlan({operationId:c.request.operationId,localPhysical,localKnowledge:local,remote,baseRecords,state:M.validateTombstoneExchangeState(state),localFingerprint:job.descriptor.localFingerprint,
+      authority:input.authority as unknown as K.KnowledgeAuthority,remoteSource:job.decisionSource.remoteSource,resolution:job.resolution,selections:deletionSelections})
+    if(!same(plan.decisionSource,job.decisionSource)||plan.decisionSourceHash!==job.decisionSourceHash)return publicationInvalid('删除选择原job/inputs/来源不闭合。')
+  } else if (job.version === 4) {
     if (!localPhysical) return publicationInvalid('删除原job4缺真实physical snapshot。')
     plan = makeTombstonePlan({ operationId: c.request.operationId, localKnowledge: local, localPhysical, remote, baseRecords,
       state: M.validateTombstoneExchangeState(state), localFingerprint: job.descriptor.localFingerprint,
@@ -564,7 +584,7 @@ async function loadSpool(db: Database.Database, c: Context, head: Head): Promise
   const normalized = storedRuntimePlan(plan)
   if (!same(input.plan, normalized) || plan.planHash !== job.descriptor.planHash) return publicationInvalid('exchange原planner结果与不可变job不符。')
   if((job.version===3||job.version===6)&&(!('forks'in plan)||!same(plan.forks,job.forks)))return publicationInvalid('both原job fork/projection与原inputs不闭合。')
-  if(job.version===4&&(!('deletions'in plan)||!same(plan.deletions,job.deletions)))return publicationInvalid('删除job4 intent与真实原inputs/plan不闭合。')
+  if((job.version===4||job.version===7)&&(!('deletions'in plan)||!same(plan.deletions,job.deletions)))return publicationInvalid('删除job intent与真实原inputs/plan不闭合。')
   if(job.version>=2&&!same(plan.merges??[],job.merges))return publicationInvalid('原job merge来源与原inputs/plan不闭合。')
   const manifest = await read('manifest.json'), objects = new Map<string, Buffer>(), assets = new Map<string, Buffer>()
   if (publicationHash(manifest) !== job.descriptor.next.manifestHash || !same(decodePublicationJson(manifest), plan.nextRemote.manifest)) return publicationInvalid('exchange原Manifest bytes已变。')
@@ -582,7 +602,8 @@ async function loadSpool(db: Database.Database, c: Context, head: Head): Promise
   if (input.stateRaw !== null && typeof input.stateRaw !== 'string') return publicationInvalid('exchange原state raw损坏。')
   return { directory: dir, job, plan, state, localFingerprint: job.descriptor.localFingerprint, manifest, records: plan.nextRemote.records, objects, assets,
     planning: { local, remote, baseRecords, authority: originalAuthority, keyGuards, stateRaw: input.stateRaw, engine:job.version,conflictSelections,bothSelections,bothLinks,
-      ...((job.version===4||job.version===5||job.version===6)?{localPhysical,...(job.version===4?{remoteClosureHash:input.remoteClosureHash as string}:{})}: {}) } }
+      ...((job.version===4||job.version===5||job.version===6||job.version===7)?{localPhysical,...(job.version===4||job.version===7?{remoteClosureHash:input.remoteClosureHash as string}:{})}: {}),
+      ...(job.version===7?{deletionSelections}:{}) } }
 }
 function claim(db: Database.Database, c: Context, saved: Spool): boolean {
   return db.transaction(() => {
@@ -776,7 +797,7 @@ function writeCatalog(db: Database.Database, record: SyncDatabases, catalogId: s
 }
 function install(db: Database.Database, c: Context, saved: Spool, original: SyncedExchangeLocal, now: string): HistoryBoundaryEffects {
   const plan = saved.plan, records = localRecords(saved, c, original), paths = documentPaths(records), incoming = new Set(plan.incoming)
-  const deletionIntents = saved.job.version === 4 ? saved.job.deletions : []
+  const deletionIntents: Array<import('./synced-exchange-tombstone-types').TombstoneDeletionIntent | DeletionChoiceIntent> = saved.job.version === 4 || saved.job.version === 7 ? saved.job.deletions : []
   const originalGroups = new Map(original.snapshot.groups.map(group => [group.wire.id,group])), remoteRecords = new Map(saved.planning.remote.records.map(row=>[row.key,row.record]))
   const deletionBefore = new Map<string, SyncedLogicalDeletionProof['localBefore']>()
   for (const intent of deletionIntents) {
@@ -911,7 +932,7 @@ function install(db: Database.Database, c: Context, saved: Spool, original: Sync
   for (const link of links) db.prepare('INSERT INTO links(id,source_document_id,target_document_id,label,created_at) VALUES(?,?,?,?,?)').run(randomUUID(), link.source_document_id, link.target_id, link.url, now)
   if (db.prepare(`SELECT 1 FROM documents d WHERE d.block_count<>(SELECT count(*) FROM blocks WHERE document_id=d.id)
     OR d.link_count<>(SELECT count(*) FROM links WHERE source_document_id=d.id) OR d.child_count<>(SELECT count(*) FROM documents WHERE parent_id=d.id) LIMIT 1`).get()) return publicationInvalid('exchange实际stats不完整。')
-  if (saved.job.version === 4) {
+  if (saved.job.version === 4 || saved.job.version === 7) {
     const refs: ReturnType<typeof logicalDeletionProofReference>[] = []
     for (const intent of deletionIntents) {
       const before = deletionBefore.get(intent.key)
@@ -932,16 +953,17 @@ function install(db: Database.Database, c: Context, saved: Spool, original: Sync
       const anchorId = logicalDeletionAnchorId(intent.before)
       if (intent.before.kind === 'document') for (const groupId of sort(intent.before.content.blocks.flatMap(block => block.type === 'synced-block' ? [parseSyncedBlockPayload(block.content).groupId] : [])))
         db.prepare('INSERT INTO synced_group_pins(group_id,kind,pin_id,created_at) VALUES(?,?,?,?)').run(groupId,'logical-deletion-document-archive',anchorId,now)
-      const proof = validateSyncedLogicalDeletionProof({kind:'synced-logical-deletion-proof',version:1,key:intent.key,intentHash:intent.intentHash,baseLiveHash:intent.baseLiveHash,tombstoneHash:intent.tombstoneHash,
+      const proofInput={kind:'synced-logical-deletion-proof',version:saved.job.version===7?2:1,key:intent.key,intentHash:intent.intentHash,baseLiveHash:intent.baseLiveHash,tombstoneHash:intent.tombstoneHash,
         deletion,before:intent.before,identities:intent.identities,localBefore:before,localAfter:after,
         source:{targetFingerprint:c.request.targetFingerprint,workspaceId:saved.job.remoteWorkspaceId,manifestHash:saved.job.descriptor.expectedRemote.manifestHash,closureHash:saved.planning.remoteClosureHash},
         scopeAtApply:{workspaceScope:c.workspaceScope,recoveryEpoch:c.recoveryEpoch},application:{operationId:c.request.operationId,requestHash:M.exchangeRequestHash(c.request),acceptedAt:now},
-        persistence:{kind:'logical-deletion-denial',anchorId}})
-      const requestHash = logicalDeletionRequestHash(proof)
+        persistence:{kind:'logical-deletion-denial',anchorId},...('base'in intent?{base:intent.base,localBeforeHash:intent.localBeforeHash,decision:intent.decision}:{})}
+      const proof=saved.job.version===7?validateSyncedLogicalDeletionChoiceProof(proofInput):validateSyncedLogicalDeletionProof(proofInput)
+      const requestHash = proof.version===2?logicalDeletionChoiceRequestHash(proof):logicalDeletionRequestHash(proof)
       db.prepare('INSERT INTO synced_operations(client_operation_id,request_hash,result_json,created_at) VALUES(?,?,?,?)').run(anchorId,requestHash,publicationJson(proof),now)
       db.prepare("INSERT INTO synced_exposure_attempts(id,request_hash,channel,target_fingerprint,publication_hash,state,created_at,confirmed_at) VALUES(?,?,?,?,?,'possible',?,NULL)")
         .run(anchorId,requestHash,LOGICAL_DELETION_CHANNEL,c.request.targetFingerprint,intent.tombstoneHash,now)
-      refs.push(logicalDeletionProofReference(proof))
+      refs.push(proof.version===2?logicalDeletionChoiceProofReference(proof):logicalDeletionProofReference(proof))
     }
     return {...archives,deletions:refs}
   }
@@ -957,7 +979,9 @@ function settle(db: Database.Database, c: Context, saved: Spool, etag: string): 
     if (local.fingerprint !== saved.localFingerprint || local.stateRaw !== saved.planning.stateRaw) return null
     const actualLocal = wire(portableRecords(local.snapshot, c), c.workspaceScope)
     if((saved.job.version===3||saved.job.version===6)&&bothCollisions(db,c,saved).length)return null
-    const checked = saved.job.version === 5 || saved.job.version === 6 ? makeKnowledgePlan({operationId:c.request.operationId,
+    const checked = saved.job.version === 7 ? makeDeletionChoicePlan({operationId:c.request.operationId,localPhysical:actualLocal,localKnowledge:knowledge(actualLocal,local),remote:saved.planning.remote,
+      baseRecords:saved.planning.baseRecords,state:M.validateTombstoneExchangeState(saved.state),localFingerprint:local.fingerprint,authority:knowledgeAuthority(local,saved.planning.authority.missingBaseKeys,saved.planning.authority.deferredKeys),
+      remoteSource:saved.job.decisionSource.remoteSource,resolution:saved.job.resolution,selections:saved.planning.deletionSelections??[]}) : saved.job.version === 5 || saved.job.version === 6 ? makeKnowledgePlan({operationId:c.request.operationId,
       localPhysical:actualLocal,localKnowledge:knowledge(actualLocal,local),remote:saved.planning.remote,baseRecords:saved.planning.baseRecords,
       state:M.validateTombstoneExchangeState(saved.state),localFingerprint:local.fingerprint,
       authority:knowledgeAuthority(local,saved.planning.authority.missingBaseKeys,saved.planning.authority.deferredKeys),conflictSelections:saved.planning.conflictSelections},
@@ -975,7 +999,7 @@ function settle(db: Database.Database, c: Context, saved: Spool, etag: string): 
       remoteWorkspaceId: saved.job.remoteWorkspaceId, beforeManifestHash: checked.beforeManifestHash, afterManifestHash: checked.afterManifestHash,
       publishedKeys: checked.writes, appliedKeys: checked.incoming, acceptedKeys: checked.accepted, deferred: checked.deferred, acceptedAt: now })
     const result = saved.job.version===3||saved.job.version===6 ? {...resultBase,forks:('forks'in checked?checked.forks:[]).map(row=>row.summary)} : resultBase
-    const state = saved.job.version===4||saved.job.version===5||saved.job.version===6 ? M.validateTombstoneExchangeState({...saved.state,version:2,currentOperationId:c.request.operationId,generation:randomUUID(),baseline:checked.nextBaseline,deferred:checked.deferred,lastSyncAt:now})
+    const state = saved.job.version===4||saved.job.version===5||saved.job.version===6||saved.job.version===7 ? M.validateTombstoneExchangeState({...saved.state,version:2,currentOperationId:c.request.operationId,generation:randomUUID(),baseline:checked.nextBaseline,deferred:checked.deferred,lastSyncAt:now})
       : M.validateExchangeState({ ...legacyState(saved.state), currentOperationId: c.request.operationId, generation: randomUUID(), baseline: checked.nextBaseline, deferred: checked.deferred, lastSyncAt: now })
     const receipt = M.validateExchangeReceipt({ kind: 'synced-exchange-operation', version: saved.job.version, request: c.request, result, provenance: {
       beforeManifestHash: result.beforeManifestHash, afterManifestHash: result.afterManifestHash, beforeManifestEtag: saved.job.descriptor.expectedRemote.etag,
@@ -983,6 +1007,7 @@ function settle(db: Database.Database, c: Context, saved: Spool, etag: string): 
       hostHistoryCuts: historyEffects.hostHistoryCuts,
       afterStateHash: publicationHash(publicationJson(state)),
       ...(saved.job.version===4?{plannerVersion:'tombstones-v1',merges:checked.merges??[],attemptId:saved.job.attemptId,deletions:historyEffects.deletions??[]}: {}),
+      ...(saved.job.version===7?{plannerVersion:'delete-choices-v1',merges:checked.merges??[],attemptId:saved.job.attemptId,deletions:historyEffects.deletions??[],resolution:saved.job.resolution,decisionSourceHash:saved.job.decisionSourceHash}: {}),
       ...(saved.job.version===5||saved.job.version===6?{plannerVersion:saved.job.plannerVersion,knowledgeHash:saved.job.knowledgeHash,
         resolution:saved.job.resolution,merges:checked.merges??[],attemptId:saved.job.attemptId,...(saved.job.version===6?{forks:'forks'in checked?checked.forks:[]}: {})}: {}),
       ...(saved.job.version===2?{plannerVersion:'conflicts-v1',resolution:saved.job.resolution,merges:checked.merges??[],attemptId:saved.job.attemptId}: {}),
@@ -994,7 +1019,7 @@ function settle(db: Database.Database, c: Context, saved: Spool, etag: string): 
       .run(M.exchangeStateKey(c.request.targetFingerprint), publicationJson(state), now)
     phase(db, saved.job, 'settled', etag)
     const final = readSyncedExchangeLocal(db, { request: c.request, initialTargetFingerprint: c.initialTargetFingerprint })
-    if (saved.job.version === 4 || saved.job.version === 5 || saved.job.version === 6) {
+    if (saved.job.version === 4 || saved.job.version === 5 || saved.job.version === 6 || saved.job.version === 7) {
       if (!('localKnowledgeFinal' in checked)) return publicationInvalid('删除settle缺准确planner4两图。')
       const physical = wire(portableRecords(final.snapshot,c),c.workspaceScope), known = knowledge(physical,final)
       if (!same(physical.manifest.entries,checked.localPhysicalFinal.manifest.entries) || !same(physical.manifest.syncedInstances,checked.localPhysicalFinal.manifest.syncedInstances)
@@ -1723,4 +1748,153 @@ async function createKnowledgeBothPreview(db:Database.Database,c:Context,preview
   const built=buildBothPreview(prepared,previewId,new Date().toISOString()),input=knowledgeInput(prepared)
   const index=await saveKnowledgePreview(db,c,prepared,'both',previewId,built.components,{allocation:built.allocation,sourceLinks:prepared.bothLinks})
   return index?frozenPublicationFacts({status:'ready',preview:knowledgeBothFacts(c,index,input,built.components)}):Object.freeze({status:'stale',side:'local'})
+}
+
+function makeDeletionChoicePlan(input:DC.DeletionChoicePlanInput):DeletionChoiceRuntimePlan {
+  const plan=planSyncedDeletionChoices(input)
+  return {...plan,localFinal:plan.localPhysicalFinal}
+}
+async function prepareDeletionChoices(db:Database.Database,c:Context,runtime:SyncedExchangeRuntime,deferredKeys:string[]):Promise<Prepared|M.SyncedExchangeResult> {
+  const base=await prepareTombstone(db,c,runtime,deferredKeys)
+  if(!('plan'in base))return base
+  if(!base.localPhysical)return publicationInvalid('删除选择缺真实physical capture。')
+  const planningAuthority=knowledgeAuthority(base.local,base.planningAuthority.missingBaseKeys,deferredKeys)
+  const input:DC.DeletionChoicePlanInput={operationId:c.request.operationId,localPhysical:base.localPhysical,localKnowledge:base.localWire,remote:fromRemote(base.remote),
+    baseRecords:base.baseRecords,state:M.validateTombstoneExchangeState(base.state),localFingerprint:base.local.fingerprint,authority:planningAuthority,
+    remoteSource:{manifestHash:base.remote.manifestHash,closureHash:base.remote.closureHash,etag:base.remote.manifestEtag},resolution:c.deletionChoice?.resolution??null,selections:c.deletionChoice?.selections??[]}
+  return {...base,engine:7,planningAuthority,plan:makeDeletionChoicePlan(input)}
+}
+function readDeletionSelections(value:unknown,request:M.ExchangeRequest):NonNullable<DC.DeletionChoicePlanInput['selections']> {
+  M.assertExchangeData(value)
+  if(request.method!=='resolveSyncedExchangeDeletions'||!Array.isArray(value))return publicationInvalid('删除选择私有selector方法不符。')
+  const selections=value.map(raw=>{assertSyncedShape(raw,['preview','decision']);return {preview:DC.validateDeletionChoicePreviewComponent(raw.preview),decision:DC.validateDeletionDecisions([raw.decision])[0]}})
+  if(!same(selections.map(row=>row.decision),request.decisions)||selections.some(row=>row.preview.componentId!==row.decision.componentId||!row.preview.choices.includes(row.decision.choice)))return publicationInvalid('删除选择私有决定不属于原preview闭集。')
+  return selections
+}
+function deletionPreviewDirectory(c:Context,id:string):string{return join(c.root,'storage','synced-exchange-deletion-previews-v1',id)}
+function deletionPreviewFacts(c:Context,index:DeletionChoicePreviewIndex,source:DC.DeletionDecisionSource,components:DC.DeletionChoicePreviewComponent[]):DC.SyncedExchangeDeletionPreview {
+  return DC.validateDeletionChoicePreview({kind:'synced-exchange-deletion-preview',version:1,previewId:index.previewId,previewHash:index.previewHash,workspaceScope:index.workspaceScope,
+    recoveryEpoch:index.recoveryEpoch,remoteWorkspaceId:source.remoteWorkspaceId,targetFingerprint:c.request.targetFingerprint,stateGeneration:source.state.generation,
+    remoteManifestHash:source.remoteSource.manifestHash,createdAt:index.createdAt,components})
+}
+async function loadDeletionPreview(db:Database.Database,c:Context,id:string):Promise<{index:DeletionChoicePreviewIndex;facts:DC.SyncedExchangeDeletionPreview}|null> {
+  const index=db.transaction(()=>{current(db,c);return readDeletionChoicePreviewIndex(db,id,c.request)})()
+  if(!index)return null
+  if(index.workspaceScope!==c.workspaceScope||index.recoveryEpoch!==c.recoveryEpoch)return unavailable('删除预览属于其它scope/epoch。')
+  const dir=deletionPreviewDirectory(c,id),file=join(dir,'preview.json');safe(dir,c.root);safe(file,dir)
+  if(!lstatSync(file).isFile())return publicationInvalid('删除预览不是私有regular file。')
+  const bytes=await readFile(file)
+  if(publicationHash(bytes)!==index.previewHash)return publicationInvalid('删除预览原bytes/index不闭合。')
+  const value=M.parseExchangeStored(bytes.toString('utf8'))
+  assertSyncedShape(value,['kind','version','previewId','databasePath','target','workspaceScope','recoveryEpoch','createdAt','decisionSource','decisionSourceHash','keyGuards','stateRaw','components'])
+  if(value.kind!=='synced-exchange-deletion-preview-inputs'||value.version!==1||value.previewId!==id||value.databasePath!==c.databasePath||!same(value.target,c.target)
+    ||value.workspaceScope!==index.workspaceScope||value.recoveryEpoch!==index.recoveryEpoch||value.createdAt!==index.createdAt||value.decisionSourceHash!==index.decisionSourceHash)return publicationInvalid('删除预览私有来源损坏。')
+  const source=DC.validateDeletionDecisionSource(value.decisionSource)
+  if(source.databasePath!==c.databasePath||source.targetFingerprint!==c.request.targetFingerprint||source.workspaceScope!==c.workspaceScope||source.recoveryEpoch!==c.recoveryEpoch
+    ||source.resolution!==null||source.decisions.length||DC.deletionDecisionSourceHash(source)!==index.decisionSourceHash)return publicationInvalid('删除预览原source范围/原像hash不符。')
+  const plan=planSyncedDeletionChoicesFromSource(source,id)
+  if(!same(plan.deletionPreviews,value.components)||!same(value.keyGuards,Object.fromEntries((source.authority.keyGuards??[]).map(row=>[row.key,row.fingerprint])))
+    ||value.stateRaw!==null&&typeof value.stateRaw!=='string')return publicationInvalid('删除预览原全图展示/guards不可重现。')
+  const final=db.transaction(()=>{current(db,c);return readDeletionChoicePreviewIndex(db,id,c.request)})()
+  if(!same(final,index))return publicationInvalid('读取删除预览期间原index变化。')
+  return {index,facts:deletionPreviewFacts(c,index,source,plan.deletionPreviews)}
+}
+async function attachDeletionPreview(db:Database.Database,c:Context,request:M.ExchangeDeletionRequest):Promise<void> {
+  const loaded=await loadDeletionPreview(db,c,request.previewId)
+  if(!loaded)return unavailable('删除resolve缺真实Main原preview。')
+  const byId=new Map(loaded.facts.components.map(row=>[row.componentId,row]))
+  const selections=request.decisions.map(decision=>{const preview=byId.get(decision.componentId)
+    if(!preview||!preview.choices.includes(decision.choice))return publicationInvalid('删除决定不属于原可执行preview。')
+    return {preview,decision}})
+  c.deletionChoice={resolution:{previewId:request.previewId,previewHash:loaded.index.previewHash,decisionsHash:DC.deletionDecisionsHash(request.decisions)},selections}
+}
+async function createDeletionPreview(db:Database.Database,c:Context,id:string,runtime:SyncedExchangeRuntime):Promise<DC.SyncedExchangeDeletionPreviewResult> {
+  if(db.pragma('user_version',{simple:true})===26)return Object.freeze({status:'unsupported',reason:'schema-27-required'})
+  if(db.pragma('user_version',{simple:true})!==27)return publicationInvalid('删除预览不接受未知schema。')
+  const existing=await loadDeletionPreview(db,c,id)
+  if(existing)return frozenPublicationFacts({status:'ready',preview:existing.facts})
+  const prepared=await prepareDeletionChoices(db,c,runtime,[])
+  if(!('plan'in prepared)){if(prepared.status==='missing'||prepared.status==='unsupported'||prepared.status==='stale')return frozenPublicationFacts(prepared);return publicationInvalid('删除预览不接受写入结果冒充source。')}
+  if(!('decisionSource'in prepared.plan))return publicationInvalid('删除预览缺真实source。')
+  const now=new Date().toISOString(),plan=prepared.plan
+  const payload={kind:'synced-exchange-deletion-preview-inputs',version:1,previewId:id,databasePath:c.databasePath,target:c.target,workspaceScope:c.workspaceScope,recoveryEpoch:c.recoveryEpoch,createdAt:now,
+    decisionSource:plan.decisionSource,decisionSourceHash:plan.decisionSourceHash,keyGuards:prepared.local.keyGuards,stateRaw:prepared.local.stateRaw,components:plan.deletionPreviews}
+  const bytes=Buffer.from(publicationJson(payload)),index=validateDeletionChoicePreviewIndex({kind:'synced-exchange-deletion-preview-index',version:1,previewId:id,databasePath:c.databasePath,targetFingerprint:c.request.targetFingerprint,
+    workspaceScope:c.workspaceScope,recoveryEpoch:c.recoveryEpoch,previewHash:publicationHash(bytes),decisionSourceHash:plan.decisionSourceHash,createdAt:now})
+  const dir=deletionPreviewDirectory(c,id);safe(dir,c.root);await mkdir(join(c.root,'storage','synced-exchange-deletion-previews-v1'),{recursive:true,mode:0o700});await mkdir(dir,{mode:0o700});safe(dir,c.root)
+  await durable(join(dir,'preview.json'),bytes);await syncDirectory(dir)
+  const installed=db.transaction(()=>{current(db,c);if(capture(db,c).fingerprint!==prepared.local.fingerprint)return false
+    putImmutable(db,deletionChoicePreviewKey(id),index,now);return true}).immediate()
+  return installed?frozenPublicationFacts({status:'ready',preview:deletionPreviewFacts(c,index,plan.decisionSource,plan.deletionPreviews)}):Object.freeze({status:'stale',side:'local'})
+}
+async function historicalDeletionPublication(db:Database.Database,c:Context,saved:Spool,runtime:SyncedExchangeRuntime):Promise<{etag:string}|null> {
+  const facts=db.transaction(()=>{current(db,c);return phases(db,saved.job)})(),confirmed=[...facts].reverse().find(row=>['remote-confirmed','published-local-deferred','settled'].includes(row.phase)&&row.remoteEtag!==null)
+  if(confirmed)return {etag:confirmed.remoteEtag!}
+  if(facts.at(-1)!.phase==='prepared')return null
+  const client=new WebDavClient(c.target,runtime.password,runtime.signal),actual=await network(()=>client.getVersioned('manifest.json',PUBLICATION_RECORD_MAX_BYTES))
+  if(actual&&publicationHash(actual.bytes)===saved.job.descriptor.next.manifestHash){confirm(db,c,saved,actual.etag);return {etag:actual.etag}}
+  return null
+}
+async function runDeletionChoices(db:Database.Database,c:Context,runtime:SyncedExchangeRuntime):Promise<M.SyncedExchangeResult> {
+  const replay=db.transaction(()=>readSyncedExchangeReceipt(db,c.request))()
+  if(replay){if(replay.version!==7)return publicationInvalid('删除选择不能继承其它版本ACK。');return frozenPublicationFacts({...replay.result,replayed:true})}
+  if(db.pragma('user_version',{simple:true})===26)return Object.freeze({status:'unsupported',reason:'schema-27-required'})
+  if(db.pragma('user_version',{simple:true})!==27)return publicationInvalid('删除选择未知schema。')
+  const first=capture(db,c),originalGuards=first.keyGuards
+  let head=db.transaction(()=>readHead(db,c))(),saved=head?await loadSpool(db,c,head):null,deferredKeys:string[]=[]
+  if(saved){if(saved.job.version!==7)return publicationInvalid('删除选择不能重解释旧job。');c.deletionChoice={resolution:saved.job.resolution,selections:saved.planning.deletionSelections??[]}}
+  else {if(c.request.method!=='resolveSyncedExchangeDeletions')return publicationInvalid('删除选择方法不符。');await attachDeletionPreview(db,c,c.request)}
+  for(let turn=0;turn<8;turn++){
+    aborted(runtime.signal)
+    if(!saved){const prepared=await prepareDeletionChoices(db,c,runtime,deferredKeys)
+      if(!('plan'in prepared)){if(prepared.status==='stale'&&prepared.side==='local'){deferredKeys=sort([...deferredKeys,...changedKeys(originalGuards,capture(db,c).keyGuards)]);continue}return frozenPublicationFacts(prepared)}
+      const raced=changedKeys(originalGuards,prepared.local.keyGuards)
+      if(raced.some(key=>!deferredKeys.includes(key))){deferredKeys=sort([...deferredKeys,...raced]);continue}
+      saved=await spool(prepared,head)
+      if(!registerJob(db,c,saved,head)){saved=null;deferredKeys=sort([...deferredKeys,...changedKeys(originalGuards,capture(db,c).keyGuards)]);head=db.transaction(()=>readHead(db,c))();continue}
+      head=db.transaction(()=>readHead(db,c))()
+    }
+    // An accepted remote effect remains attached to this exact job. Local
+    // drift can defer installation, never mint a replacement deletion proof.
+    const historical=await historicalDeletionPublication(db,c,saved,runtime),now=capture(db,c)
+    if(historical&&now.fingerprint!==saved.localFingerprint){db.transaction(()=>{current(db,c);phase(db,saved!.job,'published-local-deferred',historical.etag)}).immediate();return Object.freeze({status:'stale',side:'local'})}
+    if(!historical&&now.fingerprint!==saved.localFingerprint){deferredKeys=sort([...deferredKeys,...changedKeys(saved.planning.keyGuards,now.keyGuards)]);saved=null;continue}
+    let remote:{status:'confirmed';etag:string}|{status:'retry'}|{status:'stale'}
+    if(historical)remote={status:'confirmed',etag:historical.etag}
+    else if(!saved.plan.writes.length){const client=new WebDavClient(c.target,runtime.password,runtime.signal),actual=await network(()=>client.getVersioned('manifest.json',PUBLICATION_RECORD_MAX_BYTES))
+      remote=actual&&publicationHash(actual.bytes)===saved.job.descriptor.expectedRemote.manifestHash&&actual.etag===saved.job.descriptor.expectedRemote.etag?{status:'confirmed',etag:actual.etag}:{status:'retry'}}
+    else remote=await publish(db,c,saved,runtime)
+    if(remote.status!=='confirmed'){if(remote.status==='stale')deferredKeys=sort([...deferredKeys,...changedKeys(saved.planning.keyGuards,capture(db,c).keyGuards)]);saved=null;continue}
+    aborted(runtime.signal)
+    if(capture(db,c).fingerprint!==saved.localFingerprint){db.transaction(()=>{current(db,c);phase(db,saved!.job,'published-local-deferred',remote.etag)}).immediate();return Object.freeze({status:'stale',side:'local'})}
+    publishAliases(c,saved);verifyAliases(c,saved.job.descriptor.next.assets)
+    let settled:M.SyncedExchangeAccepted|null
+    try{settled=settle(db,c,saved,remote.etag)}catch(cause){
+      try{db.transaction(()=>{current(db,c);phase(db,saved!.job,'published-local-deferred',remote.etag)}).immediate()}
+      catch(recording){throw new SyncedPublicationError('database','删除选择远端事实已存在；本机SQL与失败记录失败，原job保持。',{cause,recording})}
+      throw cause instanceof SyncedPublicationError?cause:new SyncedPublicationError('database','删除选择本机SQL已回滚；原任务可重开收敛。',cause)}
+    if(settled)return frozenPublicationFacts(settled)
+    db.transaction(()=>{current(db,c);phase(db,saved!.job,'published-local-deferred',remote.etag)}).immediate()
+    return Object.freeze({status:'stale',side:'local'})
+  }
+  return Object.freeze({status:'stale',side:'remote'})
+}
+/** Main-only explicit deletion choices. Callers provide selectors, never records, pins or raw authority. */
+export async function previewSyncedExchangeDeletions(db:Database.Database,input:DC.SyncedExchangeDeletionPreviewInput,options:SyncedExchangeRuntime):Promise<DC.SyncedExchangeDeletionPreviewResult> {
+  let c:Context|null=null,key:string|null=null,owns=false
+  try{M.assertExchangeData(input);assertSyncedShape(input,['previewId','userDataRoot','target']);if(!isSyncedUuid(input.previewId))return publicationInvalid('删除previewId无效。')
+    c=context(db,{operationId:input.previewId,userDataRoot:input.userDataRoot,target:input.target});const runtime=credentials(options);connections.set(c,db)
+    key=publicationJson([c.databasePath,c.workspaceScope,c.recoveryEpoch,c.request.targetFingerprint]);if(running.has(key))return unavailable('同一真实target已有exchange在途。');running.add(key);owns=true
+    return await createDeletionPreview(db,c,input.previewId,runtime)
+  }catch(cause){if(cause instanceof SyncedPublicationError)throw cause;throw new SyncedPublicationError(cause instanceof Error&&/SQLITE|sqlite|database|constraint|trigger/i.test(cause.message)?'database':'invalid','真实删除预览失败；原事实保持。',cause)}
+  finally{if(key&&owns)running.delete(key);if(c)connections.delete(c)}
+}
+export async function resolveSyncedExchangeDeletions(db:Database.Database,input:DC.SyncedExchangeDeletionResolveInput,options:SyncedExchangeRuntime):Promise<M.SyncedExchangeResult> {
+  let c:Context|null=null,key:string|null=null,owns=false
+  try{M.assertExchangeData(input);assertSyncedShape(input,['operationId','userDataRoot','target','previewId','decisions']);const decisions=DC.validateDeletionDecisions(input.decisions)
+    c=context(db,{operationId:input.operationId,userDataRoot:input.userDataRoot,target:input.target});c.request=M.validateExchangeRequest({...c.request,method:'resolveSyncedExchangeDeletions',previewId:input.previewId,decisions})
+    const runtime=credentials(options);connections.set(c,db);key=publicationJson([c.databasePath,c.workspaceScope,c.recoveryEpoch,c.request.targetFingerprint]);if(running.has(key))return unavailable('同一真实target已有exchange在途。');running.add(key);owns=true
+    return await runDeletionChoices(db,c,runtime)
+  }catch(cause){if(cause instanceof SyncedPublicationError)throw cause;throw new SyncedPublicationError(cause instanceof Error&&/SQLITE|sqlite|database|constraint|trigger|exchange exact late receipt/i.test(cause.message)?'database':'invalid','真实删除选择失败；原job/possible保持。',cause)}
+  finally{if(key&&owns)running.delete(key);if(c)connections.delete(c)}
 }

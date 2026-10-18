@@ -13,6 +13,9 @@ import type { TombstoneAcceptedSide, TombstoneBaselineEntry, TombstoneDeletionIn
   TombstoneIdentityEffect, TombstoneLocalOutcome, TombstoneProofReference } from './synced-exchange-tombstone-types'
 import { validateSyncedProtocol5Record } from './synced-protocol5-model'
 import { validateKnowledgeSource, knowledgeSourceHash, type KnowledgeSource } from './synced-exchange-knowledge-model'
+import * as DC from './synced-exchange-deletion-choice-model'
+import { planSyncedDeletionChoicesFromSource } from './synced-exchange-deletion-choice-plan'
+import { validateDeletionChoiceIntent, logicalDeletionChoiceIntentHash, type DeletionChoiceIntent } from './synced-logical-deletion-choice-model'
 
 export type ExchangeHash = string
 export type ExchangeDeferredReason = 'diverged' | 'incarnation' | 'owner-source' | 'unknown-birth' | 'history-pin'
@@ -41,7 +44,10 @@ export interface ExchangeResolveRequest {
   method: 'resolveSyncedExchangeConflicts'; operationId: string; databasePath: string; targetFingerprint: string
   previewId: string; decisions: SyncedExchangeConflictDecision[]
 }
-export type ExchangeRequest = ExchangeRequestV1 | ExchangeResolveRequest | B.BothRequest
+export interface ExchangeDeletionRequest extends Omit<ExchangeResolveRequest, 'method' | 'decisions'> {
+  method: 'resolveSyncedExchangeDeletions'; decisions: DC.SyncedExchangeDeletionDecision[]
+}
+export type ExchangeRequest = ExchangeRequestV1 | ExchangeResolveRequest | B.BothRequest | ExchangeDeletionRequest
 export interface SyncedExchangeAccepted {
   status: 'applied' | 'noop' | 'deferred'; operationId: string; replayed: boolean
   workspaceScope: string; recoveryEpoch: string; remoteWorkspaceId: string
@@ -94,7 +100,13 @@ export interface KnowledgeForkReceipt {
     plannerVersion: 'knowledge-forks-v1'; knowledgeHash: string; resolution: B.BothResolution; forks: SyncedBothForkProof[]
   }
 }
-export type ExchangeReceipt = LegacyExchangeReceipt | TombstoneExchangeReceipt | KnowledgeConflictReceipt | KnowledgeForkReceipt
+export interface DeletionChoiceReceipt {
+  kind: 'synced-exchange-operation'; version: 7; request: ExchangeDeletionRequest; result: SyncedExchangeAccepted
+  provenance: Omit<TombstoneExchangeReceipt['provenance'], 'plannerVersion' | 'resolution'> & {
+    plannerVersion: 'delete-choices-v1'; decisionSourceHash: string; resolution: DC.DeletionChoiceResolution
+  }
+}
+export type ExchangeReceipt = LegacyExchangeReceipt | TombstoneExchangeReceipt | KnowledgeConflictReceipt | KnowledgeForkReceipt | DeletionChoiceReceipt
 export interface ExchangePublicationMember {
   groupId: string; creationId: string; revision: string; topologyRevision: string; semanticHash: string; nextPortableHash: string
 }
@@ -126,7 +138,11 @@ export interface KnowledgeForkJob extends Omit<LegacyExchangeJob, 'version' | 'r
   version: 6; request: B.BothRequest; plannerVersion: 'knowledge-forks-v1'
   knowledgeSource: KnowledgeSource; knowledgeHash: string; resolution: B.BothResolution; merges: ExchangeMergeProvenance[]; forks: SyncedBothForkProof[]
 }
-export type ExchangeJob = LegacyExchangeJob | TombstoneExchangeJob | KnowledgeConflictJob | KnowledgeForkJob
+export interface DeletionChoiceJob extends Omit<LegacyExchangeJob, 'version' | 'request' | 'plannerVersion' | 'resolution' | 'forks'> {
+  version: 7; request: ExchangeDeletionRequest; plannerVersion: 'delete-choices-v1'; resolution: DC.DeletionChoiceResolution
+  decisionSource: DC.DeletionDecisionSource; decisionSourceHash: string; deletions: DeletionChoiceIntent[]; merges: ExchangeMergeProvenance[]; forks?: never
+}
+export type ExchangeJob = LegacyExchangeJob | TombstoneExchangeJob | KnowledgeConflictJob | KnowledgeForkJob | DeletionChoiceJob
 export type AnyExchangeState = ExchangeState | TombstoneExchangeState
 export type ExchangeJobPhase = 'prepared' | 'possible' | 'remote-confirmed' | 'settled' | 'remote-uncertain' | 'published-local-deferred' | 'blocked'
 export interface ExchangeJobPhaseFact {
@@ -208,6 +224,10 @@ function resolutionFor(request: ExchangeRequest, binding: ExchangeResolutionBind
 }
 export function validateExchangeRequest(value: unknown): ExchangeRequest {
   assertExchangeData(value)
+  if (value !== null && typeof value === 'object' && Object.getOwnPropertyDescriptor(value, 'method')?.value === 'resolveSyncedExchangeDeletions') {
+    root(value,['method','operationId','databasePath','targetFingerprint','previewId','decisions'])
+    return {method:'resolveSyncedExchangeDeletions',operationId:uuid(value.operationId),databasePath:opaque(value.databasePath),targetFingerprint:hash(value.targetFingerprint),previewId:uuid(value.previewId),decisions:DC.validateDeletionDecisions(value.decisions)}
+  }
   if (value !== null && typeof value === 'object' && Object.getOwnPropertyDescriptor(value, 'method')?.value === 'resolveSyncedExchangeBoth') return B.validateBothRequest(value)
   if (!value || typeof value !== 'object' || !('method' in value)) return publicationInvalid('exchange method不符。')
   const raw: unknown = value
@@ -271,6 +291,7 @@ function acceptedSide(value: unknown): ExchangeAcceptedSide {
   return { key, beforeLocalHash: maybeHash(value.beforeLocalHash), beforeRemoteHash: maybeHash(value.beforeRemoteHash), afterHash: hash(value.afterHash), dependencyKeys, dependencySignature: hash(value.dependencySignature) }
 }
 export function validateExchangeReceipt(value: unknown): ExchangeReceipt {
+  if (value !== null && typeof value === 'object' && Object.getOwnPropertyDescriptor(value, 'version')?.value === 7) return validateDeletionChoiceReceipt(value)
   const tag = value !== null && typeof value === 'object' ? Object.getOwnPropertyDescriptor(value, 'version')?.value : undefined
   if (tag === 5 || tag === 6) return validateKnowledgeExchangeReceipt(value)
   if (value !== null && typeof value === 'object' && Object.getOwnPropertyDescriptor(value, 'version')?.value === 4) return validateTombstoneExchangeReceipt(value)
@@ -356,6 +377,7 @@ export function validateExchangeDescriptor(value: unknown): ExchangePublicationD
   return { kind: 'synced-exchange-publication', version: 1, attemptId: uuid(value.attemptId), workspaceScope: uuid(value.workspaceScope), recoveryEpoch: uuid(value.recoveryEpoch), targetFingerprint: hash(value.targetFingerprint), localFingerprint: hash(value.localFingerprint), planHash: hash(value.planHash), expectedRemote: { etag: opaque(expected.etag), manifestHash: hash(expected.manifestHash) }, next: { manifestHash: hash(next.manifestHash), objects, assets }, members }
 }
 export function validateExchangeJob(value: unknown): ExchangeJob {
+  if (value !== null && typeof value === 'object' && Object.getOwnPropertyDescriptor(value, 'version')?.value === 7) return validateDeletionChoiceJob(value)
   const tag = value !== null && typeof value === 'object' ? Object.getOwnPropertyDescriptor(value, 'version')?.value : undefined
   if (tag === 5 || tag === 6) return validateKnowledgeExchangeJob(value)
   if (value !== null && typeof value === 'object' && Object.getOwnPropertyDescriptor(value, 'version')?.value === 4) return validateTombstoneExchangeJob(value)
@@ -567,4 +589,53 @@ function validateKnowledgeExchangeReceipt(value: unknown): KnowledgeConflictRece
   const {forks:_forks,...withoutForks}=original.provenance
   return {...original,version:5,request:original.request,provenance:{...withoutForks,accepted,plannerVersion:'knowledge-conflicts-v1',knowledgeHash,
     resolution,merges:validateExchangeMerges(original.provenance.merges),attemptId:uuid(original.provenance.attemptId)}}
+}
+
+function validateDeletionChoiceJob(value: unknown): DeletionChoiceJob {
+  root(value,['kind','version','request','requestHash','attemptId','parentAttemptId','attemptIndex','workspaceScope','recoveryEpoch','remoteWorkspaceId','source','descriptor','components','spoolHash','preparedAt','plannerVersion','resolution','merges','deletions','decisionSource','decisionSourceHash'])
+  if(value.kind!=='synced-exchange-job'||value.version!==7||value.plannerVersion!=='delete-choices-v1')return publicationInvalid('删除选择job版本/算法不符。')
+  const request=validateExchangeRequest(value.request)
+  if(request.method!=='resolveSyncedExchangeDeletions')return publicationInvalid('删除选择job只接受原显式入口。')
+  const descriptor=validateExchangeDescriptor(value.descriptor),attemptId=uuid(value.attemptId),parentAttemptId=value.parentAttemptId===null?null:uuid(value.parentAttemptId),attemptIndex=integer(value.attemptIndex)
+  const workspaceScope=uuid(value.workspaceScope),recoveryEpoch=uuid(value.recoveryEpoch),remoteWorkspaceId=uuid(value.remoteWorkspaceId)
+  if((attemptIndex===0)!==(parentAttemptId===null)||parentAttemptId===attemptId||descriptor.attemptId!==attemptId||exchangeRequestHash(request)!==value.requestHash
+    ||request.targetFingerprint!==descriptor.targetFingerprint||workspaceScope!==descriptor.workspaceScope||recoveryEpoch!==descriptor.recoveryEpoch)return publicationInvalid('删除选择job原请求/attempt/scope不闭合。')
+  const resolution=DC.validateDeletionChoiceResolution(value.resolution),decisionSource=DC.validateDeletionDecisionSource(value.decisionSource),decisionSourceHash=hash(value.decisionSourceHash)
+  if(!resolution||resolution.previewId!==request.previewId||resolution.decisionsHash!==DC.deletionDecisionsHash(request.decisions)
+    ||publicationJson(decisionSource.resolution)!==publicationJson(resolution)||publicationJson(decisionSource.decisions)!==publicationJson(request.decisions)
+    ||DC.deletionDecisionSourceHash(decisionSource)!==decisionSourceHash||decisionSource.databasePath!==request.databasePath||decisionSource.targetFingerprint!==request.targetFingerprint
+    ||decisionSource.workspaceScope!==workspaceScope||decisionSource.recoveryEpoch!==recoveryEpoch||decisionSource.remoteWorkspaceId!==remoteWorkspaceId
+    ||decisionSource.localFingerprint!==descriptor.localFingerprint||decisionSource.remoteSource.manifestHash!==descriptor.expectedRemote.manifestHash||decisionSource.remoteSource.etag!==descriptor.expectedRemote.etag)
+    return publicationInvalid('删除选择job缺准确历史decision原像/真实remote来源。')
+  const components=ordered(list(value.components,validateExchangeComponent),row=>publicationJson(row.keys));disjoint(components)
+  const deletions=ordered(list(value.deletions,validateDeletionChoiceIntent),row=>row.key),merges=validateExchangeMerges(value.merges),source=validateExchangeSeedProof(value.source)
+  for(const {intentHash,...intent}of deletions)if(intentHash!==logicalDeletionChoiceIntentHash(intent,{operationId:request.operationId,workspaceScope,recoveryEpoch,targetFingerprint:request.targetFingerprint,remoteWorkspaceId})
+    ||intent.decision.decisionSourceHash!==decisionSourceHash||intent.decision.previewId!==resolution.previewId||intent.decision.previewHash!==resolution.previewHash||intent.decision.decisionsHash!==resolution.decisionsHash)
+    return publicationInvalid('删除选择job双hash/原决定/完整intent不闭合。')
+  // Recompute the exact historical planner from its immutable preimage. This
+  // path never consults today's state/head, a live database, or removable spool.
+  const plan=planSyncedDeletionChoicesFromSource(decisionSource,request.operationId)
+  if(publicationJson(plan.deletions)!==publicationJson(deletions)||publicationJson(plan.merges)!==publicationJson(merges)||publicationJson(plan.components)!==publicationJson(components)
+    ||publicationJson(source)!==publicationJson(decisionSource.state.source)||plan.planHash!==descriptor.planHash||plan.beforeManifestHash!==descriptor.expectedRemote.manifestHash
+    ||plan.afterManifestHash!==descriptor.next.manifestHash||plan.decisionSourceHash!==decisionSourceHash)return publicationInvalid('删除选择job不属于准确历史全图planner。')
+  return {kind:'synced-exchange-job',version:7,request,requestHash:hash(value.requestHash),attemptId,parentAttemptId,attemptIndex,workspaceScope,recoveryEpoch,remoteWorkspaceId,source,descriptor,components,spoolHash:hash(value.spoolHash),preparedAt:time(value.preparedAt),plannerVersion:'delete-choices-v1',resolution,decisionSource,decisionSourceHash,deletions,merges}
+}
+function validateDeletionChoiceReceipt(value: unknown): DeletionChoiceReceipt {
+  root(value,['kind','version','request','result','provenance'])
+  if(value.kind!=='synced-exchange-operation'||value.version!==7)return publicationInvalid('删除选择receipt版本不符。')
+  const request=validateExchangeRequest(value.request),result=validateExchangeAccepted(value.result),p=value.provenance
+  if(request.method!=='resolveSyncedExchangeDeletions')return publicationInvalid('删除选择receipt方法不符。')
+  root(p,['beforeManifestHash','afterManifestHash','beforeManifestEtag','afterManifestEtag','planHash','source','accepted','transfers','afterStateHash','historyArchives','hostHistoryCuts','plannerVersion','merges','attemptId','deletions','resolution','decisionSourceHash'])
+  const resolution=DC.validateDeletionChoiceResolution(p.resolution)
+  if(p.plannerVersion!=='delete-choices-v1'||!resolution||resolution.previewId!==request.previewId||resolution.decisionsHash!==DC.deletionDecisionsHash(request.decisions))return publicationInvalid('删除选择receipt原preview/决定不符。')
+  const accepted=ordered(list(p.accepted,tombstoneSide),row=>row.key),deletions=ordered(list(p.deletions,validateTombstoneProofReference),row=>row.key),byKey=new Map(accepted.map(row=>[row.key,row]))
+  const deletionKeys=new Set(deletions.map(row=>row.key))
+  for(const ref of deletions){const side=byKey.get(ref.key);if(!side||side.local.kind!=='absent'||side.local.deletionOperationId!==request.operationId||side.local.intentHash!==ref.intentHash)return publicationInvalid('删除选择receipt漏准确本次absence/首证。')}
+  for(const side of accepted)if(side.local.kind==='absent'&&side.local.deletionOperationId===request.operationId&&!deletionKeys.has(side.key))return publicationInvalid('删除选择receipt缺本次首证。')
+  const historyArchives=ordered(list(p.historyArchives,raw=>{root(raw,['groupId','indexHash']);return {groupId:uuid(raw.groupId),indexHash:hash(raw.indexHash)}}),row=>row.groupId)
+  const hostHistoryCuts=ordered(list(p.hostHistoryCuts,raw=>{root(raw,['historyToken','cutHash']);return {historyToken:uuid(raw.historyToken),cutHash:hash(raw.cutHash)}},Number.MAX_SAFE_INTEGER),row=>row.historyToken)
+  const provenance:DeletionChoiceReceipt['provenance']={beforeManifestHash:hash(p.beforeManifestHash),afterManifestHash:hash(p.afterManifestHash),beforeManifestEtag:opaque(p.beforeManifestEtag),afterManifestEtag:maybeString(p.afterManifestEtag),planHash:hash(p.planHash),source:validateExchangeSeedProof(p.source),accepted,transfers:ordered(list(p.transfers,validateExchangeTransfer),row=>row.id),afterStateHash:hash(p.afterStateHash),historyArchives,hostHistoryCuts,plannerVersion:'delete-choices-v1',merges:validateExchangeMerges(p.merges),attemptId:uuid(p.attemptId),deletions,resolution,decisionSourceHash:hash(p.decisionSourceHash)}
+  for(const merge of provenance.merges){const side=byKey.get(merge.key);if(!side||side.local.kind!=='live'||side.local.hash!==merge.resultHash||side.beforeLocalHash!==merge.localHash||side.beforeRemoteHash!==merge.remoteHash)return publicationInvalid('删除选择receipt的无关live合并来源不符。')}
+  if(request.operationId!==result.operationId||provenance.beforeManifestHash!==result.beforeManifestHash||provenance.afterManifestHash!==result.afterManifestHash||publicationJson(accepted.map(row=>row.key))!==publicationJson(result.acceptedKeys))return publicationInvalid('删除选择receipt结果闭集不符。')
+  return {kind:'synced-exchange-operation',version:7,request,result,provenance}
 }

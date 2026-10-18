@@ -2,14 +2,17 @@ import type Database from 'better-sqlite3'
 import { parseStrictJson } from '../../shared/strictJson'
 import { parseSyncedBlockPayload, isSyncedBlockId, isSyncedUuid } from '../../shared/syncedBlockValidation'
 import { publicationCompare, publicationHash, publicationInvalid, publicationJson } from '../sync/synced-publication-model'
-import { exchangeJobKey, parseExchangeStored, validateExchangeJob, type TombstoneExchangeReceipt, type ExchangeTransfer } from '../sync/synced-exchange-model'
+import { exchangeJobKey, parseExchangeStored, validateExchangeJob, type TombstoneExchangeReceipt, type DeletionChoiceReceipt, type ExchangeTransfer } from '../sync/synced-exchange-model'
 import type { TombstoneDeletionIntent, TombstoneProofReference } from '../sync/synced-exchange-tombstone-types'
 import { readSyncedExchangeDenialReceiptById } from './synced-exchange-receipt'
 import { LOGICAL_DELETION_CHANNEL, LOGICAL_DELETION_PREFIX, logicalDeletionAnchorId, logicalDeletionRequestHash,
-  validateSyncedLogicalDeletionProof, type SyncedLogicalDeletionProof, type SyncedLogicalDeletionOperationRow } from '../sync/synced-logical-deletion-model'
+  validateSyncedLogicalDeletionProof, type SyncedLogicalDeletionProof as OriginalDeletionProof, type SyncedLogicalDeletionOperationRow } from '../sync/synced-logical-deletion-model'
+import { validateSyncedLogicalDeletionChoiceProof, logicalDeletionChoiceRequestHash, type SyncedLogicalDeletionChoiceProof, type DeletionChoiceIntent } from '../sync/synced-logical-deletion-choice-model'
+
+type SyncedLogicalDeletionProof = OriginalDeletionProof | SyncedLogicalDeletionChoiceProof
 
 type Attempt = { id: string; request_hash: string; channel: string; target_fingerprint: string; publication_hash: string; state: string; created_at: string; confirmed_at: string | null }
-type ReceiptEvidence = { receipt: TombstoneExchangeReceipt; refs: Map<string,TombstoneProofReference>; intents: Map<string,TombstoneDeletionIntent>; transfers: Map<string,ExchangeTransfer> }
+type ReceiptEvidence = { receipt: TombstoneExchangeReceipt | DeletionChoiceReceipt; refs: Map<string,TombstoneProofReference>; intents: Map<string,TombstoneDeletionIntent | DeletionChoiceIntent>; transfers: Map<string,ExchangeTransfer>; closureHash?: string }
 const same = (left: unknown, right: unknown): boolean => publicationJson(left) === publicationJson(right)
 const parse = (text: string): unknown => parseStrictJson(text, { maxBytes: Math.max(1, Buffer.byteLength(text, 'utf8')), maxDepth: 32 })
 function corrupt(message: string): never { return publicationInvalid('永久删除证明损坏：' + message + '；不会修复或重新授予写权。') }
@@ -20,9 +23,10 @@ function anchor(db: Database.Database, id: string): Attempt | undefined {
   return db.prepare('SELECT id,request_hash,channel,target_fingerprint,publication_hash,state,created_at,confirmed_at FROM synced_exposure_attempts WHERE id=?').get(id) as Attempt | undefined
 }
 function storedProof(row: SyncedLogicalDeletionOperationRow): SyncedLogicalDeletionProof {
-  const proof = validateSyncedLogicalDeletionProof(parse(row.result_json))
+  const raw=parse(row.result_json)
+  const proof=raw!==null&&typeof raw==='object'&&Object.getOwnPropertyDescriptor(raw,'version')?.value===2?validateSyncedLogicalDeletionChoiceProof(raw):validateSyncedLogicalDeletionProof(raw)
   if (row.client_operation_id !== proof.persistence.anchorId || row.result_json !== publicationJson(proof)
-    || row.request_hash !== logicalDeletionRequestHash(proof) || row.created_at !== proof.application.acceptedAt) return corrupt('marker key/原bytes/requestHash/time不闭合')
+    || row.request_hash !== (proof.version===2?logicalDeletionChoiceRequestHash(proof):logicalDeletionRequestHash(proof)) || row.created_at !== proof.application.acceptedAt) return corrupt('marker key/原bytes/requestHash/time不闭合')
   return proof
 }
 function assertPhysical(db: Database.Database, proof: SyncedLogicalDeletionProof): void {
@@ -89,7 +93,10 @@ function assertPair(db: Database.Database, row: SyncedLogicalDeletionOperationRo
   if (operation?.request_hash !== proof.application.requestHash) return corrupt('首证原请求hash不符')
   const intent = evidence.intents.get(proof.key)
   if (!intent || !same(intent, { kind: proof.before.kind === 'document' ? 'document' : 'group', key: proof.key, baseLiveHash: proof.baseLiveHash,
-    tombstoneHash: proof.tombstoneHash, before: proof.before, identities: proof.identities, intentHash: proof.intentHash })) return corrupt('首证不属于准确原job4的完整intent')
+    tombstoneHash: proof.tombstoneHash, before: proof.before, identities: proof.identities, intentHash: proof.intentHash,
+    ...(proof.version===2?{base:proof.base,localBeforeHash:proof.localBeforeHash,decision:proof.decision}:{}) })) return corrupt('首证不属于准确原版本job的完整intent')
+  if(proof.version===2&&(receipt.version!==7||proof.decision.decisionSourceHash!==receipt.provenance.decisionSourceHash||evidence.closureHash!==proof.source.closureHash)
+    ||proof.version===1&&receipt.version!==4)return corrupt('首证版本/历史决定/真实remote closure不闭合')
   for (const effect of proof.identities) if (effect.after.kind === 'transferred') {
     const after = effect.after, transition = evidence.transfers.get(effect.before.id)
     if (!transition || transition.fromKind !== effect.before.last_owner_kind || transition.fromId !== effect.before.last_owner_id || transition.fromCreatedAt !== effect.before.created_at
@@ -111,16 +118,17 @@ export function assertSyncedLogicalDeletionRecords(db: Database.Database): Map<s
   const proofs = new Map<string, SyncedLogicalDeletionProof>(), references = new Map<string, { operationId: string; proofHash: string }>(), receipts = new Map<string, ReceiptEvidence>()
   // Materialize before nested strict receipt/pragma reads. The global reverse
   // relation also detects deletion of an entire marker, even in a zero-group DB.
-  const operations = db.prepare("SELECT client_operation_id FROM synced_operations WHERE json_extract(result_json,'$.kind')='synced-exchange-operation' AND json_extract(result_json,'$.version')=4")
+  const operations = db.prepare("SELECT client_operation_id FROM synced_operations WHERE json_extract(result_json,'$.kind')='synced-exchange-operation' AND json_extract(result_json,'$.version') IN (4,7)")
     .all() as Array<{ client_operation_id: string }>
   for (const operation of operations) {
     const receipt = readSyncedExchangeDenialReceiptById(db, operation.client_operation_id)
-    if (!receipt || receipt.version !== 4) return corrupt('删除receipt版本不闭合')
+    if (!receipt || receipt.version !== 4 && receipt.version !== 7) return corrupt('删除receipt版本不闭合')
     const source = db.prepare('SELECT value FROM app_settings WHERE key=?').get(exchangeJobKey(receipt.request.operationId,receipt.provenance.attemptId)) as {value:string}|undefined
     const job = source ? validateExchangeJob(parseExchangeStored(source.value)) : null
-    if (!job || job.version !== 4) return corrupt('首证缺准确历史job4')
+    if (!job || job.version !== receipt.version || job.version !== 4 && job.version !== 7) return corrupt('首证缺准确历史版本job')
     receipts.set(operation.client_operation_id, {receipt,refs:new Map(receipt.provenance.deletions.map(ref=>[ref.key,ref])),
-      intents:new Map(job.deletions.map(intent=>[intent.key,intent])),transfers:new Map(receipt.provenance.transfers.map(transfer=>[transfer.id,transfer]))})
+      intents:new Map<string,TombstoneDeletionIntent|DeletionChoiceIntent>(job.deletions.map(intent=>[intent.key,intent])),transfers:new Map(receipt.provenance.transfers.map(transfer=>[transfer.id,transfer])),
+      ...(job.version===7?{closureHash:job.decisionSource.remoteSource.closureHash}:{})})
     for (const ref of receipt.provenance.deletions) {
       if (references.has(ref.anchorId)) return corrupt('多个operation重复认领同稳定删除首证')
       references.set(ref.anchorId, { operationId: operation.client_operation_id, proofHash: ref.proofHash })
