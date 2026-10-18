@@ -64,7 +64,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.test.json",
     "postinstall": "electron-builder install-app-deps",
     "test:synced-exchange-v3-compat": "cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx scripts/verify-synced-exchange-v3.ts",
-    "test:synced-tombstone-legacy-readers": "cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx scripts/verify-synced-tombstone-legacy-readers.ts"
+    "test:synced-tombstone-legacy-readers": "cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx scripts/verify-synced-tombstone-legacy-readers.ts",
+    "test:synced-exchange-v4-compat": "cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx scripts/verify-synced-exchange-v4.ts"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.1",

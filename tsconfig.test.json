@@ -22,6 +22,7 @@
     "scripts/verify-synced-exchange-v1.ts",
     "scripts/verify-synced-exchange-v2.ts",
     "scripts/verify-synced-exchange-v3.ts",
+    "scripts/verify-synced-exchange-v4.ts",
     "scripts/verify-synced-tombstone-legacy-readers.ts"
   ]
 }

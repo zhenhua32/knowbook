@@ -1,3 +1,4 @@
+import { knowledgeSourceHash } from '../sync/synced-exchange-knowledge-model'
 import type Database from 'better-sqlite3'
 import { isSyncedUuid } from '../../shared/syncedBlockValidation'
 import { exchangeJobKey, exchangeJobHash, exchangeJobPhaseKey, exchangeRequestHash, parseExchangeStored, validateExchangeJob, validateExchangeJobPhase, validateExchangeReceipt,
@@ -25,7 +26,7 @@ function readStoredReceipt(db: Database.Database, operationId: string): Exchange
   if (receipt.request.operationId !== operationId || receipt.result.operationId !== operationId || receipt.result.replayed
     || row.request_hash !== exchangeRequestHash(receipt.request) || row.created_at !== receipt.result.acceptedAt)
     return publicationInvalid('exchange原request/method/hash/createdAt/replay损坏。')
-  if (receipt.version === 2 || receipt.version === 3 || receipt.version === 4) {
+  if (receipt.version === 2 || receipt.version === 3 || receipt.version === 4 || receipt.version === 5 || receipt.version === 6) {
     const proof = receipt.provenance
     if(!proof.attemptId)return publicationInvalid('v2 receipt缺准确attemptId。')
     const source = db.prepare('SELECT value,updated_at FROM app_settings WHERE key=?')
@@ -36,7 +37,7 @@ function readStoredReceipt(db: Database.Database, operationId: string): Exchange
       || job.attemptId !== proof.attemptId || job.descriptor.planHash !== proof.planHash || job.descriptor.next.manifestHash !== proof.afterManifestHash
       || job.descriptor.expectedRemote.manifestHash !== proof.beforeManifestHash || job.descriptor.expectedRemote.etag !== proof.beforeManifestEtag
       || (job.version !== 4 && receipt.version !== 4 && publicationJson(job.resolution) !== publicationJson(proof.resolution)) || publicationJson(job.merges) !== publicationJson(proof.merges)
-      || receipt.version === 3 && publicationJson(job.forks) !== publicationJson(proof.forks)
+      || (receipt.version === 3 || receipt.version === 6) && publicationJson(job.forks) !== publicationJson(proof.forks)
       || job.workspaceScope !== receipt.result.workspaceScope || job.recoveryEpoch !== receipt.result.recoveryEpoch || job.remoteWorkspaceId !== receipt.result.remoteWorkspaceId)
       return publicationInvalid('v2 receipt的merge/决定来源不属于准确原job/plan。')
     if (receipt.version === 4) {
@@ -44,6 +45,11 @@ function readStoredReceipt(db: Database.Database, operationId: string): Exchange
       const refs = new Map(receipt.provenance.deletions.map(ref => [ref.key, ref]))
       if (refs.size !== job.deletions.length || job.deletions.some(intent => refs.get(intent.key)?.intentHash !== intent.intentHash))
         return publicationInvalid('删除receipt没有准确认证原job4完整intent集合。')
+    }
+    if (receipt.version === 5 || receipt.version === 6) {
+      if (job.version !== receipt.version || !('knowledgeSource' in job) || !('knowledgeHash' in proof)
+        || knowledgeSourceHash(job.knowledgeSource) !== job.knowledgeHash || job.knowledgeHash !== proof.knowledgeHash)
+        return publicationInvalid('knowledge receipt缺历史原preimage/准确jobHash认证；不借今日state或spool。')
     }
     const jobHash = exchangeJobHash(job)
     if(source.value !== publicationJson(job) || publicationHash(source.value) !== jobHash)
@@ -55,7 +61,7 @@ function readStoredReceipt(db: Database.Database, operationId: string): Exchange
       .all(prefix.length, prefix) as Array<{key:string;value:string;updated_at:string}>
     const phases = rows.map(row=>{
       const fact = validateExchangeJobPhase(parseExchangeStored(row.value))
-      if(fact.version !== (job.version === 3 ? 2 : 1) || row.key !== exchangeJobPhaseKey(operationId, job.attemptId, fact.sequence) || row.updated_at !== fact.recordedAt
+      if(fact.version !== (job.version === 3 || job.version === 6 ? 2 : 1) || row.key !== exchangeJobPhaseKey(operationId, job.attemptId, fact.sequence) || row.updated_at !== fact.recordedAt
         || row.value !== publicationJson(fact) || fact.operationId !== operationId || fact.attemptId !== job.attemptId
         || fact.requestHash !== job.requestHash || fact.jobHash !== jobHash)
         return publicationInvalid('v2 receipt原attempt phase/key/hash损坏。')

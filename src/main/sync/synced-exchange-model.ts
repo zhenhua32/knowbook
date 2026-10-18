@@ -12,6 +12,7 @@ import type { SyncedExchangeBothForkSummary, SyncedExchangeBothPublishedBlock, S
 import type { TombstoneAcceptedSide, TombstoneBaselineEntry, TombstoneDeletionIntent, TombstoneExchangeState,
   TombstoneIdentityEffect, TombstoneLocalOutcome, TombstoneProofReference } from './synced-exchange-tombstone-types'
 import { validateSyncedProtocol5Record } from './synced-protocol5-model'
+import { validateKnowledgeSource, knowledgeSourceHash, type KnowledgeSource } from './synced-exchange-knowledge-model'
 
 export type ExchangeHash = string
 export type ExchangeDeferredReason = 'diverged' | 'incarnation' | 'owner-source' | 'unknown-birth' | 'history-pin'
@@ -81,7 +82,19 @@ export interface TombstoneExchangeReceipt {
     resolution?: never; forks?: never
   }
 }
-export type ExchangeReceipt = LegacyExchangeReceipt | TombstoneExchangeReceipt
+export interface KnowledgeConflictReceipt {
+  kind: 'synced-exchange-operation'; version: 5; request: ExchangeResolveRequest; result: SyncedExchangeAccepted
+  provenance: Omit<TombstoneExchangeReceipt['provenance'], 'plannerVersion' | 'deletions' | 'resolution' | 'forks'> & {
+    plannerVersion: 'knowledge-conflicts-v1'; knowledgeHash: string; resolution: ExchangeResolutionBinding; forks?: never
+  }
+}
+export interface KnowledgeForkReceipt {
+  kind: 'synced-exchange-operation'; version: 6; request: B.BothRequest; result: SyncedExchangeAccepted
+  provenance: Omit<TombstoneExchangeReceipt['provenance'], 'plannerVersion' | 'deletions' | 'resolution' | 'forks'> & {
+    plannerVersion: 'knowledge-forks-v1'; knowledgeHash: string; resolution: B.BothResolution; forks: SyncedBothForkProof[]
+  }
+}
+export type ExchangeReceipt = LegacyExchangeReceipt | TombstoneExchangeReceipt | KnowledgeConflictReceipt | KnowledgeForkReceipt
 export interface ExchangePublicationMember {
   groupId: string; creationId: string; revision: string; topologyRevision: string; semanticHash: string; nextPortableHash: string
 }
@@ -105,7 +118,15 @@ export interface TombstoneExchangeJob extends Omit<LegacyExchangeJob, 'version' 
   version: 4; request: ExchangeRequestV1; plannerVersion: 'tombstones-v1'; deletions: TombstoneDeletionIntent[]; merges: ExchangeMergeProvenance[]
   resolution?: never; forks?: never
 }
-export type ExchangeJob = LegacyExchangeJob | TombstoneExchangeJob
+export interface KnowledgeConflictJob extends Omit<LegacyExchangeJob, 'version' | 'request' | 'plannerVersion' | 'resolution' | 'forks'> {
+  version: 5; request: ExchangeResolveRequest; plannerVersion: 'knowledge-conflicts-v1'
+  knowledgeSource: KnowledgeSource; knowledgeHash: string; resolution: ExchangeResolutionBinding; merges: ExchangeMergeProvenance[]; forks?: never
+}
+export interface KnowledgeForkJob extends Omit<LegacyExchangeJob, 'version' | 'request' | 'plannerVersion' | 'resolution' | 'forks'> {
+  version: 6; request: B.BothRequest; plannerVersion: 'knowledge-forks-v1'
+  knowledgeSource: KnowledgeSource; knowledgeHash: string; resolution: B.BothResolution; merges: ExchangeMergeProvenance[]; forks: SyncedBothForkProof[]
+}
+export type ExchangeJob = LegacyExchangeJob | TombstoneExchangeJob | KnowledgeConflictJob | KnowledgeForkJob
 export type AnyExchangeState = ExchangeState | TombstoneExchangeState
 export type ExchangeJobPhase = 'prepared' | 'possible' | 'remote-confirmed' | 'settled' | 'remote-uncertain' | 'published-local-deferred' | 'blocked'
 export interface ExchangeJobPhaseFact {
@@ -250,6 +271,8 @@ function acceptedSide(value: unknown): ExchangeAcceptedSide {
   return { key, beforeLocalHash: maybeHash(value.beforeLocalHash), beforeRemoteHash: maybeHash(value.beforeRemoteHash), afterHash: hash(value.afterHash), dependencyKeys, dependencySignature: hash(value.dependencySignature) }
 }
 export function validateExchangeReceipt(value: unknown): ExchangeReceipt {
+  const tag = value !== null && typeof value === 'object' ? Object.getOwnPropertyDescriptor(value, 'version')?.value : undefined
+  if (tag === 5 || tag === 6) return validateKnowledgeExchangeReceipt(value)
   if (value !== null && typeof value === 'object' && Object.getOwnPropertyDescriptor(value, 'version')?.value === 4) return validateTombstoneExchangeReceipt(value)
   versionedRoot(value, 'synced-exchange-operation', ['kind', 'version', 'request', 'result', 'provenance'], [])
   let result: SyncedExchangeAccepted
@@ -333,6 +356,8 @@ export function validateExchangeDescriptor(value: unknown): ExchangePublicationD
   return { kind: 'synced-exchange-publication', version: 1, attemptId: uuid(value.attemptId), workspaceScope: uuid(value.workspaceScope), recoveryEpoch: uuid(value.recoveryEpoch), targetFingerprint: hash(value.targetFingerprint), localFingerprint: hash(value.localFingerprint), planHash: hash(value.planHash), expectedRemote: { etag: opaque(expected.etag), manifestHash: hash(expected.manifestHash) }, next: { manifestHash: hash(next.manifestHash), objects, assets }, members }
 }
 export function validateExchangeJob(value: unknown): ExchangeJob {
+  const tag = value !== null && typeof value === 'object' ? Object.getOwnPropertyDescriptor(value, 'version')?.value : undefined
+  if (tag === 5 || tag === 6) return validateKnowledgeExchangeJob(value)
   if (value !== null && typeof value === 'object' && Object.getOwnPropertyDescriptor(value, 'version')?.value === 4) return validateTombstoneExchangeJob(value)
   versionedRoot(value, 'synced-exchange-job', ['kind', 'version', 'request', 'requestHash', 'attemptId', 'parentAttemptId', 'attemptIndex', 'workspaceScope', 'recoveryEpoch', 'remoteWorkspaceId', 'source', 'descriptor', 'components', 'spoolHash', 'preparedAt'], ['plannerVersion', 'resolution', 'merges'], ['plannerVersion', 'resolution', 'merges', 'forks'])
   const request = validateExchangeRequest(value.request), descriptor = validateExchangeDescriptor(value.descriptor), workspaceScope = uuid(value.workspaceScope), recoveryEpoch = uuid(value.recoveryEpoch)
@@ -489,4 +514,57 @@ export function parseExchangeStored(source: string): unknown { return parseStric
 function disjoint(components: readonly ExchangeComponent[]): void {
   const seen = new Set<string>()
   for (const component of components) for (const key of component.keys) { if (seen.has(key)) return publicationInvalid('exchange不同依赖分量重叠。'); seen.add(key) }
+}
+
+/** New formats are decoded through strict, explicit roots. Projection below only
+ * reuses already-frozen scalar/selector/fork rules; no old stored bytes are upgraded. */
+function validateKnowledgeExchangeJob(value: unknown): KnowledgeConflictJob | KnowledgeForkJob {
+  assertExchangeData(value)
+  const fork = value !== null && typeof value === 'object' && Object.getOwnPropertyDescriptor(value, 'version')?.value === 6
+  root(value, ['kind','version','request','requestHash','attemptId','parentAttemptId','attemptIndex','workspaceScope','recoveryEpoch','remoteWorkspaceId','source','descriptor','components','spoolHash','preparedAt','plannerVersion','resolution','merges','knowledgeSource','knowledgeHash',...(fork?['forks']:[])])
+  if (value.kind !== 'synced-exchange-job' || value.version !== (fork?6:5)
+    || value.plannerVersion !== (fork?'knowledge-forks-v1':'knowledge-conflicts-v1')) return publicationInvalid('knowledge job格式/算法不匹配。')
+  const knowledgeSource = validateKnowledgeSource(value.knowledgeSource), knowledgeHash = hash(value.knowledgeHash)
+  if (knowledgeSourceHash(knowledgeSource) !== knowledgeHash) return publicationInvalid('knowledge job缺准确原preimage/hash。')
+  const { knowledgeSource: _source, knowledgeHash: _hash, ...legacy } = value
+  const checked = validateExchangeJob({...legacy,version:fork?3:2,plannerVersion:fork?'forks-v1':'conflicts-v1'})
+  if (knowledgeSource.databasePath !== checked.request.databasePath || knowledgeSource.targetFingerprint !== checked.request.targetFingerprint
+    || knowledgeSource.workspaceScope !== checked.workspaceScope || knowledgeSource.recoveryEpoch !== checked.recoveryEpoch)
+    return publicationInvalid('knowledge job原path/scope/epoch与知识preimage不符。')
+  if (fork) {
+    if (checked.version !== 3 || checked.request.method !== 'resolveSyncedExchangeBoth' || !checked.forks) return publicationInvalid('knowledge fork job缺准确both来源。')
+    return {...checked,version:6,request:checked.request,plannerVersion:'knowledge-forks-v1',knowledgeSource,knowledgeHash,
+      resolution:B.validateBothResolution(checked.resolution),merges:validateExchangeMerges(checked.merges),forks:checked.forks}
+  }
+  if (checked.version !== 2 || checked.request.method !== 'resolveSyncedExchangeConflicts') return publicationInvalid('knowledge conflict job只接受显式resolve。')
+  const resolution=validateExchangeResolutionBinding(checked.resolution)
+  if (!resolution) return publicationInvalid('knowledge conflict job缺真实preview。')
+  const {forks:_forks,...withoutForks}=checked
+  return {...withoutForks,version:5,request:checked.request,plannerVersion:'knowledge-conflicts-v1',knowledgeSource,knowledgeHash,resolution,merges:validateExchangeMerges(checked.merges)}
+}
+function validateKnowledgeExchangeReceipt(value: unknown): KnowledgeConflictReceipt | KnowledgeForkReceipt {
+  root(value,['kind','version','request','result','provenance'])
+  const fork=value.version===6,p=value.provenance
+  if (value.kind!=='synced-exchange-operation' || ![5,6].includes(value.version as number)) return publicationInvalid('knowledge receipt版本无效。')
+  root(p,['beforeManifestHash','afterManifestHash','beforeManifestEtag','afterManifestEtag','planHash','source','accepted','transfers','afterStateHash','historyArchives','hostHistoryCuts','plannerVersion','resolution','merges','attemptId','knowledgeHash',...(fork?['forks']:[])])
+  if (p.plannerVersion!==(fork?'knowledge-forks-v1':'knowledge-conflicts-v1')) return publicationInvalid('knowledge receipt算法无效。')
+  const accepted=ordered(list(p.accepted,tombstoneSide),row=>row.key)
+  const projected=accepted.map(row=>{
+    if (row.local.kind!=='live' || row.local.hash!==row.remoteHash || row.commonHash!==row.remoteHash) return publicationInvalid('knowledge receipt本次只接受准确live结果；不能重签absence。')
+    return {key:row.key,beforeLocalHash:row.beforeLocalHash,beforeRemoteHash:row.beforeRemoteHash,afterHash:row.local.hash,dependencyKeys:row.dependencyKeys,dependencySignature:row.dependencySignature}
+  })
+  const {knowledgeHash:_hash,...prior}=p
+  const original=validateExchangeReceipt({...value,version:fork?3:2,provenance:{...prior,plannerVersion:fork?'forks-v1':'conflicts-v1',accepted:projected}})
+  const knowledgeHash=hash(p.knowledgeHash)
+  if (fork) {
+    if (original.version!==3 || original.request.method!=='resolveSyncedExchangeBoth' || !original.provenance.forks) return publicationInvalid('knowledge fork receipt来源无效。')
+    return {...original,version:6,request:original.request,provenance:{...original.provenance,accepted,plannerVersion:'knowledge-forks-v1',knowledgeHash,
+      resolution:B.validateBothResolution(original.provenance.resolution),merges:validateExchangeMerges(original.provenance.merges),attemptId:uuid(original.provenance.attemptId),forks:original.provenance.forks}}
+  }
+  if (original.version!==2 || original.request.method!=='resolveSyncedExchangeConflicts') return publicationInvalid('knowledge conflict receipt来源无效。')
+  const resolution=validateExchangeResolutionBinding(original.provenance.resolution)
+  if (!resolution) return publicationInvalid('knowledge conflict receipt缺原preview。')
+  const {forks:_forks,...withoutForks}=original.provenance
+  return {...original,version:5,request:original.request,provenance:{...withoutForks,accepted,plannerVersion:'knowledge-conflicts-v1',knowledgeHash,
+    resolution,merges:validateExchangeMerges(original.provenance.merges),attemptId:uuid(original.provenance.attemptId)}}
 }

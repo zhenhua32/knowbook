@@ -99,6 +99,23 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Fetch pinned protocol5 v4 tombstone source
+        run: git fetch --no-tags --depth=1 origin 049c4ac85199c2e00484952b572276824a53b2da
+
+      - name: Verify genuine protocol5 v4 tombstone recovery compatibility
+        run: npm run test:synced-exchange-v4-compat
+
+      - name: Upload protocol5 v4 tombstone compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: synced-exchange-v4-compat
+          path: |
+            test-results/synced-exchange-v4-compat/**
+            !test-results/synced-exchange-v4-compat/**/legacy-049c4ac/**
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Verify schema27 logical deletion with genuine old Main readers
         run: npm run test:synced-tombstone-legacy-readers
 

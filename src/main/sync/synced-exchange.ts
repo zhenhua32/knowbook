@@ -35,6 +35,9 @@ import { readObservedSyncedProtocol5, readObservedSyncedProtocol5Facts, readObse
   readSyncedExchangeLocalMaterial, readSyncedExchangeLocalAsset, readConfirmedSyncedPublicationSeeds,
   type SyncedExchangeRemoteSource, type SyncedExchangeLocalMaterial, type SyncedExchangeRemoteFacts } from './synced-publication'
 import * as M from './synced-exchange-model'
+import * as K from './synced-exchange-knowledge-model'
+import { planSyncedKnowledgeConflicts, planSyncedKnowledgeForks, deriveKnowledgeBothComponents } from './synced-exchange-knowledge-plan'
+import { readKnowledgePreviewIndex, validateKnowledgePreviewIndex, knowledgePreviewKey, type KnowledgePreviewIndex, type KnowledgePreviewMode } from '../database/synced-exchange-knowledge-read'
 import { planSyncedExchange, planSyncedExchangeV1, deriveSyncedExchangeDependencyFacts, type ExchangePlan, type ExchangePlanInput } from './synced-exchange-plan'
 import * as C from './synced-exchange-conflict-model'
 import * as B from './synced-exchange-both-model'
@@ -57,15 +60,16 @@ export interface SyncedExchangeConflictPreviewInput { previewId: string; userDat
 export interface SyncedExchangeConflictResolveInput extends SyncedExchangeInput { previewId: string; decisions: C.SyncedExchangeConflictDecision[] }
 export type { SyncedExchangeConflictPreviewResult, SyncedExchangeConflictDecision } from './synced-exchange-conflict-model'
 type TombstoneRuntimePlan = TombstoneExchangePlan & { localFinal: SyncedProtocol5Snapshot }
-type RuntimePlan = ExchangePlan | BothExchangePlan | TombstoneRuntimePlan
-type Engine = 1 | 2 | 3 | 4
+type KnowledgeRuntimePlan = (K.KnowledgeConflictPlan | K.KnowledgeForkPlan) & { localFinal: SyncedProtocol5Snapshot }
+type RuntimePlan = ExchangePlan | BothExchangePlan | TombstoneRuntimePlan | KnowledgeRuntimePlan
+type Engine = 1 | 2 | 3 | 4 | 5 | 6
 type BothSource = { resolution: B.BothResolution; selections: B.BothPrivateSelection[] }
 type Context = { root: string; databasePath: string; target: WebDavSyncConfig; request: M.ExchangeRequest;
   workspaceScope: string; recoveryEpoch: string; initialTargetFingerprint: string;
-  resolution: C.ExchangeResolutionBinding | null; selections: NonNullable<ExchangePlanInput['conflictSelections']>; both: BothSource | null }
+  resolution: C.ExchangeResolutionBinding | null; selections: NonNullable<ExchangePlanInput['conflictSelections']>; both: BothSource | null; knowledgeMode: 5 | 6 | null }
 type Prepared = { context: Context; local: SyncedExchangeLocal; localMaterial: SyncedExchangeLocalMaterial;
   localWire: SyncedProtocol5Snapshot; source: SyncedExchangeRemoteSource; remote: SyncedExchangeRemoteFacts;
-  state: M.AnyExchangeState; baseRecords: SyncedProtocol5Snapshot['records']; plan: RuntimePlan; planningAuthority: ReturnType<typeof authority>; engine: Engine; bothLinks: T.SyncedBothOwnerSourceLinks[];
+  state: M.AnyExchangeState; baseRecords: SyncedProtocol5Snapshot['records']; plan: RuntimePlan; planningAuthority: ReturnType<typeof authority> | ReturnType<typeof knowledgeAuthority>; engine: Engine; bothLinks: T.SyncedBothOwnerSourceLinks[];
   localPhysical?: SyncedProtocol5Snapshot }
 type Spool = { directory: string; job: M.ExchangeJob; plan: RuntimePlan; state: M.AnyExchangeState;
   localFingerprint: string; manifest: Buffer; records: SyncedProtocol5Snapshot['records']; objects: Map<string, Buffer>; assets: Map<string, Buffer>;
@@ -107,7 +111,7 @@ function context(db: Database.Database, input: SyncedExchangeInput): Context {
     || spelling(realpathSync(file)) !== spelling(file) || spelling(realpathSync(root)) !== spelling(root)) return unavailable('exchange connection/root不是Main真实knowbook.db。')
   const databasePath = observationDatabasePath(file), request = M.validateExchangeRequest({ method: 'exchangeSyncedSnapshot', operationId: input.operationId,
     databasePath, targetFingerprint: M.exchangeTargetFingerprint(target) })
-  return { root, databasePath, target, request, ...identity(db), initialTargetFingerprint: initialIncomingTargetFingerprint(target), resolution: null, selections: [], both: null }
+  return { root, databasePath, target, request, ...identity(db), initialTargetFingerprint: initialIncomingTargetFingerprint(target), resolution: null, selections: [], both: null, knowledgeMode: null }
 }
 function current(db: Database.Database, c: Context): void {
   if (!db.open || db.readonly) return unavailable('exchange原writable connection已失效。')
@@ -263,6 +267,7 @@ function makePlan(input: ExchangePlanInput, engine: 1 | 2 | 3, selections: B.Bot
 }
 type PrivatePreparedRead = { source: SyncedExchangeRemoteSource; localMaterial: SyncedExchangeLocalMaterial; local: SyncedExchangeLocal }
 async function prepare(db: Database.Database, c: Context, runtime: SyncedExchangeRuntime, deferredKeys: string[] = [], engine: Engine = 2, captured?: PrivatePreparedRead): Promise<Prepared | M.SyncedExchangeResult> {
+  if (engine === 5 || engine === 6) return prepareKnowledge(db,c,runtime,deferredKeys,engine)
   if (engine === 4) return prepareTombstone(db, c, runtime, deferredKeys)
   let source = captured?.source
   if (!source) {
@@ -413,7 +418,7 @@ function phases(db: Database.Database, job: M.ExchangeJob): M.ExchangeJobPhaseFa
   const rows = db.prepare('SELECT key,value,updated_at FROM app_settings WHERE substr(key,1,?)=?').all(prefix.length, prefix) as Array<{ key: string; value: string; updated_at: string }>
   const facts = rows.map(row => { const fact = M.validateExchangeJobPhase(M.parseExchangeStored(row.value))
     if (row.key !== M.exchangeJobPhaseKey(job.request.operationId, job.attemptId, fact.sequence) || row.updated_at !== fact.recordedAt
-      || fact.version !== (job.version === 3 ? 2 : 1) || fact.requestHash !== job.requestHash || fact.jobHash !== M.exchangeJobHash(job) || fact.operationId !== job.request.operationId || fact.attemptId !== job.attemptId) return publicationInvalid('exchange原phase不属于实际job。')
+      || fact.version !== ((job.version === 3 || job.version === 6) ? 2 : 1) || fact.requestHash !== job.requestHash || fact.jobHash !== M.exchangeJobHash(job) || fact.operationId !== job.request.operationId || fact.attemptId !== job.attemptId) return publicationInvalid('exchange原phase不属于实际job。')
     return fact }).sort((a, b) => a.sequence - b.sequence)
   let previous: string | null = null
   for (const [index, fact] of facts.entries()) { if (fact.sequence !== index || fact.previousFactHash !== previous) return publicationInvalid('exchange phase追加链不连续。'); previous = publicationHash(publicationJson(fact)) }
@@ -423,9 +428,9 @@ function phases(db: Database.Database, job: M.ExchangeJob): M.ExchangeJobPhaseFa
 function phase(db: Database.Database, job: M.ExchangeJob, value: M.ExchangeJobPhase, remoteEtag: string | null, blocked: T.SyncedExchangeBothPublishedBlock | null = null): void {
   const previous = phases(db, job), last = previous.at(-1)!
   if (last.phase === value && last.remoteEtag === remoteEtag) return
-  const fact = M.validateExchangeJobPhase({ kind: 'synced-exchange-job-phase', version: job.version === 3 ? 2 : 1, operationId: job.request.operationId,
+  const fact = M.validateExchangeJobPhase({ kind: 'synced-exchange-job-phase', version: (job.version === 3 || job.version === 6) ? 2 : 1, operationId: job.request.operationId,
     requestHash: job.requestHash, jobHash: M.exchangeJobHash(job), attemptId: job.attemptId, sequence: previous.length,
-    previousFactHash: publicationHash(publicationJson(last)), phase: value, remoteEtag, recordedAt: new Date().toISOString(), ...(job.version === 3 ? { blocked } : {}) })
+    previousFactHash: publicationHash(publicationJson(last)), phase: value, remoteEtag, recordedAt: new Date().toISOString(), ...((job.version === 3 || job.version === 6) ? { blocked } : {}) })
   putImmutable(db, M.exchangeJobPhaseKey(job.request.operationId, job.attemptId, fact.sequence), fact, fact.recordedAt)
 }
 function storedRuntimePlan(plan: RuntimePlan): unknown {
@@ -460,16 +465,22 @@ async function spool(prepared: Prepared, parent: Head | null): Promise<Spool> {
     keyGuards: local.keyGuards, stateRaw: local.stateRaw, plan,
     ...(prepared.engine === 2 ? {plannerVersion:'conflicts-v1',resolution:c.resolution,conflictSelections:c.selections}: {}),
     ...(prepared.engine === 4 ? {plannerVersion:'tombstones-v1',localPhysical:prepared.localPhysical,remoteClosureHash:remote.closureHash}: {}),
+    ...(prepared.engine === 5 || prepared.engine === 6 ? {plannerVersion:prepared.engine===5?'knowledge-conflicts-v1':'knowledge-forks-v1',
+      localPhysical:prepared.localPhysical,knowledgeSource:'knowledgeSource'in plan?plan.knowledgeSource:null,knowledgeHash:'knowledgeHash'in plan?plan.knowledgeHash:null,
+      resolution:prepared.engine===5?c.resolution:c.both!.resolution,...(prepared.engine===5?{conflictSelections:c.selections}:{bothSelections:storedBothSelections(c.both!.selections),bothLinks:prepared.bothLinks})}: {}),
     ...(prepared.engine === 3 ? {plannerVersion:'forks-v1',resolution:c.both!.resolution,bothSelections:storedBothSelections(c.both!.selections),bothLinks:prepared.bothLinks}: {}) }
   // assetNames is a Map and never crosses a JSON boundary. Full snapshots are reconstructed strictly on load.
   const storedInputs = { ...inputs, local: { manifest: inputs.local.manifest, records: inputs.local.records }, remote: { manifest: inputs.remote.manifest, records: inputs.remote.records },
-    plan: storedRuntimePlan(plan), ...(prepared.engine === 4 && prepared.localPhysical ? { localPhysical: { manifest: prepared.localPhysical.manifest, records: prepared.localPhysical.records } } : {}) }
+    plan: storedRuntimePlan(plan), ...((prepared.engine === 4 || prepared.engine === 5 || prepared.engine === 6) && prepared.localPhysical ? { localPhysical: { manifest: prepared.localPhysical.manifest, records: prepared.localPhysical.records } } : {}) }
   const inputBytes = Buffer.from(publicationJson(storedInputs)), spoolHash = publicationHash(publicationJson({ inputHash: publicationHash(inputBytes), descriptor }))
   const job = M.validateExchangeJob({ kind: 'synced-exchange-job', version: prepared.engine, request: c.request, requestHash: M.exchangeRequestHash(c.request),
     attemptId, parentAttemptId: parent?.attemptId ?? null, attemptIndex: parent ? parent.attemptIndex + 1 : 0, workspaceScope: c.workspaceScope,
     recoveryEpoch: c.recoveryEpoch, remoteWorkspaceId: remote.manifest.workspaceId, source: prepared.state.source, descriptor, components: plan.components, spoolHash, preparedAt: now,
     ...(prepared.engine === 2 ? {plannerVersion:'conflicts-v1',resolution:c.resolution,merges:plan.merges??[]}: {}),
     ...(prepared.engine === 4 ? {plannerVersion:'tombstones-v1',merges:plan.merges??[],deletions:'deletions'in plan?plan.deletions:[]}: {}),
+    ...(prepared.engine === 5 || prepared.engine === 6 ? {plannerVersion:prepared.engine===5?'knowledge-conflicts-v1':'knowledge-forks-v1',
+      knowledgeSource:'knowledgeSource'in plan?plan.knowledgeSource:null,knowledgeHash:'knowledgeHash'in plan?plan.knowledgeHash:null,
+      resolution:prepared.engine===5?c.resolution:c.both!.resolution,merges:plan.merges??[],...(prepared.engine===6?{forks:'forks'in plan?plan.forks:[]}: {})}: {}),
     ...(prepared.engine === 3 ? {plannerVersion:'forks-v1',resolution:c.both!.resolution,merges:plan.merges??[],forks:'forks' in plan ? plan.forks : []}: {}) })
   const dir = directory(c, attemptId); safe(dir, c.root); await mkdir(join(dir, 'objects'), { recursive: true, mode: 0o700 }); await mkdir(join(dir, 'assets'), { mode: 0o700 }); safe(dir, c.root)
   await durable(join(dir, 'inputs.json'), inputBytes); await durable(join(dir, 'manifest.json'), manifest)
@@ -478,8 +489,8 @@ async function spool(prepared: Prepared, parent: Head | null): Promise<Spool> {
   await durable(join(dir, 'job.json'), Buffer.from(publicationJson(job))); await durable(join(dir, 'ready.json'), Buffer.from(publicationJson({ jobHash: M.exchangeJobHash(job), spoolHash }))); await syncDirectory(dir)
   return { directory: dir, job, plan, state: prepared.state, localFingerprint: local.fingerprint, manifest, records, objects, assets,
     planning: { local: prepared.localWire, remote: fromRemote(remote), baseRecords: prepared.baseRecords, authority: prepared.planningAuthority, keyGuards: local.keyGuards, stateRaw: local.stateRaw,
-      engine:prepared.engine,conflictSelections:prepared.engine===2?c.selections:[],bothSelections:prepared.engine===3?c.both!.selections:[],bothLinks:prepared.bothLinks,
-      ...(prepared.engine===4?{localPhysical:prepared.localPhysical,remoteClosureHash:remote.closureHash}: {}) } }
+      engine:prepared.engine,conflictSelections:prepared.engine===2||prepared.engine===5?c.selections:[],bothSelections:prepared.engine===3||prepared.engine===6?c.both!.selections:[],bothLinks:prepared.bothLinks,
+      ...((prepared.engine===4||prepared.engine===5||prepared.engine===6)?{localPhysical:prepared.localPhysical,...(prepared.engine===4?{remoteClosureHash:remote.closureHash}:{})}: {}) } }
 }
 function registerJob(db: Database.Database, c: Context, spool: Spool, parent: Head | null): boolean {
   return db.transaction(() => {
@@ -487,9 +498,9 @@ function registerJob(db: Database.Database, c: Context, spool: Spool, parent: He
     if (!same(readHead(db, c), parent)) return false
     const job = spool.job, now = job.preparedAt
     putImmutable(db, M.exchangeJobKey(c.request.operationId, job.attemptId), job, now)
-    const first = M.validateExchangeJobPhase({ kind: 'synced-exchange-job-phase', version: job.version === 3 ? 2 : 1, operationId: c.request.operationId,
+    const first = M.validateExchangeJobPhase({ kind: 'synced-exchange-job-phase', version: (job.version === 3 || job.version === 6) ? 2 : 1, operationId: c.request.operationId,
       requestHash: job.requestHash, jobHash: M.exchangeJobHash(job), attemptId: job.attemptId, sequence: 0, previousFactHash: null,
-      phase: 'prepared', remoteEtag: null, recordedAt: now, ...(job.version === 3 ? { blocked: null } : {}) })
+      phase: 'prepared', remoteEtag: null, recordedAt: now, ...((job.version === 3 || job.version === 6) ? { blocked: null } : {}) })
     putImmutable(db, M.exchangeJobPhaseKey(c.request.operationId, job.attemptId, 0), first, now)
     const head: Head = { kind: 'synced-exchange-job-head', version: 1, operationId: c.request.operationId, requestHash: job.requestHash,
       attemptId: job.attemptId, attemptIndex: job.attemptIndex, jobHash: M.exchangeJobHash(job) }
@@ -512,7 +523,7 @@ async function loadSpool(db: Database.Database, c: Context, head: Head): Promise
   if (!same(savedJob, job) || ready.jobHash !== head.jobHash || ready.spoolHash !== job.spoolHash) return publicationInvalid('exchange原spool/job原bytes已变。')
   const inputBytes = await read('inputs.json'), input = M.parseExchangeStored(inputBytes.toString('utf8'))
   assertSyncedShape(input, ['kind', 'version', 'request', 'target', 'local', 'remote', 'state', 'baseRecords', 'authority', 'keyGuards', 'stateRaw', 'plan',
-    ...(job.version===2?['plannerVersion','resolution','conflictSelections']:job.version===3?['plannerVersion','resolution','bothSelections','bothLinks']:job.version===4?['plannerVersion','localPhysical','remoteClosureHash']:[])])
+    ...(job.version===2?['plannerVersion','resolution','conflictSelections']:job.version===3?['plannerVersion','resolution','bothSelections','bothLinks']:job.version===4?['plannerVersion','localPhysical','remoteClosureHash']:job.version===5?['plannerVersion','localPhysical','knowledgeSource','knowledgeHash','resolution','conflictSelections']:job.version===6?['plannerVersion','localPhysical','knowledgeSource','knowledgeHash','resolution','bothSelections','bothLinks']:[])])
   if (input.kind !== 'synced-exchange-private-inputs' || input.version !== job.version || !same(input.request, c.request) || !same(input.target, c.target)
     || publicationHash(publicationJson({ inputHash: publicationHash(inputBytes), descriptor: job.descriptor })) !== job.spoolHash) return publicationInvalid('exchange原spoolinput认证失败。')
   const decodeSnapshot = (value: unknown): SyncedProtocol5Snapshot => {
@@ -526,14 +537,14 @@ async function loadSpool(db: Database.Database, c: Context, head: Head): Promise
   const baseRecords = input.baseRecords.map(raw => { assertSyncedShape(raw, ['key', 'hash', 'record'])
     if (typeof raw.key !== 'string' || typeof raw.hash !== 'string') return publicationInvalid('exchange原B key/hash无效。')
     return { key: raw.key, hash: raw.hash, record: validateSyncedProtocol5Record(raw.record, raw.key) } })
-  assertSyncedShape(input.authority, ['catalogId', 'identities', 'occupiedDocumentIds', 'historyComponents', 'pinnedGroupIds', 'knownGroupIds', 'missingBaseKeys', 'deferredKeys', ...(job.version===4?['deletedFacts','pins']:[])], ['keyGuards'])
+  assertSyncedShape(input.authority, ['catalogId', 'identities', 'occupiedDocumentIds', 'historyComponents', 'pinnedGroupIds', 'knownGroupIds', 'missingBaseKeys', 'deferredKeys', ...(job.version===4?['deletedFacts','pins']:job.version===5||job.version===6?['deletedFacts','pins','deletionProofReferences']:[])], ['keyGuards'])
   // The authority was minted only by this module's original real capture and is authenticated by both immutable DB job and private spool hash.
   const originalAuthority = input.authority as unknown as ReturnType<typeof authority>
-  const conflictSelections=job.version===2?readSelections(input.conflictSelections,c.request):[]
-  const bothSelections=job.version===3?readBothSelections(input.bothSelections,c.request):[],bothLinks=job.version===3?B.validateBothSourceLinks(input.bothLinks):[]
+  const conflictSelections=job.version===2||job.version===5?readSelections(input.conflictSelections,c.request):[]
+  const bothSelections=job.version===3||job.version===6?readBothSelections(input.bothSelections,c.request):[],bothLinks=job.version===3||job.version===6?B.validateBothSourceLinks(input.bothLinks):[]
   if(job.version===3&&(input.plannerVersion!=='forks-v1'||!same(B.validateBothResolution(input.resolution),job.resolution)))return publicationInvalid('both原job来源/算法损坏。')
   if(job.version===2&&(input.plannerVersion!=='conflicts-v1'||!same(C.validateExchangeResolutionBinding(input.resolution),job.resolution))) return publicationInvalid('原job决定来源/算法损坏。')
-  const localPhysical = job.version === 4 ? decodeSnapshot(input.localPhysical) : undefined
+  const localPhysical = job.version === 4 || job.version === 5 || job.version === 6 ? decodeSnapshot(input.localPhysical) : undefined
   if (job.version === 4 && (input.plannerVersion !== 'tombstones-v1' || typeof input.remoteClosureHash !== 'string' || !/^[a-f0-9]{64}$/.test(input.remoteClosureHash))) return publicationInvalid('原删除job4私有来源版本/闭包hash损坏。')
   let plan: RuntimePlan
   if (job.version === 4) {
@@ -541,12 +552,18 @@ async function loadSpool(db: Database.Database, c: Context, head: Head): Promise
     plan = makeTombstonePlan({ operationId: c.request.operationId, localKnowledge: local, localPhysical, remote, baseRecords,
       state: M.validateTombstoneExchangeState(state), localFingerprint: job.descriptor.localFingerprint,
       authority: input.authority as unknown as TombstonePlanInput['authority'] })
+  } else if (job.version===5 || job.version===6) {
+    if (!localPhysical || input.plannerVersion!==job.plannerVersion || !same(K.validateKnowledgeSource(input.knowledgeSource),job.knowledgeSource)
+      || input.knowledgeHash!==job.knowledgeHash || !same(input.resolution,job.resolution)) return publicationInvalid('knowledge原job preimage/决定/两图缺失或损坏。')
+    plan=makeKnowledgePlan({operationId:c.request.operationId,localPhysical,localKnowledge:local,remote,baseRecords,state:M.validateTombstoneExchangeState(state),
+      localFingerprint:job.descriptor.localFingerprint,authority:input.authority as unknown as K.KnowledgeAuthority,conflictSelections},job.version,bothSelections,bothLinks)
+    if (!same(plan.knowledgeSource,job.knowledgeSource) || plan.knowledgeHash!==job.knowledgeHash) return publicationInvalid('knowledge job原来源与私有inputs/plan不符。')
   } else plan = makePlan({ operationId: c.request.operationId, local, remote, baseRecords, state: legacyState(state),
     localFingerprint: job.descriptor.localFingerprint, authority: originalAuthority,
     ...(job.version===2?{conflictSelections}: {}) },job.version,bothSelections,bothLinks)
   const normalized = storedRuntimePlan(plan)
   if (!same(input.plan, normalized) || plan.planHash !== job.descriptor.planHash) return publicationInvalid('exchange原planner结果与不可变job不符。')
-  if(job.version===3&&(!('forks'in plan)||!same(plan.forks,job.forks)))return publicationInvalid('both原job fork/projection与原inputs不闭合。')
+  if((job.version===3||job.version===6)&&(!('forks'in plan)||!same(plan.forks,job.forks)))return publicationInvalid('both原job fork/projection与原inputs不闭合。')
   if(job.version===4&&(!('deletions'in plan)||!same(plan.deletions,job.deletions)))return publicationInvalid('删除job4 intent与真实原inputs/plan不闭合。')
   if(job.version>=2&&!same(plan.merges??[],job.merges))return publicationInvalid('原job merge来源与原inputs/plan不闭合。')
   const manifest = await read('manifest.json'), objects = new Map<string, Buffer>(), assets = new Map<string, Buffer>()
@@ -565,7 +582,7 @@ async function loadSpool(db: Database.Database, c: Context, head: Head): Promise
   if (input.stateRaw !== null && typeof input.stateRaw !== 'string') return publicationInvalid('exchange原state raw损坏。')
   return { directory: dir, job, plan, state, localFingerprint: job.descriptor.localFingerprint, manifest, records: plan.nextRemote.records, objects, assets,
     planning: { local, remote, baseRecords, authority: originalAuthority, keyGuards, stateRaw: input.stateRaw, engine:job.version,conflictSelections,bothSelections,bothLinks,
-      ...(job.version===4?{localPhysical,remoteClosureHash:input.remoteClosureHash as string}: {}) } }
+      ...((job.version===4||job.version===5||job.version===6)?{localPhysical,...(job.version===4?{remoteClosureHash:input.remoteClosureHash as string}:{})}: {}) } }
 }
 function claim(db: Database.Database, c: Context, saved: Spool): boolean {
   return db.transaction(() => {
@@ -878,7 +895,7 @@ function install(db: Database.Database, c: Context, saved: Spool, original: Sync
     const sourceKey = 'sync.webdav.protocol5.exchange-reservation.v1.' + c.request.operationId
     db.prepare("INSERT INTO block_identities(id,last_owner_kind,last_owner_id,state,created_at) VALUES(?,'reserved',?,'retained',NULL)").run(binding.target.id, sourceKey)
   }
-  if (saved.job.version === 3) for (const row of usedBothAllocation(saved)?.missing ?? []) {
+  if (saved.job.version === 3 || saved.job.version === 6) for (const row of usedBothAllocation(saved)?.missing ?? []) {
     if (!db.prepare('SELECT 1 FROM block_identities WHERE id=?').get(row.id))
       db.prepare("INSERT INTO block_identities(id,last_owner_kind,last_owner_id,state,created_at) VALUES(?,'reserved',?,'retained',NULL)")
         .run(row.id, 'sync.webdav.protocol5.exchange-reservation.v1.' + c.request.operationId)
@@ -939,8 +956,12 @@ function settle(db: Database.Database, c: Context, saved: Spool, etag: string): 
     const local = capture(db, c)
     if (local.fingerprint !== saved.localFingerprint || local.stateRaw !== saved.planning.stateRaw) return null
     const actualLocal = wire(portableRecords(local.snapshot, c), c.workspaceScope)
-    if(saved.job.version===3&&bothCollisions(db,c,saved).length)return null
-    const checked = saved.job.version === 4 ? makeTombstonePlan({operationId:c.request.operationId,localPhysical:actualLocal,localKnowledge:knowledge(actualLocal,local),remote:saved.planning.remote,
+    if((saved.job.version===3||saved.job.version===6)&&bothCollisions(db,c,saved).length)return null
+    const checked = saved.job.version === 5 || saved.job.version === 6 ? makeKnowledgePlan({operationId:c.request.operationId,
+      localPhysical:actualLocal,localKnowledge:knowledge(actualLocal,local),remote:saved.planning.remote,baseRecords:saved.planning.baseRecords,
+      state:M.validateTombstoneExchangeState(saved.state),localFingerprint:local.fingerprint,
+      authority:knowledgeAuthority(local,saved.planning.authority.missingBaseKeys,saved.planning.authority.deferredKeys),conflictSelections:saved.planning.conflictSelections},
+      saved.job.version,saved.planning.bothSelections,saved.job.version===6?captureBothSources(db,c,actualLocal):[]) : saved.job.version === 4 ? makeTombstonePlan({operationId:c.request.operationId,localPhysical:actualLocal,localKnowledge:knowledge(actualLocal,local),remote:saved.planning.remote,
       baseRecords:saved.planning.baseRecords,state:M.validateTombstoneExchangeState(saved.state),localFingerprint:local.fingerprint,
       authority:deletionAuthority(local,saved.planning.authority.missingBaseKeys,saved.planning.authority.deferredKeys)}) : makePlan({ operationId: c.request.operationId, local: actualLocal, remote: saved.planning.remote,
       baseRecords: saved.planning.baseRecords, state: legacyState(saved.state), localFingerprint: local.fingerprint,
@@ -953,8 +974,8 @@ function settle(db: Database.Database, c: Context, saved: Spool, etag: string): 
       operationId: c.request.operationId, replayed: false, workspaceScope: c.workspaceScope, recoveryEpoch: c.recoveryEpoch,
       remoteWorkspaceId: saved.job.remoteWorkspaceId, beforeManifestHash: checked.beforeManifestHash, afterManifestHash: checked.afterManifestHash,
       publishedKeys: checked.writes, appliedKeys: checked.incoming, acceptedKeys: checked.accepted, deferred: checked.deferred, acceptedAt: now })
-    const result = saved.job.version===3 ? {...resultBase,forks:('forks'in checked?checked.forks:[]).map(row=>row.summary)} : resultBase
-    const state = saved.job.version===4 ? M.validateTombstoneExchangeState({...saved.state,version:2,currentOperationId:c.request.operationId,generation:randomUUID(),baseline:checked.nextBaseline,deferred:checked.deferred,lastSyncAt:now})
+    const result = saved.job.version===3||saved.job.version===6 ? {...resultBase,forks:('forks'in checked?checked.forks:[]).map(row=>row.summary)} : resultBase
+    const state = saved.job.version===4||saved.job.version===5||saved.job.version===6 ? M.validateTombstoneExchangeState({...saved.state,version:2,currentOperationId:c.request.operationId,generation:randomUUID(),baseline:checked.nextBaseline,deferred:checked.deferred,lastSyncAt:now})
       : M.validateExchangeState({ ...legacyState(saved.state), currentOperationId: c.request.operationId, generation: randomUUID(), baseline: checked.nextBaseline, deferred: checked.deferred, lastSyncAt: now })
     const receipt = M.validateExchangeReceipt({ kind: 'synced-exchange-operation', version: saved.job.version, request: c.request, result, provenance: {
       beforeManifestHash: result.beforeManifestHash, afterManifestHash: result.afterManifestHash, beforeManifestEtag: saved.job.descriptor.expectedRemote.etag,
@@ -962,6 +983,8 @@ function settle(db: Database.Database, c: Context, saved: Spool, etag: string): 
       hostHistoryCuts: historyEffects.hostHistoryCuts,
       afterStateHash: publicationHash(publicationJson(state)),
       ...(saved.job.version===4?{plannerVersion:'tombstones-v1',merges:checked.merges??[],attemptId:saved.job.attemptId,deletions:historyEffects.deletions??[]}: {}),
+      ...(saved.job.version===5||saved.job.version===6?{plannerVersion:saved.job.plannerVersion,knowledgeHash:saved.job.knowledgeHash,
+        resolution:saved.job.resolution,merges:checked.merges??[],attemptId:saved.job.attemptId,...(saved.job.version===6?{forks:'forks'in checked?checked.forks:[]}: {})}: {}),
       ...(saved.job.version===2?{plannerVersion:'conflicts-v1',resolution:saved.job.resolution,merges:checked.merges??[],attemptId:saved.job.attemptId}: {}),
       ...(saved.job.version===3?{plannerVersion:'forks-v1',resolution:saved.job.resolution,merges:checked.merges??[],forks:'forks'in checked?checked.forks:[],attemptId:saved.job.attemptId}: {}) } })
     db.prepare('INSERT INTO synced_operations(client_operation_id,request_hash,result_json,created_at) VALUES(?,?,?,?)')
@@ -971,7 +994,7 @@ function settle(db: Database.Database, c: Context, saved: Spool, etag: string): 
       .run(M.exchangeStateKey(c.request.targetFingerprint), publicationJson(state), now)
     phase(db, saved.job, 'settled', etag)
     const final = readSyncedExchangeLocal(db, { request: c.request, initialTargetFingerprint: c.initialTargetFingerprint })
-    if (saved.job.version === 4) {
+    if (saved.job.version === 4 || saved.job.version === 5 || saved.job.version === 6) {
       if (!('localKnowledgeFinal' in checked)) return publicationInvalid('删除settle缺准确planner4两图。')
       const physical = wire(portableRecords(final.snapshot,c),c.workspaceScope), known = knowledge(physical,final)
       if (!same(physical.manifest.entries,checked.localPhysicalFinal.manifest.entries) || !same(physical.manifest.syncedInstances,checked.localPhysicalFinal.manifest.syncedInstances)
@@ -996,8 +1019,10 @@ function readSelections(value: unknown, request: M.ExchangeRequest): NonNullable
   return selections
 }
 function previewDirectory(c: Context, previewId: string): string { return join(c.root,'storage','synced-exchange-previews-v1',previewId) }
-type StoredPreview = {index:C.ConflictPreviewIndex;facts:C.SyncedExchangeConflictPreview}
+type StoredPreview = {index:C.ConflictPreviewIndex|KnowledgePreviewIndex;facts:C.SyncedExchangeConflictPreview}
 async function loadPreview(db:Database.Database,c:Context,previewId:string):Promise<StoredPreview|null> {
+  const knowledgeIndex=db.transaction(()=>{current(db,c);return readKnowledgePreviewIndex(db,'conflicts',previewId,c.request)})()
+  if(knowledgeIndex)return loadKnowledgeConflictPreview(db,c,knowledgeIndex)
   const index=db.transaction(()=>{current(db,c);return readSyncedExchangeConflictPreviewIndex(db,previewId,c.request)})()
   if(!index)return null
   if(index.workspaceScope!==c.workspaceScope||index.recoveryEpoch!==c.recoveryEpoch)return unavailable('原preview属于另一scope/recovery世代。')
@@ -1055,6 +1080,7 @@ async function attachPreview(db:Database.Database,c:Context,request:M.ExchangeRe
     }
     return {preview,decision}
   })
+  c.knowledgeMode=loaded.index.version===2?5:null
   c.resolution={previewId:request.previewId,previewHash:loaded.index.previewHash,decisionsHash:C.conflictDecisionsHash(request.decisions)}
 }
 async function createPreview(db:Database.Database,c:Context,previewId:string,runtime:SyncedExchangeRuntime):Promise<C.SyncedExchangeConflictPreviewResult> {
@@ -1062,6 +1088,7 @@ async function createPreview(db:Database.Database,c:Context,previewId:string,run
   if(db.pragma('user_version',{simple:true})!==27)return publicationInvalid('preview不接受未知/未来schema。')
   const existing=await loadPreview(db,c,previewId)
   if(existing)return frozenPublicationFacts({status:'ready',preview:existing.facts})
+  if(manualKnowledge(capture(db,c)))return createKnowledgePreview(db,c,previewId,runtime,'conflicts')
   const prepared=await prepare(db,c,runtime)
   if(!('plan'in prepared)) {
     if(prepared.status==='missing'||prepared.status==='unsupported'||prepared.status==='stale')return frozenPublicationFacts(prepared)
@@ -1098,8 +1125,8 @@ async function run(db: Database.Database, c: Context, runtime: SyncedExchangeRun
   const first = capture(db, c), originalGuards = first.keyGuards
   let deferredKeys: string[] = [], head = db.transaction(() => readHead(db, c))(), saved: Spool | null = head ? await loadSpool(db, c, head) : null
   let engine: Engine=saved?.job.version??(c.request.method==='exchangeSyncedSnapshot'?4:2)
-  if(saved&&engine===2) {c.resolution=C.validateExchangeResolutionBinding(saved.job.resolution??null);c.selections=saved.planning.conflictSelections}
-  else if(c.request.method==='resolveSyncedExchangeConflicts') await attachPreview(db,c,c.request)
+  if(saved&&(engine===2||engine===5)) {c.resolution=C.validateExchangeResolutionBinding(saved.job.resolution??null);c.selections=saved.planning.conflictSelections;c.knowledgeMode=engine===5?5:null}
+  else if(c.request.method==='resolveSyncedExchangeConflicts') {await attachPreview(db,c,c.request);if(c.knowledgeMode===5)engine=5}
   // A bounded set of real competing snapshots; each retry gets a new immutable attempt and fresh original ETag.
   for (let turn = 0; turn < 8; turn++) {
     aborted(runtime.signal)
@@ -1232,12 +1259,13 @@ function strictBothSnapshot(value:unknown):SyncedProtocol5Snapshot {
     return {key:row.key,record:row.record}}))
 }
 function bothDirectory(c:Context,previewId:string):string{return join(c.root,'storage','synced-exchange-both-previews-v1',previewId)}
-type BothStoredPreview={index:B.BothPreviewIndex;facts:T.SyncedExchangeBothPreview;allocation:T.SyncedBothAllocation;selections:B.BothPrivateSelection[]}
+type BothStoredPreview={index:B.BothPreviewIndex|KnowledgePreviewIndex;facts:T.SyncedExchangeBothPreview;allocation:T.SyncedBothAllocation;selections:B.BothPrivateSelection[]}
 function buildBothPreview(prepared:Prepared,previewId:string,now:string):{components:T.SyncedExchangeBothPreviewComponent[];allocation:T.SyncedBothAllocation;selections:B.BothPrivateSelection[]} {
-  const input=planInput(prepared),sourceLinks=captureBothSources(captureConnection(prepared.context),prepared.context,prepared.localWire)
-  const facts=deriveBothComponents(input,sourceLinks),local=new Map(prepared.localWire.records.map(row=>[row.key,row]))
+  const ki=prepared.engine===6?knowledgeInput(prepared):null,legacy=ki?null:planInput(prepared)
+  const input=ki?{local:ki.localKnowledge,remote:ki.remote}:legacy!,sourceLinks=captureBothSources(captureConnection(prepared.context),prepared.context,prepared.localPhysical??prepared.localWire)
+  const facts=ki?deriveKnowledgeBothComponents(ki,sourceLinks):deriveBothComponents(legacy!,sourceLinks),local=new Map(prepared.localWire.records.map(row=>[row.key,row]))
   const descriptions=new Map(facts.filter(row=>row.conflictedKeys.length&&row.selectedOriginal&&!row.reason).map(row=>[row.component.componentId,describeSyncedBothComponent({
-    local:input.local,remote:input.remote,selectedOriginal:row.selectedOriginal!,conflictedKeys:row.conflictedKeys,component:row.component,sourceLinks})]))
+    local:input.local,remote:input.remote,selectedOriginal:row.selectedOriginal!,conflictedKeys:row.conflictedKeys,component:bothMutableComponent(row),sourceLinks})]))
   const allocation:T.SyncedBothAllocation={kind:'synced-exchange-both-allocation',version:1,previewId,allocatedAt:now,documents:[],groups:[],blocks:[],instances:[],entities:[],missing:[]}
   // No reservation or physical row is created. These UUIDs are merely stable private candidates.
   const offeredDocs=new Map<string,Extract<ReturnType<typeof describeSyncedBothComponent>,{status:'eligible'}>['copyDocuments'][number]>(),offeredGroups=new Map<string,Extract<ReturnType<typeof describeSyncedBothComponent>,{status:'eligible'}>['groups'][number]>()
@@ -1300,7 +1328,7 @@ function buildBothPreview(prepared:Prepared,previewId:string,now:string):{compon
   for(const fact of facts) {
     if(!fact.conflictedKeys.length&&!fact.reason)continue
     const description=descriptions.get(fact.component.componentId),eligible=description?.status==='eligible'
-    const component:T.SyncedExchangeBothPreviewComponent={...fact.component,records:fact.records,reason:fact.reason??(description?.status==='blocked'?description.reason:null),choices:eligible?['both']:[],copyDocuments:[],groups:[],entities:[]}
+    const component:T.SyncedExchangeBothPreviewComponent={...fact.component,records:fact.records.map(({key,baseHash,localHash,remoteHash})=>({key,baseHash,localHash,remoteHash})),reason:fact.reason??(description?.status==='blocked'?description.reason:null),choices:eligible?['both']:[],copyDocuments:[],groups:[],entities:[]}
     if(eligible){
       for(const source of description.copyDocuments){const copy=documents.get(source.sourceDocumentId)!,doc=local.get('doc:'+source.sourceDocumentId)!.record
         if(doc.kind!=='document')return publicationInvalid('both copy来源不真实。')
@@ -1327,7 +1355,7 @@ function buildBothPreview(prepared:Prepared,previewId:string,now:string):{compon
       const decision:T.SyncedExchangeBothDecision={componentId:component.componentId,copyDocumentIds:sort(copies),groups:component.groups.filter(row=>needed.has(row.sourceGroupId)).map(row=>({groupId:row.sourceGroupId,hosts:row.hosts.filter(host=>host.destination==='copied'&&copies.has(host.sourceDocumentId)).map(({required:_required,documentId:_doc,instanceId:_instance,...host})=>host)}))}
       const trialSelection:B.BothPrivateSelection={preview:component,decision,component:fact.component,allocation:checked,poolAllocation:checked,sourceLinks,conflictedKeys:fact.conflictedKeys}
       const trialAllocation=effectiveBothAllocation([trialSelection])
-      const trial=planSyncedBothFork({local:input.local,remote:input.remote,component:fact.component,selectedOriginal:fact.selectedOriginal,conflictedKeys:fact.conflictedKeys,sourceLinks,
+      const trial=planSyncedBothFork({local:input.local,remote:input.remote,component:bothMutableComponent(fact),selectedOriginal:fact.selectedOriginal,conflictedKeys:fact.conflictedKeys,sourceLinks,
         retainedLocal:input.local,retainedRemote:input.remote,decision,allocation:trialAllocation})
       if(trial.status==='blocked'){component.reason=trial.reason;component.choices=[]}
     }
@@ -1384,6 +1412,8 @@ function effectiveBothAllocation(selections:B.BothPrivateSelection[]):T.SyncedBo
   return B.validateBothAllocation({...pool,groups})
 }
 async function loadBothPreview(db:Database.Database,c:Context,previewId:string):Promise<BothStoredPreview|null> {
+  const knowledgeIndex=db.transaction(()=>{current(db,c);return readKnowledgePreviewIndex(db,'both',previewId,c.request)})()
+  if(knowledgeIndex)return loadKnowledgeBothPreview(db,c,knowledgeIndex)
   const index=db.transaction(()=>{current(db,c);return readSyncedBothPreviewIndex(db,previewId,c.request)})()
   if(!index)return null
   if(index.workspaceScope!==c.workspaceScope||index.recoveryEpoch!==c.recoveryEpoch)return unavailable('both原preview属于其它scope/epoch。')
@@ -1420,12 +1450,14 @@ async function attachBothPreview(db:Database.Database,c:Context,request:B.BothRe
   const byId=new Map(loaded.selections.map(row=>[row.component.componentId,row]))
   const selections=request.decisions.map(decision=>{const source=byId.get(decision.componentId);if(!source)return publicationInvalid('both selector不在原可执行preview。');validateBothSelector(source.preview,decision);return {...source,decision}})
   const allocation=effectiveBothAllocation(selections)
+  c.knowledgeMode=loaded.index.version===2?6:null
   c.both={resolution:B.validateBothResolution({previewId:request.previewId,previewHash:loaded.index.previewHash,decisionsHash:publicationHash(publicationJson(request.decisions)),allocationHash:B.bothAllocationHash(allocation)}),selections:selections.map(row=>({...row,allocation}))}
 }
 async function createBothPreview(db:Database.Database,c:Context,previewId:string,runtime:SyncedExchangeRuntime):Promise<T.SyncedExchangeBothPreviewResult> {
   if(db.pragma('user_version',{simple:true})===26)return Object.freeze({status:'unsupported',reason:'schema-27-required'})
   if(db.pragma('user_version',{simple:true})!==27)return publicationInvalid('both preview schema无效。')
   const existing=await loadBothPreview(db,c,previewId);if(existing)return frozenPublicationFacts({status:'ready',preview:existing.facts})
+  if(manualKnowledge(capture(db,c)))return createKnowledgeBothPreview(db,c,previewId,runtime)
   const prepared=await prepare(db,c,runtime);if(!('plan'in prepared)) {
     if(prepared.status==='missing'||prepared.status==='unsupported'||prepared.status==='stale')return frozenPublicationFacts(prepared)
     return publicationInvalid('both preview不接受已有结算结果。')}
@@ -1443,7 +1475,7 @@ async function createBothPreview(db:Database.Database,c:Context,previewId:string
   return installed?frozenPublicationFacts({status:'ready',preview:facts}):Object.freeze({status:'stale',side:'local'})
 }
 function usedBothAllocation(saved:Spool):T.SyncedBothAllocation|null {
-  if(saved.job.version!==3)return null
+  if(saved.job.version!==3&&saved.job.version!==6)return null
   const allocation=saved.planning.bothSelections[0]?.allocation;if(!allocation)return publicationInvalid('both原job缺固定map。')
   const summaries=saved.job.forks?.map(row=>row.summary)??[],docs=new Set(summaries.flatMap(row=>row.documents.map(row=>row.documentId))),groups=new Set(summaries.flatMap(row=>row.groups.map(row=>row.groupId))),instances=new Set(summaries.flatMap(row=>row.instances.map(row=>row.instanceId))),entities=new Set(summaries.flatMap(row=>row.entities.map(row=>row.entityId)))
   const used=new Set<string>()
@@ -1453,7 +1485,7 @@ function usedBothAllocation(saved:Spool):T.SyncedBothAllocation|null {
 }
 const bothBirths=new WeakMap<Spool,Map<string,string>>()
 function allocatedPhysicalBirth(saved:Spool,id:string,fallback:string):string {
-  if(saved.job.version!==3)return fallback
+  if(saved.job.version!==3&&saved.job.version!==6)return fallback
   let births=bothBirths.get(saved)
   if(!births){const allocation=saved.planning.bothSelections[0]?.allocation;births=new Map([...(allocation?.blocks??[]).map(row=>[row.blockId,row.createdAt] as const),...(allocation?.instances??[]).map(row=>[row.instanceId,row.createdAt] as const)]);bothBirths.set(saved,births)}
   // Only truly new fork IDs require a fixed birth. Unrelated ordinary incoming IDs retain the old bounded behavior.
@@ -1469,7 +1501,7 @@ function bothCollisions(db:Database.Database,c:Context,saved:Spool):T.SyncedExch
     return [...new Map(result.map(row=>[publicationJson([row.kind,row.id]),row])).values()].sort((a,b)=>publicationCompare(publicationJson([a.kind,a.id]),publicationJson([b.kind,b.id])))})()
 }
 function blockPublishedBoth(db:Database.Database,c:Context,saved:Spool,etag:string,collisions:T.SyncedExchangeBothPublishedBlock['collisions']):T.SyncedExchangeBothPublishedBlock {
-  if(saved.job.version!==3||!saved.job.resolution)return publicationInvalid('旧job不能伪both blocker。')
+  if((saved.job.version!==3&&saved.job.version!==6)||!saved.job.resolution)return publicationInvalid('旧job不能伪both blocker。')
   const resolution=B.validateBothResolution(saved.job.resolution),reason=collisions.some(row=>row.kind==='path')?'path-collision':collisions.some(row=>row.kind==='entity')?'catalog-collision':collisions.length?'identity-collision':'source-stale'
   const result=B.validateBothPublishedBlock({status:'blocked',stage:'published-local',reason,operationId:c.request.operationId,attemptId:saved.job.attemptId,allocationHash:resolution.allocationHash,
     publishedManifestHash:saved.job.descriptor.next.manifestHash,publishedManifestETag:etag,componentIds:sort(saved.job.forks?.map(row=>row.componentId)??[]),collisions})
@@ -1487,16 +1519,16 @@ async function historicalBothPublication(db:Database.Database,c:Context,saved:Sp
 }
 async function runBoth(db:Database.Database,c:Context,runtime:SyncedExchangeRuntime):Promise<T.SyncedExchangeBothResult> {
   const replay=db.transaction(()=>readSyncedExchangeReceipt(db,c.request))()
-  if(replay){if(replay.version!==3||!replay.result.forks)return publicationInvalid('both原收据不能跨版本授票。');return frozenPublicationFacts({...replay.result,replayed:true,forks:replay.result.forks})}
+  if(replay){if((replay.version!==3&&replay.version!==6)||!replay.result.forks)return publicationInvalid('both原收据不能跨版本授票。');return frozenPublicationFacts({...replay.result,replayed:true,forks:replay.result.forks})}
   if(db.pragma('user_version',{simple:true})===26)return Object.freeze({status:'unsupported',reason:'schema-27-required'})
   if(db.pragma('user_version',{simple:true})!==27)return publicationInvalid('both未知schema。')
   const first=capture(db,c),originalGuards=first.keyGuards
   let head=db.transaction(()=>readHead(db,c))(),saved=head?await loadSpool(db,c,head):null,deferredKeys:string[]=[]
-  if(saved){if(saved.job.version!==3||!saved.job.resolution)return publicationInvalid('both不能继承旧版本job。');c.both={resolution:B.validateBothResolution(saved.job.resolution),selections:saved.planning.bothSelections}}
+  if(saved){if((saved.job.version!==3&&saved.job.version!==6)||!saved.job.resolution)return publicationInvalid('both不能继承旧版本job。');c.knowledgeMode=saved.job.version===6?6:null;c.both={resolution:B.validateBothResolution(saved.job.resolution),selections:saved.planning.bothSelections}}
   else {if(c.request.method!=='resolveSyncedExchangeBoth')return publicationInvalid('both方法不一致。');await attachBothPreview(db,c,c.request)}
   for(let turn=0;turn<8;turn++) {
     aborted(runtime.signal)
-    if(!saved){const prepared=await prepare(db,c,runtime,deferredKeys,3)
+    if(!saved){const prepared=await prepare(db,c,runtime,deferredKeys,c.knowledgeMode===6?6:3)
       if(!('plan'in prepared)){if(prepared.status==='stale'&&prepared.side==='local'){deferredKeys=sort([...deferredKeys,...changedKeys(originalGuards,capture(db,c).keyGuards)]);continue}
         if(prepared.status==='missing'||prepared.status==='unsupported'||prepared.status==='stale')return frozenPublicationFacts(prepared)
         return publicationInvalid('both prepare返回非读取结果。')}
@@ -1550,4 +1582,145 @@ export async function resolveSyncedExchangeBoth(db:Database.Database,input:T.Syn
     return await runBoth(db,c,runtime)
   }catch(cause){if(cause instanceof SyncedPublicationError)throw cause;throw new SyncedPublicationError(cause instanceof Error&&/SQLITE|sqlite|database|constraint|trigger|exchange exact late receipt/i.test(cause.message)?'database':'invalid','both真实发布/安装失败；原固定job和曝光事实保持。',cause)}
   finally{if(key&&owns)running.delete(key);if(c)connections.delete(c)}
+}
+
+// New knowledge-selection formats never reinterpret saved jobs1--4.
+function manualKnowledge(local:SyncedExchangeLocal):boolean {
+  return Boolean(local.snapshot.deletions?.length || local.state?.version===2&&local.state.baseline.some(row=>row.local.kind==='absent'))
+}
+function knowledgeAuthority(local:SyncedExchangeLocal,missingBaseKeys:string[],deferredKeys:string[]=[]):ReturnType<typeof deletionAuthority>&{deletionProofReferences:K.KnowledgeDeletionReference[]} {
+  return {...deletionAuthority(local,missingBaseKeys,deferredKeys),deletionProofReferences:(local.snapshot.deletions??[]).map(proof=>({
+    key:proof.key,tombstoneHash:proof.tombstoneHash,deletionOperationId:proof.application.operationId,intentHash:proof.intentHash,
+    proofHash:publicationHash(publicationJson(proof)),anchorId:proof.persistence.anchorId})).sort((a,b)=>publicationCompare(a.key,b.key))}
+}
+function knowledgeInput(prepared:Prepared):K.KnowledgePlanInput {
+  if(!prepared.localPhysical)return publicationInvalid('knowledge规划缺真实physical图。')
+  const planningAuthority=prepared.planningAuthority
+  if(!('deletionProofReferences'in planningAuthority)||!('deletedFacts'in planningAuthority)||!('pins'in planningAuthority))
+    return publicationInvalid('knowledge规划缺实际capture的proof/pins/denial authority。')
+  return {operationId:prepared.context.request.operationId,localPhysical:prepared.localPhysical,localKnowledge:prepared.localWire,remote:fromRemote(prepared.remote),
+    baseRecords:prepared.baseRecords,state:M.validateTombstoneExchangeState(prepared.state),localFingerprint:prepared.local.fingerprint,
+    authority:planningAuthority,conflictSelections:prepared.context.selections}
+}
+function makeKnowledgePlan(input:K.KnowledgePlanInput,engine:5|6,selections:B.BothPrivateSelection[]=[],links:T.SyncedBothOwnerSourceLinks[]=[]):KnowledgeRuntimePlan {
+  const plan=engine===5?planSyncedKnowledgeConflicts(input):planSyncedKnowledgeForks(input,selections,links)
+  return {...plan,localFinal:plan.localPhysicalFinal}
+}
+async function prepareKnowledge(db:Database.Database,c:Context,runtime:SyncedExchangeRuntime,deferredKeys:string[],engine:5|6):Promise<Prepared|M.SyncedExchangeResult> {
+  // One real reader/materialization. The old pure4 result is not installed or registered.
+  const base=await prepareTombstone(db,c,runtime,deferredKeys)
+  if(!('plan'in base))return base
+  const planningAuthority=knowledgeAuthority(base.local,base.planningAuthority.missingBaseKeys,deferredKeys)
+  const prepared:Prepared={...base,planningAuthority,engine,bothLinks:engine===6?captureBothSources(db,c,base.localPhysical!):[]}
+  const plan=makeKnowledgePlan(knowledgeInput(prepared),engine,c.both?.selections??[],prepared.bothLinks)
+  return {...prepared,plan}
+}
+function bothMutableComponent(fact:{component:T.SyncedBothSourceComponent;fence?:K.KnowledgeComponentFence}):T.SyncedBothSourceComponent {
+  return fact.fence?{...fact.component,keys:fact.fence.mutableKeys}:fact.component
+}
+function knowledgePreviewDirectory(c:Context,mode:KnowledgePreviewMode,previewId:string):string {
+  return join(c.root,'storage',mode==='both'?'synced-exchange-both-previews-v2':'synced-exchange-previews-v2',previewId)
+}
+type KnowledgePreviewData={index:KnowledgePreviewIndex;input:K.KnowledgePlanInput;plan:KnowledgeRuntimePlan;value:Record<string,unknown>;sourceLinks:T.SyncedBothOwnerSourceLinks[]}
+async function loadKnowledgePreviewData(db:Database.Database,c:Context,index:KnowledgePreviewIndex,mode:KnowledgePreviewMode):Promise<KnowledgePreviewData> {
+  if(index.workspaceScope!==c.workspaceScope||index.recoveryEpoch!==c.recoveryEpoch)return unavailable('knowledge预览属于另一真实scope/recovery世代。')
+  const dir=knowledgePreviewDirectory(c,mode,index.previewId),file=join(dir,'preview.json');safe(dir,c.root);safe(file,dir)
+  if(!lstatSync(file).isFile())return publicationInvalid('knowledge preview原文件不是regular。')
+  const bytes=await readFile(file)
+  if(publicationHash(bytes)!==index.previewHash)return publicationInvalid('knowledge preview原bytes/index不闭合。')
+  const value=M.parseExchangeStored(bytes.toString('utf8'))
+  assertSyncedShape(value,['kind','version','previewId','databasePath','target','workspaceScope','recoveryEpoch','createdAt','local','localPhysical','remote','baseRecords','state',
+    'authority','keyGuards','stateRaw','localFingerprint','plannerVersion','knowledgeSource','knowledgeHash','componentFences','components',...(mode==='both'?['allocation','sourceLinks','componentFacts']:[])])
+  if(value.kind!==(mode==='both'?'synced-exchange-both-preview-inputs':'synced-exchange-conflict-preview-inputs')||value.version!==2||value.previewId!==index.previewId
+    ||value.databasePath!==c.databasePath||!same(value.target,c.target)||value.workspaceScope!==index.workspaceScope||value.recoveryEpoch!==index.recoveryEpoch
+    ||value.createdAt!==index.createdAt||value.plannerVersion!==index.plannerVersion||value.knowledgeHash!==index.knowledgeHash)return publicationInvalid('knowledge preview私有来源/闭形损坏。')
+  const localKnowledge=strictBothSnapshot(value.local),localPhysical=strictBothSnapshot(value.localPhysical),remote=strictBothSnapshot(value.remote),state=M.validateTombstoneExchangeState(value.state)
+  if(typeof value.localFingerprint!=='string'||!/^[a-f0-9]{64}$/.test(value.localFingerprint)||!Array.isArray(value.baseRecords)
+    ||state.workspaceScope!==c.workspaceScope||state.recoveryEpoch!==c.recoveryEpoch)return publicationInvalid('knowledge preview原state/B/fingerprint缺失。')
+  const baseRecords=value.baseRecords.map(row=>{assertSyncedShape(row,['key','hash','record'])
+    if(typeof row.key!=='string'||typeof row.hash!=='string'||publicationHash(publicationJson(row.record))!==row.hash)return publicationInvalid('knowledge preview原B hash不符。')
+    return {key:row.key,hash:row.hash,record:validateSyncedProtocol5Record(row.record,row.key)}})
+  assertSyncedShape(value.authority,['catalogId','identities','occupiedDocumentIds','historyComponents','pinnedGroupIds','knownGroupIds','missingBaseKeys','deferredKeys','deletedFacts','pins','deletionProofReferences'],['keyGuards'])
+  const sourceLinks=mode==='both'?B.validateBothSourceLinks(value.sourceLinks):[]
+  const input:K.KnowledgePlanInput={operationId:index.previewId,localPhysical,localKnowledge,remote,baseRecords,state,localFingerprint:value.localFingerprint,authority:value.authority as unknown as K.KnowledgeAuthority}
+  const plan=makeKnowledgePlan(input,mode==='both'?6:5,[],sourceLinks)
+  if(!same(plan.knowledgeSource,K.validateKnowledgeSource(value.knowledgeSource))||plan.knowledgeHash!==index.knowledgeHash
+    ||!same(plan.componentFences,value.componentFences))return publicationInvalid('knowledge preview来源原像/组件完整fence未可重现。')
+  if(value.stateRaw!==null&&typeof value.stateRaw!=='string')return publicationInvalid('knowledge preview原stateRaw无效。')
+  const expectedGuards=Object.fromEntries((input.authority.keyGuards??[]).map(row=>[row.key,row.fingerprint]))
+  if(!same(value.keyGuards,expectedGuards))return publicationInvalid('knowledge preview原keyguards两处来源不一致。')
+  const final=db.transaction(()=>{current(db,c);return readKnowledgePreviewIndex(db,mode,index.previewId,c.request)})()
+  if(!same(final,index))return publicationInvalid('读取knowledge preview期间原index改变。')
+  return {index,input,plan,value,sourceLinks}
+}
+function knowledgeConflictFacts(c:Context,index:KnowledgePreviewIndex,input:K.KnowledgePlanInput,components:C.ConflictPreviewComponent[]):C.SyncedExchangeConflictPreview {
+  return C.validateConflictPreview({kind:'synced-exchange-conflict-preview',version:1,previewId:index.previewId,previewHash:index.previewHash,
+    workspaceScope:index.workspaceScope,recoveryEpoch:index.recoveryEpoch,remoteWorkspaceId:input.remote.manifest.workspaceId,targetFingerprint:c.request.targetFingerprint,
+    stateGeneration:input.state.generation,remoteManifestHash:publicationHash(publicationJson(input.remote.manifest)),createdAt:index.createdAt,components})
+}
+async function loadKnowledgeConflictPreview(db:Database.Database,c:Context,index:KnowledgePreviewIndex):Promise<StoredPreview> {
+  const loaded=await loadKnowledgePreviewData(db,c,index,'conflicts')
+  if(!same(loaded.plan.conflictPreviews,loaded.value.components))return publicationInvalid('knowledge conflict展示与完整原plan不符。')
+  return {index,facts:knowledgeConflictFacts(c,index,loaded.input,loaded.plan.conflictPreviews)}
+}
+function knowledgeBothFacts(c:Context,index:KnowledgePreviewIndex,input:K.KnowledgePlanInput,components:T.SyncedExchangeBothPreviewComponent[]):T.SyncedExchangeBothPreview {
+  return B.validateBothPreview({kind:'synced-exchange-both-preview',version:1,previewId:index.previewId,previewHash:index.previewHash,workspaceScope:index.workspaceScope,
+    recoveryEpoch:index.recoveryEpoch,remoteWorkspaceId:input.remote.manifest.workspaceId,targetFingerprint:c.request.targetFingerprint,stateGeneration:input.state.generation,
+    remoteManifestHash:publicationHash(publicationJson(input.remote.manifest)),createdAt:index.createdAt,components})
+}
+function storedKnowledgeBothFacts(input:K.KnowledgePlanInput,links:T.SyncedBothOwnerSourceLinks[]):unknown {
+  return deriveKnowledgeBothComponents(input,links).map(row=>({component:row.component,records:row.records,conflictedKeys:row.conflictedKeys,reason:row.reason,fence:row.fence}))
+}
+async function loadKnowledgeBothPreview(db:Database.Database,c:Context,index:KnowledgePreviewIndex):Promise<BothStoredPreview> {
+  const loaded=await loadKnowledgePreviewData(db,c,index,'both'),{input,value,sourceLinks}=loaded
+  const allocation=B.validateBothAllocation(value.allocation)
+  if(B.bothAllocationHash(allocation)!==index.allocationHash||!same(value.componentFacts,storedKnowledgeBothFacts(input,sourceLinks))||!Array.isArray(value.components))return publicationInvalid('knowledge both原pool/完整组件来源损坏。')
+  const components=value.components.map(B.validateBothPreviewComponent).sort((a,b)=>publicationCompare(a.componentId,b.componentId))
+  const byId=new Map(deriveKnowledgeBothComponents(input,sourceLinks).map(row=>[row.component.componentId,row]))
+  const selections:B.BothPrivateSelection[]=components.filter(row=>row.choices.includes('both')).map(preview=>{
+    const fact=byId.get(preview.componentId)
+    if(!fact||fact.reason||!fact.selectedOriginal||!same(preview.keys,fact.component.keys)||preview.localSignature!==fact.component.localSignature
+      ||preview.remoteSignature!==fact.component.remoteSignature||preview.dependencySignature!==fact.component.dependencySignature)return publicationInvalid('knowledge both展示没有准确完整组件fence。')
+    const described=describeSyncedBothComponent({local:input.localKnowledge,remote:input.remote,component:bothMutableComponent(fact),selectedOriginal:fact.selectedOriginal,
+      conflictedKeys:fact.conflictedKeys,sourceLinks})
+    if(described.status!=='eligible'||!same(described.groups.map(row=>[row.sourceGroupId,row.sourceHash,row.required,row.hosts]),preview.groups.map(row=>[row.sourceGroupId,row.sourceHash,row.required,row.hosts.map(({documentId:_documentId,instanceId:_instanceId,...host})=>host)])))return publicationInvalid('knowledge both展示与原live来源闭集不符。')
+    return {preview,decision:{componentId:preview.componentId,copyDocumentIds:[],groups:[]},component:fact.component,allocation,poolAllocation:allocation,sourceLinks,conflictedKeys:fact.conflictedKeys}
+  })
+  return {index,facts:knowledgeBothFacts(c,index,input,components),allocation,selections}
+}
+async function saveKnowledgePreview(db:Database.Database,c:Context,prepared:Prepared,mode:KnowledgePreviewMode,previewId:string,components:unknown,
+  both?:{allocation:T.SyncedBothAllocation;sourceLinks:T.SyncedBothOwnerSourceLinks[]}):Promise<KnowledgePreviewIndex|null> {
+  if(!('knowledgeSource'in prepared.plan))return publicationInvalid('新预览缺knowledge原像。')
+  const input=knowledgeInput(prepared),now=new Date().toISOString(),plan=prepared.plan
+  const payload={kind:mode==='both'?'synced-exchange-both-preview-inputs':'synced-exchange-conflict-preview-inputs',version:2,previewId,databasePath:c.databasePath,
+    target:c.target,workspaceScope:c.workspaceScope,recoveryEpoch:c.recoveryEpoch,createdAt:now,local:snapshotData(input.localKnowledge),localPhysical:snapshotData(input.localPhysical),
+    remote:snapshotData(input.remote),baseRecords:input.baseRecords,state:input.state,authority:input.authority,keyGuards:prepared.local.keyGuards,stateRaw:prepared.local.stateRaw,
+    localFingerprint:prepared.local.fingerprint,plannerVersion:mode==='both'?'knowledge-forks-v1':'knowledge-conflicts-v1',knowledgeSource:plan.knowledgeSource,
+    knowledgeHash:plan.knowledgeHash,componentFences:plan.componentFences,components,...(both?{allocation:both.allocation,sourceLinks:both.sourceLinks,componentFacts:storedKnowledgeBothFacts(input,both.sourceLinks)}:{})}
+  const bytes=Buffer.from(publicationJson(payload)),index=validateKnowledgePreviewIndex({kind:mode==='both'?'synced-exchange-both-preview-index':'synced-exchange-conflict-preview-index',version:2,
+    previewId,databasePath:c.databasePath,targetFingerprint:c.request.targetFingerprint,workspaceScope:c.workspaceScope,recoveryEpoch:c.recoveryEpoch,
+    previewHash:publicationHash(bytes),createdAt:now,plannerVersion:payload.plannerVersion,knowledgeHash:plan.knowledgeHash,...(both?{allocationHash:B.bothAllocationHash(both.allocation)}:{})},mode)
+  const dir=knowledgePreviewDirectory(c,mode,previewId);safe(dir,c.root);await mkdir(join(c.root,'storage',mode==='both'?'synced-exchange-both-previews-v2':'synced-exchange-previews-v2'),{recursive:true,mode:0o700})
+  await mkdir(dir,{mode:0o700});safe(dir,c.root);await durable(join(dir,'preview.json'),bytes);await syncDirectory(dir)
+  const installed=db.transaction(()=>{current(db,c)
+    if(capture(db,c).fingerprint!==prepared.local.fingerprint)return false
+    const legacy=mode==='both'?readSyncedBothPreviewIndex(db,previewId,c.request):readSyncedExchangeConflictPreviewIndex(db,previewId,c.request)
+    if(legacy||readKnowledgePreviewIndex(db,mode,previewId,c.request))return publicationInvalid('knowledge previewId已有不可覆盖的原来源。')
+    putImmutable(db,knowledgePreviewKey(mode,previewId),index,now);return true}).immediate()
+  return installed?index:null
+}
+async function createKnowledgePreview(db:Database.Database,c:Context,previewId:string,runtime:SyncedExchangeRuntime,mode:'conflicts'):Promise<C.SyncedExchangeConflictPreviewResult> {
+  const prepared=await prepareKnowledge(db,c,runtime,[],5)
+  if(!('plan'in prepared)){if(prepared.status==='missing'||prepared.status==='unsupported'||prepared.status==='stale')return frozenPublicationFacts(prepared);return publicationInvalid('knowledge preview不接受历史操作结果。')}
+  const components='conflictPreviews'in prepared.plan?prepared.plan.conflictPreviews:undefined
+  if(!components)return publicationInvalid('knowledge conflict preview缺真实plan。')
+  const index=await saveKnowledgePreview(db,c,prepared,mode,previewId,components)
+  return index?frozenPublicationFacts({status:'ready',preview:knowledgeConflictFacts(c,index,knowledgeInput(prepared),components)}):Object.freeze({status:'stale',side:'local'})
+}
+async function createKnowledgeBothPreview(db:Database.Database,c:Context,previewId:string,runtime:SyncedExchangeRuntime):Promise<T.SyncedExchangeBothPreviewResult> {
+  const prepared=await prepareKnowledge(db,c,runtime,[],6)
+  if(!('plan'in prepared)){if(prepared.status==='missing'||prepared.status==='unsupported'||prepared.status==='stale')return frozenPublicationFacts(prepared);return publicationInvalid('knowledge both preview不接受历史操作结果。')}
+  const built=buildBothPreview(prepared,previewId,new Date().toISOString()),input=knowledgeInput(prepared)
+  const index=await saveKnowledgePreview(db,c,prepared,'both',previewId,built.components,{allocation:built.allocation,sourceLinks:prepared.bothLinks})
+  return index?frozenPublicationFacts({status:'ready',preview:knowledgeBothFacts(c,index,input,built.components)}):Object.freeze({status:'stale',side:'local'})
 }
