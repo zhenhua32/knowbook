@@ -26,6 +26,14 @@
 - 代码改动完成后的最终验证至少运行：`npm run typecheck && npm run test`。
 - 测试不得弹出原生窗口或抢占用户前台应用的焦点。Electron E2E 使用 `e2e-tests/helpers/electron.ts` 的默认后台模式（`KNOWBOOK_E2E_BACKGROUND=1` + 独立用户数据目录）；原生文件选择、确认弹窗和外部应用操作须使用测试夹具，不得自行移除后台限制。
 
+## Test Artifact Cleanup
+- 本地测试、构建和 CI 排查生成的日志、下载的临时压缩包，优先放在 `.tmp/<任务名>/` 或 `test-results/<任务名>/`，避免散落在项目根目录。
+- 每轮验证结束并读取结果后，清理本次任务已不再需要的普通 `.log`、轮转日志及临时 `.ci*.zip`；任务完成、最终回复前再检查一次，包含项目根目录中的遗留文件。仅清理能确认由本次任务生成或下载的临时文件，不全盘删除其他任务的产物。
+- 测试失败时先保留排查所需日志；问题解决后再清理。任务结束时仍需保留的诊断文件，应在最终回复中说明路径和保留原因；用户要求保留的文件继续保留。
+- 删除前确认目标路径位于项目内，不跟随符号链接或目录联接到项目外。保留受 Git 跟踪的文件、测试夹具、依赖目录、用户数据和正式发布包；不能仅凭 `.log` 或 `.zip` 扩展名批量删除。
+- `LevelDB`、`IndexedDB`、`Local Storage`、`Session Storage` 中的日志（如 `000003.log`）属于数据存储文件，不能当作普通文本日志清理。
+- 清理在相关进程退出、结果读取及必要的证据归档或 CI artifact 上传完成后执行；由任务收尾流程负责，不接入通用 `posttest` / `posttest:e2e` 自动删除钩子，以免提前删除诊断证据，也能覆盖测试命令外生成的日志和下载包。
+
 ## Architecture (three process boundaries)
 - **Main** (`src/main/`): Electron main process, SQLite store (`database/store.ts`), backup service, plugin host, IPC handlers. Owns the database file.
 - **Preload** (`src/preload/index.ts`): Exposes a safe `window.knowbook` API to renderer (typed in `contracts.ts`).
