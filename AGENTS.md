@@ -20,9 +20,10 @@
 ## Test / Verification
 - Unit/integration tests: `tests/` (Node-style `node:test` in main process)
 - E2E tests: `e2e-tests/` (Playwright Electron; `npm run test:e2e` builds the app first)
-- Run tests: `npm run test`
+- 全量测试：`npm run test`，留到改动完成后的最终验证阶段统一运行。
 - Lint/typecheck: `npm run typecheck` (no separate lint script; use tsc)
-- After changes, at minimum run: `npm run typecheck && npm run test`
+- 本地修改、调试代码时，优先只运行与改动相关的测试文件或用例；不要一开始或每次修改后直接运行全量测试。
+- 代码改动完成后的最终验证至少运行：`npm run typecheck && npm run test`。
 - 测试不得弹出原生窗口或抢占用户前台应用的焦点。Electron E2E 使用 `e2e-tests/helpers/electron.ts` 的默认后台模式（`KNOWBOOK_E2E_BACKGROUND=1` + 独立用户数据目录）；原生文件选择、确认弹窗和外部应用操作须使用测试夹具，不得自行移除后台限制。
 
 ## Architecture (three process boundaries)
