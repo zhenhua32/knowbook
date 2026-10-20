@@ -19,6 +19,7 @@
     "scripts/markdown-spec-report.ts",
     "scripts/synced-source-checkpoint-benchmark.ts",
     "scripts/verify-schema27-legacy-readers.ts",
+    "scripts/verify-synced-recovery-legacy-reader.ts",
     "scripts/verify-synced-exchange-v1.ts",
     "scripts/verify-synced-exchange-v2.ts",
     "scripts/verify-synced-exchange-v3.ts",

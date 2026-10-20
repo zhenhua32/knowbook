@@ -177,6 +177,24 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+      - name: Fetch pinned schema27 recovery boundary reader source
+        run: git fetch --no-tags --depth=1 origin 92c4766d551c625ac6e1708331c5697da94a186b
+
+      - name: Verify synced recovery boundary with genuine old schema27 readers
+        run: npm run test:synced-recovery-legacy-reader
+
+      - name: Upload synced recovery boundary legacy reader evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: synced-recovery-legacy-reader-evidence
+          path: |
+            test-results/rec-legacy/**
+            !test-results/rec-legacy/**/old
+            !test-results/rec-legacy/**/old/**
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Fetch pinned schema26 reader source
         run: git fetch --no-tags --depth=1 origin 6d61134b917d88753bdbc72a5cafe6e3d81fc216
 
@@ -389,6 +407,9 @@ jobs:
 
       - name: Run controlled database restore regression tests
         run: npm run test:database-restore
+
+      - name: Run synced recovery boundary regression tests
+        run: npm run test:synced-recovery-boundary
 
       - name: Build unpacked application
         run: npm run pack

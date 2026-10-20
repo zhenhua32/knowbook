@@ -1,6 +1,8 @@
 import type Database from 'better-sqlite3'
 import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-read'
 import { LOGICAL_DELETION_CHANNEL } from '../sync/synced-logical-deletion-model'
+import { assertSyncedRecoveryBoundaryRecords } from './synced-recovery-boundary-read'
+import { RECOVERY_BOUNDARY_CHANNEL, recoveryEpochMarkerId } from './synced-recovery-boundary-model'
 import { isSyncedUuid } from '../../shared/syncedBlockValidation'
 import { parseStrictJson } from '../../shared/strictJson'
 import { readSyncedGroupLifecycles, syncedLifecycleSemanticHash } from './synced-lifecycle-state'
@@ -69,7 +71,12 @@ export function readSyncedRemoteObservation(db: Database.Database, incarnation: 
 
 /** Runtime finite format, never DDL/repair. Ordinary empty publication attempts remain invalid. */
 export function assertSyncedRemoteObservationRecords(db: Database.Database): void {
+  // Startup also calls this assertion outside a transaction. Keep all paired
+  // evidence reads, including recovery boundaries, in one owned SQL snapshot.
+  if (!db.inTransaction) return db.transaction(() => assertSyncedRemoteObservationRecords(db))()
   const logical = assertSyncedLogicalDeletionRecords(db), logicalAnchors = new Set([...logical.values()].map(proof => proof.persistence.anchorId))
+  const recovery = assertSyncedRecoveryBoundaryRecords(db)
+  const recoveryAnchors = new Set([...recovery.boundaries.keys()].map(recoveryEpochMarkerId))
   const checked = new Set<string>()
   const checkKey = (key: string): void => {
     if (checked.has(key)) return
@@ -89,6 +96,7 @@ export function assertSyncedRemoteObservationRecords(db: Database.Database): voi
   for (const row of db.prepare(`SELECT a.id,a.channel FROM synced_exposure_attempts a WHERE NOT EXISTS(
     SELECT 1 FROM synced_group_exposure_members m WHERE m.attempt_id=a.id)`).all() as Array<{ id: string; channel: string }>) {
     if (row.channel === LOGICAL_DELETION_CHANNEL && logicalAnchors.has(row.id)) continue
+    if (row.channel === RECOVERY_BOUNDARY_CHANNEL && recoveryAnchors.has(row.id)) continue
     if (row.channel !== SYNCED_RETIRED_OBSERVATION_CHANNEL || !row.id.startsWith(SYNCED_OBSERVATION_PREFIX)) {
       throw new Error('同步块 schema27 存在没有准确参与组的发布记录；不会丢弃可能曝光证据。')
     }

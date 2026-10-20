@@ -7,6 +7,7 @@ import { parseStrictJson } from '../../shared/strictJson'
 import { assertSyncedLifecycleCoverage, readSyncedGroupLifecycles } from './synced-lifecycle-state'
 import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-read'
 import { LOGICAL_DELETION_PREFIX } from '../sync/synced-logical-deletion-model'
+import { assertSyncedRecoveryBoundaryRecords } from './synced-recovery-boundary-read'
 
 type GroupRow = {
   id: string; creation_id: string; created_at: string; origin_json: string; bindings_json: string
@@ -165,6 +166,7 @@ function readGroups(db: Database.Database, ids: readonly string[]): Map<string, 
 export function getSyncedGroupSnapshots(db: Database.Database, input: unknown): SyncedGroupSnapshotsResult {
   const ids = idsInput(input)
   return db.transaction(() => {
+    if ((db.pragma('user_version', { simple: true }) as number) >= 27) assertSyncedRecoveryBoundaryRecords(db)
     const scope = workspaceScope(db), snapshots = readGroups(db, ids)
     return { workspaceScope: scope, items: ids.map(groupId => {
       const snapshot = snapshots.get(groupId)
@@ -183,6 +185,7 @@ export function listSyncedGroups(db: Database.Database, input: unknown): SyncedG
   return db.transaction(() => {
     workspaceScope(db)
     const lifecycle = (db.pragma('user_version', { simple: true }) as number) >= 27
+    if (lifecycle) assertSyncedRecoveryBoundaryRecords(db)
     if (lifecycle) assertSyncedLifecycleCoverage(db)
     if (lifecycle) assertSyncedLogicalDeletionRecords(db)
     // Use the same active predicate before count and pagination; filtering the
@@ -209,6 +212,7 @@ export function getSyncedHostHistory(db: Database.Database, input: unknown): Syn
   assertSyncedShape(input, ['documentId'])
   if (!isSyncedBlockId(input.documentId)) return invalid('identity', '宿主文档身份无效。')
   return db.transaction(() => {
+    if ((db.pragma('user_version', { simple: true }) as number) >= 27) assertSyncedRecoveryBoundaryRecords(db)
     const row = db.prepare(`SELECT s.cursor,s.position,undo.id AS undo_token,redo.id AS redo_token,next_entry.position AS redo_position
       FROM synced_host_history_state s
       LEFT JOIN synced_host_history_documents current_entry ON current_entry.document_id=s.document_id AND current_entry.position=s.position

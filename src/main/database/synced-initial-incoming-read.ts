@@ -13,6 +13,10 @@ export interface InitialIncomingLocal {
   identities: Map<string, InitialIncomingIdentity>; historyDocuments: Set<string>; historyBlocks: Set<string>
   groupIds: Set<string>; baseline: InitialIncomingBaseline | null; baselineRaw: string | null
 }
+export type InitialIncomingWorkspace = Omit<InitialIncomingLocal, 'baseline' | 'baselineRaw'>
+type WorkspaceCapture = Omit<InitialIncomingWorkspace, 'fingerprint'> & {
+  rawIdentities: InitialIncomingIdentity[]; historyRows: unknown[]
+}
 type OperationRow = { client_operation_id: string; request_hash: string; result_json: string; created_at: string }
 const id = (value: unknown): string => isSyncedBlockId(value) ? value : publicationInvalid('incoming 本机历史/身份中的稳定 ID 无效。')
 function json(source: string): unknown { return parseInitialIncomingStored(source) }
@@ -38,8 +42,8 @@ export function readInitialIncomingBaseline(db: Database.Database, request: Init
   return { value, raw: row.value }
 }
 
-/** Caller owns a strict read/IMMEDIATE. This leaf reads authority; it never repairs, reserves or adopts. */
-export function readInitialIncomingLocal(db: Database.Database, request: InitialIncomingRequest): InitialIncomingLocal {
+/** Keep the original fingerprint preimage; baseline belongs only to the request wrapper. */
+function captureInitialIncomingWorkspace(db: Database.Database): WorkspaceCapture {
   const snapshot = readSyncedPersistentPublicationSnapshot(db)
   const rawIdentities = db.prepare('SELECT id,last_owner_kind,last_owner_id,state,created_at FROM block_identities ORDER BY id').all() as InitialIncomingIdentity[]
   const identities = new Map<string, InitialIncomingIdentity>()
@@ -165,6 +169,20 @@ export function readInitialIncomingLocal(db: Database.Database, request: Initial
     historyRows.push(rows.sort((a, b) => publicationJson(a) < publicationJson(b) ? -1 : publicationJson(a) > publicationJson(b) ? 1 : 0))
   }
   const groupIds = new Set((db.prepare('SELECT id FROM synced_groups ORDER BY id').all() as Array<{ id: string }>).map(row => row.id))
+  return { snapshot, identities, historyDocuments, historyBlocks, groupIds, rawIdentities, historyRows }
+}
+
+/** Request-free strict workspace read. No incoming baseline/receipt lookup or write authority. */
+export function readInitialIncomingWorkspace(db: Database.Database): InitialIncomingWorkspace {
+  if (!db.open || !db.inTransaction) return publicationInvalid('incoming workspace读取要求开放原connection的真实自有事务。')
+  const { snapshot, identities, historyDocuments, historyBlocks, groupIds, rawIdentities, historyRows } = captureInitialIncomingWorkspace(db)
+  return { snapshot, identities, historyDocuments, historyBlocks, groupIds,
+    fingerprint: publicationHash(publicationJson({ snapshot: snapshot.localFingerprint, rawIdentities, historyRows })) }
+}
+
+/** Caller owns a strict read/IMMEDIATE. This leaf reads authority; it never repairs, reserves or adopts. */
+export function readInitialIncomingLocal(db: Database.Database, request: InitialIncomingRequest): InitialIncomingLocal {
+  const { snapshot, identities, historyDocuments, historyBlocks, groupIds, rawIdentities, historyRows } = captureInitialIncomingWorkspace(db)
   const baseline = readInitialIncomingBaseline(db, request)
   return { snapshot, identities, historyDocuments, historyBlocks, groupIds, baseline: baseline?.value ?? null, baselineRaw: baseline?.raw ?? null,
     fingerprint: publicationHash(publicationJson({ snapshot: snapshot.localFingerprint, rawIdentities, historyRows, baseline: baseline?.raw ?? null })) }

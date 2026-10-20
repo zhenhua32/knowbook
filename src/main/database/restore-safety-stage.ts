@@ -3,6 +3,7 @@ import { KnowbookStore } from './store'
 import { inspectOrdinaryRestoreConnection, inspectOrdinaryRestoreDatabase, assertControlledRestoreReceipt, type RestoreDatabaseInspection } from './restore-safety-read'
 import { restoreFail, restoreJson, restoreReceiptKey, type RestoreReceipt } from './restore-safety-model'
 import { restoreSqliteFilename } from './restore-safety-sqlite-path'
+import { advanceSyncedRecoveryEpoch } from './synced-recovery-boundary'
 
 const require = createRequire(import.meta.url)
 const Database = require('better-sqlite3') as typeof import('better-sqlite3')
@@ -35,10 +36,10 @@ export function finalizeControlledRestoreStage(path: string, receipt: RestoreRec
       if (before.schemaVersion !== 27 || before.recoveryEpoch === receipt.recoveryEpoch
         || before.documentVersions.includes(receipt.documentBoundary)) return restoreFail('固定新epoch/CAS与旧stage不分离。')
       if (db.prepare('SELECT 1 FROM app_settings WHERE key=?').get(restoreReceiptKey(receipt.operationId))) return restoreFail('本次restore operation已占用。')
-      const changed = db.prepare('UPDATE synced_workspace_state SET workspace_scope=?,recovery_epoch=? WHERE singleton=1')
-        .run(receipt.workspaceScope,receipt.recoveryEpoch)
-      if (changed.changes !== 1) return restoreFail('stage workspace singleton变化。')
-      db.prepare('UPDATE documents SET updated_at=?').run(receipt.documentBoundary)
+      if (before.workspaceScope === null || before.recoveryEpoch === null) return restoreFail('stage原workspace身份缺失。')
+      advanceSyncedRecoveryEpoch(db, { operationId: receipt.operationId, expectedWorkspaceScope: before.workspaceScope,
+        expectedRecoveryEpoch: before.recoveryEpoch, workspaceScope: receipt.workspaceScope,
+        recoveryEpoch: receipt.recoveryEpoch, documentBoundary: receipt.documentBoundary, acceptedAt: receipt.acceptedAt })
       db.exec("UPDATE system_plugin_installations SET enabled=0,auto_start=0,safe_mode_disabled=1,status='safe-mode-disabled'")
       db.prepare('INSERT OR REPLACE INTO app_settings(key,value,updated_at) VALUES(?,?,?)').run('system-plugin.safe-mode-next-boot','1',receipt.acceptedAt)
       db.prepare('INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,?)').run(restoreReceiptKey(receipt.operationId),restoreJson(receipt),receipt.acceptedAt)

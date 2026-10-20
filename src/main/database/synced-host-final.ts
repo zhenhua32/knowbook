@@ -1,5 +1,6 @@
 import { hasSyncedRemoteObservationForCreate } from './synced-remote-observation-read'
 import { readSyncedExchangeHostCut } from './synced-exchange-host-cut'
+import { readSyncedRecoveryHostCut } from './synced-recovery-boundary-read'
 import { randomUUID } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import type { SyncedFailure, SyncedGroupSnapshot, SyncedGroupWire, SyncedRestoreHostInput,
@@ -416,6 +417,8 @@ export function restoreSyncedHostOperation(db: Database.Database, value: unknown
         || previous.historyToken !== null && previous.historyToken !== input.historyToken) throw new Error('原逆操作回执与同一请求身份不一致。')
       return previous
     }
+    if ((db.pragma('user_version', { simple: true }) as number) >= 27
+      && readSyncedRecoveryHostCut(db, input.historyToken)) conflict('history', new Map(), new Map())
     const row = db.prepare('SELECT id,action_json,before_json,after_json,before_hash,after_hash,created_at FROM synced_host_history WHERE id=?')
       .get(input.historyToken) as SyncedHostHistoryBranchRow | undefined
     if (!row) conflict('history', new Map(), new Map())
@@ -704,6 +707,8 @@ export function getSyncedCreateRestoreContext(db: Database.Database, value: unkn
   const historyToken = value.historyToken, direction = value.direction
   if (db.inTransaction) throw new Error('create restore-context 必须拥有自己的只读事务。')
   return db.transaction((): SyncedCreateRestoreContext => {
+    if ((db.pragma('user_version', { simple: true }) as number) >= 27
+      && readSyncedRecoveryHostCut(db, historyToken)) return { status: 'unavailable', reason: 'history' }
     const row = db.prepare('SELECT id,action_json,before_json,after_json,before_hash,after_hash,created_at FROM synced_host_history WHERE id=?').get(historyToken) as SyncedHostHistoryBranchRow | undefined
     if (!row) return { status: 'unavailable', reason: 'history' }
     if (hostJournalKind(row) === 'bare-create') return { status: 'unavailable', reason: 'journal-kind' }

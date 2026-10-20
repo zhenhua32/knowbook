@@ -69,7 +69,9 @@
     "test:synced-exchange-v56-compat": "cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx scripts/verify-synced-exchange-v56.ts",
     "test:backup-v3-legacy-reader": "cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx scripts/verify-backup-v3-legacy-reader.ts",
     "test:database-restore": "cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx --test --test-timeout=120000 tests/main-database-restore-maintenance.test.ts tests/main-controlled-database-restore*.test.ts",
-    "test:database-restore-v2-legacy": "cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx scripts/verify-database-restore-v2.ts"
+    "test:database-restore-v2-legacy": "cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx scripts/verify-database-restore-v2.ts",
+    "test:synced-recovery-boundary": "cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx --test --test-timeout=120000 tests/main-synced-recovery-boundary.test.ts tests/main-synced-recovery-boundary-integrity.test.ts tests/main-synced-recovery-boundary-legacy.test.ts",
+    "test:synced-recovery-legacy-reader": "cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx scripts/verify-synced-recovery-legacy-reader.ts"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.1",
