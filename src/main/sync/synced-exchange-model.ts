@@ -377,7 +377,7 @@ export function validateExchangeDescriptor(value: unknown): ExchangePublicationD
   return { kind: 'synced-exchange-publication', version: 1, attemptId: uuid(value.attemptId), workspaceScope: uuid(value.workspaceScope), recoveryEpoch: uuid(value.recoveryEpoch), targetFingerprint: hash(value.targetFingerprint), localFingerprint: hash(value.localFingerprint), planHash: hash(value.planHash), expectedRemote: { etag: opaque(expected.etag), manifestHash: hash(expected.manifestHash) }, next: { manifestHash: hash(next.manifestHash), objects, assets }, members }
 }
 export function validateExchangeJob(value: unknown): ExchangeJob {
-  if (value !== null && typeof value === 'object' && Object.getOwnPropertyDescriptor(value, 'version')?.value === 7) return validateDeletionChoiceJob(value)
+  if (value !== null && typeof value === 'object' && Object.getOwnPropertyDescriptor(value, 'version')?.value === 7) return validateDeletionChoiceJob(value).job
   const tag = value !== null && typeof value === 'object' ? Object.getOwnPropertyDescriptor(value, 'version')?.value : undefined
   if (tag === 5 || tag === 6) return validateKnowledgeExchangeJob(value)
   if (value !== null && typeof value === 'object' && Object.getOwnPropertyDescriptor(value, 'version')?.value === 4) return validateTombstoneExchangeJob(value)
@@ -591,7 +591,14 @@ function validateKnowledgeExchangeReceipt(value: unknown): KnowledgeConflictRece
     resolution,merges:validateExchangeMerges(original.provenance.merges),attemptId:uuid(original.provenance.attemptId)}}
 }
 
-function validateDeletionChoiceJob(value: unknown): DeletionChoiceJob {
+/** The plan is the result of this exact validation, not a caller-supplied proof.
+ * No result is cached: each invocation checks its own complete input again. */
+export function validateExchangeJobWithPlan(value: unknown): { job: ExchangeJob; deletionPlan: DC.DeletionChoicePlan | null } {
+  if (value !== null && typeof value === 'object' && Object.getOwnPropertyDescriptor(value, 'version')?.value === 7)
+    return validateDeletionChoiceJob(value)
+  return { job: validateExchangeJob(value), deletionPlan: null }
+}
+function validateDeletionChoiceJob(value: unknown): { job: DeletionChoiceJob; deletionPlan: DC.DeletionChoicePlan } {
   root(value,['kind','version','request','requestHash','attemptId','parentAttemptId','attemptIndex','workspaceScope','recoveryEpoch','remoteWorkspaceId','source','descriptor','components','spoolHash','preparedAt','plannerVersion','resolution','merges','deletions','decisionSource','decisionSourceHash'])
   if(value.kind!=='synced-exchange-job'||value.version!==7||value.plannerVersion!=='delete-choices-v1')return publicationInvalid('删除选择job版本/算法不符。')
   const request=validateExchangeRequest(value.request)
@@ -618,7 +625,8 @@ function validateDeletionChoiceJob(value: unknown): DeletionChoiceJob {
   if(publicationJson(plan.deletions)!==publicationJson(deletions)||publicationJson(plan.merges)!==publicationJson(merges)||publicationJson(plan.components)!==publicationJson(components)
     ||publicationJson(source)!==publicationJson(decisionSource.state.source)||plan.planHash!==descriptor.planHash||plan.beforeManifestHash!==descriptor.expectedRemote.manifestHash
     ||plan.afterManifestHash!==descriptor.next.manifestHash||plan.decisionSourceHash!==decisionSourceHash)return publicationInvalid('删除选择job不属于准确历史全图planner。')
-  return {kind:'synced-exchange-job',version:7,request,requestHash:hash(value.requestHash),attemptId,parentAttemptId,attemptIndex,workspaceScope,recoveryEpoch,remoteWorkspaceId,source,descriptor,components,spoolHash:hash(value.spoolHash),preparedAt:time(value.preparedAt),plannerVersion:'delete-choices-v1',resolution,decisionSource,decisionSourceHash,deletions,merges}
+  const job: DeletionChoiceJob = {kind:'synced-exchange-job',version:7,request,requestHash:hash(value.requestHash),attemptId,parentAttemptId,attemptIndex,workspaceScope,recoveryEpoch,remoteWorkspaceId,source,descriptor,components,spoolHash:hash(value.spoolHash),preparedAt:time(value.preparedAt),plannerVersion:'delete-choices-v1',resolution,decisionSource,decisionSourceHash,deletions,merges}
+  return { job, deletionPlan: plan }
 }
 function validateDeletionChoiceReceipt(value: unknown): DeletionChoiceReceipt {
   root(value,['kind','version','request','result','provenance'])

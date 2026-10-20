@@ -1,27 +1,31 @@
 import { assertHistoricalDeletionChoiceProofs } from './synced-exchange-deletion-choice-proof-read'
 import { knowledgeSourceHash } from '../sync/synced-exchange-knowledge-model'
-import { planSyncedDeletionChoicesFromSource } from '../sync/synced-exchange-deletion-choice-plan'
 import { deletionDecisionSourceHash } from '../sync/synced-exchange-deletion-choice-model'
 import type Database from 'better-sqlite3'
 import { isSyncedUuid } from '../../shared/syncedBlockValidation'
-import { exchangeJobKey, exchangeJobHash, exchangeJobPhaseKey, exchangeRequestHash, parseExchangeStored, validateExchangeJob, validateExchangeJobPhase, validateExchangeReceipt,
-  type ExchangeReceipt, type ExchangeRequest } from '../sync/synced-exchange-model'
+import { exchangeJobKey, exchangeJobPhaseKey, exchangeRequestHash, parseExchangeStored, validateExchangeJobWithPlan, validateExchangeJobPhase, validateExchangeReceipt,
+  type ExchangeJob, type ExchangeReceipt, type ExchangeRequest } from '../sync/synced-exchange-model'
 import { publicationHash, publicationInvalid, publicationJson } from '../sync/synced-publication-model'
 
 /** Exact stored request is authoritative for historical references; never synthesize it from today's method/options. */
 export function readSyncedExchangeReceiptById(db: Database.Database, operationId: string): ExchangeReceipt | null {
   if (!db.open || !db.inTransaction || db.pragma('foreign_keys', { simple: true }) !== 1 || !isSyncedUuid(operationId))
     return publicationInvalid('exchange历史receipt只允许owned/FK准确ID读取。')
-  return readStoredReceipt(db,operationId)
+  return readStoredReceipt(db,operationId)?.receipt ?? null
 }
 /** Strict denial facts are read before startup enables connection FK enforcement.
  * This separate read-only snapshot entry grants no mutation authority, while the
  * ordinary historical entry above retains its original owned/FK requirement. */
 export function readSyncedExchangeDenialReceiptById(db: Database.Database, operationId: string): ExchangeReceipt | null {
+  return readSyncedExchangeDenialEvidenceById(db, operationId)?.receipt ?? null
+}
+/** The already-validated immutable job belongs to the same SQL snapshot as its
+ * receipt. Returning these local facts grants no mutation or execution permit. */
+export function readSyncedExchangeDenialEvidenceById(db: Database.Database, operationId: string): { receipt: ExchangeReceipt; job: ExchangeJob | null } | null {
   if (!db.open || !db.inTransaction || !isSyncedUuid(operationId)) return publicationInvalid('删除否权历史认证只允许真实owned只读快照/准确ID。')
   return readStoredReceipt(db,operationId)
 }
-function readStoredReceipt(db: Database.Database, operationId: string): ExchangeReceipt | null {
+function readStoredReceipt(db: Database.Database, operationId: string): { receipt: ExchangeReceipt; job: ExchangeJob | null } | null {
   const row = db.prepare('SELECT request_hash,result_json,created_at FROM synced_operations WHERE client_operation_id=?')
     .get(operationId) as { request_hash: string; result_json: string; created_at: string } | undefined
   if (!row) return null
@@ -29,13 +33,15 @@ function readStoredReceipt(db: Database.Database, operationId: string): Exchange
   if (receipt.request.operationId !== operationId || receipt.result.operationId !== operationId || receipt.result.replayed
     || row.request_hash !== exchangeRequestHash(receipt.request) || row.created_at !== receipt.result.acceptedAt)
     return publicationInvalid('exchange原request/method/hash/createdAt/replay损坏。')
+  let validatedJob: ExchangeJob | null = null
   if (receipt.version === 2 || receipt.version === 3 || receipt.version === 4 || receipt.version === 5 || receipt.version === 6 || receipt.version === 7) {
     const proof = receipt.provenance
     if(!proof.attemptId)return publicationInvalid('v2 receipt缺准确attemptId。')
     const source = db.prepare('SELECT value,updated_at FROM app_settings WHERE key=?')
       .get(exchangeJobKey(operationId, proof.attemptId)) as { value: string; updated_at: string } | undefined
     if (!source) return publicationInvalid('v2 receipt缺准确immutable attempt。')
-    const job = validateExchangeJob(parseExchangeStored(source.value))
+    const { job, deletionPlan } = validateExchangeJobWithPlan(parseExchangeStored(source.value))
+    validatedJob = job
     if (job.version !== receipt.version || source.updated_at !== job.preparedAt || publicationJson(job.request) !== publicationJson(receipt.request)
       || job.attemptId !== proof.attemptId || job.descriptor.planHash !== proof.planHash || job.descriptor.next.manifestHash !== proof.afterManifestHash
       || job.descriptor.expectedRemote.manifestHash !== proof.beforeManifestHash || job.descriptor.expectedRemote.etag !== proof.beforeManifestEtag
@@ -57,12 +63,17 @@ function readStoredReceipt(db: Database.Database, operationId: string): Exchange
     if (receipt.version === 7) {
       if(job.version!==7||deletionDecisionSourceHash(job.decisionSource)!==job.decisionSourceHash||job.decisionSourceHash!==receipt.provenance.decisionSourceHash)
         return publicationInvalid('删除选择receipt缺准确历史原像。')
-      const plan=planSyncedDeletionChoicesFromSource(job.decisionSource,operationId)
+      // The job validator just rebuilt this plan from the complete original
+      // preimage. Reuse that local result for the receipt's separate checks.
+      const plan=deletionPlan
+      if (!plan) return publicationInvalid('删除选择job缺本次完整历史planner结果。')
       for(const [actual,expected]of [[proof.accepted,plan.acceptedSides],[proof.transfers,plan.transfers],[receipt.result.publishedKeys,plan.writes],[receipt.result.appliedKeys,plan.incoming],[receipt.result.deferred,plan.deferred]])
         if(publicationJson(actual)!==publicationJson(expected))return publicationInvalid('删除选择历史receipt不是原完整planner结果。')
       assertHistoricalDeletionChoiceProofs(db,job,receipt)
     }
-    const jobHash = exchangeJobHash(job)
+    // No external callout or write occurs between validation and this hash.
+    // exchangeJobHash would validate and rebuild the same plan a second time.
+    const jobHash = publicationHash(publicationJson(job))
     if(source.value !== publicationJson(job) || publicationHash(source.value) !== jobHash)
       return publicationInvalid('v2 receipt的job不是准确原规范bytes。')
     // This is the receipt's historical attempt, not today's head. Materialize before nested
@@ -89,7 +100,7 @@ function readStoredReceipt(db: Database.Database, operationId: string): Exchange
       || last.phase !== 'settled' || last.remoteEtag !== proof.afterManifestEtag)
       return publicationInvalid('v2 receipt缺准确原prepared/settled事实。')
   }
-  return receipt
+  return { receipt, job: validatedJob }
 }
 export function readExactSyncedExchangeReceipt(db: Database.Database, request: ExchangeRequest): ExchangeReceipt | null {
   const receipt = readSyncedExchangeReceiptById(db, request.operationId)

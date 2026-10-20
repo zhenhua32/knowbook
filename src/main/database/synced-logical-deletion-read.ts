@@ -2,9 +2,9 @@ import type Database from 'better-sqlite3'
 import { parseStrictJson } from '../../shared/strictJson'
 import { parseSyncedBlockPayload, isSyncedBlockId, isSyncedUuid } from '../../shared/syncedBlockValidation'
 import { publicationCompare, publicationHash, publicationInvalid, publicationJson } from '../sync/synced-publication-model'
-import { exchangeJobKey, parseExchangeStored, validateExchangeJob, type TombstoneExchangeReceipt, type DeletionChoiceReceipt, type ExchangeTransfer } from '../sync/synced-exchange-model'
+import type { TombstoneExchangeReceipt, DeletionChoiceReceipt, ExchangeTransfer } from '../sync/synced-exchange-model'
 import type { TombstoneDeletionIntent, TombstoneProofReference } from '../sync/synced-exchange-tombstone-types'
-import { readSyncedExchangeDenialReceiptById } from './synced-exchange-receipt'
+import { readSyncedExchangeDenialEvidenceById } from './synced-exchange-receipt'
 import { LOGICAL_DELETION_CHANNEL, LOGICAL_DELETION_PREFIX, logicalDeletionAnchorId, logicalDeletionRequestHash,
   validateSyncedLogicalDeletionProof, type SyncedLogicalDeletionProof as OriginalDeletionProof, type SyncedLogicalDeletionOperationRow } from '../sync/synced-logical-deletion-model'
 import { validateSyncedLogicalDeletionChoiceProof, logicalDeletionChoiceRequestHash, type SyncedLogicalDeletionChoiceProof, type DeletionChoiceIntent } from '../sync/synced-logical-deletion-choice-model'
@@ -121,10 +121,9 @@ export function assertSyncedLogicalDeletionRecords(db: Database.Database): Map<s
   const operations = db.prepare("SELECT client_operation_id FROM synced_operations WHERE json_extract(result_json,'$.kind')='synced-exchange-operation' AND json_extract(result_json,'$.version') IN (4,7)")
     .all() as Array<{ client_operation_id: string }>
   for (const operation of operations) {
-    const receipt = readSyncedExchangeDenialReceiptById(db, operation.client_operation_id)
+    const evidence = readSyncedExchangeDenialEvidenceById(db, operation.client_operation_id)
+    const receipt = evidence?.receipt, job = evidence?.job
     if (!receipt || receipt.version !== 4 && receipt.version !== 7) return corrupt('删除receipt版本不闭合')
-    const source = db.prepare('SELECT value FROM app_settings WHERE key=?').get(exchangeJobKey(receipt.request.operationId,receipt.provenance.attemptId)) as {value:string}|undefined
-    const job = source ? validateExchangeJob(parseExchangeStored(source.value)) : null
     if (!job || job.version !== receipt.version || job.version !== 4 && job.version !== 7) return corrupt('首证缺准确历史版本job')
     receipts.set(operation.client_operation_id, {receipt,refs:new Map(receipt.provenance.deletions.map(ref=>[ref.key,ref])),
       intents:new Map<string,TombstoneDeletionIntent|DeletionChoiceIntent>(job.deletions.map(intent=>[intent.key,intent])),transfers:new Map(receipt.provenance.transfers.map(transfer=>[transfer.id,transfer])),
