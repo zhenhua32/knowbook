@@ -80,8 +80,8 @@ export class WebDavClient {
         return await this.request(url, method, body, { ...headers, 'If-Match': `"${tag}"` })
       }
       return response
-    } catch {
-      throw new Error(this.signal?.aborted ? '同步已停止。' : '无法连接 WebDAV 或请求超时，请检查网络、地址和证书。')
+    } catch (error) {
+      throw new Error(this.signal?.aborted ? '同步已停止。' : '无法连接 WebDAV 或请求超时，请检查网络、地址和证书。', { cause: error })
     }
   }
 

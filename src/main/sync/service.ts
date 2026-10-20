@@ -188,7 +188,7 @@ export class WebDavSyncService {
     catch (error) {
       this.phase = 'error'
       this.message = error instanceof Error ? error.message : '同步失败，下次将自动重试。'
-      throw new Error(this.message)
+      throw new Error(this.message, { cause: error })
     } finally { this.busy = null; this.abort = null; this.progress = null }
     return this.getStatus()
   }
