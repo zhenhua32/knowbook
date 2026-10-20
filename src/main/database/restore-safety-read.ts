@@ -4,6 +4,7 @@ import { isSyncedUuid } from '../../shared/syncedBlockValidation'
 import { assertSyncedBlockSchema } from './synced-schema'
 import { assertSyncedLifecycleSchema } from './synced-lifecycle-schema'
 import { restoreSqliteFilename } from './restore-safety-sqlite-path'
+import { auditRestoreKnowledgeConnection, assertEmptyRestoreKnowledge } from './restore-safety-knowledge'
 import { parseRestoreJson, restoreFail, restoreJson, restoreReceiptKey, validateRestoreReceipt, type RestoreReceipt } from './restore-safety-model'
 
 const require = createRequire(import.meta.url)
@@ -81,11 +82,10 @@ function inspectRestoreConnection(db: Sqlite.Database, ordinary: boolean): Resto
     assertSyncedBlockSchema(db)
     if (version >= 27) assertSyncedLifecycleSchema(db)
   }
-  for (const name of syncedTables) if (ordinary && table(db,name) && db.prepare(`SELECT 1 FROM ${name} LIMIT 1`).get()) return restoreFail('尚不支持恢复包含同步块正文或同步知识／历史的数据库：'+name)
-  if (ordinary && db.prepare("SELECT 1 FROM blocks WHERE type='synced-block' LIMIT 1").get()) return restoreFail('原physical仍含同步实例。')
-  for (const prefix of ordinary ? ['sync.webdav.protocol5.','synced.backup.v3.'] : []) {
-    if (db.prepare('SELECT 1 FROM app_settings WHERE substr(key,1,?)=? LIMIT 1').get(prefix.length,prefix)) return restoreFail('原同步私有metadata仍存在：'+prefix)
-  }
+  // An opaque capture of the actual owned snapshot is the only empty-knowledge
+  // input. This same gate runs on the source copy, stopped current copy and
+  // private stage; a caller diagnostic or a missing app_settings row is no permit.
+  if (ordinary) assertEmptyRestoreKnowledge(db,auditRestoreKnowledgeConnection(db))
   let workspaceScope: string | null = null, recoveryEpoch: string | null = null
   if (version >= 26) {
     const row = db.prepare('SELECT workspace_scope,recovery_epoch FROM synced_workspace_state WHERE singleton=1').get() as {workspace_scope:unknown;recovery_epoch:unknown} | undefined
