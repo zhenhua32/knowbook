@@ -319,3 +319,28 @@ export async function diagnoseRootKnowledgeMaterial(handle: RootKnowledgeMateria
     permanentDenials: material.union.permanentDenials.length, mappingAmbiguities: material.union.mappingAmbiguities.length,
     historicalPrimaryRowDifferences: material.union.historicalPrimaryRowDifferences.length, acceptedCoverage: false as const })
 }
+
+import { readCertifiedDurableSqlCapsuleNow } from './restore-knowledge-capsule-read'
+import { assertDurableSqlDagNodeFileNow } from './restore-knowledge-dag-files'
+
+/** No await, caller paths, loader, closure subset, currentness cache or permit.
+ * Prepared evidence only. Future live owner must independently authenticate its
+ * actual SQL accepted coverage/required roots/fence and own transaction frame. */
+export function assertRootKnowledgeArtifactsFreshNow(handle: RootKnowledgeMaterial): void {
+  const material = rootMaterials.get(handle)
+  if (!material) return durableSqlDagInvalid('同步witness不是Main完整root-bound material句柄')
+  const entry = saved(material.dag), root = entry.nodes.get(durableSqlDagLocator(entry.ref))
+  if (!root || capsuleJson(material.root) !== capsuleJson(entry.ref)
+    || capsuleJson(material.capsules) !== capsuleJson(rootMaterialCapsules(entry))) return durableSqlDagInvalid('同步witness私有root或完整capsule集合变化')
+  // Pure closed-graph validation retains cycle/depth/reachability/total budgets;
+  // all files below still come only from the true private certified maps.
+  const closed = producerClosure(entry.profileRoot, root.file, { nodes: entry.nodes, capsules: entry.capsules }, [])
+  if (closed.height !== entry.height || closed.totalNodeBytes !== entry.totalNodeBytes || closed.totalOriginalBytes !== entry.totalOriginalBytes)
+    return durableSqlDagInvalid('同步witness完整DAG预算或最长路径变化')
+  for (const { file } of entry.nodes.values()) assertDurableSqlDagNodeFileNow(entry.profileRoot, file)
+  for (const item of entry.capsules.values()) {
+    const actual = capsuleSealReference(entry.profileRoot, readCertifiedDurableSqlCapsuleNow(item.capsule))
+    if (capsuleJson(actual) !== capsuleJson(item.ref)) return durableSqlDagInvalid('同步witness准确原capsule身份变化')
+  }
+  for (const { file } of entry.nodes.values()) assertDurableSqlDagNodeFileNow(entry.profileRoot, file)
+}

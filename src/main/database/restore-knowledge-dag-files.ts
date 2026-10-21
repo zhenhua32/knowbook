@@ -100,3 +100,53 @@ export async function writeDurableSqlDagNodeFile(profileRoot: string, operationI
   return readDurableSqlDagNodeFile(root, { kind: 'durable-sql-dag-ref', version: 1,
     operationId, dagId, rootHash: durableSqlDagRootHash(node) })
 }
+
+import * as syncDagFs from 'node:fs'
+import { parse as syncDagParse, relative as syncDagRelative, sep as syncDagSep } from 'node:path'
+import { capsuleBytesHash as syncDagBytesHash } from './restore-knowledge-capsule-model'
+
+function syncDagPath(path: string, root: string): void {
+  const absolute = resolve(path), child = syncDagRelative(root, absolute)
+  if (child === '..' || child.startsWith('..' + syncDagSep) || isAbsolute(child)) return durableSqlDagInvalid('同步witness DAG越过profile')
+  let cursor = syncDagParse(absolute).root
+  for (const part of syncDagRelative(cursor, absolute).split(syncDagSep).filter(Boolean)) {
+    cursor = join(cursor, part); const info = syncDagFs.lstatSync(cursor)
+    if (info.isSymbolicLink() || cursor !== absolute && !info.isDirectory() || !samePath(syncDagFs.realpathSync.native(cursor), cursor))
+      return durableSqlDagInvalid('同步witness DAG有重定向')
+  }
+}
+function syncDagDirectory(path: string, root: string): BigIntStats {
+  syncDagPath(path, root); const info = syncDagFs.lstatSync(path, { bigint: true })
+  if (!info.isDirectory() || info.isSymbolicLink() || info.ino === 0n) return durableSqlDagInvalid('同步witness DAG目录身份不可认证')
+  return info
+}
+/** Data assertion only: real DAG owner supplies this exact private Saved node;
+ * the DTO itself cannot mint a SQL/DAG certificate or choose a closure subset. */
+export function assertDurableSqlDagNodeFileNow(profileRoot: string, expected: DurableSqlDagNodeFile): void {
+  if (typeof profileRoot !== 'string' || !isAbsolute(profileRoot) || !samePath(resolve(profileRoot), profileRoot)) return durableSqlDagInvalid('同步witness profile无效')
+  const ref = validateDurableSqlDagReference(expected.ref), p = paths(profileRoot, ref.operationId, ref.dagId)
+  const node = validateDurableSqlDagNode(expected.node), text = capsuleJson(node), bytes = Buffer.from(text, 'utf8')
+  if (durableSqlDagRootHash(node) !== ref.rootHash || bytes.length !== expected.bytes || bytes.length > DURABLE_SQL_DAG_MAX_NODE_BYTES)
+    return durableSqlDagInvalid('同步witness私有node原像变化')
+  syncDagDirectory(p.operation, profileRoot); syncDagDirectory(p.collection, profileRoot)
+  const directory = syncDagDirectory(p.node, profileRoot)
+  if (capsuleJson(syncDagFs.readdirSync(p.node)) !== capsuleJson(['root.json'])) return durableSqlDagInvalid('同步witness node不是准确单文件闭集')
+  syncDagPath(p.file, profileRoot); const prior = syncDagFs.lstatSync(p.file, { bigint: true })
+  if (!standalone(prior) || prior.size !== BigInt(bytes.length)) return durableSqlDagInvalid('同步witness node不是准确独立普通文件')
+  const fd = syncDagFs.openSync(p.file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+  try {
+    const before = syncDagFs.fstatSync(fd, { bigint: true })
+    if (!samePathFd(prior, before) || process.platform === 'win32' && before.dev === 0n || before.size !== BigInt(bytes.length)) return durableSqlDagInvalid('同步witness node打开身份变化')
+    const actual = Buffer.alloc(bytes.length + 1); let offset = 0
+    while (offset < actual.length) { const count = syncDagFs.readSync(fd, actual, offset, actual.length - offset, offset); if (!count) break; offset += count }
+    const after = syncDagFs.fstatSync(fd, { bigint: true }), current = syncDagFs.lstatSync(p.file, { bigint: true })
+    syncDagPath(p.file, profileRoot)
+    if (offset !== bytes.length || !sameFd(before, after) || !samePathFd(current, after) || !actual.subarray(0, offset).equals(bytes)
+      || syncDagBytesHash(actual.subarray(0, offset)) !== syncDagBytesHash(bytes)) return durableSqlDagInvalid('同步witness node完整bytes/hash或身份变化')
+    const decoded = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(actual.subarray(0, offset))
+    if (decoded !== text || !Buffer.from(decoded, 'utf8').equals(actual.subarray(0, offset))) return durableSqlDagInvalid('同步witness node非准确canonical UTF8')
+  } finally { syncDagFs.closeSync(fd) }
+  const after = syncDagDirectory(p.node, profileRoot)
+  if (directory.dev !== after.dev || directory.ino !== after.ino || directory.mtimeNs !== after.mtimeNs || directory.ctimeNs !== after.ctimeNs
+    || capsuleJson(syncDagFs.readdirSync(p.node)) !== capsuleJson(['root.json'])) return durableSqlDagInvalid('同步witness DAG目录读取期间变化')
+}

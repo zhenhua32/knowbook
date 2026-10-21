@@ -208,3 +208,15 @@ export async function diagnoseCertifiedCapsuleKnowledge(handle: CertifiedCapsule
     groups: payload.groups.length, denials: payload.denials.length, exposures: payload.exposures.length,
     observations: payload.observations.length, occupancy: payload.occupancy.length, acceptedCoverage: false as const })
 }
+
+import { readDurableSqlCapsuleSealNow } from './restore-knowledge-capsule-files'
+
+/** Private certified identity -> fixed synchronous artifact witness. Not SQL
+ * recertification, accepted coverage or live/publication/install permission. */
+export function readCertifiedDurableSqlCapsuleNow(handle: CertifiedDurableSqlCapsule): DurableSqlCapsuleSeal {
+  const entry = certified.get(handle)
+  if (!entry) return capsuleInvalid('同步witness不是Main真实SQL认证capsule句柄')
+  const seal = readDurableSqlCapsuleSealNow(entry.original)
+  if (seal.manifestHash !== entry.manifestHash) return capsuleInvalid('同步witness原manifest身份变化')
+  return seal
+}

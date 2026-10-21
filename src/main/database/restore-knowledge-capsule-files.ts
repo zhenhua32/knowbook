@@ -302,3 +302,123 @@ export async function readDurableSqlCapsuleSeal(handle: OwnedRawCapsuleOriginal)
   await assertOwnedRawCapsuleOriginal(handle)
   return observed
 }
+
+// Synchronous prepared-artifact witness only. No SQL/currentness/permission.
+import * as syncCapsuleFs from 'node:fs'
+import { createHash as syncCapsuleHash } from 'node:crypto'
+import { parse as syncCapsuleParse } from 'node:path'
+
+function syncCapsulePath(path: string, root: string): void {
+  const absolute = resolve(path), child = relative(root, absolute)
+  if (child === '..' || child.startsWith('..' + sep) || isAbsolute(child)) return capsuleInvalid('同步witness路径越过真实profile')
+  let cursor = syncCapsuleParse(absolute).root
+  for (const part of relative(cursor, absolute).split(sep).filter(Boolean)) {
+    cursor = join(cursor, part)
+    const info = syncCapsuleFs.lstatSync(cursor)
+    if (info.isSymbolicLink() || cursor !== absolute && !info.isDirectory()
+      || !samePath(syncCapsuleFs.realpathSync.native(cursor), cursor)) return capsuleInvalid('同步witness目录含重定向')
+  }
+}
+function syncCapsuleDirectory(path: string, root: string): syncCapsuleFs.BigIntStats {
+  syncCapsulePath(path, root)
+  const info = syncCapsuleFs.lstatSync(path, { bigint: true })
+  if (!info.isDirectory() || info.isSymbolicLink() || info.ino === 0n) return capsuleInvalid('同步witness目录身份不可认证')
+  return info
+}
+function syncCapsuleDirectoryEnd(path: string, root: string, before: syncCapsuleFs.BigIntStats): void {
+  const after = syncCapsuleDirectory(path, root)
+  if (before.dev !== after.dev || before.ino !== after.ino || before.mtimeNs !== after.mtimeNs || before.ctimeNs !== after.ctimeNs)
+    return capsuleInvalid('同步witness目录读取期间变化')
+}
+const syncCapsuleStandalone = (info: syncCapsuleFs.BigIntStats): boolean => info.isFile() && !info.isSymbolicLink() && info.ino !== 0n && info.nlink === 1n
+function syncCapsuleSameFd(a: syncCapsuleFs.BigIntStats, b: syncCapsuleFs.BigIntStats): boolean {
+  return syncCapsuleStandalone(a) && syncCapsuleStandalone(b) && a.dev === b.dev && a.ino === b.ino && a.size === b.size
+    && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs
+}
+function syncCapsulePathFd(path: syncCapsuleFs.BigIntStats, fd: syncCapsuleFs.BigIntStats): boolean {
+  return syncCapsuleStandalone(path) && syncCapsuleStandalone(fd)
+    && (path.dev === fd.dev || process.platform === 'win32' && (path.dev === 0n || BigInt.asUintN(32, path.dev) === fd.dev))
+    && path.ino === fd.ino && path.size === fd.size && path.mtimeNs === fd.mtimeNs && path.ctimeNs === fd.ctimeNs
+}
+/** 64KiB bounded streaming; even a 1TiB original is never put in one Buffer. */
+function syncCapsuleDigest(path: string, root: string, expected: DurableSqlCapsuleFile): void {
+  syncCapsulePath(path, root)
+  const prior = syncCapsuleFs.lstatSync(path, { bigint: true })
+  if (!syncCapsuleStandalone(prior) || prior.size !== BigInt(expected.bytes)) return capsuleInvalid('同步witness原件不是准确独立普通文件')
+  const fd = syncCapsuleFs.openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+  try {
+    const before = syncCapsuleFs.fstatSync(fd, { bigint: true })
+    if (!syncCapsulePathFd(prior, before) || process.platform === 'win32' && before.dev === 0n
+      || before.size !== BigInt(expected.bytes)) return capsuleInvalid('同步witness原件打开身份或长度变化')
+    const buffer = Buffer.alloc(64 * 1024), hash = syncCapsuleHash('sha256'); let offset = 0
+    while (offset < expected.bytes) {
+      const count = syncCapsuleFs.readSync(fd, buffer, 0, Math.min(buffer.length, expected.bytes - offset), offset)
+      if (!count) return capsuleInvalid('同步witness原件读取截断')
+      hash.update(buffer.subarray(0, count)); offset += count
+    }
+    const extra = syncCapsuleFs.readSync(fd, buffer, 0, 1, offset), after = syncCapsuleFs.fstatSync(fd, { bigint: true }), current = syncCapsuleFs.lstatSync(path, { bigint: true })
+    syncCapsulePath(path, root)
+    if (extra || !syncCapsuleSameFd(before, after) || !syncCapsulePathFd(current, after) || hash.digest('hex') !== expected.sha256)
+      return capsuleInvalid('同步witness原件真实bytes/hash或身份变化')
+  } finally { syncCapsuleFs.closeSync(fd) }
+}
+function syncCapsuleText(path: string, root: string, expected: string, maxBytes: number): void {
+  syncCapsulePath(path, root)
+  const prior = syncCapsuleFs.lstatSync(path, { bigint: true }), expectedBytes = Buffer.from(expected, 'utf8')
+  if (!syncCapsuleStandalone(prior) || expectedBytes.length > maxBytes || prior.size !== BigInt(expectedBytes.length)) return capsuleInvalid('同步witness有限artifact类型或长度变化')
+  const fd = syncCapsuleFs.openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+  try {
+    const before = syncCapsuleFs.fstatSync(fd, { bigint: true })
+    if (!syncCapsulePathFd(prior, before) || process.platform === 'win32' && before.dev === 0n) return capsuleInvalid('同步witness artifact打开身份变化')
+    const bytes = Buffer.alloc(expectedBytes.length + 1); let offset = 0
+    while (offset < bytes.length) { const count = syncCapsuleFs.readSync(fd, bytes, offset, bytes.length - offset, offset); if (!count) break; offset += count }
+    const after = syncCapsuleFs.fstatSync(fd, { bigint: true }), current = syncCapsuleFs.lstatSync(path, { bigint: true })
+    syncCapsulePath(path, root)
+    if (offset !== expectedBytes.length || !syncCapsuleSameFd(before, after) || !syncCapsulePathFd(current, after)
+      || !bytes.subarray(0, offset).equals(expectedBytes)
+      || capsuleBytesHash(bytes.subarray(0, offset)) !== capsuleBytesHash(expectedBytes)) return capsuleInvalid('同步witness完整artifact bytes/hash或身份变化')
+    const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes.subarray(0, offset))
+    if (!Buffer.from(text, 'utf8').equals(bytes.subarray(0, offset)) || text !== expected) return capsuleInvalid('同步witness artifact无法无损canonical读取')
+  } finally { syncCapsuleFs.closeSync(fd) }
+}
+function syncCapsuleInventory(path: string, root: string, expected: readonly DurableSqlCapsuleFile[]): void {
+  const before = syncCapsuleDirectory(path, root), names = expected.filter(row => row.present).map(row => row.name).sort()
+  if (capsuleJson(syncCapsuleFs.readdirSync(path).sort()) !== capsuleJson(names)) return capsuleInvalid('同步witness DB/WAL/SHM闭集变化或存在journal')
+  for (const row of expected) if (row.present) syncCapsuleDigest(join(path, row.name), root, row)
+  if (capsuleJson(syncCapsuleFs.readdirSync(path).sort()) !== capsuleJson(names)) return capsuleInvalid('同步witness原件目录读取期间变化')
+  syncCapsuleDirectoryEnd(path, root, before)
+}
+function syncCapsuleOriginal(info: OwnedRawCapsuleOriginalInfo): void {
+  const before = syncCapsuleDirectory(info.capsuleDirectory, info.profileRoot), names = syncCapsuleFs.readdirSync(info.capsuleDirectory).sort()
+  if (names.some(name => !['original', 'scratch', 'index', 'manifest.json'].includes(name))) return capsuleInvalid('同步witness capsule有额外/pending文件')
+  syncCapsuleDirectory(info.scratchDirectory, info.profileRoot)
+  if (!samePath(info.sealedDirectory, info.originalDirectory)) syncCapsuleInventory(info.sealedDirectory, info.profileRoot, info.originalInventory)
+  syncCapsuleInventory(info.originalDirectory, info.profileRoot, info.originalInventory)
+  if (capsuleJson(syncCapsuleFs.readdirSync(info.capsuleDirectory).sort()) !== capsuleJson(names)) return capsuleInvalid('同步witness capsule目录变化')
+  syncCapsuleDirectoryEnd(info.capsuleDirectory, info.profileRoot, before)
+}
+/** Genuine private original registry only. Immutable parsing may be reused;
+ * every manifest/shard/original byte is freshly read. This mints no certificate. */
+export function readDurableSqlCapsuleSealNow(handle: OwnedRawCapsuleOriginal): DurableSqlCapsuleSeal {
+  const state = saved(handle)
+  if (state.busy || !state.sealed) return capsuleInvalid('同步witness缺已完成封存或原件正在写入')
+  const { info, sealed } = state
+  if (durableSqlCapsuleManifestHash(sealed.manifest) !== sealed.manifestHash
+    || capsuleJson(sealed.manifest.files) !== capsuleJson(info.originalInventory)) return capsuleInvalid('同步witness私有封存原像变化')
+  syncCapsuleOriginal(info)
+  syncCapsuleText(join(info.capsuleDirectory, 'manifest.json'), info.profileRoot, capsuleJson(sealed.manifest), CAPSULE_MAX_MANIFEST_BYTES)
+  const index = join(info.capsuleDirectory, 'index'), before = syncCapsuleDirectory(index, info.profileRoot), names = sealed.manifest.evidenceIndex.shards.map(row => row.name).sort()
+  if (capsuleJson(syncCapsuleFs.readdirSync(index).sort()) !== capsuleJson(names)) return capsuleInvalid('同步witness事实分片不是准确闭集')
+  let offset = 0, previous: string | null = null
+  for (const shard of sealed.manifest.evidenceIndex.shards) {
+    const facts = sealed.facts.slice(offset, offset + shard.entries), text = capsuleJson({ kind: 'restore-durable-sql-facts', version: 1, index: shard.index, facts })
+    if (facts.length !== shard.entries || Buffer.byteLength(text) !== shard.bytes || capsuleBytesHash(text) !== shard.sha256) return capsuleInvalid('同步witness私有完整分片原像变化')
+    for (const fact of facts) { const key = durableSqlCapsuleFactKey(fact); if (previous !== null && previous >= key) return capsuleInvalid('同步witness跨片事实顺序变化'); previous = key }
+    syncCapsuleText(join(index, shard.name), info.profileRoot, text, CAPSULE_MAX_SHARD_BYTES); offset += shard.entries
+  }
+  if (offset !== sealed.facts.length || offset !== sealed.manifest.evidenceIndex.entries
+    || capsuleJson(syncCapsuleFs.readdirSync(index).sort()) !== capsuleJson(names)) return capsuleInvalid('同步witness完整分片数量或闭集变化')
+  syncCapsuleDirectoryEnd(index, info.profileRoot, before)
+  syncCapsuleOriginal(info)
+  return sealed
+}
