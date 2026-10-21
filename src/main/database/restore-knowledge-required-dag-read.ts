@@ -311,3 +311,134 @@ export async function readRequiredRootBundleSource(handle: OwnedRequiredRootBund
   await fresh(entry)
   return freezeCapsuleValue({ profileRoot: entry.profileRoot, descriptor, descriptorHash: originBundleDescriptorHash(descriptor), files })
 }
+
+// Whole qualified projection source seam. Authority stays in the existing
+// required material/DAG WeakMaps; no caller DTO/ref/list can register a source.
+import { knowledgePayloadHash, type CapsuleKnowledgePayload } from './restore-knowledge-payload-model'
+import type { DurableSqlCapsuleFile } from './restore-knowledge-capsule-model'
+
+export interface OwnedRequiredKnowledgeSource { readonly kind: 'owned-required-whole-knowledge-source' }
+export interface OwnedRequiredKnowledgeInput {
+  readonly role: 'source' | 'current'; readonly locator: string
+  readonly capsule: CoverageCapsuleReference; readonly binding: CoverageInputBinding; readonly origin: RequiredDagNoPriorOrigin
+  readonly manifestText: string; readonly originalFiles: readonly DurableSqlCapsuleFile[]
+  readonly projection: CapsuleKnowledgePayload; readonly projectionHash: string
+}
+export interface OwnedRequiredKnowledgeData {
+  readonly kind: 'owned-required-whole-knowledge-data'; readonly version: 1
+  readonly root: CoverageRootReference; readonly nodeText: string; readonly sourceMaterialHash: string
+  readonly inputs: readonly OwnedRequiredKnowledgeInput[]
+  readonly preparedEvidence: true; readonly acceptedCoverage: false; readonly effective: false; readonly permit: false
+}
+type RequiredKnowledgeSourceEntry = { material: RequiredRootKnowledgeMaterial; value: OwnedRequiredKnowledgeData
+  captured: readonly { locator: string; knowledge: CertifiedCapsuleKnowledge }[] }
+const requiredKnowledgeSources = new WeakMap<OwnedRequiredKnowledgeSource, RequiredKnowledgeSourceEntry>()
+
+/** This is the entire actual Saved map, not the public diagnostic input count.
+ * Locator uniqueness is meaningful only inside this genuine required owner. */
+function wholeRequiredKnowledgeInputs(entry: Saved): readonly { locator: string; input: Input; role: 'source' | 'current' }[] {
+  assertRequiredSavedStructure(entry)
+  const sourceKey = requiredDagCapsuleLocator(entry.file.node.source), currentKey = requiredDagCapsuleLocator(entry.file.node.current)
+  if (sourceKey === currentKey) return requiredDagInvalid('whole source两个原角色复用locator')
+  const values: { locator: string; input: Input; role: 'source' | 'current' }[] = []
+  for (const [locator, input] of entry.inputs) {
+    if (locator !== requiredDagCapsuleLocator(input.binding) || input.binding.capsule.namespace.kind !== 'native'
+      || input.binding.capsule.readerVersion !== 'knowbook-durable-sql-v1') return requiredDagInvalid('whole source私有Map key/原v1 ref不闭合')
+    const role = locator === sourceKey ? 'source' : locator === currentKey ? 'current' : requiredDagInvalid('whole source有原node之外输入')
+    if (capsuleJson(input.binding) !== capsuleJson(entry.file.node[role]) || capsuleJson(input.origin) !== capsuleJson(entry.file.node.origins[role])
+      || input.origin.rawRequirementsHash !== input.binding.rawRequirementsHash
+      || requiredDagInterpretationHash(input.origin) !== input.binding.interpretationHash)
+      return requiredDagInvalid('whole source完整原binding/origin与角色变化')
+    values.push({ locator, input, role })
+  }
+  values.sort((a, b) => a.locator < b.locator ? -1 : a.locator > b.locator ? 1 : 0)
+  if (values.length !== 2 || new Set(values.map(value => value.locator)).size !== 2
+    || !values.some(value => value.role === 'source') || !values.some(value => value.role === 'current'))
+    return requiredDagInvalid('whole source不是准确首代全Map')
+  return values
+}
+/** The existing material read retains both of its artifact freshness rounds.
+ * Separate actual seals bind each DB/WAL/SHM inventory; the enclosing fixed
+ * capture/read phase performs the final fresh after its new K reads. */
+async function readWholeRequiredKnowledgeData(material: RequiredRootKnowledgeMaterial): Promise<OwnedRequiredKnowledgeData> {
+  const value = await readRequiredRootKnowledgeMaterial(material), { entry } = requiredMaterialEntry(material)
+  const expected = wholeRequiredKnowledgeInputs(entry), projections = new Map<string, CapsuleKnowledgePayload>()
+  for (const payload of value.union.payloads) {
+    const key = capsuleJson(payload.capsule)
+    if (projections.has(key)) return requiredDagInvalid('whole source私有完整projection重复准确ref')
+    projections.set(key, payload)
+  }
+  if (projections.size !== expected.length) return requiredDagInvalid('whole source完整projection全集有遗漏/额外项')
+  const inputs = await settledRequiredInputMap(expected, async ({ locator, input, role }): Promise<OwnedRequiredKnowledgeInput> => {
+    const bare = requiredBareCapsule(input.binding.capsule), projection = projections.get(capsuleJson(bare))
+    const record = value.capsuleBindings.find(item => requiredDagCapsuleLocator(item.binding) === locator)
+    if (!projection || !record || capsuleJson(record) !== capsuleJson({ capsule: input.binding.capsule, binding: input.binding, origin: input.origin }))
+      return requiredDagInvalid('whole source逐locator/ref/hash/binding/origin与私有material不相等')
+    const seal = await readCertifiedDurableSqlCapsule(input.capsule)
+    assertRequiredCapsuleSeal(entry, input, seal)
+    return { role, locator, capsule: input.binding.capsule, binding: input.binding, origin: input.origin,
+      manifestText: capsuleJson(seal.manifest), originalFiles: seal.manifest.files, projection, projectionHash: knowledgePayloadHash(projection) }
+  })
+  return freezeCapsuleValue({ kind: 'owned-required-whole-knowledge-data', version: 1, root: value.root,
+    nodeText: capsuleJson(value.node), sourceMaterialHash: value.materialHash, inputs,
+    preparedEvidence: true, acceptedCoverage: false, effective: false, permit: false })
+}
+function sameRequiredKnowledgeData(expected: OwnedRequiredKnowledgeData, actual: OwnedRequiredKnowledgeData): void {
+  if (capsuleJson(expected) !== capsuleJson(actual)) return requiredDagInvalid('whole source原root/node/全Map/完整projection前后变化')
+}
+/** Checks the same genuine private material's complete immutable facts after
+ * final fresh. Does not repeat an already-completed material read wrapper or
+ * replace artifact freshness with a DTO assertion. */
+function assertWholeRequiredPrivateFacts(material: RequiredRootKnowledgeMaterial, expected: OwnedRequiredKnowledgeData): void {
+  const { material: saved, entry } = requiredMaterialEntry(material), inputs = wholeRequiredKnowledgeInputs(entry)
+  if (capsuleJson(saved.root) !== capsuleJson(expected.root) || capsuleJson(saved.node) !== expected.nodeText
+    || saved.materialHash !== expected.sourceMaterialHash || expected.inputs.length !== inputs.length)
+    return requiredDagInvalid('whole source末检真实root/node/material/全Map变化')
+  const projections = new Map(saved.diagnostic.payloads.map(payload => [capsuleJson(payload.capsule), payload] as const))
+  if (projections.size !== inputs.length || saved.diagnostic.payloads.length !== inputs.length)
+    return requiredDagInvalid('whole source末检私有完整projection全集变化')
+  for (const { locator, input, role } of inputs) {
+    const record = expected.inputs.find(item => item.locator === locator), projection = projections.get(capsuleJson(requiredBareCapsule(input.binding.capsule)))
+    if (!record || !projection || record.role !== role || capsuleJson(record.capsule) !== capsuleJson(input.binding.capsule)
+      || capsuleJson(record.binding) !== capsuleJson(input.binding) || capsuleJson(record.origin) !== capsuleJson(input.origin)
+      || requiredDagDatabaseFilesHash(record.originalFiles) !== input.origin.databaseFilesHash
+      || knowledgePayloadHash(projection) !== record.projectionHash || capsuleJson(projection) !== capsuleJson(record.projection))
+      return requiredDagInvalid('whole source末检逐原件ref/hash/binding/origin/完整projection变化')
+  }
+}
+/** Fixed fresh SQL capture of BOTH actual private inputs. Started pair settles
+ * before failure escapes; no source can be minted from an immutable DTO copy. */
+export async function captureOwnedRequiredKnowledgeSource(material: RequiredRootKnowledgeMaterial) {
+  const first = await readWholeRequiredKnowledgeData(material), { entry } = requiredMaterialEntry(material)
+  const captured = await settledRequiredInputMap(wholeRequiredKnowledgeInputs(entry), async ({ locator, input }) => {
+    const knowledge = await extractCertifiedDurableSqlCapsuleKnowledge(input.capsule), projection = await readCertifiedCapsuleKnowledge(knowledge)
+    const expected = first.inputs.find(item => item.locator === locator)
+    if (!expected || capsuleJson(projection.capsule) !== capsuleJson(requiredBareCapsule(input.binding.capsule))
+      || knowledgePayloadHash(projection) !== expected.projectionHash || capsuleJson(projection) !== capsuleJson(expected.projection))
+      return requiredDagInvalid('whole source本次实际SQL完整projection不等于genuine material对应原件')
+    return { locator, knowledge }
+  })
+  await fresh(entry)
+  assertWholeRequiredPrivateFacts(material, first)
+  const handle: OwnedRequiredKnowledgeSource = Object.freeze({ kind: 'owned-required-whole-knowledge-source' })
+  requiredKnowledgeSources.set(handle, { material, value: first, captured: Object.freeze(captured) })
+  // The fixed upper owner can consume this completed capture's full facts.
+  // Copying either field cannot register another source in the WeakMap.
+  return Object.freeze({ source: handle, value: first })
+}
+/** Reuses the complete immutable SQL-captured projection. This read performs
+ * real artifact freshness, not a new SQL extraction or a generic owner proof. */
+export async function readOwnedRequiredKnowledgeSource(handle: OwnedRequiredKnowledgeSource): Promise<OwnedRequiredKnowledgeData> {
+  const entry = requiredKnowledgeSources.get(handle)
+  if (!entry) return requiredDagInvalid('不是Main全Map实际SQL捕获的whole source私有句柄')
+  sameRequiredKnowledgeData(entry.value, await readWholeRequiredKnowledgeData(entry.material))
+  await settledRequiredInputMap(entry.captured, async item => {
+    const projection = await readCertifiedCapsuleKnowledge(item.knowledge), expected = entry.value.inputs.find(input => input.locator === item.locator)
+    if (!expected || knowledgePayloadHash(projection) !== expected.projectionHash || capsuleJson(projection) !== capsuleJson(expected.projection))
+      return requiredDagInvalid('whole source新捕获私有K完整原像变化')
+  })
+  const { entry: required } = requiredMaterialEntry(entry.material)
+  await fresh(required)
+  assertWholeRequiredPrivateFacts(entry.material, entry.value)
+  return entry.value
+}

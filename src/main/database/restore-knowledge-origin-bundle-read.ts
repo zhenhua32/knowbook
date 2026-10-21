@@ -77,3 +77,89 @@ export async function readPreparedOriginBundle(handle: PreparedOriginBundle) {
     preparedEvidence: true as const, acceptedCoverage: false as const, emptyKnowledgeProven: false as const,
     effectivePermit: false as const, fullNonemptyAncestorSupport: false as const })
 }
+
+// Actual imported whole-source seam. Only this existing owner can access the
+// Saved mount/material pair; a public bundle diagnostic cannot mint a source.
+import { captureOwnedRequiredKnowledgeSource, readOwnedRequiredKnowledgeSource,
+  type OwnedRequiredKnowledgeSource, type OwnedRequiredKnowledgeData, type OwnedRequiredKnowledgeInput } from './restore-knowledge-required-dag-read'
+import { originBundleExpectedFiles } from './restore-knowledge-origin-bundle-model'
+import { parseRequiredSqlDagNode, requiredDagCapsuleLocator } from './restore-knowledge-required-dag-model'
+
+export interface OwnedFirstImportedKnowledgeSource { readonly kind: 'owned-first-imported-whole-knowledge-source' }
+export interface OwnedFirstImportedKnowledgeInput extends Omit<OwnedRequiredKnowledgeInput, 'capsule'> {
+  readonly capsule: CoverageCapsuleReference; readonly originalCapsule: CoverageCapsuleReference
+}
+export interface OwnedFirstImportedKnowledgeData {
+  readonly kind: 'owned-first-imported-whole-knowledge-data'; readonly version: 1
+  readonly descriptorHash: string; readonly root: CoverageRootReference; readonly originalRoot: CoverageRootReference
+  readonly originalNodeText: string; readonly sourceMaterialHash: string
+  readonly inputs: readonly OwnedFirstImportedKnowledgeInput[]
+  readonly interpretation: 'actual-immutable-single-first-bundle-domain'
+  readonly preparedEvidence: true; readonly acceptedCoverage: false; readonly effective: false; readonly permit: false
+}
+type ImportedKnowledgeSourceEntry = { bundle: PreparedOriginBundle; required: OwnedRequiredKnowledgeSource; value: OwnedFirstImportedKnowledgeData }
+const importedKnowledgeSources = new WeakMap<OwnedFirstImportedKnowledgeSource, ImportedKnowledgeSourceEntry>()
+type Mounted = Awaited<ReturnType<typeof readMountedOriginBundle>>
+
+function assertSameMountedKnowledgeOriginal(entry: Saved, actual: Mounted): void {
+  if (actual.profileRoot !== entry.profileRoot || actual.operationId !== entry.operationId || actual.mountId !== entry.mountId
+    || actual.original.directory !== entry.original.directory || actual.original.descriptorHash !== entry.original.descriptorHash
+    || capsuleJson(actual.original.descriptor) !== capsuleJson(entry.original.descriptor)
+    || capsuleJson(originBundleExpectedFiles(actual.original.descriptor)) !== capsuleJson(originBundleExpectedFiles(entry.original.descriptor)))
+    return originBundleInvalid('qualified whole source真实mounted原件/准确catalog变化')
+}
+function importedWholeKnowledgeData(entry: Saved, mounted: Mounted, value: OwnedRequiredKnowledgeData): OwnedFirstImportedKnowledgeData {
+  assertSameMountedKnowledgeOriginal(entry, mounted)
+  const descriptor = mounted.original.descriptor, node = parseRequiredSqlDagNode(descriptor.nodeText)
+  if (capsuleJson(value.root) !== capsuleJson(descriptor.root) || value.nodeText !== descriptor.nodeText || value.inputs.length !== 2)
+    return originBundleInvalid('qualified whole source真实required根/node/全集不等于原catalog')
+  const seen = new Set<string>(), inputs: OwnedFirstImportedKnowledgeInput[] = []
+  for (const input of value.inputs) {
+    const binding = node[input.role], origin = node.origins[input.role], locator = requiredDagCapsuleLocator(binding)
+    if (seen.has(locator) || input.locator !== locator || capsuleJson(input.binding) !== capsuleJson(binding)
+      || capsuleJson(input.origin) !== capsuleJson(origin) || capsuleJson(input.capsule) !== capsuleJson(binding.capsule)
+      || input.manifestText !== (input.role === 'source' ? descriptor.sourceManifestText : descriptor.currentManifestText))
+      return originBundleInvalid('qualified whole source逐原角色/ref/hash/binding/origin/真实manifest不闭合')
+    seen.add(locator)
+    // Only the actual mounted owner's identity qualifies the outer reference.
+    // Inner native K1 refs, binding/origin, node and all historical rows stay exact.
+    inputs.push({ ...input, originalCapsule: input.capsule, capsule: validateCoverageCapsuleReference({ ...input.capsule,
+      namespace: { kind: 'imported-bundle', mountId: entry.mountId, bundleDescriptorHash: mounted.original.descriptorHash } }) })
+  }
+  if (seen.size !== 2 || !seen.has(requiredDagCapsuleLocator(node.source)) || !seen.has(requiredDagCapsuleLocator(node.current)))
+    return originBundleInvalid('qualified whole source数量相等但准确原input集合不相等')
+  return freezeCapsuleValue({ kind: 'owned-first-imported-whole-knowledge-data', version: 1,
+    descriptorHash: mounted.original.descriptorHash, root: qualifiedRoot(entry), originalRoot: descriptor.root,
+    originalNodeText: descriptor.nodeText, sourceMaterialHash: value.sourceMaterialHash, inputs,
+    interpretation: 'actual-immutable-single-first-bundle-domain', preparedEvidence: true, acceptedCoverage: false, effective: false, permit: false })
+}
+async function mountedKnowledgeOriginal(entry: Saved): Promise<Mounted> {
+  const actual = await readMountedOriginBundle(entry.profileRoot, entry.operationId, entry.mountId, entry.original.descriptorHash)
+  assertSameMountedKnowledgeOriginal(entry, actual)
+  return actual
+}
+/** One genuine first bundle only. Required capture performs two actual SQL
+ * extractions, then mounted late-read closes the original catalog boundary. */
+export async function captureOwnedFirstImportedKnowledgeSource(bundle: PreparedOriginBundle) {
+  const entry = preparedBundles.get(bundle)
+  if (!entry) return originBundleInvalid('不是Main真实bundle私有句柄，不能mint qualified whole source')
+  const first = await mountedKnowledgeOriginal(entry), captured = await captureOwnedRequiredKnowledgeSource(entry.material)
+  const value = importedWholeKnowledgeData(entry, first, captured.value)
+  const last = await mountedKnowledgeOriginal(entry)
+  if (capsuleJson(first.original.descriptor) !== capsuleJson(last.original.descriptor)) return originBundleInvalid('qualified capture期间原catalog变化')
+  const handle: OwnedFirstImportedKnowledgeSource = Object.freeze({ kind: 'owned-first-imported-whole-knowledge-source' })
+  importedKnowledgeSources.set(handle, { bundle, required: captured.source, value })
+  return Object.freeze({ source: handle, value })
+}
+/** Fixed mounted-before -> genuine whole source -> late-mounted sequence.
+ * Verification/native placement never becomes a resolver for original refs. */
+export async function readOwnedFirstImportedKnowledgeSource(handle: OwnedFirstImportedKnowledgeSource): Promise<OwnedFirstImportedKnowledgeData> {
+  const source = importedKnowledgeSources.get(handle)
+  if (!source) return originBundleInvalid('不是Main真实mounted whole source私有句柄')
+  const entry = preparedBundles.get(source.bundle)
+  if (!entry) return originBundleInvalid('qualified whole source丢失真实bundle owner')
+  const first = await mountedKnowledgeOriginal(entry), value = importedWholeKnowledgeData(entry, first, await readOwnedRequiredKnowledgeSource(source.required))
+  await mountedKnowledgeOriginal(entry)
+  if (capsuleJson(value) !== capsuleJson(source.value)) return originBundleInvalid('qualified whole source全投影/实际mount前像变化')
+  return source.value
+}
