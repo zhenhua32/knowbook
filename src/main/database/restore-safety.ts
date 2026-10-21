@@ -15,6 +15,7 @@ import { readRestoreJournalVersion } from './restore-safety-files'
 import { prepareDurableSqlCapsuleOriginal } from './restore-knowledge-capsule-files'
 import { certifyDurableSqlCapsuleIfSupported, readCertifiedDurableSqlCapsule,
   type CertifiedDurableSqlCapsule } from './restore-knowledge-capsule-read'
+import { captureDurableSqlDag, readCertifiedDurableSqlDag } from './restore-knowledge-dag-read'
 
 export interface ControlledRestoreInput {
   userDataRoot:string; backupPath:string; stopProcesses?:typeof stopDatabaseRestoreProcesses; beforeReplace?:()=>Promise<void>
@@ -316,6 +317,16 @@ export async function restoreControlledDatabase(input:ControlledRestoreInput,leg
       }
       // Every preceding branch assigns a real classification; no catch converts semantic damage to empty.
       if(!current)return restoreFail('缺准确current分类。')
+      // Prepared evidence only, in the existing ordinary flow. Do not move or
+      // bypass either ordinary admission to claim a knowledge restore. Legacy
+      // unsupported/missing/unreadable originals cannot stand for empty K.
+      const preparedDag=source.capsule&&currentCapsule?await captureDurableSqlDag({profileRoot:root,
+        operationId:p.recovery.split(/[\\/]/).at(-1)!,dagId:randomUUID(),source:source.capsule,current:currentCapsule,parents:[]}):null
+      await writeRestoreJson(join(p.recovery,'knowledge-dag-preflight.json'),{
+        kind:'controlled-restore-original-dag-preflight',version:1,status:preparedDag?'prepared-originals-only':'not-certified',
+        sourceSchemaVersion:source.schemaVersion,currentSchemaVersion:current.schemaVersion,currentClassification:current.classification,
+        acceptedSourceKnowledge:false,acceptedSqlCoverage:false,certifiedForInstallation:false,
+        dag:preparedDag?await readCertifiedDurableSqlDag(preparedDag):null},root,true)
       const migrated=migrateControlledRestoreStage(p.stage,source.schemaVersion)
       if(migrated.workspaceScope===null||migrated.recoveryEpoch===null)return restoreFail('stage27缺实际scope/epoch。')
       let epoch=randomUUID()
@@ -338,6 +349,7 @@ export async function restoreControlledDatabase(input:ControlledRestoreInput,leg
       await assertRestoreInventory(p.storage,inventory)
       if(source.capsule)await readCertifiedDurableSqlCapsule(source.capsule)
       if(currentCapsule)await readCertifiedDurableSqlCapsule(currentCapsule)
+      if(preparedDag)await readCertifiedDurableSqlDag(preparedDag)
       if((await restoreFileDigest(input.backupPath)).sha256!==source.sha256)return restoreFail('源备份在维护期间变化。')
       if(restoreJson(await sourceSqlInventory(input.backupPath))!==restoreJson(source.inventory))return restoreFail('源原三文件在维护期间变化。')
       await assertNoActiveRestoreRollbackJournal(input.backupPath)
@@ -350,6 +362,7 @@ export async function restoreControlledDatabase(input:ControlledRestoreInput,leg
       await input.beforeReplace?.()
       if(source.capsule)await readCertifiedDurableSqlCapsule(source.capsule)
       if(currentCapsule)await readCertifiedDurableSqlCapsule(currentCapsule)
+      if(preparedDag)await readCertifiedDurableSqlDag(preparedDag)
       if(restoreJson(await sourceSqlInventory(input.backupPath))!==restoreJson(source.inventory))return restoreFail('源原三文件在安装前变化。')
       await assertNoActiveRestoreRollbackJournal(input.backupPath)
       await assertNoActiveRestoreRollbackJournal(p.database)

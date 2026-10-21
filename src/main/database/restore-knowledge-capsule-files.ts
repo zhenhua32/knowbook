@@ -167,8 +167,13 @@ export async function assertOwnedRawCapsuleOriginal(handle: OwnedRawCapsuleOrigi
   const { info } = saved(handle)
   await assertCapsuleDirectory(info.capsuleDirectory, info.profileRoot)
   await directory(info.scratchDirectory, info.profileRoot)
-  if (!samePath(info.sealedDirectory, info.originalDirectory)) await assertInventory(info.sealedDirectory, info.originalInventory, info.profileRoot)
-  await assertInventory(info.originalDirectory, info.originalInventory, info.profileRoot)
+  if (!samePath(info.sealedDirectory, info.originalDirectory)) {
+    const results = await Promise.allSettled([
+      assertInventory(info.sealedDirectory, info.originalInventory, info.profileRoot),
+      assertInventory(info.originalDirectory, info.originalInventory, info.profileRoot)
+    ])
+    for (const result of results) if (result.status === 'rejected') throw result.reason
+  } else await assertInventory(info.originalDirectory, info.originalInventory, info.profileRoot)
 }
 /** Call immediately before opening SQLite. The facts must start in an exact
  * independent copy, not a caller-replaced working database. */
