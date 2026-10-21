@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { constants, type Stats } from 'node:fs'
+import { constants, type BigIntStats, type Stats } from 'node:fs'
 import { copyFile, lstat, mkdir, open, readdir, realpath, rename, rm } from 'node:fs/promises'
 import { dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
 import { RESTORE_FILES, parseRestoreJson, restoreFail, restoreJson, restoreUuid, type RestoreRawFile } from './restore-safety-model'
@@ -37,6 +37,49 @@ export async function restoreDirectory(path:string,root:string,exclusive=false):
   await mkdir(path,{recursive:!exclusive})
   await assertRestorePath(path,root)
   if(!(await lstat(path)).isDirectory())return restoreFail('维护目录身份错误。')
+}
+type RestoreOpenFileIdentity=Pick<BigIntStats,'dev'|'ino'>
+/** Pure comparison only. It grants no path/content/restore authority. The owner
+ * below always supplies stats from simultaneously open real descriptors. */
+export function isSameRestoreOpenFileIdentity(a:RestoreOpenFileIdentity,b:RestoreOpenFileIdentity):boolean{
+  return typeof a.dev==='bigint'&&typeof b.dev==='bigint'&&typeof a.ino==='bigint'&&typeof b.ino==='bigint'
+    &&a.ino!==0n&&a.ino===b.ino&&a.dev===b.dev
+}
+function pathMatchesRestoreHandle(path:BigIntStats,fd:BigIntStats):boolean{
+  // This compatibility applies only to one path and its own opened handle.
+  // It must never decide whether two different files are aliases.
+  const device=path.dev===fd.dev||process.platform==='win32'&&(path.dev===0n||BigInt.asUintN(32,path.dev)===fd.dev)
+  return path.isFile()&&!path.isSymbolicLink()&&fd.isFile()&&path.ino!==0n&&path.ino===fd.ino&&device
+}
+async function withRestoreOpenFileIdentity(path:string,root:string|undefined,run:(identity:BigIntStats)=>Promise<void>):Promise<void>{
+  await assertRestorePath(path,root)
+  const prior=await lstat(path,{bigint:true})
+  if(!prior.isFile()||prior.isSymbolicLink()||prior.ino===0n)return restoreFail('维护文件不是可识别的普通原件。')
+  const fd=await open(path,constants.O_RDONLY|(constants.O_NOFOLLOW??0))
+  try{
+    const before=await fd.stat({bigint:true})
+    if(!pathMatchesRestoreHandle(prior,before)||process.platform==='win32'&&before.dev===0n)
+      return restoreFail('维护文件打开身份变化或卷身份不可用。')
+    await run(before)
+    await assertRestorePath(path,root)
+    const after=await fd.stat({bigint:true}),current=await lstat(path,{bigint:true})
+    if(!isSameRestoreOpenFileIdentity(before,after)||!pathMatchesRestoreHandle(current,after))
+      return restoreFail('维护文件身份核对期间发生替换。')
+  }finally{await fd.close()}
+}
+/** Source/candidate paths are actual filesystem inputs; no caller stats or
+ * serialized identity DTO can authorize a restore or bypass this read. */
+export async function assertRestoreSourceIndependent(source:string,ownedPaths:readonly string[],root:string):Promise<void>{
+  await withRestoreOpenFileIdentity(source,undefined,async identity=>{
+    for(const path of ownedPaths){
+      if(!await restoreExists(path))continue
+      await withRestoreOpenFileIdentity(path,root,async other=>{
+        // Both values are BigInt fstat from the same API, with both handles
+        // held open. No Number cast, device truncation or zero wildcard.
+        if(isSameRestoreOpenFileIdentity(identity,other))return restoreFail('备份与profile-owned原件是同一实际file/hardlink。')
+      })
+    }
+  })
 }
 function sameFd(a:Stats,b:Stats):boolean{return a.dev===b.dev&&a.ino===b.ino&&a.size===b.size&&a.mtimeMs===b.mtimeMs&&a.ctimeMs===b.ctimeMs}
 function samePath(a:Stats,b:Stats):boolean{return (a.dev===b.dev||process.platform==='win32'&&a.dev===0)&&a.ino===b.ino&&a.size===b.size&&a.mtimeMs===b.mtimeMs&&a.ctimeMs===b.ctimeMs}

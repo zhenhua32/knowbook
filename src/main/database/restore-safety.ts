@@ -9,7 +9,7 @@ import { finalizeControlledRestoreStage, migrateControlledRestoreStage } from '.
 import { RESTORE_FILES, restoreFail, restoreHash, restoreJson, validateRestoreFence, validateRestoreIntent, validateRestoreJournal,
   type RestoreCurrent, type RestoreFence, type RestoreIntent, type RestoreJournal, type RestoreRawFile, type RestoreReceipt } from './restore-safety-model'
 import { RESTORE_FENCE, RESTORE_PENDING, RESTORE_SAFE_MODE, assertNoRestorePrivateSyncFiles, assertRestoreInventory, assertRestorePath,
-  canonicalRestoreRoot, copyRestoreInventory, readRestoreJson, readRestoreText, restoreDirectory, restoreExists, restoreFileDigest,
+  canonicalRestoreRoot, copyRestoreInventory, readRestoreJson, readRestoreText, assertRestoreSourceIndependent, restoreDirectory, restoreExists, restoreFileDigest,
   restoreInventory, restorePaths, syncRestoreDirectory, syncRestoreFile, writeRestoreJson } from './restore-safety-files'
 import { readRestoreJournalVersion } from './restore-safety-files'
 import { prepareDurableSqlCapsuleOriginal } from './restore-knowledge-capsule-files'
@@ -245,12 +245,7 @@ async function sourceStage(source:string,p:ReturnType<typeof restorePaths>):Prom
   const identity=await lstat(source)
   if(!identity.isFile()||identity.isSymbolicLink())return restoreFail('备份不是独立普通SQLite文件。')
   if(resolve(source).toLowerCase()===resolve(p.database).toLowerCase())return restoreFail('不能恢复当前DB本身。')
-  for(const path of [...RESTORE_FILES.map(name=>join(p.storage,name)),p.stage,p.fence,p.journal,p.intent,p.parent]){
-    if(!await restoreExists(path))continue
-    await assertRestorePath(path,p.root)
-    const other=await lstat(path)
-    if(identity.ino!==0&&identity.ino===other.ino&&(identity.dev===other.dev||process.platform==='win32'&&(identity.dev===0||other.dev===0)))return restoreFail('备份与profile-owned原件是同一实际file/hardlink。')
-  }
+  await assertRestoreSourceIndependent(source,[...RESTORE_FILES.map(name=>join(p.storage,name)),p.stage,p.fence,p.journal,p.intent,p.parent],p.root)
   if(await restoreExists(source+'-wal')&&(await lstat(source+'-wal')).size>0)return restoreFail('备份含活动WAL。')
   await assertNoActiveRestoreRollbackJournal(source)
   const sourceInventory=await sourceSqlInventory(source),original=sourceInventory[0]
