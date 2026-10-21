@@ -31,7 +31,7 @@ public static class KnowBookRestoreArgv {
 }
 '@
 $result=[System.Collections.Generic.List[object]]::new()
-foreach($item in Get-CimInstance Win32_Process) {
+foreach($item in Get-CimInstance Win32_Process -Property ProcessId,Name,ExecutablePath,CreationDate,CommandLine) {
  if ($item.Name -notmatch '(?i)knowbook|electron|node' -and $item.CommandLine -notlike '*knowbookService*') { continue }
  $parts=$null
  if ($item.CommandLine) {
