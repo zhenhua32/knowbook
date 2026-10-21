@@ -1,3 +1,6 @@
+import { extractCertifiedDurableSqlCapsuleKnowledge, readCertifiedCapsuleKnowledge } from './restore-knowledge-capsule-read'
+import { unionCertifiedCapsuleKnowledge, readCertifiedKnowledgeUnion, type CertifiedKnowledgeUnion } from './restore-knowledge-payload-read'
+import { knowledgeHash, type KnowledgeUnionDiagnostic } from './restore-knowledge-payload-model'
 import { relative, sep } from 'node:path'
 import { capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { readCertifiedDurableSqlCapsule, reopenCertifiedDurableSqlCapsule,
@@ -254,4 +257,65 @@ export async function readCertifiedDurableSqlDag(handle: CertifiedDurableSqlDag)
     nodes: entry.nodes.size, capsules: entry.capsules.size, height: entry.height,
     nodeBytes: entry.totalNodeBytes, originalBytes: entry.totalOriginalBytes,
     semanticKnowledgeExtracted: false as const, acceptedSqlCoverage: false as const, certifiedForInstallation: false as const })
+}
+
+/** Root-complete original material for this authenticated prepared DAG. A generic
+ * payload subset/union or a serializable diagnostic can never mint this identity.
+ * It is still not accepted SQL coverage, live currentness or an install permit. */
+export interface RootKnowledgeMaterial { readonly kind: 'root-bound-knowledge-material' }
+type RootMaterialEntry = { dag: CertifiedDurableSqlDag; root: DurableSqlDagReference; capsules: readonly DurableSqlCapsuleReference[];
+  union: CertifiedKnowledgeUnion; materialHash: string }
+const rootMaterials = new WeakMap<RootKnowledgeMaterial, RootMaterialEntry>()
+function rootMaterialCapsules(entry: Saved): DurableSqlCapsuleReference[] {
+  return [...entry.capsules.values()].map(item => item.ref).sort((a, b) => capsuleJson(a) < capsuleJson(b) ? -1 : capsuleJson(a) > capsuleJson(b) ? 1 : 0)
+}
+function assertMaterialCapsules(expected: readonly DurableSqlCapsuleReference[], actual: KnowledgeUnionDiagnostic): void {
+  const found = actual.payloads.map(payload => payload.capsule).sort((a, b) => capsuleJson(a) < capsuleJson(b) ? -1 : capsuleJson(a) > capsuleJson(b) ? 1 : 0)
+  if (capsuleJson(expected) !== capsuleJson(found)) return durableSqlDagInvalid('K material遗漏或替换真实DAG完整capsule集合')
+}
+
+export async function extractRootKnowledgeMaterial(handle: CertifiedDurableSqlDag): Promise<RootKnowledgeMaterial> {
+  const entry = saved(handle)
+  await assertFresh(entry)
+  const expected = rootMaterialCapsules(entry), inputs = []
+  // This exact private map is the whole authenticated closure, including shared
+  // ancestors. No caller array/ref/visitor can select a smaller subset.
+  for (const item of entry.capsules.values()) {
+    const extracted = await extractCertifiedDurableSqlCapsuleKnowledge(item.capsule)
+    const payload = await readCertifiedCapsuleKnowledge(extracted)
+    if (capsuleJson(payload.capsule) !== capsuleJson(item.ref)) return durableSqlDagInvalid('K payload不属于准确DAG原capsule')
+    inputs.push(extracted)
+  }
+  const union = await unionCertifiedCapsuleKnowledge(inputs), diagnostic = await readCertifiedKnowledgeUnion(union)
+  assertMaterialCapsules(expected, diagnostic)
+  await assertFresh(entry)
+  const materialHash = knowledgeHash('knowbook.root-knowledge-material.v1', { root: entry.ref, capsules: expected, union: diagnostic })
+  const material: RootKnowledgeMaterial = Object.freeze({ kind: 'root-bound-knowledge-material' })
+  rootMaterials.set(material, { dag: handle, root: entry.ref, capsules: Object.freeze(expected), union, materialHash })
+  return material
+}
+
+/** Main-only full evidence access. Ordinary diagnostics use the counts below;
+ * future accepted coverage must consume this registry identity plus its own
+ * trusted SQL/fence binding and actual current transaction revalidation. */
+export async function readRootKnowledgeMaterial(handle: RootKnowledgeMaterial) {
+  const material = rootMaterials.get(handle)
+  if (!material) return durableSqlDagInvalid('不是Main完整root-bound K material句柄')
+  const entry = saved(material.dag)
+  await assertFresh(entry)
+  if (capsuleJson(material.root) !== capsuleJson(entry.ref) || capsuleJson(material.capsules) !== capsuleJson(rootMaterialCapsules(entry)))
+    return durableSqlDagInvalid('K material准确root或完整原件集合变化')
+  const diagnostic = await readCertifiedKnowledgeUnion(material.union)
+  assertMaterialCapsules(material.capsules, diagnostic)
+  await assertFresh(entry)
+  return freezeCapsuleValue({ kind: 'root-bound-knowledge-material-data' as const, version: 1 as const, root: material.root,
+    capsules: material.capsules, materialHash: material.materialHash, preparedEvidence: true as const, union: diagnostic })
+}
+
+export async function diagnoseRootKnowledgeMaterial(handle: RootKnowledgeMaterial) {
+  const material = await readRootKnowledgeMaterial(handle)
+  return freezeCapsuleValue({ kind: 'root-bound-knowledge-material-summary' as const, version: 1 as const, root: material.root,
+    materialHash: material.materialHash, capsules: material.capsules.length, groups: material.union.groups.length,
+    permanentDenials: material.union.permanentDenials.length, mappingAmbiguities: material.union.mappingAmbiguities.length,
+    historicalPrimaryRowDifferences: material.union.historicalPrimaryRowDifferences.length, acceptedCoverage: false as const })
 }

@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
-import { TextDecoder } from 'node:util'
+import { rawRestoreSqlCell as cell } from './restore-knowledge-sql-cell'
 import { publicationHash, publicationJson, publicationCompare } from '../sync/synced-publication-model'
 import { syncedBlockSchemaObjectNames } from './synced-schema'
 import { syncedLifecycleSchemaObjectNames } from './synced-lifecycle-schema-metadata'
@@ -18,27 +18,6 @@ function encoding(db: Database.Database) {
   const actual = db.pragma('encoding', { simple: true })
   if (actual !== 'UTF-8' && actual !== 'UTF-16le' && actual !== 'UTF-16be') return refused('未知数据库TEXT编码')
   return actual
-}
-function cell(storage: unknown, value: unknown, textEncoding: string): unknown {
-  if (storage === 'null' && value === null) return ['null']
-  if (storage === 'integer' && typeof value === 'bigint') return ['integer', value.toString()]
-  if (storage === 'real' && typeof value === 'number') {
-    const bits = Buffer.allocUnsafe(8); bits.writeDoubleLE(value)
-    return ['real-ieee754-le', bits.toString('hex')]
-  }
-  if ((storage === 'text' || storage === 'blob') && value instanceof Uint8Array) {
-    const bytes = Buffer.from(value)
-    if (storage === 'text') {
-      const label = textEncoding.toLowerCase(), decoder = new TextDecoder(label, { fatal: true, ignoreBOM: true })
-      let text: string
-      try { text = decoder.decode(bytes) } catch { return refused('原SQL TEXT含非法编码字节') }
-      const roundtrip = Buffer.from(text, textEncoding === 'UTF-8' ? 'utf8' : 'utf16le')
-      if (textEncoding === 'UTF-16be') roundtrip.swap16()
-      if (!roundtrip.equals(bytes)) return refused('原SQL TEXT不能无损回读')
-    }
-    return [storage, bytes.toString('base64')]
-  }
-  return refused('原SQL storage class与实际值不符')
 }
 function rawRows(db: Database.Database, table: string, columns: readonly string[], textEncoding: string): IterableIterator<unknown[]> {
   const projection = columns.flatMap(name => {
