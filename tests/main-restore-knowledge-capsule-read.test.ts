@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, realpath, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import Database from 'better-sqlite3'
 import { copyRestoreInventory, restoreInventory } from '../src/main/database/restore-safety-files'
@@ -18,12 +18,13 @@ import { withControlledRestore, restoreKnowbookDatabase, noProcesses, assertOrig
 import { withDeletionPrimer, completed, encode, hash } from './helpers/synced-exchange-tombstone-primer-fixture'
 
 async function original(f: Pick<V3Fixture, 'userDataRoot' | 'file'>, label = 'source') {
-  const recoveryDirectory = join(f.userDataRoot, 'backups', 'database-restore', randomUUID())
+  const profileRoot = await realpath(f.userDataRoot), sourceDirectory = await realpath(dirname(f.file))
+  const recoveryDirectory = join(profileRoot, 'backups', 'database-restore', randomUUID())
   await mkdir(recoveryDirectory, { recursive: true })
   const sealedDirectory = join(recoveryDirectory, 'sealed')
-  const inventory = await restoreInventory(dirname(f.file))
-  await copyRestoreInventory(dirname(f.file), sealedDirectory, inventory, f.userDataRoot)
-  const handle = await prepareDurableSqlCapsuleOriginal({ profileRoot: f.userDataRoot, recoveryDirectory,
+  const inventory = await restoreInventory(sourceDirectory)
+  await copyRestoreInventory(sourceDirectory, sealedDirectory, inventory, profileRoot)
+  const handle = await prepareDurableSqlCapsuleOriginal({ profileRoot, recoveryDirectory,
     sealedDirectory, capsuleId: randomUUID(), label })
   return { handle, sealedDirectory, inventory, recoveryDirectory }
 }

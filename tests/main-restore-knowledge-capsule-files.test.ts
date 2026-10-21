@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { randomUUID } from 'node:crypto'
-import { constants, copyFileSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { constants, copyFileSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import Database from 'better-sqlite3'
@@ -31,7 +31,7 @@ function byteInventory(directory: string) {
 async function withOriginal(run: (fixture: {
   root: string; input: PrepareDurableSqlCapsuleOriginalInput; originalBytes: ReturnType<typeof byteInventory>
 }) => void | Promise<void>) {
-  const root = mkdtempSync(join(tmpdir(), 'knowbook-capsule-files-')), profileRoot = join(root, 'profile')
+  const root = mkdtempSync(join(tmpdir(), 'knowbook-capsule-files-')), profileRoot = join(realpathSync.native(root), 'profile')
   const recoveryDirectory = join(profileRoot, 'backups', 'database-restore', randomUUID()), sealedDirectory = join(recoveryDirectory, 'sealed-input')
   const producer = join(profileRoot, 'producer')
   mkdirSync(producer, { recursive: true }); mkdirSync(sealedDirectory, { recursive: true })

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import Database from 'better-sqlite3'
 import { readInitialIncomingWorkspace } from '../src/main/database/synced-initial-incoming-read'
@@ -103,12 +103,13 @@ test('a real unregistered ordinary template remains raw SQL evidence while the p
   assert.deepEqual(f.db.prepare('SELECT * FROM block_identities ORDER BY id').all(), before.identities)
   assert.deepEqual(f.db.prepare('SELECT total_changes() AS count').get(), before.changes)
 
-  const originalCurrent = f.sealCurrent(), inventory = await restoreInventory(dirname(f.database))
-  const recoveryDirectory = join(f.profile, 'backups', 'database-restore', randomUUID())
+  const originalCurrent = f.sealCurrent(), profileRoot = realpathSync.native(f.profile), sourceDirectory = realpathSync.native(dirname(f.database))
+  const inventory = await restoreInventory(sourceDirectory)
+  const recoveryDirectory = join(profileRoot, 'backups', 'database-restore', randomUUID())
   mkdirSync(recoveryDirectory, { recursive: true })
   const sealedDirectory = join(recoveryDirectory, 'sealed-template-original')
-  await copyRestoreInventory(dirname(f.database), sealedDirectory, inventory, f.profile)
-  const original = await prepareDurableSqlCapsuleOriginal({ profileRoot: f.profile, recoveryDirectory,
+  await copyRestoreInventory(sourceDirectory, sealedDirectory, inventory, profileRoot)
+  const original = await prepareDurableSqlCapsuleOriginal({ profileRoot, recoveryDirectory,
     sealedDirectory, capsuleId: randomUUID(), label: 'ordinary template raw evidence' })
   const capsule = await certifyDurableSqlCapsuleOriginal(original), seal = await readCertifiedDurableSqlCapsule(capsule)
   assert.equal(seal.manifest.material, 'durable-sql-only')
