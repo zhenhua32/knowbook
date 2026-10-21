@@ -8,6 +8,22 @@ export interface CertifiedKnowledgeUnion { readonly kind: 'certified-durable-sql
 type Entry = { inputs: readonly CertifiedCapsuleKnowledge[]; diagnostic: KnowledgeUnionDiagnostic; payloadHash: string }
 const unions = new WeakMap<CertifiedKnowledgeUnion, Entry>()
 
+/** Immutable per-capsule reads only. One bounded batch settles, including all
+ * finally FD closes, before original-order failure or the next batch/phase.
+ * Returned slots follow input indices, never callback completion order. */
+async function settledPayloadInputMap<T, R>(items: readonly T[], read: (item: T) => Promise<R>): Promise<Awaited<R>[]> {
+  const values: Awaited<R>[] = []
+  for (let from = 0; from < items.length; from += 4) {
+    const results = await Promise.allSettled(items.slice(from, from + 4).map(item => Promise.resolve().then(() => read(item))))
+    for (let offset = 0; offset < results.length; offset++) {
+      const result = results[offset]
+      if (result.status === 'rejected') throw result.reason
+      values[from + offset] = result.value
+    }
+  }
+  return values
+}
+
 export async function unionCertifiedCapsuleKnowledge(input: readonly CertifiedCapsuleKnowledge[]): Promise<CertifiedKnowledgeUnion> {
   if (!Array.isArray(input) || Object.getPrototypeOf(input) !== Array.prototype || !input.length)
     return capsuleInvalid('K union须有真实认证payload原件，不能以null/empty冒认证')
@@ -19,12 +35,11 @@ export async function unionCertifiedCapsuleKnowledge(input: readonly CertifiedCa
     if (!descriptor?.enumerable || !('value' in descriptor)) return capsuleInvalid('K union输入有hole/accessor或非enumerable元素')
     inputs.push(descriptor.value as CertifiedCapsuleKnowledge)
   }
-  const payloads = []
-  for (const handle of inputs) payloads.push(await readCertifiedCapsuleKnowledge(handle))
+  const payloads = await settledPayloadInputMap(inputs, readCertifiedCapsuleKnowledge)
   const diagnostic = unionKnowledgePayloadDiagnostics(payloads)
   // No live SQL transaction crosses these awaits. Each input is an immutable
   // source capsule and is freshly checked again immediately before minting.
-  for (const handle of inputs) await readCertifiedCapsuleKnowledge(handle)
+  await settledPayloadInputMap(inputs, readCertifiedCapsuleKnowledge)
   const handle: CertifiedKnowledgeUnion = Object.freeze({ kind: 'certified-durable-sql-knowledge-union' })
   unions.set(handle, { inputs: Object.freeze(inputs), diagnostic, payloadHash: knowledgeHash('knowbook.knowledge.union.v1', diagnostic) })
   return handle
@@ -33,7 +48,7 @@ export async function unionCertifiedCapsuleKnowledge(input: readonly CertifiedCa
 export async function readCertifiedKnowledgeUnion(handle: CertifiedKnowledgeUnion): Promise<KnowledgeUnionDiagnostic> {
   const entry = unions.get(handle)
   if (!entry) return capsuleInvalid('不是Main完整K原件union句柄')
-  for (const input of entry.inputs) await readCertifiedCapsuleKnowledge(input)
+  await settledPayloadInputMap(entry.inputs, readCertifiedCapsuleKnowledge)
   return entry.diagnostic
 }
 

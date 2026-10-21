@@ -26,6 +26,22 @@ type Input = { capsule: CertifiedDurableSqlCapsule; captured: CertifiedCapsulePr
 type Saved = { profileRoot: string; file: RequiredSqlDagNodeFile; inputs: Map<string, Input>; totalOriginalBytes: number }
 const certifiedRequired = new WeakMap<CertifiedRequiredSqlDag, Saved>()
 
+/** Fixed first-generation pair only. Each started read, including its own
+ * scratch/FD finally, settles before ordered failure escapes. No phase overlaps
+ * the next phase, and the private input/result order is retained. */
+async function settledRequiredInputMap<T, R>(items: readonly T[], read: (item: T) => Promise<R>): Promise<Awaited<R>[]> {
+  const values: Awaited<R>[] = []
+  for (let from = 0; from < items.length; from += 2) {
+    const results = await Promise.allSettled(items.slice(from, from + 2).map(item => Promise.resolve().then(() => read(item))))
+    for (let offset = 0; offset < results.length; offset++) {
+      const result = results[offset]
+      if (result.status === 'rejected') throw result.reason
+      values[from + offset] = result.value
+    }
+  }
+  return values
+}
+
 function firstBinding(value: UnresolvedCertifiedCapsulePriorCoverage): { binding: CoverageInputBinding; origin: RequiredDagNoPriorOrigin; originalBytes: number } {
   if (value.requirements.entries.length) return requiredDagInvalid('实际SQL要求非空：需完整coverage-v2/bundle owner，不能省略或降empty')
   const origin: RequiredDagNoPriorOrigin = { kind: 'no-prior-coverage-references', version: 1,
@@ -65,13 +81,12 @@ function completeInputs(source: Input, current: Input): { inputs: Map<string, In
   return { inputs, totalOriginalBytes }
 }
 async function assertActualInputs(entry: Saved): Promise<void> {
-  const originals: Input[] = []
-  for (const item of entry.inputs.values()) {
+  const originals = await settledRequiredInputMap([...entry.inputs.values()], async item => {
     const current = await readCertifiedCapsulePriorCoverage(item.captured), actual = firstBinding(current)
     if (capsuleJson(actual.binding) !== capsuleJson(item.binding) || capsuleJson(actual.origin) !== capsuleJson(item.origin)
       || actual.originalBytes !== item.originalBytes) return requiredDagInvalid('真实原SQL要求/原件身份变化')
-    originals.push(item)
-  }
+    return item
+  })
   if (originals.length !== 2 || capsuleJson(nodeFrom(originals[0], originals[1])) !== capsuleJson(entry.file.node)
     || completeInputs(originals[0], originals[1]).totalOriginalBytes !== entry.totalOriginalBytes) return requiredDagInvalid('私有完整两侧原件集合不闭合')
 }
@@ -209,12 +224,12 @@ export async function extractRequiredRootKnowledgeMaterial(handle: CertifiedRequ
   if (!entry) return requiredDagInvalid('v2 K提取不是Main完整真实required-DAG句柄')
   assertRequiredSavedStructure(entry)
   await fresh(entry)
-  const capsuleBindings = requiredMaterialBindings(entry), inputs: CertifiedCapsuleKnowledge[] = []
-  for (const input of entry.inputs.values()) {
+  const capsuleBindings = requiredMaterialBindings(entry)
+  const inputs: CertifiedCapsuleKnowledge[] = await settledRequiredInputMap([...entry.inputs.values()], async input => {
     const captured = await extractCertifiedDurableSqlCapsuleKnowledge(input.capsule), payload = await readCertifiedCapsuleKnowledge(captured)
     if (capsuleJson(payload.capsule) !== capsuleJson(requiredBareCapsule(input.binding.capsule))) return requiredDagInvalid('typed payload不属于真实qualified v2原件')
-    inputs.push(captured)
-  }
+    return captured
+  })
   const union = await unionCertifiedCapsuleKnowledge(inputs), diagnostic = await readCertifiedKnowledgeUnion(union)
   assertRequiredUnion(capsuleBindings, diagnostic)
   await fresh(entry)
@@ -263,4 +278,36 @@ export function assertRequiredRootKnowledgeArtifactsFreshNow(handle: RequiredRoo
   assertRequiredSqlDagNodeFileNow(entry.profileRoot, entry.file)
   for (const input of entry.inputs.values()) assertRequiredCapsuleSeal(entry, input, readCertifiedDurableSqlCapsuleNow(input.capsule))
   assertRequiredSqlDagNodeFileNow(entry.profileRoot, entry.file)
+}
+
+// Fixed bundle source seam. This module never imports bundle FS/read owners.
+import { originBundleExpectedFiles, originBundleNodePath, originBundleDescriptorHash, validateFirstOriginBundleDescriptor,
+  type FirstOriginBundleDescriptor } from './restore-knowledge-origin-bundle-model'
+
+export interface OwnedRequiredRootBundleSource { readonly kind: 'owned-required-root-bundle-source' }
+const requiredBundleSources = new WeakMap<OwnedRequiredRootBundleSource, RequiredRootKnowledgeMaterial>()
+/** Caller-selected paths/maps/namespace claims cannot mint this source. */
+export async function captureRequiredRootBundleSource(material: RequiredRootKnowledgeMaterial): Promise<OwnedRequiredRootBundleSource> {
+  await readRequiredRootKnowledgeMaterial(material)
+  const handle: OwnedRequiredRootBundleSource = Object.freeze({ kind: 'owned-required-root-bundle-source' })
+  requiredBundleSources.set(handle, material)
+  return handle
+}
+/** Only file data, never a permit. The exporter accepts the private source
+ * identity above and reruns this fixed full-map read before/after copying. */
+export async function readRequiredRootBundleSource(handle: OwnedRequiredRootBundleSource) {
+  const material = requiredBundleSources.get(handle)
+  if (!material) return requiredDagInvalid('不是完整真实required material的bundle source私有句柄')
+  const value = await readRequiredRootKnowledgeMaterial(material), { entry } = requiredMaterialEntry(material)
+  const source = entry.inputs.get(requiredDagCapsuleLocator(entry.file.node.source)), current = entry.inputs.get(requiredDagCapsuleLocator(entry.file.node.current))
+  if (!source || !current || entry.inputs.size !== 2) return requiredDagInvalid('bundle source缺完整原件闭包')
+  const sourceSeal = await readCertifiedDurableSqlCapsule(source.capsule), currentSeal = await readCertifiedDurableSqlCapsule(current.capsule)
+  const descriptor: FirstOriginBundleDescriptor = validateFirstOriginBundleDescriptor({ kind: 'restore-prepared-first-origin-bundle', version: 1,
+    readerVersion: 'knowbook-prepared-origin-bundle-v1', material: 'durable-sql-only', root: value.root, nodeText: capsuleJson(value.node),
+    sourceManifestText: capsuleJson(sourceSeal.manifest), currentManifestText: capsuleJson(currentSeal.manifest) })
+  const files = originBundleExpectedFiles(descriptor).map(file => ({ ...file,
+    sourcePath: file.path === originBundleNodePath(value.root) ? entry.file.path
+      : entry.profileRoot + sep + file.path.slice('catalog/'.length).split('/').join(sep) }))
+  await fresh(entry)
+  return freezeCapsuleValue({ profileRoot: entry.profileRoot, descriptor, descriptorHash: originBundleDescriptorHash(descriptor), files })
 }
