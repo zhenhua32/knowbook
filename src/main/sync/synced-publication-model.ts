@@ -9,7 +9,7 @@ import { validateSyncedWorkspaceGraph } from '../../shared/syncedBlockGraph'
 import { parseDatabaseViewPayload, mapDatabaseViewReferences, serializeDatabaseViewPayload } from '../../shared/databaseViewBlock'
 import { parseStrictJson } from '../../shared/strictJson'
 import { SYNC_TABLE_COLUMNS, SYNC_TABLES, type SyncDatabases, type SyncRow, type SyncTable } from './model'
-import { collectSyncedBindingOccurrences } from '../database/synced-block-links'
+import { collectSyncedBindingOccurrences } from './synced-binding-occurrences'
 
 export const PUBLICATION_RECORD_MAX_BYTES = 16 * 1024 * 1024
 export type SyncedPublicationErrorCode = 'invalid' | 'unsupported' | 'unavailable' | 'asset' | 'spool' | 'transport' | 'database'

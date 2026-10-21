@@ -39,7 +39,11 @@ export function readInitialIncomingBaseline(db: Database.Database, request: Init
 /** Public callers retain the original admission before reading raw facts. */
 function captureInitialIncomingWorkspace(db: Database.Database) {
   assertSyncedPersistentPublicationReadAdmissionOwned(db)
-  return readRawInitialIncomingWorkspaceOwned(db)
+  const facts = readRawInitialIncomingWorkspaceOwned(db)
+  // Preserve the original incoming capability restriction. A raw historical
+  // template name is not a retained identity or an incoming ownership permit.
+  if (facts.unregisteredTemplateBlocks.size) return publicationInvalid('本机历史块缺少原保留 ledger；不会重新回填或抢占。')
+  return facts
 }
 
 /** Request-free strict workspace read. No incoming baseline/receipt lookup or write authority. */

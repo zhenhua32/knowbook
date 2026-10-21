@@ -13,7 +13,7 @@ import { collectSyncedMarkdownAssetDestinations, parseSyncedPortableAssetUri, bu
 import { validateSyncedWorkspaceGraph, type SyncedValidatedGraph } from '../../shared/syncedBlockGraph'
 import { isSyncedUuid, parseSyncedBlockPayload, validateSyncedGroupWire, validateSyncedHostForest,
   SYNCED_MAX_BLOCKS, SYNCED_PROJECTED_MAX_BYTES } from '../../shared/syncedBlockValidation'
-import { collectSyncedBindingOccurrences } from '../database/synced-block-links'
+import { collectSyncedBindingOccurrences } from '../sync/synced-binding-occurrences'
 import { DATABASE_SYSTEM_FIELD_IDS } from '../../shared/database-workspace'
 import { collectDatabaseViewConfigFieldIds, parseDatabaseViewPayload } from '../../shared/databaseViewBlock'
 import { validateFieldValues, strictSavedViewConfig, backupScope, type MissingReferences, type DeletionPolicy } from './v2-format'

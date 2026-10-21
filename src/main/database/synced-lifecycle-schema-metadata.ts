@@ -168,6 +168,11 @@ const required = [
 ]
 const comparable = (sql: string): string => sql.replace(/\s+/g, ' ').trim().replace(/;$/, '')
 
+/** Structural inventory only; its success is not historical evidence admission. */
+export function syncedLifecycleSchemaObjectNames(): ReadonlyArray<Readonly<{ name: string; type: string }>> {
+  return Object.freeze(required.map(({ name, type }) => Object.freeze({ name, type })))
+}
+
 /** Read-only structural leaf: exact original DDL plus its original table FK
  * checks. It performs no lifecycle coverage, observation/anchor admission,
  * effective knowledge, public group read, repair, version change or writes.

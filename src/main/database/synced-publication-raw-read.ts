@@ -8,7 +8,7 @@ import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-re
 import type { SyncedLogicalDeletionProof } from '../sync/synced-logical-deletion-model'
 import type { SyncedLogicalDeletionChoiceProof } from '../sync/synced-logical-deletion-choice-model'
 import { readStrictHostDocument } from './synced-host-document-read'
-import { assertSyncedStoredBindings } from './synced-block-links'
+import { assertSyncedStoredBindings } from './synced-stored-binding-read'
 import { SYNC_TABLE_COLUMNS, SYNC_TABLES, type SyncDatabases } from '../sync/model'
 import { publicationHash, publicationInvalid, publicationJson, publicationCompare, validateInitialRecord,
   mapPublicationCatalog, validatePublicationCatalog, type InitialPublicationRecord } from '../sync/synced-publication-model'
@@ -37,8 +37,11 @@ function wire(snapshot: SyncedGroupSnapshot): SyncedGroupWire {
  * public capability readers retain their own admission before calling here. */
 export function readRawSyncedPersistentPublicationSnapshotOwned(db: Database.Database): SyncedPublicationLocalSnapshot {
   if (!db.open || !db.inTransaction) return publicationInvalid('完整持久图读取须位于调用方自有一致事务。')
+  const version = db.pragma('user_version', { simple: true })
+  if (version !== 26 && version !== 27) return publicationInvalid('原始同步图仅识别准确的schema26或27。')
+  const lifecycle = version === 27
   const context = identity(db)
-  const deleted = assertSyncedLogicalDeletionRecords(db)
+  const deleted = lifecycle ? assertSyncedLogicalDeletionRecords(db) : new Map()
   const ids = (db.prepare('SELECT id FROM synced_groups ORDER BY id').all() as Array<{ id: unknown }>).map(row => {
     if (!isSyncedUuid(row.id)) return publicationInvalid('真实同步组身份无效。'); return row.id
   })
@@ -46,7 +49,7 @@ export function readRawSyncedPersistentPublicationSnapshotOwned(db: Database.Dat
   const groups: SyncedPublicationLocalSnapshot['groups'] = [], snapshots: SyncedGroupSnapshot[] = []
   for (let from = 0; from < ids.length; from += SYNCED_MAX_BLOCKS) {
     const batch = ids.slice(from, from + SYNCED_MAX_BLOCKS)
-    for (const [id, item] of readSyncedGroupLifecycles(db, batch)) life.set(id, item)
+    if (lifecycle) for (const [id, item] of readSyncedGroupLifecycles(db, batch)) life.set(id, item)
     const scope = readRawSyncedWorkspaceScopeOwned(db), rawGroups = readRawSyncedGroupSnapshotsOwned(db, batch)
     const read = { workspaceScope: scope, items: batch.map(groupId => {
       const snapshot = rawGroups.get(groupId)
@@ -55,7 +58,7 @@ export function readRawSyncedPersistentPublicationSnapshotOwned(db: Database.Dat
     if (read.workspaceScope !== context.workspaceScope) return publicationInvalid('组列表不属于原 workspace。')
     for (const item of read.items) {
       if (item.status === 'ready') {
-        if (life.get(item.snapshot.groupId)?.state !== 'active') return publicationInvalid('活动组与 lifecycle 不一致。')
+        if (lifecycle && life.get(item.snapshot.groupId)?.state !== 'active') return publicationInvalid('活动组与 lifecycle 不一致。')
         assertSyncedStoredBindings(db, item.snapshot.origin, item.snapshot.blocks, item.snapshot.bindings)
         const body = wire(item.snapshot)
         groups.push({ wire: body, revision: item.snapshot.revision, topologyRevision: item.snapshot.topologyRevision, semanticHash: syncedLifecycleSemanticHash(body) })
@@ -106,7 +109,9 @@ export function readRawSyncedPersistentPublicationSnapshotOwned(db: Database.Dat
     b.kind === 'databases' ? 'databases' : b.kind === 'document' ? 'doc:' + b.id : 'group:' + b.id))
   groups.sort((a, b) => publicationCompare(a.wire.id, b.wire.id))
   validatePublicationCatalog(mapPublicationCatalog(orderedRecords, setting.value))
-  const lifecycleContent = ids.map(id => { const item = life.get(id)!; return { groupId: id, creationId: item.creationId, state: item.state } })
+  // A legacy raw graph carries no claim of never-published or lifecycle state.
+  // Schema27 keeps its exact original fingerprint preimage and array order.
+  const lifecycleContent = lifecycle ? ids.map(id => { const item = life.get(id)!; return { groupId: id, creationId: item.creationId, state: item.state } }) : []
   const localFingerprint = publicationHash(publicationJson({ ...context, catalogId: setting.value, records: orderedRecords, groups,
     documentFacts, actualOwners, actualInstances, lifecycleContent, ...(deleted.size ? { deleted: [...deleted].map(([key, proof]) => [key, publicationHash(publicationJson(proof))]) } : {}) }))
   return { ...context, localFingerprint, catalogId: setting.value, records: orderedRecords, groups, ...(deleted.size ? { deletions: [...deleted.values()] } : {}) }

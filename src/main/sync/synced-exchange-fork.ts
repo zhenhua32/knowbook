@@ -8,7 +8,7 @@ import { collectDocumentMarkdownLinks, getMarkdownHeadingTargets, type MarkdownH
 import { parseWikiReference, resolveWikiDocument } from '../../shared/markdownWiki'
 import { mapDatabaseViewReferences, parseDatabaseViewPayload } from '../../shared/databaseViewBlock'
 import { captureSyncedCreateSourceFacts, UnsupportedSyncedHostCreate } from '../database/synced-host-create-plan'
-import { collectSyncedBindingOccurrences } from '../database/synced-block-links'
+import { collectSyncedBindingOccurrences } from './synced-binding-occurrences'
 import { assertExchangeData } from './synced-exchange-model'
 import { publicationCompare, publicationHash, publicationInvalid, publicationJson, SyncedPublicationError } from './synced-publication-model'
 import { syncedProtocol5RecordKey, validateSyncedProtocol5Snapshot, type SyncedProtocol5Record, type SyncedProtocol5Snapshot } from './synced-protocol5-model'

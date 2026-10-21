@@ -1,10 +1,12 @@
 import type Database from 'better-sqlite3'
-import type { SyncedBindingClaim, SyncedBindingKey, SyncedCanonicalWire, SyncedGroupSnapshot, SyncedLinkBinding, SyncedLinkTarget, SyncedOriginV1 } from '../../shared/synced-blocks'
-import { collectDocumentMarkdownLinks, getMarkdownHeadingTargets } from '../../shared/markdownLinkMaintenance'
+import type { SyncedBindingClaim, SyncedCanonicalWire, SyncedGroupSnapshot, SyncedLinkBinding, SyncedLinkTarget, SyncedOriginV1 } from '../../shared/synced-blocks'
+import { getMarkdownHeadingTargets } from '../../shared/markdownLinkMaintenance'
 import { parseLocalMarkdownUrl, resolveMarkdownDocumentPath } from '../../shared/markdownLinks'
 import { findWikiHeading, parseWikiReference, resolveWikiDocument, wikiDocumentPaths } from '../../shared/markdownWiki'
-import { isSyncedUuid, SyncedValidationError, validateSyncedBindings, validateSyncedCanonicalWire, validateSyncedOrigin } from '../../shared/syncedBlockValidation'
+import { isSyncedUuid, SyncedValidationError, validateSyncedCanonicalWire, validateSyncedOrigin } from '../../shared/syncedBlockValidation'
 import { BlockIdentityRepository } from './block-identities'
+import { assertSyncedStoredBindings, checkStoredTarget, readSyncedBindingSources, type SyncedVerifiedBindingSource } from './synced-stored-binding-read'
+export { assertSyncedStoredBindings, readSyncedBindingSources, type SyncedVerifiedBindingSource } from './synced-stored-binding-read'
 import { decodeMarkdownFormat } from '../../shared/markdownFormat'
 import { validateSyncedBindingClaims } from '../../shared/syncedBlockInputs'
 import type { SyncedStableBlockDraft } from '../../shared/synced-blocks'
@@ -12,78 +14,18 @@ import { captureSyncedCreateSourceFacts, UnsupportedSyncedHostCreate } from './s
 import type { CreateCapturedBinding } from './synced-host-create-codec'
 import type { SyncedBothOwnerSourceLinks, SyncedBothSourceKey } from '../sync/synced-exchange-both-types'
 
-type Occurrence = Omit<SyncedLinkBinding, 'target'> & { url: string }
+import { parseSyncedBindingOccurrences as occurrences, type SyncedBindingOccurrence as Occurrence } from '../sync/synced-binding-occurrences'
+export { collectSyncedBindingOccurrences } from '../sync/synced-binding-occurrences'
 type DocumentRow = { id: string; path: string; title: string }
 type ProspectiveHost = { ids: ReadonlySet<string>; blocks: readonly SyncedStableBlockDraft[];
   headings?: { slug: Map<string, { slug: string; text: string }>; text: Map<string, { slug: string; text: string }> } }
 function prospectiveHeadingTextKey(value: string): string { return value.normalize('NFC').toLowerCase() }
 function fail(message: string): never { throw new SyncedValidationError('binding', message) }
 const key = (value: Omit<SyncedLinkBinding, 'target'>) => JSON.stringify([value.blockId, value.from, value.to, value.raw, value.syntax])
-export interface SyncedVerifiedBindingSource { key: SyncedBindingKey; url: string; target: SyncedLinkTarget }
+
 export type SyncedBindingTicketResolver = (ticketId: string, entryId: string) => SyncedVerifiedBindingSource
 
-/** Definitions are captured at their actual destination, never at each use.
- * The whole forest parser decides which references are active. */
-function occurrences(origin: SyncedOriginV1, blocks: readonly SyncedCanonicalWire[]): Occurrence[] {
-  const result: Occurrence[] = []
-  for (const link of collectDocumentMarkdownLinks([...blocks])) {
-    if (link.kind === 'image') continue
-    if (!link.blockId || link.end < link.start) fail('实际链接无法映射到 canonical 块范围。')
-    const wiki = link.kind === 'wiki'
-    if (!wiki && !resolveMarkdownDocumentPath(origin.pathAtCreation, link.url)) continue
-    const block = blocks[link.blockIndex]
-    result.push({ blockId: link.blockId, from: link.start, to: link.end,
-      raw: block.content.slice(link.start, link.end), syntax: wiki ? 'wiki' : 'markdown', url: link.url })
-  }
-  return result
-}
 
-function checkStoredTarget(db: Database.Database, target: SyncedLinkTarget, plannedGroupId?: string): void {
-  if (target.kind !== 'block') return
-  // Captured target state/owner hints can outlive a rename, deletion or move.
-  // Only the stable ID is authoritative. Never replace it from the old URL.
-  const identities = new BlockIdentityRepository(db)
-  const identity = identities.get(target.id)
-  const owner = identities.resolveLiveOwner(target.id)
-  if (!identity) {
-    if (plannedGroupId && target.documentId === null && target.state === 'live'
-      && db.prepare('SELECT 1 FROM synced_groups WHERE id=?').get(plannedGroupId)) return
-    fail('已知块目标缺少保留身份；不能按名称重新绑定。')
-  }
-  if (plannedGroupId && (identity.owner.kind !== 'group' || identity.owner.id !== plannedGroupId)) {
-    fail('候选 canonical 目标身份仍由其它归属保留。')
-  }
-  if (owner?.kind === 'group' && !db.prepare('SELECT 1 FROM synced_groups WHERE id=?').get(owner.id)) {
-    fail('已知 canonical 目标缺少真实同步组。')
-  }
-}
-
-/** Validate a trusted journal/persisted side without reinterpreting its targets
- * against today's paths. Historical state hints are not executable resolution. */
-export function assertSyncedStoredBindings(db: Database.Database, origin: SyncedOriginV1,
-  blocks: readonly SyncedCanonicalWire[], bindings: readonly SyncedLinkBinding[], plannedGroupId?: string): void {
-  readSyncedBindingSources(db, origin, blocks, bindings, plannedGroupId)
-}
-
-/** Only actual whole-forest parser destinations can become copy sources.
- * Source tickets call this without the candidate-only plannedGroupId exception. */
-export function readSyncedBindingSources(db: Database.Database, origin: SyncedOriginV1,
-  blocks: readonly SyncedCanonicalWire[], bindings: readonly SyncedLinkBinding[], plannedGroupId?: string): SyncedVerifiedBindingSource[] {
-  const checkedOrigin = validateSyncedOrigin(origin), checkedBlocks = validateSyncedCanonicalWire(blocks)
-  const checked = validateSyncedBindings(bindings, checkedBlocks), parsed = occurrences(checkedOrigin, checkedBlocks)
-  const actual = new Map(parsed.map(item => [key(item), item]))
-  const candidateIds = new Set(checkedBlocks.map(block => block.id))
-  if (actual.size !== parsed.length || checked.length !== actual.size) fail('链接绑定未准确覆盖实际 Markdown 目的地。')
-  const seen = new Set<string>()
-  return checked.map(binding => {
-    const identity = key(binding)
-    if (!actual.has(identity) || seen.has(identity)) fail('链接绑定范围与实际语法不一致。')
-    seen.add(identity)
-    checkStoredTarget(db, binding.target, plannedGroupId && binding.target.kind === 'block' && candidateIds.has(binding.target.id) ? plannedGroupId : undefined)
-    const { target, ...range } = binding
-    return { key: range, target, url: actual.get(identity)!.url }
-  })
-}
 
 class UnprovedSyncedDocumentHeading extends SyncedValidationError {
   constructor() { super('binding', 'prospective heading 仍需完整同步投影，保留原稿。') }
@@ -322,9 +264,4 @@ export function applySyncedGroupBindingClaims(db: Database.Database, before: Syn
   const bindings = actual.map(item => claimed.get(key(item))!)
   assertSyncedStoredBindings(db, before.origin, checked, bindings, before.groupId)
   return bindings
-}
-
-/** Pure original-Key parser closure only; no target lookup or Main source authority. */
-export function collectSyncedBindingOccurrences(origin: SyncedOriginV1, blocks: readonly SyncedCanonicalWire[]): Array<Omit<SyncedLinkBinding, 'target'> & { url: string }> {
-  return occurrences(validateSyncedOrigin(origin), validateSyncedCanonicalWire(blocks))
 }

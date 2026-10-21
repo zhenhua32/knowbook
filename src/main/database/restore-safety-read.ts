@@ -108,6 +108,9 @@ function inspectRestoreConnection(db: Sqlite.Database, ordinary: boolean): Resto
   return {schemaVersion:version,workspaceScope,recoveryEpoch,documentVersions:[...versions],documentCas}
 }
 export function inspectOrdinaryRestoreConnection(db: Sqlite.Database): RestoreDatabaseInspection { return inspectRestoreConnection(db,true) }
+/** Main capsule structural/receipt inspection. This does not apply the ordinary
+ * empty-knowledge admission or grant any install/publication capability. */
+export function inspectRawRestoreConnection(db: Sqlite.Database): RestoreDatabaseInspection { return inspectRestoreConnection(db,false) }
 export function inspectOrdinaryRestoreDatabase(path: string): RestoreDatabaseInspection {
   let db: Sqlite.Database | undefined
   try {

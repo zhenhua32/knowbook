@@ -337,6 +337,15 @@ const requiredTables = Array.from(tables.matchAll(/CREATE TABLE IF NOT EXISTS ([
   match => ({ name: match[1], sql: match[0] }))
 const requiredTriggers = Array.from(guards.matchAll(/CREATE TRIGGER IF NOT EXISTS ([a-z_]+) [\s\S]*?\nEND;/g),
   match => ({ name: match[1], sql: match[0] }))
+/** Original declared object names for a raw capsule's closed namespace scan.
+ * They come from the same DDL used by the installer, never a caller allow-list. */
+export function syncedBlockSchemaObjectNames(): ReadonlyArray<Readonly<{ name: string; type: string }>> {
+  return Object.freeze([
+    ...requiredTables.map(({ name }) => Object.freeze({ name, type: 'table' })),
+    ...requiredTriggers.map(({ name }) => Object.freeze({ name, type: 'trigger' })),
+    ...Array.from(tables.matchAll(/CREATE INDEX IF NOT EXISTS ([a-z_]+) [^;]+;/g), match => Object.freeze({ name: match[1], type: 'index' }))
+  ])
+}
 function comparableSql(sql: string): string {
   return sql.replace(/\bIF NOT EXISTS\s+/gi, '').replace(/\s+/g, ' ').trim().replace(/;$/, '')
 }

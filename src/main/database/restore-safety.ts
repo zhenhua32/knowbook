@@ -12,6 +12,9 @@ import { RESTORE_FENCE, RESTORE_PENDING, RESTORE_SAFE_MODE, assertNoRestorePriva
   canonicalRestoreRoot, copyRestoreInventory, readRestoreJson, readRestoreText, restoreDirectory, restoreExists, restoreFileDigest,
   restoreInventory, restorePaths, syncRestoreDirectory, syncRestoreFile, writeRestoreJson } from './restore-safety-files'
 import { readRestoreJournalVersion } from './restore-safety-files'
+import { prepareDurableSqlCapsuleOriginal } from './restore-knowledge-capsule-files'
+import { certifyDurableSqlCapsuleIfSupported, readCertifiedDurableSqlCapsule,
+  type CertifiedDurableSqlCapsule } from './restore-knowledge-capsule-read'
 
 export interface ControlledRestoreInput {
   userDataRoot:string; backupPath:string; stopProcesses?:typeof stopDatabaseRestoreProcesses; beforeReplace?:()=>Promise<void>
@@ -199,7 +202,45 @@ export async function recoverControlledDatabaseRestore(userDataRoot:string,recov
   try{return await dispatchOwnedRecovery(root,recoverLegacy)}finally{release()}
 }
 
-async function sourceStage(source:string,p:ReturnType<typeof restorePaths>):Promise<{sha256:string;schemaVersion:number;authority:{workspaceScope:string|null;recoveryEpoch:string|null}}>{
+/** Evidence capture only. Legacy ordinary admission still decides whether the
+ * existing restore may proceed; a capsule never authorizes synced installation. */
+async function captureRestoreSqlOriginal(p:ReturnType<typeof restorePaths>,sealedDirectory:string,label:'source'|'current'):Promise<CertifiedDurableSqlCapsule|null>{
+  const original=await prepareDurableSqlCapsuleOriginal({profileRoot:p.root,recoveryDirectory:p.recovery,sealedDirectory,capsuleId:randomUUID(),label})
+  let result:Awaited<ReturnType<typeof certifyDurableSqlCapsuleIfSupported>>
+  try{result=await certifyDurableSqlCapsuleIfSupported(original)}catch(error){
+    if(error&&typeof error==='object'&&'code'in error&&typeof error.code==='string'
+      &&(error.code==='SQLITE_NOTADB'||error.code.startsWith('SQLITE_CORRUPT')))throw new RestoreUnreadableDatabase(error)
+    throw error
+  }
+  if(result.status==='unsupported-schema'){
+    await writeRestoreJson(join(p.recovery,label+'-durable-sql.json'),{status:result.status,schemaVersion:result.schemaVersion,
+      material:'durable-sql-only',certifiedForInstallation:false},p.root,true)
+    return null
+  }
+  const seal=await readCertifiedDurableSqlCapsule(result.capsule)
+  await writeRestoreJson(join(p.recovery,label+'-durable-sql.json'),{status:'certified',manifestPath:seal.manifestPath,
+    manifestHash:seal.manifestHash,material:seal.manifest.material,certifiedForInstallation:false},p.root,true)
+  return result.capsule
+}
+async function sourceSqlInventory(source:string):Promise<RestoreRawFile[]>{
+  const result:RestoreRawFile[]=[]
+  for(const [index,name]of RESTORE_FILES.entries()){
+    const path=source+['','-wal','-shm'][index]
+    await assertRestorePath(path)
+    if(!await restoreExists(path)){result.push({name,present:false,bytes:0,sha256:null});continue}
+    const actual=await restoreFileDigest(path)
+    result.push({name,present:true,...actual})
+  }
+  return result
+}
+async function assertNoActiveRestoreRollbackJournal(database:string):Promise<void>{
+  const journal=database+'-journal'
+  if(!await restoreExists(journal))return
+  await assertRestorePath(journal)
+  const info=await lstat(journal)
+  if(!info.isFile()||info.size>0)return restoreFail('原数据库含非空或非普通 rollback journal；三文件SQL capsule不能静默遗漏它。')
+}
+async function sourceStage(source:string,p:ReturnType<typeof restorePaths>):Promise<{sha256:string;schemaVersion:number;authority:{workspaceScope:string|null;recoveryEpoch:string|null};capsule:CertifiedDurableSqlCapsule|null;inventory:RestoreRawFile[]}>{
   await assertRestorePath(source)
   const identity=await lstat(source)
   if(!identity.isFile()||identity.isSymbolicLink())return restoreFail('备份不是独立普通SQLite文件。')
@@ -211,11 +252,25 @@ async function sourceStage(source:string,p:ReturnType<typeof restorePaths>):Prom
     if(identity.ino!==0&&identity.ino===other.ino&&(identity.dev===other.dev||process.platform==='win32'&&(identity.dev===0||other.dev===0)))return restoreFail('备份与profile-owned原件是同一实际file/hardlink。')
   }
   if(await restoreExists(source+'-wal')&&(await lstat(source+'-wal')).size>0)return restoreFail('备份含活动WAL。')
-  const original=await restoreFileDigest(source)
+  await assertNoActiveRestoreRollbackJournal(source)
+  const sourceInventory=await sourceSqlInventory(source),original=sourceInventory[0]
+  if(!original.present||original.sha256===null)return restoreFail('备份原DB缺失。')
+  if(sourceInventory[1].bytes>0)return restoreFail('备份含活动WAL。')
   await copyFile(source,p.stage,constants.COPYFILE_EXCL)
   if((await restoreFileDigest(p.stage)).sha256!==original.sha256||(await restoreFileDigest(source)).sha256!==original.sha256)return restoreFail('复制期间备份发生变化。')
+  // Preserve the untouched source before SQLite first opens the migration stage.
+  const sourceOriginal=join(p.recovery,'source-original')
+  await restoreDirectory(sourceOriginal,p.root,true)
+  for(const [index,item]of sourceInventory.entries())if(item.present){
+    const target=join(sourceOriginal,item.name)
+    await copyFile(source+['','-wal','-shm'][index],target,constants.COPYFILE_EXCL);await syncRestoreFile(target)
+  }
+  await syncRestoreDirectory(sourceOriginal)
+  await assertRestoreInventory(sourceOriginal,sourceInventory)
+  if(restoreJson(await sourceSqlInventory(source))!==restoreJson(sourceInventory))return restoreFail('源原三文件在封存期间变化。')
+  const capsule=await captureRestoreSqlOriginal(p,sourceOriginal,'source')
   const sourceDb=inspectOrdinaryRestoreDatabase(p.stage)
-  return {sha256:original.sha256,schemaVersion:sourceDb.schemaVersion,authority:{workspaceScope:sourceDb.workspaceScope,recoveryEpoch:sourceDb.recoveryEpoch}}
+  return {sha256:original.sha256,schemaVersion:sourceDb.schemaVersion,authority:{workspaceScope:sourceDb.workspaceScope,recoveryEpoch:sourceDb.recoveryEpoch},capsule,inventory:sourceInventory}
 }
 function fixedDocumentBoundary(versions:readonly string[]):string{
   const known=new Set(versions);let next=Date.now(),value=new Date(next).toISOString()
@@ -238,9 +293,10 @@ export async function restoreControlledDatabase(input:ControlledRestoreInput,leg
       const identities=await legacy.readCurrentIdentities(root,p.recovery)
       stoppedPids=await(input.stopProcesses??stopDatabaseRestoreProcesses)({userDataRoot:root,identities})
       await assertNoRestorePrivateSyncFiles(root)
+      await assertNoActiveRestoreRollbackJournal(p.database)
       const inventory=await restoreInventory(p.storage)
       await copyRestoreInventory(p.storage,p.safety,inventory,root)
-      let current:RestoreCurrent|undefined,currentVersions:string[]=[],currentInspection:RestoreDatabaseInspection|undefined
+      let current:RestoreCurrent|undefined,currentVersions:string[]=[],currentInspection:RestoreDatabaseInspection|undefined,currentCapsule:CertifiedDurableSqlCapsule|null=null
       const parentExists=await restoreExists(p.fence)
       let parent:RestoreFence|null=null,parentRaw:string|null=null
       if(parentExists){parentRaw=await readRestoreText(p.fence);parent=validateRestoreFence(await readRestoreJson(p.fence));await lineage(root,parent)}
@@ -252,7 +308,7 @@ export async function restoreControlledDatabase(input:ControlledRestoreInput,leg
         const inspectDirectory=join(p.recovery,'safety-inspection')
         await copyRestoreInventory(p.safety,inspectDirectory,inventory,root)
         const file=join(inspectDirectory,'knowbook.db')
-        try{currentInspection=inspectOrdinaryRestoreDatabase(file)}catch(error){
+        try{currentCapsule=await captureRestoreSqlOriginal(p,p.safety,'current');currentInspection=inspectOrdinaryRestoreDatabase(file)}catch(error){
           if(parent||!(error instanceof RestoreUnreadableDatabase))throw error
           current={classification:'legacy-disaster-unverified',schemaVersion:null,workspaceScope:null,recoveryEpoch:null,inventory}
         }
@@ -285,13 +341,25 @@ export async function restoreControlledDatabase(input:ControlledRestoreInput,leg
         createdAt:acceptedAt,source:{path:resolve(input.backupPath),sha256:source.sha256,schemaVersion:source.schemaVersion},current,candidateAuthority:source.authority,
         parentFenceHash:parentRaw===null?null:rawHash(parentRaw),receipt,receiptHash:restoreHash(receipt),stagedSha256})
       await assertRestoreInventory(p.storage,inventory)
+      if(source.capsule)await readCertifiedDurableSqlCapsule(source.capsule)
+      if(currentCapsule)await readCertifiedDurableSqlCapsule(currentCapsule)
       if((await restoreFileDigest(input.backupPath)).sha256!==source.sha256)return restoreFail('源备份在维护期间变化。')
+      if(restoreJson(await sourceSqlInventory(input.backupPath))!==restoreJson(source.inventory))return restoreFail('源原三文件在维护期间变化。')
+      await assertNoActiveRestoreRollbackJournal(input.backupPath)
+      await assertNoActiveRestoreRollbackJournal(p.database)
       await writeRestoreJson(p.intent,intent,root,true)
       await writeRestoreJson(p.fence,fenceFor(intent,'prepared'),root)
       await writeRestoreJson(p.journal,journalFor(intent,'moving'),root);moving=true
       for(const file of inventory)if(file.present)await rename(join(p.storage,file.name),join(p.original,file.name))
       await syncRestoreDirectory(p.storage);await syncRestoreDirectory(p.original)
       await input.beforeReplace?.()
+      if(source.capsule)await readCertifiedDurableSqlCapsule(source.capsule)
+      if(currentCapsule)await readCertifiedDurableSqlCapsule(currentCapsule)
+      if(restoreJson(await sourceSqlInventory(input.backupPath))!==restoreJson(source.inventory))return restoreFail('源原三文件在安装前变化。')
+      await assertNoActiveRestoreRollbackJournal(input.backupPath)
+      await assertNoActiveRestoreRollbackJournal(p.database)
+      await assertRestoreInventory(p.original,inventory)
+      for(const name of RESTORE_FILES)if(await restoreExists(join(p.storage,name)))return restoreFail('安装前storage出现非原分配数据库文件。')
       await rename(p.stage,p.database);await syncRestoreDirectory(p.storage);await syncRestoreDirectory(p.recovery)
       await verifyInstalled(root,intent,true);installed=true
       await finishInstalled(root,intent,stoppedPids)

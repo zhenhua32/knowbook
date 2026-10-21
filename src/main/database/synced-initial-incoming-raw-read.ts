@@ -11,6 +11,9 @@ export interface RawInitialIncomingWorkspaceFacts {
   snapshot: SyncedPublicationLocalSnapshot
   identities: Map<string, InitialIncomingIdentity>; historyDocuments: Set<string>; historyBlocks: Set<string>; groupIds: Set<string>
   rawIdentities: InitialIncomingIdentity[]; historyRows: unknown[]
+  /** Ordinary templates created after schema26 legitimately have no ledger.
+   * Record their occupied names without inventing an ownership reservation. */
+  unregisteredTemplateBlocks: Set<string>
 }
 const id = (value: unknown): string => isSyncedBlockId(value) ? value : publicationInvalid('incoming 本机历史/身份中的稳定 ID 无效。')
 function json(source: string): unknown { return parseInitialIncomingStored(source) }
@@ -32,6 +35,7 @@ export function readRawInitialIncomingWorkspaceOwned(db: Database.Database): Raw
     identities.set(row.id, row)
   }
   const historyDocuments = new Set<string>(), historyBlocks = new Set<string>(), historyRows: unknown[] = []
+  const unregisteredTemplateBlocks = new Set<string>()
   for (const proof of snapshot.deletions ?? []) if (proof.before.kind === 'document') historyDocuments.add(proof.before.id)
   for (const row of rawIdentities) if (row.last_owner_kind === 'document') historyDocuments.add(row.last_owner_id)
   const document = (value: unknown): string => { const key = id(value); historyDocuments.add(key); return key }
@@ -94,7 +98,18 @@ export function readRawInitialIncomingWorkspaceOwned(db: Database.Database): Raw
   }
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='document_templates'").get()) {
     const templates = db.prepare('SELECT id,blocks_json FROM document_templates ORDER BY id').all() as Array<{ id: string; blocks_json: string }>
-    historyRows.push(templates); for (const row of templates) content({ blocks: json(row.blocks_json) })
+    historyRows.push(templates)
+    for (const row of templates) {
+      const blocks = json(row.blocks_json)
+      if (!Array.isArray(blocks)) return publicationInvalid('incoming 本机历史正文损坏。')
+      for (const item of blocks) {
+        if (!syncedPlainRecord(item)) return publicationInvalid('incoming 历史块不是对象。')
+        if (item.id === undefined) continue
+        const key = id(item.id)
+        if (identities.has(key)) block(key)
+        else { historyBlocks.add(key); unregisteredTemplateBlocks.add(key) }
+      }
+    }
   }
   const restore = db.prepare('SELECT * FROM backup_restore_identities ORDER BY lineage,kind,source_database_id,source_id,state').all() as Array<{ kind: string; target_id: string }>
   historyRows.push(restore)
@@ -140,10 +155,12 @@ export function readRawInitialIncomingWorkspaceOwned(db: Database.Database): Raw
   }
   const pins = db.prepare('SELECT * FROM synced_group_pins ORDER BY group_id,kind,pin_id').all()
   historyRows.push(pins)
-  for (const table of ['synced_group_lifecycle', 'synced_group_retirements', 'synced_exposure_attempts', 'synced_group_exposure_members']) {
+  const lifecycleTables = db.pragma('user_version', { simple: true }) === 27
+    ? ['synced_group_lifecycle', 'synced_group_retirements', 'synced_exposure_attempts', 'synced_group_exposure_members'] : []
+  for (const table of lifecycleTables) {
     const rows = db.prepare('SELECT * FROM ' + table).all()
     historyRows.push(rows.sort((a, b) => publicationJson(a) < publicationJson(b) ? -1 : publicationJson(a) > publicationJson(b) ? 1 : 0))
   }
   const groupIds = new Set((db.prepare('SELECT id FROM synced_groups ORDER BY id').all() as Array<{ id: string }>).map(row => row.id))
-  return { snapshot, identities, historyDocuments, historyBlocks, groupIds, rawIdentities, historyRows }
+  return { snapshot, identities, historyDocuments, historyBlocks, groupIds, rawIdentities, historyRows, unregisteredTemplateBlocks }
 }
