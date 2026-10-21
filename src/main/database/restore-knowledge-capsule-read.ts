@@ -220,3 +220,73 @@ export function readCertifiedDurableSqlCapsuleNow(handle: CertifiedDurableSqlCap
   if (seal.manifestHash !== entry.manifestHash) return capsuleInvalid('同步witness原manifest身份变化')
   return seal
 }
+
+import { readRawPriorKnowledgeCoverageOwned } from './restore-knowledge-coverage-raw-read'
+import { rawPriorCoverageRequirementsHash, type RawPriorCoverageRequirements } from './restore-knowledge-coverage-model'
+import type { DurableSqlCapsuleFile } from './restore-knowledge-capsule-model'
+
+/** Actual raw SQL facts only. No namespace interpretation, accepted relation,
+ * empty-knowledge proof or current/effective transaction authority. */
+export interface CertifiedCapsulePriorCoverage { readonly kind: 'certified-capsule-prior-coverage' }
+export interface UnresolvedCertifiedCapsulePriorCoverage {
+  readonly kind: 'unresolved-certified-capsule-prior-coverage'; readonly version: 1
+  readonly capsule: { readonly operationId: string; readonly capsuleId: string; readonly manifestHash: string
+    readonly readerVersion: 'knowbook-durable-sql-v1' }
+  readonly originalFiles: readonly DurableSqlCapsuleFile[]
+  readonly requirements: RawPriorCoverageRequirements; readonly rawRequirementsHash: string
+  readonly namespaceResolved: false; readonly emptyKnowledgeProven: false; readonly acceptedCoverage: false
+}
+const priorCoverageCaptures = new WeakMap<CertifiedCapsulePriorCoverage, {
+  capsule: CertifiedDurableSqlCapsule; value: UnresolvedCertifiedCapsulePriorCoverage
+}>()
+/** Fixed Main owner: full draft and requirements are captured in one genuine
+ * independent scratch SQL snapshot. A caller cannot provide a map or subset. */
+export async function captureCertifiedCapsulePriorCoverage(handle: CertifiedDurableSqlCapsule): Promise<CertifiedCapsulePriorCoverage> {
+  const entry = certified.get(handle)
+  if (!entry) return capsuleInvalid('prior coverage不是Main实际SQL认证capsule句柄')
+  const seal = await readCertifiedDurableSqlCapsule(handle)
+  if (seal.manifest.version !== 1 || seal.manifest.readerVersion !== 'knowbook-durable-sql-v1' || seal.manifest.material !== 'durable-sql-only')
+    return capsuleInvalid('prior coverage v1拒绝未知capsule格式；不能将新证据重新标为v1')
+  const originalInfo = readOwnedRawCapsuleOriginal(entry.original)
+  const parts = relative(originalInfo.profileRoot, seal.manifestPath).split(sep)
+  if (parts.length !== 6 || parts[0] !== 'backups' || parts[1] !== 'database-restore'
+    || parts[3] !== 'knowledge-capsules' || parts[5] !== 'manifest.json') return capsuleInvalid('prior coverage不在真实Main固定原件目录')
+  const fresh = await reopenDurableSqlCapsuleOriginal({ profileRoot: originalInfo.profileRoot, operationId: parts[2],
+    capsuleId: parts[4], expectedManifestHash: entry.manifestHash })
+  const info = readOwnedRawCapsuleOriginal(fresh)
+  let db: Sqlite.Database | undefined
+  try {
+    await assertOwnedRawCapsuleScratchReady(fresh)
+    db = new Database(restoreSqliteFilename(info.databasePath), { readonly: true, fileMustExist: true })
+    db.pragma('query_only=ON'); db.pragma('foreign_keys=ON')
+    const current = db
+    const captured = current.transaction(() => {
+      const draft = readDurableSqlCapsuleDraftOwned(current)
+      if (!('facts' in draft)) return capsuleInvalid('prior coverage缺该schema完整原SQL adapter')
+      return { draft, requirements: readRawPriorKnowledgeCoverageOwned(current) }
+    })()
+    db.close(); db = undefined
+    const completed = await completeDurableSqlCapsuleSeal(fresh, captured.draft)
+    if (completed.manifestHash !== entry.manifestHash) return capsuleInvalid('prior coverage完整SQL重建不等于原manifest')
+    await assertOwnedRawCapsuleOriginal(fresh)
+    const final = await readCertifiedDurableSqlCapsule(handle)
+    if (final.manifestHash !== completed.manifestHash) return capsuleInvalid('prior coverage提取期间真实原件变化')
+    const value: UnresolvedCertifiedCapsulePriorCoverage = freezeCapsuleValue({ kind: 'unresolved-certified-capsule-prior-coverage', version: 1,
+      capsule: { operationId: parts[2], capsuleId: parts[4], manifestHash: final.manifestHash, readerVersion: 'knowbook-durable-sql-v1' },
+      originalFiles: final.manifest.files, requirements: captured.requirements,
+      rawRequirementsHash: rawPriorCoverageRequirementsHash(captured.requirements),
+      namespaceResolved: false, emptyKnowledgeProven: false, acceptedCoverage: false })
+    const result: CertifiedCapsulePriorCoverage = Object.freeze({ kind: 'certified-capsule-prior-coverage' })
+    priorCoverageCaptures.set(result, { capsule: handle, value })
+    return result
+  } finally { db?.close() }
+}
+export async function readCertifiedCapsulePriorCoverage(handle: CertifiedCapsulePriorCoverage): Promise<UnresolvedCertifiedCapsulePriorCoverage> {
+  const entry = priorCoverageCaptures.get(handle)
+  if (!entry) return capsuleInvalid('不是Main真实owned SQL prior coverage提取句柄')
+  const seal = await readCertifiedDurableSqlCapsule(entry.capsule)
+  if (seal.manifestHash !== entry.value.capsule.manifestHash
+    || rawPriorCoverageRequirementsHash(entry.value.requirements) !== entry.value.rawRequirementsHash)
+    return capsuleInvalid('prior coverage真实原件或私有要求集变化')
+  return entry.value
+}

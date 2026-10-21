@@ -1,0 +1,266 @@
+import { relative, sep } from 'node:path'
+import { capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
+import { captureCertifiedCapsulePriorCoverage, readCertifiedCapsulePriorCoverage,
+  readCertifiedDurableSqlCapsule, reopenCertifiedDurableSqlCapsule,
+  type CertifiedCapsulePriorCoverage, type CertifiedDurableSqlCapsule, type UnresolvedCertifiedCapsulePriorCoverage } from './restore-knowledge-capsule-read'
+import { validateCoverageCapsuleReference, validateCoverageRootReference,
+  type CoverageInputBinding, type CoverageRootReference } from './restore-knowledge-coverage-model'
+import { DURABLE_SQL_DAG_MAX_CAPSULES, DURABLE_SQL_DAG_MAX_NODES, DURABLE_SQL_DAG_MAX_ORIGINAL_BYTES,
+  DURABLE_SQL_DAG_MAX_TOTAL_NODE_BYTES } from './restore-knowledge-dag-model'
+import { canonicalRequiredSqlDagRoot, readRequiredSqlDagNodeFile, writeRequiredSqlDagNodeFile,
+  type RequiredSqlDagNodeFile } from './restore-knowledge-required-dag-files'
+import { requiredDagCapsuleLocator, requiredDagDatabaseFilesHash, requiredDagInterpretationHash, requiredDagInvalid,
+  requiredDagParentUnion, validateRequiredSqlDagNode, type RequiredDagNoPriorOrigin, type RequiredSqlDagNode } from './restore-knowledge-required-dag-model'
+
+/** Real SQL-required prepared graph identity. Never an accepted/live context. */
+export interface CertifiedRequiredSqlDag { readonly kind: 'certified-required-sql-dag' }
+export interface CaptureFirstRequiredSqlDagInput {
+  readonly profileRoot: string; readonly operationId: string; readonly dagId: string
+  readonly source: CertifiedDurableSqlCapsule; readonly current: CertifiedDurableSqlCapsule
+}
+export interface ReopenFirstRequiredSqlDagInput {
+  readonly profileRoot: string; readonly operationId: string; readonly dagId: string; readonly expectedRootHash: string
+}
+type Input = { capsule: CertifiedDurableSqlCapsule; captured: CertifiedCapsulePriorCoverage
+  binding: CoverageInputBinding; origin: RequiredDagNoPriorOrigin; originalBytes: number }
+type Saved = { profileRoot: string; file: RequiredSqlDagNodeFile; inputs: Map<string, Input>; totalOriginalBytes: number }
+const certifiedRequired = new WeakMap<CertifiedRequiredSqlDag, Saved>()
+
+function firstBinding(value: UnresolvedCertifiedCapsulePriorCoverage): { binding: CoverageInputBinding; origin: RequiredDagNoPriorOrigin; originalBytes: number } {
+  if (value.requirements.entries.length) return requiredDagInvalid('实际SQL要求非空：需完整coverage-v2/bundle owner，不能省略或降empty')
+  const origin: RequiredDagNoPriorOrigin = { kind: 'no-prior-coverage-references', version: 1,
+    databaseFilesHash: requiredDagDatabaseFilesHash(value.originalFiles), rawRequirementsHash: value.rawRequirementsHash }
+  // This states only that the actual SQL has no prior-C relative roots to
+  // interpret. It never identifies the source original domain as this profile.
+  return { binding: { capsule: validateCoverageCapsuleReference({ kind: 'restore-knowledge-origin-capsule-ref', version: 1,
+    namespace: { kind: 'native' }, ...value.capsule }), interpretationHash: requiredDagInterpretationHash(origin),
+    rawRequirementsHash: value.rawRequirementsHash, requiredRoots: [] }, origin,
+    originalBytes: value.originalFiles.reduce((sum, file) => sum + file.bytes, 0) }
+}
+async function originalInput(profileRoot: string, capsule: CertifiedDurableSqlCapsule): Promise<Input> {
+  const captured = await captureCertifiedCapsulePriorCoverage(capsule), value = await readCertifiedCapsulePriorCoverage(captured)
+  const seal = await readCertifiedDurableSqlCapsule(capsule), parts = relative(profileRoot, seal.manifestPath).split(sep)
+  if (seal.manifest.version !== 1 || seal.manifest.readerVersion !== 'knowbook-durable-sql-v1'
+    || parts.length !== 6 || parts[0] !== 'backups' || parts[1] !== 'database-restore' || parts[3] !== 'knowledge-capsules' || parts[5] !== 'manifest.json'
+    || parts[2] !== value.capsule.operationId || parts[4] !== value.capsule.capsuleId || seal.manifestHash !== value.capsule.manifestHash)
+    return requiredDagInvalid('首次producer只能使用本Main固定原件；foreign须真实importer，不能借同UUID路径')
+  return { capsule, captured, ...firstBinding(value) }
+}
+function nodeFrom(source: Input, current: Input): RequiredSqlDagNode {
+  return validateRequiredSqlDagNode({ kind: 'restore-required-sql-knowledge-dag-node', version: 2,
+    readerVersion: 'knowbook-required-sql-knowledge-dag-v2', material: 'durable-sql-only',
+    source: source.binding, current: current.binding, origins: { source: source.origin, current: current.origin },
+    parents: requiredDagParentUnion(source.binding.requiredRoots, current.binding.requiredRoots) })
+}
+function completeInputs(source: Input, current: Input): { inputs: Map<string, Input>; totalOriginalBytes: number } {
+  const inputs = new Map<string, Input>()
+  for (const item of [source, current]) {
+    const key = requiredDagCapsuleLocator(item.binding), previous = inputs.get(key)
+    if (previous) return requiredDagInvalid('source/current实际原件locator重复；不能复用一侧冒充另一侧')
+    inputs.set(key, item)
+  }
+  const totalOriginalBytes = [...inputs.values()].reduce((sum, item) => sum + item.originalBytes, 0)
+  if (inputs.size > DURABLE_SQL_DAG_MAX_CAPSULES || !Number.isSafeInteger(totalOriginalBytes) || totalOriginalBytes > DURABLE_SQL_DAG_MAX_ORIGINAL_BYTES)
+    return requiredDagInvalid('完整原件集合超原DAG预算；不能截断')
+  return { inputs, totalOriginalBytes }
+}
+async function assertActualInputs(entry: Saved): Promise<void> {
+  const originals: Input[] = []
+  for (const item of entry.inputs.values()) {
+    const current = await readCertifiedCapsulePriorCoverage(item.captured), actual = firstBinding(current)
+    if (capsuleJson(actual.binding) !== capsuleJson(item.binding) || capsuleJson(actual.origin) !== capsuleJson(item.origin)
+      || actual.originalBytes !== item.originalBytes) return requiredDagInvalid('真实原SQL要求/原件身份变化')
+    originals.push(item)
+  }
+  if (originals.length !== 2 || capsuleJson(nodeFrom(originals[0], originals[1])) !== capsuleJson(entry.file.node)
+    || completeInputs(originals[0], originals[1]).totalOriginalBytes !== entry.totalOriginalBytes) return requiredDagInvalid('私有完整两侧原件集合不闭合')
+}
+async function fresh(entry: Saved): Promise<void> {
+  const first = await readRequiredSqlDagNodeFile(entry.profileRoot, entry.file.ref)
+  if (capsuleJson(first.node) !== capsuleJson(entry.file.node)) return requiredDagInvalid('真实node被替换')
+  await assertActualInputs(entry)
+  const last = await readRequiredSqlDagNodeFile(entry.profileRoot, entry.file.ref)
+  if (capsuleJson(last.node) !== capsuleJson(entry.file.node)) return requiredDagInvalid('读取原件期间node被替换')
+}
+function register(entry: Saved): CertifiedRequiredSqlDag {
+  if (1 > DURABLE_SQL_DAG_MAX_NODES || entry.file.bytes > DURABLE_SQL_DAG_MAX_TOTAL_NODE_BYTES) return requiredDagInvalid('完整首代node超预算')
+  const handle: CertifiedRequiredSqlDag = Object.freeze({ kind: 'certified-required-sql-dag' })
+  certifiedRequired.set(handle, entry)
+  return handle
+}
+/** No parents/origin/loader input: fixed SQL scans derive the complete first
+ * generation parent set. Nonempty historical knowledge is fully allowed. */
+export async function captureFirstRequiredSqlDag(input: CaptureFirstRequiredSqlDagInput): Promise<CertifiedRequiredSqlDag> {
+  const row = capsuleRecord(input, ['profileRoot', 'operationId', 'dagId', 'source', 'current'])
+  const profileRoot = await canonicalRequiredSqlDagRoot(row.profileRoot)
+  const results = await Promise.allSettled([originalInput(profileRoot, row.source as CertifiedDurableSqlCapsule),
+    originalInput(profileRoot, row.current as CertifiedDurableSqlCapsule)] as const)
+  if (results[0].status === 'rejected') throw results[0].reason
+  if (results[1].status === 'rejected') throw results[1].reason
+  const source = results[0].value, current = results[1].value, complete = completeInputs(source, current), node = nodeFrom(source, current)
+  const file = await writeRequiredSqlDagNodeFile(profileRoot, row.operationId as string, row.dagId as string, node)
+  const entry: Saved = { profileRoot, file, ...complete }
+  await fresh(entry)
+  return register(entry)
+}
+/** Persisted first generation is never rewritten. Both real capsule V1 SQL
+ * certifiers and fresh SQL requirements captures rerun before private mint. */
+export async function reopenFirstRequiredSqlDag(input: ReopenFirstRequiredSqlDagInput): Promise<CertifiedRequiredSqlDag> {
+  const row = capsuleRecord(input, ['profileRoot', 'operationId', 'dagId', 'expectedRootHash'])
+  const profileRoot = await canonicalRequiredSqlDagRoot(row.profileRoot), ref = validateCoverageRootReference({ kind: 'restore-knowledge-origin-root-ref', version: 1,
+    namespace: { kind: 'native' }, operationId: row.operationId, dagId: row.dagId, rootHash: row.expectedRootHash,
+    readerVersion: 'knowbook-required-sql-knowledge-dag-v2' })
+  const file = await readRequiredSqlDagNodeFile(profileRoot, ref), node = file.node
+  if (node.parents.length || node.origins.source.kind !== 'no-prior-coverage-references' || node.origins.current.kind !== 'no-prior-coverage-references')
+    return requiredDagInvalid('非首代要求闭包尚缺固定完整bundle/capsule-v2 owner；不当作empty')
+  const reopen = async (binding: CoverageInputBinding): Promise<Input> => {
+    const capsule = binding.capsule
+    if (capsule.namespace.kind !== 'native' || capsule.readerVersion !== 'knowbook-durable-sql-v1') return requiredDagInvalid('无真实importer时不按本机解释foreign/capsule-v2')
+    return originalInput(profileRoot, await reopenCertifiedDurableSqlCapsule({ profileRoot, operationId: capsule.operationId,
+      capsuleId: capsule.capsuleId, expectedManifestHash: capsule.manifestHash }))
+  }
+  const results = await Promise.allSettled([reopen(node.source), reopen(node.current)] as const)
+  if (results[0].status === 'rejected') throw results[0].reason
+  if (results[1].status === 'rejected') throw results[1].reason
+  const source = results[0].value, current = results[1].value
+  if (capsuleJson(nodeFrom(source, current)) !== capsuleJson(node)) return requiredDagInvalid('两实际SQL重建不等于完整持久node')
+  const entry: Saved = { profileRoot, file, ...completeInputs(source, current) }
+  await fresh(entry)
+  return register(entry)
+}
+export async function readCertifiedRequiredSqlDag(handle: CertifiedRequiredSqlDag) {
+  const entry = certifiedRequired.get(handle)
+  if (!entry) return requiredDagInvalid('不是Main真实SQL要求驱动DAG私有句柄')
+  await fresh(entry)
+  return freezeCapsuleValue({ kind: 'required-sql-knowledge-dag-diagnostic' as const, version: 2 as const,
+    root: entry.file.ref, node: entry.file.node, capsules: [...entry.inputs.values()].map(item => item.binding.capsule),
+    nodes: 1, height: 1, totalNodeBytes: entry.file.bytes, totalOriginalBytes: entry.totalOriginalBytes,
+    preparedEvidence: true as const, emptyKnowledgeProven: false as const, acceptedCoverage: false as const })
+}
+
+import { extractCertifiedDurableSqlCapsuleKnowledge, readCertifiedCapsuleKnowledge, readCertifiedDurableSqlCapsuleNow,
+  type CertifiedCapsuleKnowledge } from './restore-knowledge-capsule-read'
+import { unionCertifiedCapsuleKnowledge, readCertifiedKnowledgeUnion, type CertifiedKnowledgeUnion } from './restore-knowledge-payload-read'
+import { knowledgeHash, type KnowledgeCapsuleRef, type KnowledgeUnionDiagnostic } from './restore-knowledge-payload-model'
+import type { CoverageCapsuleReference } from './restore-knowledge-coverage-model'
+import type { DurableSqlCapsuleSeal } from './restore-knowledge-capsule-files'
+import { assertRequiredSqlDagNodeFileNow } from './restore-knowledge-required-dag-files'
+
+/** Separate from the original prepared-v1 RootKnowledgeMaterial registry. This
+ * identity certifies complete prepared v2 material, never current-effective K. */
+export interface RequiredRootKnowledgeMaterial { readonly kind: 'required-root-bound-knowledge-material' }
+export interface RequiredRootCapsuleBinding {
+  readonly capsule: CoverageCapsuleReference; readonly binding: CoverageInputBinding; readonly origin: RequiredDagNoPriorOrigin
+}
+type RequiredMaterial = { dag: CertifiedRequiredSqlDag; root: CoverageRootReference; node: RequiredSqlDagNode
+  capsuleBindings: readonly RequiredRootCapsuleBinding[]; union: CertifiedKnowledgeUnion
+  diagnostic: KnowledgeUnionDiagnostic; materialHash: string }
+const requiredRootMaterials = new WeakMap<RequiredRootKnowledgeMaterial, RequiredMaterial>()
+
+function requiredBareCapsule(ref: CoverageCapsuleReference): KnowledgeCapsuleRef {
+  if (ref.namespace.kind !== 'native' || ref.readerVersion !== 'knowbook-durable-sql-v1')
+    return requiredDagInvalid('typed K尚缺bundle/capsule2来源适配；不能抹namespace借v1 union')
+  return { kind: 'durable-sql-capsule-ref', version: 1, operationId: ref.operationId, capsuleId: ref.capsuleId, manifestHash: ref.manifestHash }
+}
+/** No caller input. Every source is the actual owner's whole private map. */
+function requiredMaterialBindings(entry: Saved): readonly RequiredRootCapsuleBinding[] {
+  const records: RequiredRootCapsuleBinding[] = []
+  for (const input of entry.inputs.values()) records.push({ capsule: structuredClone(input.binding.capsule),
+    binding: structuredClone(input.binding), origin: structuredClone(input.origin) })
+  records.sort((a, b) => requiredDagCapsuleLocator(a.binding) < requiredDagCapsuleLocator(b.binding) ? -1 : requiredDagCapsuleLocator(a.binding) > requiredDagCapsuleLocator(b.binding) ? 1 : 0)
+  return freezeCapsuleValue(records)
+}
+function assertRequiredSavedStructure(entry: Saved): void {
+  // The previous owner only registers this exact first generation. An actual
+  // future DFS must provide its full node map, not be silently treated as one.
+  if (entry.file.node.parents.length) return requiredDagInvalid('同步/typed material尚缺非首代完整node闭包owner，不能省父节点')
+  const records = [...entry.inputs.values()]
+  if (records.length !== 2 || capsuleJson(nodeFrom(records[0], records[1])) !== capsuleJson(entry.file.node)
+    || completeInputs(records[0], records[1]).totalOriginalBytes !== entry.totalOriginalBytes)
+    return requiredDagInvalid('私有v2完整输入/原分配不闭合')
+}
+function assertRequiredUnion(bindings: readonly RequiredRootCapsuleBinding[], diagnostic: KnowledgeUnionDiagnostic): void {
+  const expected = bindings.map(record => requiredBareCapsule(record.capsule)).sort((a, b) => capsuleJson(a) < capsuleJson(b) ? -1 : capsuleJson(a) > capsuleJson(b) ? 1 : 0)
+  const actual = diagnostic.payloads.map(payload => payload.capsule).sort((a, b) => capsuleJson(a) < capsuleJson(b) ? -1 : capsuleJson(a) > capsuleJson(b) ? 1 : 0)
+  if (capsuleJson(expected) !== capsuleJson(actual)) return requiredDagInvalid('K union省略/替换准确v2全capsule集合')
+}
+function requiredMaterialHash(root: CoverageRootReference, node: RequiredSqlDagNode,
+  capsuleBindings: readonly RequiredRootCapsuleBinding[], union: KnowledgeUnionDiagnostic): string {
+  return knowledgeHash('knowbook.required-root-knowledge-material.v2', { root, node, capsuleBindings, union })
+}
+function requiredMaterialEntry(handle: RequiredRootKnowledgeMaterial): { material: RequiredMaterial; entry: Saved } {
+  const material = requiredRootMaterials.get(handle)
+  if (!material) return requiredDagInvalid('不是Main完整required-v2 RootMaterial私有句柄')
+  const entry = certifiedRequired.get(material.dag)
+  if (!entry) return requiredDagInvalid('required-v2 material丢失真实DAG owner')
+  assertRequiredSavedStructure(entry)
+  if (capsuleJson(material.root) !== capsuleJson(entry.file.ref) || capsuleJson(material.node) !== capsuleJson(entry.file.node)
+    || capsuleJson(material.capsuleBindings) !== capsuleJson(requiredMaterialBindings(entry))) return requiredDagInvalid('v2 material准确root/binding/origin/全集变化')
+  assertRequiredUnion(material.capsuleBindings, material.diagnostic)
+  if (requiredMaterialHash(material.root, material.node, material.capsuleBindings, material.diagnostic) !== material.materialHash)
+    return requiredDagInvalid('v2 material私有完整typed原像变化')
+  return { material, entry }
+}
+
+/** The only material factory takes one genuine whole required-DAG handle. It
+ * cannot take a generic payload array/union, refs DTO or caller-selected subset. */
+export async function extractRequiredRootKnowledgeMaterial(handle: CertifiedRequiredSqlDag): Promise<RequiredRootKnowledgeMaterial> {
+  const entry = certifiedRequired.get(handle)
+  if (!entry) return requiredDagInvalid('v2 K提取不是Main完整真实required-DAG句柄')
+  assertRequiredSavedStructure(entry)
+  await fresh(entry)
+  const capsuleBindings = requiredMaterialBindings(entry), inputs: CertifiedCapsuleKnowledge[] = []
+  for (const input of entry.inputs.values()) {
+    const captured = await extractCertifiedDurableSqlCapsuleKnowledge(input.capsule), payload = await readCertifiedCapsuleKnowledge(captured)
+    if (capsuleJson(payload.capsule) !== capsuleJson(requiredBareCapsule(input.binding.capsule))) return requiredDagInvalid('typed payload不属于真实qualified v2原件')
+    inputs.push(captured)
+  }
+  const union = await unionCertifiedCapsuleKnowledge(inputs), diagnostic = await readCertifiedKnowledgeUnion(union)
+  assertRequiredUnion(capsuleBindings, diagnostic)
+  await fresh(entry)
+  const root = entry.file.ref, node = entry.file.node, materialHash = requiredMaterialHash(root, node, capsuleBindings, diagnostic)
+  const material: RequiredRootKnowledgeMaterial = Object.freeze({ kind: 'required-root-bound-knowledge-material' })
+  requiredRootMaterials.set(material, { dag: handle, root, node, capsuleBindings, union, diagnostic, materialHash })
+  return material
+}
+/** Full prepared typed data, Main-internal. Diagnostics below expose counts.
+ * Immutable parsed facts are reused; all real artifacts are still freshly read. */
+export async function readRequiredRootKnowledgeMaterial(handle: RequiredRootKnowledgeMaterial) {
+  const { material, entry } = requiredMaterialEntry(handle)
+  await fresh(entry)
+  const diagnostic = await readCertifiedKnowledgeUnion(material.union)
+  assertRequiredUnion(material.capsuleBindings, diagnostic)
+  if (requiredMaterialHash(material.root, material.node, material.capsuleBindings, diagnostic) !== material.materialHash)
+    return requiredDagInvalid('v2完整K union原像变化')
+  await fresh(entry)
+  return freezeCapsuleValue({ kind: 'required-root-knowledge-material-data' as const, version: 2 as const,
+    root: material.root, node: material.node, capsuleBindings: material.capsuleBindings, materialHash: material.materialHash,
+    union: diagnostic, preparedEvidence: true as const, acceptedCoverage: false as const, emptyKnowledgeProven: false as const })
+}
+export async function diagnoseRequiredRootKnowledgeMaterial(handle: RequiredRootKnowledgeMaterial) {
+  const value = await readRequiredRootKnowledgeMaterial(handle)
+  return freezeCapsuleValue({ kind: 'required-root-knowledge-material-summary' as const, version: 2 as const,
+    root: value.root, materialHash: value.materialHash, capsules: value.capsuleBindings.length,
+    groups: value.union.groups.length, permanentDenials: value.union.permanentDenials.length,
+    exposureRecords: value.union.exposures.length, observations: value.union.observations.length,
+    preparedEvidence: true as const, acceptedCoverage: false as const, permit: false as const })
+}
+function assertRequiredCapsuleSeal(entry: Saved, input: Input, seal: DurableSqlCapsuleSeal): void {
+  const ref = input.binding.capsule, parts = relative(entry.profileRoot, seal.manifestPath).split(sep)
+  if (ref.namespace.kind !== 'native' || ref.readerVersion !== 'knowbook-durable-sql-v1'
+    || seal.manifest.version !== 1 || seal.manifest.readerVersion !== 'knowbook-durable-sql-v1' || seal.manifest.material !== 'durable-sql-only'
+    || parts.length !== 6 || parts[0] !== 'backups' || parts[1] !== 'database-restore' || parts[3] !== 'knowledge-capsules' || parts[5] !== 'manifest.json'
+    || parts[2] !== ref.operationId || parts[4] !== ref.capsuleId || seal.manifestHash !== ref.manifestHash
+    || requiredDagDatabaseFilesHash(seal.manifest.files) !== input.origin.databaseFilesHash
+    || seal.manifest.files.reduce((sum, file) => sum + file.bytes, 0) !== input.originalBytes
+    || requiredDagInterpretationHash(input.origin) !== input.binding.interpretationHash)
+    return requiredDagInvalid('同步v2 witness真实capsule/DBbytes/origin绑定变化')
+}
+/** No await/current SQL/frame/permit/cache. Its entire artifact closure comes
+ * from this v2 owner's private maps, never the old v1 material registry. */
+export function assertRequiredRootKnowledgeArtifactsFreshNow(handle: RequiredRootKnowledgeMaterial): void {
+  const { entry } = requiredMaterialEntry(handle)
+  assertRequiredSqlDagNodeFileNow(entry.profileRoot, entry.file)
+  for (const input of entry.inputs.values()) assertRequiredCapsuleSeal(entry, input, readCertifiedDurableSqlCapsuleNow(input.capsule))
+  assertRequiredSqlDagNodeFileNow(entry.profileRoot, entry.file)
+}
