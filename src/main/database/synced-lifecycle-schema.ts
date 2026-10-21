@@ -1,19 +1,13 @@
-import { assertSyncedLifecycleSchemaMetadata, syncedLifecycleTables as tables, syncedLifecycleGuards as guards } from './synced-lifecycle-schema-metadata'
-import { assertSyncedRemoteObservationRecords } from './synced-remote-observation-read'
+import { syncedLifecycleTables as tables, syncedLifecycleGuards as guards } from './synced-lifecycle-schema-metadata'
 import type Database from 'better-sqlite3'
 import type { SyncedGroupSnapshot } from '../../shared/synced-blocks'
 import { canonicalSyncedPortableJson } from '../../shared/syncedBlockPortable'
 import { assertSyncedBlockSchema } from './synced-schema'
 import { getSyncedGroupSnapshots } from './synced-blocks-read'
-import { assertSyncedLifecycleCoverage, readSyncedGroupLifecycles, syncedLifecycleSemanticHash } from './synced-lifecycle-state'
+import { readSyncedGroupLifecycles, syncedLifecycleSemanticHash } from './synced-lifecycle-state'
+import { assertSyncedLifecycleSchema } from './synced-lifecycle-schema-read'
+export { assertSyncedLifecycleSchema } from './synced-lifecycle-schema-read'
 
-/** No DDL or data repairs. Schema-26 authority is verified separately and stays
- * byte-for-byte unchanged; these checks only add the schema-27 namespace. */
-export function assertSyncedLifecycleSchema(db: Database.Database): void {
-  assertSyncedLifecycleSchemaMetadata(db)
-  assertSyncedLifecycleCoverage(db)
-  assertSyncedRemoteObservationRecords(db)
-}
 
 function wire(snapshot: SyncedGroupSnapshot) {
   return { kind: 'synced-group' as const, id: snapshot.groupId, creationId: snapshot.creationId, createdAt: snapshot.createdAt,

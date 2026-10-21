@@ -13,7 +13,7 @@ import { restoreInventory } from '../../src/main/database/restore-safety-files'
 import type { DurableSqlCapsuleReference } from '../../src/main/database/restore-knowledge-dag-model'
 import type { CapsuleKnowledgePayload, KnowledgeOriginalRow, KnowledgeSqlCell } from '../../src/main/database/restore-knowledge-payload-model'
 
-/** Candidate integration helper, not executed. Inputs are real fixture-owned
+/** Integration helper. Inputs are real fixture-owned
  * directories; no draft/fact/ACK/proof/permit is supplied to production code. */
 export async function prepareKnowledgeOriginal(profileInput: string, sourceInput: string, operationId = randomUUID()) {
   const profileRoot = await realpath(profileInput), sourceDirectory = await realpath(sourceInput)

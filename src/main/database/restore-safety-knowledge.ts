@@ -2,11 +2,11 @@ import { realpathSync } from 'node:fs'
 import type Database from 'better-sqlite3'
 import { isSyncedUuid } from '../../shared/syncedBlockValidation'
 import { publicationCompare, publicationHash, publicationJson } from '../sync/synced-publication-model'
-import { assertSyncedLifecycleSchema } from './synced-lifecycle-schema'
+import { assertSyncedLifecycleSchema } from './synced-lifecycle-schema-read'
 import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-read'
 import { hasAnySyncedObservationPending } from './synced-remote-observation-pending'
 import { assertSyncedRemoteObservationRecords } from './synced-remote-observation-read'
-import { readSyncedPersistentPublicationSnapshot } from './synced-publication'
+import { readRawValidatedSyncedPersistentPublicationSnapshotOwned } from './synced-publication-sql-read'
 import { assertSyncedBlockSchema } from './synced-schema'
 import { restoreFail } from './restore-safety-model'
 
@@ -159,7 +159,7 @@ function inspect(db: Database.Database): RestoreKnowledgeDiagnostic {
   if (groupOwner) reasons.push('仍保同步 owner 身份：block_identities')
   if (schemaVersion >= 26 && (physical || groupOwner || db.prepare('SELECT 1 FROM synced_groups LIMIT 1').get()
     || db.prepare('SELECT 1 FROM synced_instances LIMIT 1').get())) {
-    if (schemaVersion >= 27) readSyncedPersistentPublicationSnapshot(db)
+    if (schemaVersion >= 27) readRawValidatedSyncedPersistentPublicationSnapshotOwned(db)
     else unsupported.push('尚不支持恢复 schema26 同步正文；不推定完整生命周期知识。')
   }
   reasons.push(...historyReferences(db, present, schemaVersion))

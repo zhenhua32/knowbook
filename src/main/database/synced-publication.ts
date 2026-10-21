@@ -4,7 +4,7 @@ import { assertSyncedBlockSchema } from './synced-schema'
 import { assertSyncedLifecycleCoverage, readSyncedGroupLifecycles } from './synced-lifecycle-state'
 import { SyncedPublicationError, publicationHash, publicationInvalid, publicationJson,
   frozenPublicationFacts, validatePublicationDescriptor, type PublicationDescriptor } from '../sync/synced-publication-model'
-import { assertSyncedRecoveryBoundaryRecords } from './synced-recovery-boundary-read'
+import { assertRawSyncedPublicationSqlStructureOwned } from './synced-publication-sql-read'
 import { readRawSyncedPersistentPublicationSnapshotOwned, type SyncedPublicationLocalSnapshot } from './synced-publication-raw-read'
 export type { SyncedPublicationLocalSnapshot } from './synced-publication-raw-read'
 
@@ -40,14 +40,7 @@ function identity(db: Database.Database): Identity {
 /** Main-internal admission of the actual owned SQL snapshot. No caller facts,
  * capture, lease or install authority are accepted or returned. */
 export function assertSyncedPersistentPublicationReadAdmissionOwned(db: Database.Database): void {
-  if (!db.inTransaction) return publicationInvalid('完整持久图读取须位于调用方自有一致事务。')
-  assertSyncedBlockSchema(db); assertSyncedLifecycleCoverage(db)
-  const foreignKeys = db.pragma('foreign_key_check')
-  if (!Array.isArray(foreignKeys) || foreignKeys.length) return publicationInvalid('完整数据库存在外键损坏。')
-  // The old public group wrapper checked this in every group batch. Keep
-  // admission here when the raw core no longer calls that capability wrapper;
-  // an empty graph must not hide an orphan recovery marker/anchor either.
-  if ((db.pragma('user_version', { simple: true }) as number) >= 27) assertSyncedRecoveryBoundaryRecords(db)
+  assertRawSyncedPublicationSqlStructureOwned(db)
 }
 /** Public capability reader keeps admission separate from raw original facts. */
 export function readSyncedPersistentPublicationSnapshot(db: Database.Database): SyncedPublicationLocalSnapshot {
