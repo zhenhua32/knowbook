@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { constants, type Stats } from 'node:fs'
 import { lstat, open, readdir, realpath } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
@@ -18,6 +19,11 @@ export interface PrepareDurableSqlCapsuleOriginalInput {
   readonly profileRoot: string; readonly recoveryDirectory: string; readonly sealedDirectory: string
   readonly capsuleId: string; readonly label: string
 }
+/** Main-internal durable locator. The expected hash must come from the trusted
+ * owning root/DAG, never a manifest or fact DTO supplied as authorization. */
+export interface ReopenDurableSqlCapsuleOriginalInput {
+  readonly profileRoot: string; readonly operationId: string; readonly capsuleId: string; readonly expectedManifestHash: string
+}
 export interface OwnedRawCapsuleOriginalInfo {
   readonly profileRoot: string; readonly recoveryDirectory: string; readonly sealedDirectory: string
   readonly capsuleDirectory: string; readonly originalDirectory: string; readonly scratchDirectory: string
@@ -30,7 +36,7 @@ export interface DurableSqlCapsuleSeal {
   readonly manifest: DurableSqlCapsuleManifest; readonly manifestHash: string; readonly manifestPath: string
   readonly shardsDirectory: string; readonly facts: readonly RawHistoricalEvidenceFact[]
 }
-type Saved = { info: OwnedRawCapsuleOriginalInfo; busy: boolean; failed: boolean; sealed: DurableSqlCapsuleSeal | null }
+type Saved = { info: OwnedRawCapsuleOriginalInfo; busy: boolean; failed: boolean; origin: 'new' | 'sealed'; sealed: DurableSqlCapsuleSeal | null }
 const originals = new WeakMap<OwnedRawCapsuleOriginal, Saved>()
 const samePath = (a: string, b: string): boolean => process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b
 function beneath(root: string, candidate: string): boolean {
@@ -115,19 +121,53 @@ export async function prepareDurableSqlCapsuleOriginal(input: PrepareDurableSqlC
   const info = freezeCapsuleValue({ profileRoot, recoveryDirectory, sealedDirectory, capsuleDirectory, originalDirectory, scratchDirectory,
     databasePath: join(scratchDirectory, 'knowbook.db'), originalInventory: inventory, label })
   const handle: OwnedRawCapsuleOriginal = Object.freeze({ kind: 'owned-raw-capsule-original' })
-  originals.set(handle, { info, busy: false, failed: false, sealed: null })
+  originals.set(handle, { info, busy: false, failed: false, origin: 'new', sealed: null })
+  return handle
+}
+/** Reopen persisted bytes, not process-local authority. Old scratch is neither
+ * opened nor repaired. Every reopen makes its own exclusive SQLite copy outside
+ * the immutable capsule directory and rereads all original/index artifacts. */
+export async function reopenDurableSqlCapsuleOriginal(input: ReopenDurableSqlCapsuleOriginalInput): Promise<OwnedRawCapsuleOriginal> {
+  const row = capsuleRecord(input, ['profileRoot', 'operationId', 'capsuleId', 'expectedManifestHash'])
+  const profileRoot = await canonicalRestoreRoot(absolute(row.profileRoot))
+  if (!isSyncedUuid(row.operationId) || !isSyncedUuid(row.capsuleId)
+    || typeof row.expectedManifestHash !== 'string' || !/^[a-f0-9]{64}$/.test(row.expectedManifestHash)) return capsuleInvalid('重开locator身份/hash无效')
+  const recoveryDirectory = join(profileRoot, 'backups', 'database-restore', row.operationId)
+  const capsuleDirectory = join(recoveryDirectory, 'knowledge-capsules', row.capsuleId), originalDirectory = join(capsuleDirectory, 'original')
+  await directory(recoveryDirectory, profileRoot)
+  await assertCapsuleDirectory(capsuleDirectory, profileRoot)
+  const inventory = await rawInventory(originalDirectory, profileRoot)
+  const location = { profileRoot, capsuleDirectory, originalInventory: inventory }
+  const seal = await readSeal(location, row.expectedManifestHash)
+  await assertInventory(originalDirectory, inventory, profileRoot)
+  const readsDirectory = join(recoveryDirectory, 'knowledge-capsule-reads')
+  await restoreDirectory(readsDirectory, profileRoot)
+  const scratchDirectory = join(readsDirectory, randomUUID())
+  await copyRestoreInventory(originalDirectory, scratchDirectory, inventory as RestoreRawFile[], profileRoot)
+  await assertInventory(scratchDirectory, inventory, profileRoot)
+  await assertInventory(originalDirectory, inventory, profileRoot)
+  const observed = await readSeal(location, seal.manifestHash)
+  await assertCapsuleDirectory(capsuleDirectory, profileRoot)
+  const info = freezeCapsuleValue({ profileRoot, recoveryDirectory, sealedDirectory: originalDirectory, capsuleDirectory,
+    originalDirectory, scratchDirectory, databasePath: join(scratchDirectory, 'knowbook.db'), originalInventory: inventory, label: 'reopened durable SQL capsule' })
+  const handle: OwnedRawCapsuleOriginal = Object.freeze({ kind: 'owned-raw-capsule-original' })
+  originals.set(handle, { info, busy: false, failed: false, origin: 'sealed', sealed: observed })
   return handle
 }
 export function readOwnedRawCapsuleOriginal(handle: OwnedRawCapsuleOriginal): OwnedRawCapsuleOriginalInfo { return saved(handle).info }
+/** Fixed persisted capsule namespace; old scratch contents are never input. */
+async function assertCapsuleDirectory(capsuleDirectory: string, profileRoot: string): Promise<void> {
+  await directory(capsuleDirectory, profileRoot)
+  const entries = await readdir(capsuleDirectory)
+  if (entries.some(name => !['original', 'scratch', 'index', 'manifest.json'].includes(name))) return capsuleInvalid('capsule目录含未知原件或pending文件')
+}
 /** Does not compare scratch sidecars after SQLite opened them; SQLite is allowed
  * to operate only on that independent scratch. Sealed original bytes stay exact. */
 export async function assertOwnedRawCapsuleOriginal(handle: OwnedRawCapsuleOriginal): Promise<void> {
   const { info } = saved(handle)
-  await directory(info.capsuleDirectory, info.profileRoot)
-  const entries = await readdir(info.capsuleDirectory)
-  if (entries.some(name => !['original', 'scratch', 'index', 'manifest.json'].includes(name))) return capsuleInvalid('capsule目录含未知原件或pending文件')
+  await assertCapsuleDirectory(info.capsuleDirectory, info.profileRoot)
   await directory(info.scratchDirectory, info.profileRoot)
-  await assertInventory(info.sealedDirectory, info.originalInventory, info.profileRoot)
+  if (!samePath(info.sealedDirectory, info.originalDirectory)) await assertInventory(info.sealedDirectory, info.originalInventory, info.profileRoot)
   await assertInventory(info.originalDirectory, info.originalInventory, info.profileRoot)
 }
 /** Call immediately before opening SQLite. The facts must start in an exact
@@ -180,7 +220,7 @@ async function readText(path: string, root: string, maxBytes: number): Promise<{
     return { text, bytes: offset, sha256: capsuleBytesHash(bytes) }
   } finally { await fd.close() }
 }
-async function readSeal(info: OwnedRawCapsuleOriginalInfo, expectedManifestHash: string): Promise<DurableSqlCapsuleSeal> {
+async function readSeal(info: Pick<OwnedRawCapsuleOriginalInfo, 'profileRoot' | 'capsuleDirectory' | 'originalInventory'>, expectedManifestHash: string): Promise<DurableSqlCapsuleSeal> {
   const manifestPath = join(info.capsuleDirectory, 'manifest.json'), shardsDirectory = join(info.capsuleDirectory, 'index')
   const raw = await readText(manifestPath, info.profileRoot, CAPSULE_MAX_MANIFEST_BYTES), manifest = parseDurableSqlCapsuleManifest(raw.text)
   const manifestHash = durableSqlCapsuleManifestHash(manifest)
@@ -223,6 +263,28 @@ export async function sealDurableSqlCapsule(handle: OwnedRawCapsuleOriginal, dra
     await assertScratchContent(state.info)
     await assertOwnedRawCapsuleOriginal(handle)
     state.sealed = observed
+    return observed
+  } catch (error) { state.failed = true; throw error }
+  finally { state.busy = false }
+}
+/** The private registry chooses new seal versus persisted-seal comparison.
+ * Reopened artifacts are never rewritten, even if a caller supplies a plausible
+ * draft. Only the independent SQL certifier may turn this comparison into a new
+ * process-local certified handle. */
+export async function completeDurableSqlCapsuleSeal(handle: OwnedRawCapsuleOriginal, draft: DurableSqlCapsuleDraft): Promise<DurableSqlCapsuleSeal> {
+  const state = saved(handle)
+  if (state.origin === 'new') return sealDurableSqlCapsule(handle, draft)
+  if (state.busy || !state.sealed) return capsuleInvalid('重开原件正在认证或缺已封存manifest')
+  state.busy = true
+  try {
+    await assertOwnedRawCapsuleOriginal(handle)
+    await assertScratchContent(state.info)
+    const rebuilt = buildDurableSqlCapsuleArtifacts(draft, state.info.originalInventory)
+    const observed = await readSeal(state.info, state.sealed.manifestHash)
+    if (rebuilt.manifestHash !== observed.manifestHash || capsuleJson(rebuilt.manifest) !== capsuleJson(observed.manifest))
+      return capsuleInvalid('独立原SQL重建不等于既有完整manifest与事实索引')
+    await assertScratchContent(state.info)
+    await assertOwnedRawCapsuleOriginal(handle)
     return observed
   } catch (error) { state.failed = true; throw error }
   finally { state.busy = false }

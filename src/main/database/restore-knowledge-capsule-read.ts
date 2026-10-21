@@ -9,7 +9,7 @@ import { assertRawSyncedHistoricalEvidenceOwned } from './synced-operation-histo
 import { readHistoricalRowLocator } from './synced-history-evidence-support'
 import { readRawRestoreSqlInventoryOwned } from './restore-knowledge-sql-inventory'
 import { assertOwnedRawCapsuleOriginal, assertOwnedRawCapsuleScratchReady, readOwnedRawCapsuleOriginal,
-  readDurableSqlCapsuleSeal, sealDurableSqlCapsule, type OwnedRawCapsuleOriginal,
+  readDurableSqlCapsuleSeal, completeDurableSqlCapsuleSeal, reopenDurableSqlCapsuleOriginal, type ReopenDurableSqlCapsuleOriginalInput, type OwnedRawCapsuleOriginal,
   type DurableSqlCapsuleSeal } from './restore-knowledge-capsule-files'
 import { capsuleInvalid, freezeCapsuleValue, type DurableSqlCapsuleDraft } from './restore-knowledge-capsule-model'
 
@@ -104,7 +104,7 @@ export async function certifyDurableSqlCapsuleIfSupported(original: OwnedRawCaps
     db.close(); db = undefined
     await assertOwnedRawCapsuleOriginal(original)
     if (!('facts' in draft)) return Object.freeze({ status: 'unsupported-schema', schemaVersion: draft.schemaVersion })
-    const seal = await sealDurableSqlCapsule(original, draft)
+    const seal = await completeDurableSqlCapsuleSeal(original, draft)
     const observed = await readDurableSqlCapsuleSeal(original)
     if (observed.manifestHash !== seal.manifestHash) return capsuleInvalid('认证后原manifest被替换')
     await assertOwnedRawCapsuleOriginal(original)
@@ -112,6 +112,13 @@ export async function certifyDurableSqlCapsuleIfSupported(original: OwnedRawCaps
     certified.set(handle, { original, manifestHash: seal.manifestHash })
     return Object.freeze({ status: 'certified', capsule: handle })
   } finally { db?.close(); certifying.delete(original) }
+}
+
+/** Independent process restart entry. A trusted owning root provides only the
+ * persisted locator/hash; all SQL, originals, support locators and complete
+ * manifest/fact hashes are reread before this process can mint a certificate. */
+export async function reopenCertifiedDurableSqlCapsule(input: ReopenDurableSqlCapsuleOriginalInput): Promise<CertifiedDurableSqlCapsule> {
+  return certifyDurableSqlCapsuleOriginal(await reopenDurableSqlCapsuleOriginal(input))
 }
 
 /** Fresh original inventory and complete artifact readback on every use. This
