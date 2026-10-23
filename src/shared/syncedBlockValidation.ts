@@ -74,13 +74,14 @@ function blockFormat(type: string, value: unknown): MarkdownBlockFormat | undefi
   return normalized
 }
 
+interface ForestOptions { canonical: boolean; wire: boolean; template?: true }
 /** This validates authored relationships before any normalizer can repair them. */
-function forest(value: unknown, options: { canonical: boolean; wire: boolean }): SyncedStableBlockDraft[] | SyncedCanonicalWire[] {
+function forest(value: unknown, options: ForestOptions): SyncedStableBlockDraft[] | SyncedCanonicalWire[] {
   if (Array.isArray(value) && value.length > SYNCED_MAX_BLOCKS) return fail('forest')
   return persistedForest(value, options)
 }
 
-function persistedForest(value: unknown, options: { canonical: boolean; wire: boolean }): SyncedStableBlockDraft[] | SyncedCanonicalWire[] {
+function persistedForest(value: unknown, options: ForestOptions): SyncedStableBlockDraft[] | SyncedCanonicalWire[] {
   if (!Array.isArray(value) || options.canonical && !value.length) return fail('forest')
   const result: SyncedStableBlockDraft[] = [], ids = new Set<string>(), ancestors: SyncedStableBlockDraft[] = []
   for (const raw of value) {
@@ -94,7 +95,7 @@ function persistedForest(value: unknown, options: { canonical: boolean; wire: bo
     if (typeof raw.depth !== 'number' || !Number.isSafeInteger(raw.depth) || raw.depth < 0 || raw.depth > SYNCED_MAX_DEPTH) return fail('depth')
     const parentBlockId = raw.parentBlockId === null ? null : opaque(raw.parentBlockId)
     const parent = raw.depth ? ancestors[raw.depth - 1] : undefined
-    const deferredReference = !options.canonical && type === 'synced-block' && parent && isListBlockType(parent.type)
+    const deferredReference = !options.canonical && !options.template && type === 'synced-block' && parent && isListBlockType(parent.type)
     if (raw.depth === 0 ? parentBlockId !== null
       : !parent || parent.id !== parentBlockId || !canBlockNestUnder(parent.type, type) && !deferredReference) return fail('forest')
     if (raw.tags !== undefined && (!Array.isArray(raw.tags) || Array.from(raw.tags).some(tag => typeof tag !== 'string' || !tag.trim())
@@ -105,7 +106,7 @@ function persistedForest(value: unknown, options: { canonical: boolean; wire: bo
       || !Number.isSafeInteger(raw.listStart) || raw.listStart < 0 || raw.listStart > 999_999_999)) return fail('forest')
     if (raw.highlight !== undefined && (typeof raw.highlight !== 'string' || !highlights.has(raw.highlight))) return fail('forest')
     const markdownFormat = blockFormat(type, raw.markdownFormat)
-    if (type === 'synced-block') {
+    if (type === 'synced-block' && !options.template) {
       uuid(id); parseSyncedBlockPayload(content)
       if (raw.checked || raw.language !== undefined || raw.listStart !== undefined || raw.markdownFormat !== undefined) return fail('forest')
     }
@@ -118,7 +119,7 @@ function persistedForest(value: unknown, options: { canonical: boolean; wire: bo
     result.push(options.wire ? { ...block, createdAt: timestamp(raw.createdAt) } as SyncedCanonicalWire : block)
     ancestors.length = raw.depth + 1; ancestors[raw.depth] = block
   }
-  if (columnStructureErrorCode(result, { checkParentIds: true, allowSyncedPlaceholders: !options.canonical })) return fail('forest')
+  if (columnStructureErrorCode(result, { checkParentIds: true, allowSyncedPlaceholders: !options.canonical && !options.template })) return fail('forest')
   try { assertDatabaseViewStructure(result) } catch { return fail('forest') }
   return result
 }
@@ -137,6 +138,12 @@ export function validateSyncedHostForest(value: unknown): SyncedStableBlockDraft
  * only a data codec; the live host/wire entry points retain their own limit. */
 export function validatePersistedHostForest(value: unknown): SyncedStableBlockDraft[] {
   return persistedForest(value, { canonical: false, wire: false }) as SyncedStableBlockDraft[]
+}
+/** Saved templates are ordinary drafts. Their synced-block text/IDs are not
+ * group authority, and their parent relationships have no deferred projection.
+ * Assert only: do not project a template into a validated host/group DTO. */
+export function assertPersistedTemplateForest(value: unknown): void {
+  persistedForest(value, { canonical: false, wire: false, template: true })
 }
 export function syncedCanonicalEdits(blocks: readonly SyncedCanonicalWire[]): SyncedCanonicalEdit[] {
   return validateSyncedCanonicalEdit(blocks.map(({ createdAt: _createdAt, ...block }) => block))
