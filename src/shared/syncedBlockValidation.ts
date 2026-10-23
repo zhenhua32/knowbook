@@ -76,7 +76,12 @@ function blockFormat(type: string, value: unknown): MarkdownBlockFormat | undefi
 
 /** This validates authored relationships before any normalizer can repair them. */
 function forest(value: unknown, options: { canonical: boolean; wire: boolean }): SyncedStableBlockDraft[] | SyncedCanonicalWire[] {
-  if (!Array.isArray(value) || value.length > SYNCED_MAX_BLOCKS || options.canonical && !value.length) return fail('forest')
+  if (Array.isArray(value) && value.length > SYNCED_MAX_BLOCKS) return fail('forest')
+  return persistedForest(value, options)
+}
+
+function persistedForest(value: unknown, options: { canonical: boolean; wire: boolean }): SyncedStableBlockDraft[] | SyncedCanonicalWire[] {
+  if (!Array.isArray(value) || options.canonical && !value.length) return fail('forest')
   const result: SyncedStableBlockDraft[] = [], ids = new Set<string>(), ancestors: SyncedStableBlockDraft[] = []
   for (const raw of value) {
     assertSyncedShape(raw, options.wire ? [...blockRequired, 'createdAt'] : blockRequired, blockOptional)
@@ -126,6 +131,12 @@ export function validateSyncedCanonicalWire(value: unknown): SyncedCanonicalWire
 }
 export function validateSyncedHostForest(value: unknown): SyncedStableBlockDraft[] {
   return forest(value, { canonical: false, wire: false }) as SyncedStableBlockDraft[]
+}
+/** Persisted ordinary history can exceed the authored host item count. Source
+ * readers must bound the complete SQL bytes before parsing its JSON. This is
+ * only a data codec; the live host/wire entry points retain their own limit. */
+export function validatePersistedHostForest(value: unknown): SyncedStableBlockDraft[] {
+  return persistedForest(value, { canonical: false, wire: false }) as SyncedStableBlockDraft[]
 }
 export function syncedCanonicalEdits(blocks: readonly SyncedCanonicalWire[]): SyncedCanonicalEdit[] {
   return validateSyncedCanonicalEdit(blocks.map(({ createdAt: _createdAt, ...block }) => block))

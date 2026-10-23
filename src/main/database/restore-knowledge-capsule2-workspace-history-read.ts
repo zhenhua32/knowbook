@@ -7,6 +7,7 @@ import { publicationHash, publicationInvalid, publicationJson } from '../sync/sy
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { readRawCapsule2ContentOwned } from './restore-knowledge-capsule2-content-raw-read'
 import { readRawCapsule2PhysicalGraphOwned } from './restore-knowledge-capsule2-physical-raw-read'
+import { assertRawCapsule2OrdinaryHistoryOwned } from './restore-knowledge-capsule2-ordinary-history-read'
 import { readRawCapsule2HistoricalEvidenceOwned } from './restore-knowledge-capsule2-history-read'
 import { CAPSULE2_READER, CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-model'
 
@@ -29,11 +30,13 @@ function json(source: string): unknown { return parseInitialIncomingStored(sourc
  * roots, IDs, attestation, mode, cache, skip or admission are accepted.
  *
  * This composes the exact former finite rawInitial history kernel with actual
- * total2 for reserved-family closure. Its content() is deliberately the old
- * partial identity checker, never a new complete ordinary-history codec. */
+ * total2 for reserved-family closure. Ordinary checkpoint/trash bodies and
+ * metadata are checked before the former identity/history hash kernel below;
+ * templates and the remaining source certifier seams are still incomplete. */
 export function readRawCapsule2WorkspaceHistoryOwned(db: Database.Database): RawCapsule2WorkspaceHistoryObservation {
   const sourceContent = readRawCapsule2ContentOwned(db)
   const physical = readRawCapsule2PhysicalGraphOwned(db)
+  assertRawCapsule2OrdinaryHistoryOwned(db)
   const sourceContentHash = capsuleBytesHash('knowbook.capsule2.workspace-history-source-content.v1\0' + capsuleJson(sourceContent))
   const physicalObservationHash = capsuleBytesHash('knowbook.capsule2.workspace-history-physical-observation.v1\0' + capsuleJson(physical))
   const rawIdentities = db.prepare('SELECT id,last_owner_kind,last_owner_id,state,created_at FROM block_identities ORDER BY id').all() as InitialIncomingIdentity[]
