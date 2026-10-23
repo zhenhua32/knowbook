@@ -255,11 +255,36 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  electron-e2e:
-    name: Electron E2E (shard ${{ matrix.shard }}/4)
-    needs: validate
+  prepare-cjk-fonts:
+    name: Prepare CJK font package
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      KNOWBOOK_CJK_FONT_DIR: ${{ runner.temp }}/knowbook-cjk-fonts
+    steps:
+      - name: Download original CJK font package
+        run: |
+          mkdir -p "$KNOWBOOK_CJK_FONT_DIR"
+          cd "$KNOWBOOK_CJK_FONT_DIR"
+          sudo apt-get update
+          apt-get download fonts-noto-cjk
+          sha256sum ./*.deb > SHA256SUMS
+
+      - name: Upload CJK font package for desktop acceptance
+        uses: actions/upload-artifact@v4
+        with:
+          name: electron-e2e-cjk-fonts
+          path: ${{ env.KNOWBOOK_CJK_FONT_DIR }}/
+          if-no-files-found: error
+          retention-days: 1
+
+  electron-e2e:
+    name: Electron E2E (shard ${{ matrix.shard }}/4)
+    needs: [validate, prepare-cjk-fonts]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      KNOWBOOK_CJK_FONT_DIR: ${{ runner.temp }}/knowbook-cjk-fonts
     strategy:
       # Keep every shard's diagnostics when another shard fails.
       fail-fast: false
@@ -284,10 +309,17 @@ jobs:
           name: electron-e2e-build
           path: out/
 
+      - name: Download original CJK font package
+        uses: actions/download-artifact@v8
+        with:
+          name: electron-e2e-cjk-fonts
+          path: ${{ env.KNOWBOOK_CJK_FONT_DIR }}/
+
       - name: Install CJK fonts for desktop acceptance
         run: |
-          sudo apt-get update
-          sudo apt-get install -y fonts-noto-cjk
+          cd "$KNOWBOOK_CJK_FONT_DIR"
+          sha256sum --check SHA256SUMS
+          sudo dpkg -i ./*.deb
 
       - name: Run Electron E2E tests
         # One worker per runner preserves the isolated performance measurements.
