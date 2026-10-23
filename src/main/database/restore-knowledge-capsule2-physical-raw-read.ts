@@ -7,7 +7,7 @@ import { assertSyncedLifecycleSchemaMetadata } from './synced-lifecycle-schema-m
 import { assertSyncedLifecycleCoverage, readSyncedGroupLifecycles, type SyncedGroupLifecycle } from './synced-lifecycle-state'
 import { readRawSyncedGroupSnapshotsOwned } from './synced-blocks-raw-read'
 import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-read'
-import { readStrictHostDocument } from './synced-host-document-read'
+import { readRawCapsule2HostDocumentOwned } from './synced-host-document-read'
 import { assertSyncedStoredBindings } from './synced-stored-binding-read'
 
 type IdentityRow = { id: string; last_owner_kind: 'document' | 'group' | 'reserved'; last_owner_id: string;
@@ -83,7 +83,7 @@ export function readRawCapsule2PhysicalGraphOwned(db: Database.Database): RawCap
   }
   const documents: DocumentFact[] = (db.prepare('SELECT id FROM documents ORDER BY id').all() as Array<{ id: unknown }>).map(row => {
     if (!isSyncedBlockId(row.id)) return invalid('真实宿主身份无效')
-    const host = readStrictHostDocument(db, row.id)
+    const host = readRawCapsule2HostDocumentOwned(db, row.id)
     if (!host) return invalid('真实宿主缺失')
     return { documentId: row.id, title: host.content.title, path: host.detail.path, summary: host.content.summary,
       createdAt: host.createdAt, updatedAt: host.detail.updatedAt, parentId: host.parentId, sortOrder: host.sortOrder,
@@ -110,7 +110,7 @@ export function readRawCapsule2PhysicalGraphOwned(db: Database.Database): RawCap
     const owner = graph.owners.get(id)
     if (!owner || owner.kind !== row.last_owner_kind || owner.id !== row.last_owner_id) return invalid('ledger与实际唯一owner不一致')
     // Known birth equality is independently checked in both raw SQL physical
-    // joins (readStrictHostDocument/readRawSyncedGroupSnapshotsOwned), not guessed.
+    // joins (readRawCapsule2HostDocumentOwned/readRawSyncedGroupSnapshotsOwned), not guessed.
   }
   const instances = db.prepare('SELECT instance_id,group_id,host_document_id,binding_version,parent_block_id,depth FROM synced_instances ORDER BY instance_id').all() as InstanceRow[]
   const expected = new Map(snapshots.flatMap(snapshot => snapshot.instances.map(item => [item.instanceId,

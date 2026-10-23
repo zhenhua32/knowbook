@@ -45,11 +45,25 @@ export function validateHostDocumentDetail(value: unknown): DocumentDetail {
 
 /** Original connection only. No Store, healing, normalization, DML or clamped depth. */
 export function readStrictHostDocument(db: Database.Database, documentId: string): StrictHostDocument | null {
+  return readHostDocument(db, documentId, false)
+}
+
+/** The ordinary sync writer accepts every safe signed document sortOrder.
+ * Preserve those actual SQL values when observing a recovery source, without
+ * widening the live host-operation/ACK reader or changing block-order rules.
+ * This data-only leaf grants no source certification or installation right. */
+export function readRawCapsule2HostDocumentOwned(db: Database.Database, documentId: string): StrictHostDocument | null {
+  if (!db.open || !db.readonly || !db.inTransaction || db.pragma('query_only', { simple: true }) !== 1
+    || db.pragma('foreign_keys', { simple: true }) !== 1) return bad()
+  return readHostDocument(db, documentId, true)
+}
+
+function readHostDocument(db: Database.Database, documentId: string, signedDocumentOrder: boolean): StrictHostDocument | null {
   const document = db.prepare('SELECT id,title,path,summary,updated_at,created_at,parent_id,sort_order FROM documents WHERE id=?')
     .get(documentId) as { id: string; title: string; path: string; summary: string; updated_at: string; created_at: string; parent_id: string | null; sort_order: number } | undefined
   if (!document) return null
   if (document.id !== documentId || document.parent_id !== null && !isSyncedBlockId(document.parent_id)
-    || !Number.isSafeInteger(document.sort_order) || document.sort_order < 0) return bad()
+    || !Number.isSafeInteger(document.sort_order) || !signedDocumentOrder && document.sort_order < 0) return bad()
   const rows = db.prepare(`SELECT b.*,i.last_owner_kind AS identity_kind,i.last_owner_id AS identity_owner,
     i.state AS identity_state,i.created_at AS identity_created_at,
     EXISTS(SELECT 1 FROM synced_group_blocks c WHERE c.id=b.id) AS canonical_collision
