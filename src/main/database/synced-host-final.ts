@@ -34,6 +34,7 @@ export type SyncedHostFinalResult = SyncedStructureResult | SyncedHostCreateAppl
 type Groups = Map<string, SyncedGroupSnapshot>
 type Hosts = Map<string, StrictHostDocument>
 type Guards = Pick<SyncedRestoreHostInput, 'groups' | 'expectedInstances'>
+type CreatedTemplateHost = { documentId: string; syncReferences: () => void }
 class Refused extends Error { constructor(readonly result: SyncedHostFinalResult) { super('Host final transaction refused') } }
 function invalid(code: 'identity' | 'binding' | 'forest', message: string): never { throw new SyncedValidationError(code, message) }
 function unsupported(reason: Extract<SyncedHostFinalResult, { status: 'unsupported' }>['reason']): never { throw new Refused({ status: 'unsupported', reason }) }
@@ -131,11 +132,14 @@ function guards(input: Guards, persisted: HostSide[], sides: HostSide[], groups:
   }
   return required
 }
-function checkTitlesAndHeadings(persisted: Hosts, before: HostSide[], after: HostSide[]): void {
+function checkTitlesAndHeadings(persisted: Hosts, before: HostSide[], after: HostSide[], created?: CreatedTemplateHost): void {
   const afterById = new Map(after.map(side => [side.documentId, side]))
   for (const original of before) {
     const p = persisted.get(original.documentId)!, a = afterById.get(original.documentId)!
     if (p.detail.title !== original.content.title || p.detail.title !== a.content.title) unsupported('title-change')
+    // Only the newly inserted, verified empty template host has no old heading
+    // identities to rewrite. Existing public host mutations retain this guard.
+    if (created?.documentId === original.documentId && !p.content.blocks.length && sameHostContent(original.content, a.content)) continue
     const oldTargets = getMarkdownHeadingTargets(p.content.blocks, p.content.title)
     for (const side of [original, a]) if (getMarkdownHeadingRewrites(oldTargets,
       getMarkdownHeadingTargets(side.content.blocks, side.content.title)).size) unsupported('heading-rewrite')
@@ -341,61 +345,63 @@ function plannedSides(input: HostFinalInput | HostInsertInput | HostMoveInput): 
 function applyHostMutation(db: Database.Database, value: unknown, method: HostApplyMethod): SyncedHostFinalResult {
   const parsed = validated(() => validateSyncedStructureInput(value))
   if ('status' in parsed) return parsed
-  const request: SyncedStructureInput = parsed
-  return mutation(db, () => {
-    const requestHash = hostHash({ method, input: request }), previous = replay(db, request.clientOperationId, requestHash)
-    if (method === 'applySyncedHostCommand' && isHostCreateInput(request)) return applyCreate(db, request, requestHash, previous)
-    if (previous && 'createdLifecycle' in previous) throw new Error('原create回执不能当其它结构请求重放。')
-    const input = acceptedInput(request, method), after = plannedSides(input)
-    if (previous) {
-      if (!exactSet(previous.hosts.map(host => host.documentId), input.hostsWorkingBefore.map(host => host.documentId))
-        || !exactSet(previous.groups.map(group => group.groupId), input.groups.map(group => group.groupId))) throw new Error('原结构回执与同一请求的参与者不一致。')
-      const previousBefore = new Map(input.hostsWorkingBefore.map(host => [host.documentId, host])), previousAfter = new Map(after.map(side => [side.documentId, side.content]))
-      for (const saved of previous.hosts) {
-        const before = previousBefore.get(saved.documentId)!, after = previousAfter.get(saved.documentId)!
-        if (!hostEqual(saved.logicalBefore, before.workingBefore) || !sameHostContent({ title: saved.after.title, summary: saved.after.summary,
-          blocks: saved.after.blocks.map(({ sortOrder: _sortOrder, ...block }) => block) }, after)) throw new Error('原结构回执与同一请求完整 W/A 不一致。')
-      }
-      const logicalChange = input.hostsWorkingBefore.some(host => !sameHostContent(host.workingBefore, previousAfter.get(host.documentId)!))
-      if (logicalChange !== (previous.historyToken !== null)) throw new Error('原结构回执的本次可逆 token 与原 W/A 不一致。')
-      return previous
+  return mutation(db, () => applyHostMutationOwned(db, parsed, method))
+}
+function applyHostMutationOwned(db: Database.Database, request: SyncedStructureInput, method: HostApplyMethod,
+  createdTemplate?: CreatedTemplateHost): SyncedMainHostSuccess {
+  const requestHash = hostHash({ method, input: request }), previous = replay(db, request.clientOperationId, requestHash)
+  if (method === 'applySyncedHostCommand' && isHostCreateInput(request)) return applyCreate(db, request, requestHash, previous)
+  if (previous && 'createdLifecycle' in previous) throw new Error('原create回执不能当其它结构请求重放。')
+  const input = acceptedInput(request, method), after = plannedSides(input)
+  if (previous) {
+    if (!exactSet(previous.hosts.map(host => host.documentId), input.hostsWorkingBefore.map(host => host.documentId))
+      || !exactSet(previous.groups.map(group => group.groupId), input.groups.map(group => group.groupId))) throw new Error('原结构回执与同一请求的参与者不一致。')
+    const previousBefore = new Map(input.hostsWorkingBefore.map(host => [host.documentId, host])), previousAfter = new Map(after.map(side => [side.documentId, side.content]))
+    for (const saved of previous.hosts) {
+      const before = previousBefore.get(saved.documentId)!, after = previousAfter.get(saved.documentId)!
+      if (!hostEqual(saved.logicalBefore, before.workingBefore) || !sameHostContent({ title: saved.after.title, summary: saved.after.summary,
+        blocks: saved.after.blocks.map(({ sortOrder: _sortOrder, ...block }) => block) }, after)) throw new Error('原结构回执与同一请求完整 W/A 不一致。')
     }
-    const all = readAllHosts(db), groups = allGroups(db), ids = input.hostsWorkingBefore.map(item => item.documentId), hosts = participating(all, ids)
-    checkUpdatedAt(input.hostsWorkingBefore.map(item => ({ documentId: item.documentId, expectedUpdatedAt: item.expectedPersistedUpdatedAt })), hosts, groups)
-    const persisted = persistedSides(hosts), before = input.hostsWorkingBefore.map(item => ({ documentId: item.documentId, content: item.workingBefore }))
-    if (input.mode === 'command' && !hasSyncedInsertWorkingStructure(persisted[0].content, before[0].content)) unsupported('working-structure')
-    checkTitlesAndHeadings(hosts, before, after); nonempty(after)
-    const required = guards(input, persisted, [...before, ...after], groups, hosts)
-    const workspace = new BlockIdentityRepository(db).getWorkspaceIdentity()
-    if (!isSyncedUuid(workspace.workspaceScope) || !isSyncedUuid(workspace.recoveryEpoch)) invalid('identity', '真实工作区身份无效。')
-    if (input.mode === 'host-final') checkReferenceAuthority(db, input, persisted, before, after, groups, workspace.workspaceScope)
-    else if (isHostInsertInput(input)) checkInsertAuthority(db, input, groups)
-    else assertSyncedHostMoveContext(before[0].content, after[0].content)
-    const now = time(hosts), acceptedBirths = births(db, [...before, ...after], hosts, now), graph = finalGraph(all, groups, after)
-    const physicalChange = after.some(side => !sameHostContent(hosts.get(side.documentId)!.content, side.content))
-    const afterById = new Map(after.map(side => [side.documentId, side]))
-    const logicalChange = before.some(side => !sameHostContent(side.content, afterById.get(side.documentId)!.content))
-    if (!physicalChange && !logicalChange && (input.mode === 'command' || !input.newRefSources.length)) return receipt(db,
-      result(db, input.clientOperationId, 'noop', null, before, required, []), requestHash, now)
-    prune(db, ids)
-    const affected = writeHosts(db, hosts, after, acceptedBirths, groups, graph, now, logicalChange)
-    let token: string | null = null
-    if (logicalChange) {
-      token = randomUUID()
-      const dependencies = hostReferencedGroups([...before, ...after])
-      const journal: HostJournal = { input, persisted: persisted.map(side => ({ ...side, updatedAt: hosts.get(side.documentId)!.detail.updatedAt })),
-        births: acceptedBirths, groups: [...dependencies].map(id => { const group = groups.get(id) ?? missing('group', id)
-          return { groupId: id, creationId: group.creationId, createdAt: group.createdAt, origin: group.origin } }), before, after }
-      const encoded = encodeHostJournal(journal)
-      const row: SyncedHostHistoryBranchRow = { id: token, action_json: encoded.action, before_json: encoded.before, after_json: encoded.after,
-        before_hash: encoded.beforeHash, after_hash: encoded.afterHash, created_at: now }
-      decodeHostJournal(row)
-      insertHostJournal(db, row)
-      appendHostHistory(db, ids, token, journal.groups, now)
-    }
-    for (const id of ids) assertHostChain(db, id)
-    return receipt(db, result(db, input.clientOperationId, 'applied', token, before, required, affected), requestHash, now)
-  })
+    const logicalChange = input.hostsWorkingBefore.some(host => !sameHostContent(host.workingBefore, previousAfter.get(host.documentId)!))
+    if (logicalChange !== (previous.historyToken !== null)) throw new Error('原结构回执的本次可逆 token 与原 W/A 不一致。')
+    return previous
+  }
+  const all = readAllHosts(db), groups = allGroups(db), ids = input.hostsWorkingBefore.map(item => item.documentId), hosts = participating(all, ids)
+  checkUpdatedAt(input.hostsWorkingBefore.map(item => ({ documentId: item.documentId, expectedUpdatedAt: item.expectedPersistedUpdatedAt })), hosts, groups)
+  const persisted = persistedSides(hosts), before = input.hostsWorkingBefore.map(item => ({ documentId: item.documentId, content: item.workingBefore }))
+  if (input.mode === 'command' && !hasSyncedInsertWorkingStructure(persisted[0].content, before[0].content)) unsupported('working-structure')
+  checkTitlesAndHeadings(hosts, before, after, createdTemplate); nonempty(after)
+  const required = guards(input, persisted, [...before, ...after], groups, hosts)
+  const workspace = new BlockIdentityRepository(db).getWorkspaceIdentity()
+  if (!isSyncedUuid(workspace.workspaceScope) || !isSyncedUuid(workspace.recoveryEpoch)) invalid('identity', '真实工作区身份无效。')
+  if (input.mode === 'host-final') checkReferenceAuthority(db, input, persisted, before, after, groups, workspace.workspaceScope)
+  else if (isHostInsertInput(input)) checkInsertAuthority(db, input, groups)
+  else assertSyncedHostMoveContext(before[0].content, after[0].content)
+  const now = time(hosts), acceptedBirths = births(db, [...before, ...after], hosts, now), graph = finalGraph(all, groups, after)
+  const physicalChange = after.some(side => !sameHostContent(hosts.get(side.documentId)!.content, side.content))
+  const afterById = new Map(after.map(side => [side.documentId, side]))
+  const logicalChange = before.some(side => !sameHostContent(side.content, afterById.get(side.documentId)!.content))
+  if (!physicalChange && !logicalChange && (input.mode === 'command' || !input.newRefSources.length)) return receipt(db,
+    result(db, input.clientOperationId, 'noop', null, before, required, []), requestHash, now)
+  prune(db, ids)
+  const affected = writeHosts(db, hosts, after, acceptedBirths, groups, graph, now, logicalChange)
+  createdTemplate?.syncReferences()
+  let token: string | null = null
+  if (logicalChange) {
+    token = randomUUID()
+    const dependencies = hostReferencedGroups([...before, ...after])
+    const journal: HostJournal = { input, persisted: persisted.map(side => ({ ...side, updatedAt: hosts.get(side.documentId)!.detail.updatedAt })),
+      births: acceptedBirths, groups: [...dependencies].map(id => { const group = groups.get(id) ?? missing('group', id)
+        return { groupId: id, creationId: group.creationId, createdAt: group.createdAt, origin: group.origin } }), before, after }
+    const encoded = encodeHostJournal(journal)
+    const row: SyncedHostHistoryBranchRow = { id: token, action_json: encoded.action, before_json: encoded.before, after_json: encoded.after,
+      before_hash: encoded.beforeHash, after_hash: encoded.afterHash, created_at: now }
+    decodeHostJournal(row)
+    insertHostJournal(db, row)
+    appendHostHistory(db, ids, token, journal.groups, now)
+  }
+  for (const id of ids) assertHostChain(db, id)
+  return receipt(db, result(db, input.clientOperationId, 'applied', token, before, required, affected), requestHash, now)
 }
 
 export function applySyncedHostFinal(db: Database.Database, value: unknown): SyncedHostFinalResult {
@@ -403,6 +409,50 @@ export function applySyncedHostFinal(db: Database.Database, value: unknown): Syn
 }
 export function applySyncedHostCommand(db: Database.Database, value: unknown): SyncedHostFinalResult {
   return applyHostMutation(db, value, 'applySyncedHostCommand')
+}
+
+/** Store-only creation of a new template host. Main owns the outer transaction
+ * and derives reference authority from today's actual workspace and groups.
+ * The callback inserts only the ordinary document row; it cannot commit an
+ * unregistered placeholder or expose a generic caller-owned mutation path. */
+export function createSyncedTemplateDocument(db: Database.Database,
+  createEmptyDocument: () => { documentId: string; blocks: SyncedStableBlockDraft[]; syncReferences: () => void }): string {
+  let documentId: string | null = null
+  const applied = mutation(db, () => {
+    const existing = new Set((db.prepare('SELECT id FROM documents').all() as Array<{ id: string }>).map(row => row.id))
+    const copied = createEmptyDocument()
+    if (!isSyncedUuid(copied.documentId) || existing.has(copied.documentId)) invalid('identity', '模板必须创建真实的新宿主。')
+    const fresh = host(db, copied.documentId)
+    if (fresh.content.blocks.length) invalid('forest', '模板宿主正文只能由结构仓库写入。')
+    const references = copied.blocks.filter(block => block.type === 'synced-block')
+    if (!references.length) invalid('forest', '同步模板必须包含真实引用。')
+    const groups = allGroups(db), workspace = new BlockIdentityRepository(db).getWorkspaceIdentity()
+    const required = new Map(references.map(block => {
+      const id = parseSyncedBlockPayload(block.content).groupId
+      return [id, groups.get(id) ?? missing('group', id)]
+    }))
+    const content = { ...fresh.content, blocks: copied.blocks }
+    const input = validateSyncedStructureInput({ clientOperationId: randomUUID(), mode: 'host-final', reason: 'paste',
+      hostsWorkingBefore: [{ documentId: copied.documentId, expectedPersistedUpdatedAt: fresh.detail.updatedAt, workingBefore: content }],
+      finalAfter: [{ documentId: copied.documentId, ...content }], expectedInstances: [],
+      groups: [...required.values()].map(group => ({ groupId: group.groupId,
+        expectedRevision: group.revision, expectedTopologyRevision: group.topologyRevision })),
+      newRefSources: references.map(block => {
+        const group = required.get(parseSyncedBlockPayload(block.content).groupId)!
+        return { instanceId: block.id, kind: 'internal', identity: {
+          workspaceScope: workspace.workspaceScope, groupId: group.groupId, creationId: group.creationId } }
+      }) })
+    // A new document starts at its full template baseline (P != W = A). The
+    // existing kernel registers all births/instances and writes its exact ACK
+    // without inventing a partial-insert Undo action for document creation.
+    const result = applyHostMutationOwned(db, input, 'applySyncedHostFinal', {
+      documentId: copied.documentId, syncReferences: copied.syncReferences })
+    if (result.status !== 'applied' || result.historyToken !== null) throw new Error('模板初始宿主必须完整落地且没有局部撤销记录。')
+    documentId = copied.documentId
+    return result
+  })
+  if (applied.status !== 'applied' || documentId === null) throw new Error('模板中的同步引用无效或已失效，未创建文档。')
+  return documentId
 }
 export function restoreSyncedHostOperation(db: Database.Database, value: unknown): SyncedHostFinalResult {
   const parsed = validated(() => validateSyncedRestoreHostInput(value))

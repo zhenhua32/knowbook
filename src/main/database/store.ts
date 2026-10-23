@@ -81,6 +81,7 @@ import { CURRENT_DATABASE_SCHEMA_VERSION } from './schema-version'
 import { assertNoUnsupportedSyncedContent, assertSyncedBlockSchema, installSyncedBlockSchema } from './synced-schema'
 import { assertSyncedLifecycleSchema, installSyncedLifecycleSchema } from './synced-lifecycle-schema'
 import { BlockIdentityRepository } from './block-identities'
+import { createSyncedTemplateDocument } from './synced-host-final'
 import { DatabaseSavedViewNameError } from './saved-view-form'
 import { parseWorkspaceEventDetails } from '@shared/workspaceEventDetails'
 import { DocumentRecoveryRepository } from './document-recovery'
@@ -1424,7 +1425,7 @@ export class KnowbookStore {
   private createDocumentSnapshot(parentId: string | null, requestedTitle: string, summary: string, sourceBlocks: DocumentBlockDraft[], date?: string): string {
     if (parentId !== null) this.templateText(parentId, 'Parent document ID', 200)
     const source = this.prepareTemplateBlocks(sourceBlocks)
-    return this.db.transaction(() => {
+    const createEmptyDocument = () => {
       const parent = parentId ? this.db.prepare('SELECT id, path FROM documents WHERE id = ?').get(parentId) as ParentDocumentRow | undefined : undefined
       if (parentId && !parent) throw new Error('Parent document not found.')
       const title = this.generateSiblingTitle(parentId, this.normalizeDocumentTitle(requestedTitle))
@@ -1453,13 +1454,21 @@ export class KnowbookStore {
       assertDatabaseViewStructure(blocks)
       this.db.prepare(`INSERT INTO documents (id, title, slug, parent_id, path, summary, sort_order, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(id, title, `doc-${id}`, parentId, path, expand(summary).trim(), sortOrder, now, now)
+      return { documentId: id, blocks, title, path, now,
+        syncReferences: () => this.resyncLinksForReferenceChanges([title, path, ...blocks.map(block => block.id)], [id]) }
+    }
+    if (source.some(block => block.type === 'synced-block')) {
+      return createSyncedTemplateDocument(this.db, createEmptyDocument)
+    }
+    return this.db.transaction(() => {
+      const { documentId: id, blocks, now, syncReferences } = createEmptyDocument()
       const insert = this.db.prepare(`INSERT INTO blocks
         (id, document_id, parent_block_id, sort_order, type, content, checked, depth, tags_json, language, list_start, markdown_format_json, highlight, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       blocks.forEach((block, index) => insert.run(block.id, id, block.parentBlockId, index, block.type, block.content,
         block.checked ? 1 : 0, block.depth, JSON.stringify(block.tags ?? []), block.language ?? null, block.listStart ?? null,
         block.markdownFormat ? JSON.stringify(block.markdownFormat) : null, block.highlight ?? null, now, now))
-      this.resyncLinksForReferenceChanges([title, path, ...blocks.map((block) => block.id)], [id])
+      syncReferences()
       return id
     })()
   }
