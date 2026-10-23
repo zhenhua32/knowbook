@@ -37,6 +37,41 @@ function freeze<T>(value: T): T {
   return value
 }
 
+/** Actual document parents form a separate forest from the depth-bounded
+ * block graph. Keep the ordinary writer's unbounded title length and exact
+ * sibling spelling: deletion promotion can produce Case/case siblings.
+ * Historical paths may be empty, duplicated or drifted by the former astral
+ * prefix SQL. They remain literal source data, never tree identity or a value
+ * to normalize while observing an immutable source. */
+function assertDocumentTree(documents: readonly DocumentFact[]): void {
+  const byId = new Map(documents.map(document => [document.documentId, document]))
+  if (byId.size !== documents.length) return invalid('文档身份重复')
+  const siblings = new Map<string | null, Set<string>>()
+  for (const document of documents) {
+    const title = document.title
+    if (!title || title !== title.trim() || title === '.' || title === '..' || /[/\\\x00-\x1f]/.test(title))
+      return invalid('文档标题不属于原普通writer接受域')
+    if (document.parentId !== null && !byId.has(document.parentId)) return invalid('文档父身份不在完整来源闭集')
+    const names = siblings.get(document.parentId) ?? new Set<string>()
+    if (names.has(title)) return invalid('文档同级标题完全重复')
+    names.add(title); siblings.set(document.parentId, names)
+  }
+  // Each parent edge is followed once across all chains. No recursive call,
+  // path-prefix inference or new document-depth limit is involved. Starting at
+  // every document also rejects a detached cycle with no reachable root.
+  const complete = new Set<string>()
+  for (const document of documents) {
+    const chain = new Set<string>()
+    let next: DocumentFact | undefined = document
+    while (next && !complete.has(next.documentId)) {
+      if (chain.has(next.documentId)) return invalid('文档父身份形成环')
+      chain.add(next.documentId)
+      next = next.parentId === null ? undefined : byId.get(next.parentId)
+    }
+    for (const id of chain) complete.add(id)
+  }
+}
+
 /** New directed raw leaf, deliberately independent of publication records.
  * No document is passed to validateInitialRecord, no catalog is remapped, and
  * no observer/guard/effective/K/public reader is called. The legacy readers and
@@ -89,6 +124,7 @@ export function readRawCapsule2PhysicalGraphOwned(db: Database.Database): RawCap
       createdAt: host.createdAt, updatedAt: host.detail.updatedAt, parentId: host.parentId, sortOrder: host.sortOrder,
       blocks: host.content.blocks, births: [...host.births].sort(([a], [b]) => compare(a, b)) }
   })
+  assertDocumentTree(documents)
   const wires = snapshots.map(item => ({ kind: 'synced-group' as const, id: item.groupId, creationId: item.creationId,
     createdAt: item.createdAt, origin: item.origin, bindings: item.bindings, blocks: item.blocks }))
   // validateSyncedWorkspaceGraph has no document title/publication-record rule.
