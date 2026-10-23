@@ -71,6 +71,10 @@ export async function createPublicationHttpServer() {
       res.writeHead(200, { ...(omit ? {} : { ETag: etag(existing) }), 'Content-Length': existing.length }); res.end(method === 'HEAD' ? undefined : existing)
     } catch (error) { hookErrors.push(error); if (!res.headersSent && !res.destroyed) res.writeHead(500).end(); else res.destroy() }
   })
+  // Synchronous Main/SQLite work can outlast Node's idle keep-alive timer and
+  // let it reset the next request before the fixture can receive it. Keep idle
+  // sockets until close() owns teardown; explicit disconnect hooks still fail.
+  server.keepAliveTimeout = 0
   const port = await listenOnFetchSafePort(server)
   return { url: 'http://127.0.0.1:' + port + '/', files, requests, hookErrors,
     setHook: (next: PublicationHttpHook | undefined) => { hook = next },
