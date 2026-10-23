@@ -197,7 +197,7 @@ test('process guard stops only exact live persisted identity and refuses unknown
     list: async () => [{ ...observed, startToken: 'windows:reused', argv: [expected.executable, resolve('other-script.cjs')] }], terminate: () => assert.fail('reused PID must not be killed') }), [])
 })
 
-test('Windows process guard observes real creation token and waits for an owned Electron Node process to exit', { skip: process.platform !== 'win32' }, async () => {
+test('Windows process guard observes real creation token and waits for an owned Electron Node process to exit', { skip: process.platform !== 'win32' }, async (context) => {
   const profile = mkdtempSync(join(tmpdir(), 'knowbook restore process '))
   const serviceEntry = join(profile, 'system-plugins', 'runtime', 'fixture', 'revision', 'service.cjs')
   mkdirSync(join(serviceEntry, '..'), { recursive: true })
@@ -217,6 +217,22 @@ test('Windows process guard observes real creation token and waits for an owned 
     }] })
     assert.deepEqual(result, [child.pid])
     await ended
+  } catch (error) {
+    // execFile's retained cause can contain every observed command line. Emit
+    // only fixed phase markers and bounded process-exit metadata, never its
+    // message, command, stdout or arbitrary PowerShell stderr.
+    const cause = error instanceof Error ? error.cause : undefined
+    if (cause instanceof Error) {
+      const result = cause as Error & { code?: unknown; signal?: unknown; killed?: unknown; stderr?: unknown }
+      const phases = typeof result.stderr === 'string' ? result.stderr.split(/\r?\n/).filter(line =>
+        /^knowbook-restore-process:(started|argv-ready|reading-processes|encoding-result|complete)$/.test(line)).slice(-5) : []
+      context.diagnostic(JSON.stringify({ kind: 'restore-process-query-failure',
+        code: typeof result.code === 'number' && Number.isSafeInteger(result.code) ? result.code
+          : typeof result.code === 'string' && /^E[A-Z0-9_]{1,63}$/.test(result.code) ? result.code : null,
+        signal: typeof result.signal === 'string' && /^SIG[A-Z0-9]{1,16}$/.test(result.signal) ? result.signal : null,
+        killed: result.killed === true, phases }))
+    }
+    throw error
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
     await ended

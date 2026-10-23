@@ -23,6 +23,7 @@ export async function listWindowsRestoreProcesses(): Promise<RestoreObservedProc
   if (process.platform !== 'win32') throw new Error('数据库维护恢复目前仅支持 Windows。')
   const script = `$ErrorActionPreference='Stop'
 [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false)
+[Console]::Error.WriteLine('knowbook-restore-process:started')
 Add-Type -TypeDefinition @'
 using System; using System.Runtime.InteropServices;
 public static class KnowBookRestoreArgv {
@@ -30,7 +31,9 @@ public static class KnowBookRestoreArgv {
  [DllImport("kernel32.dll")] public static extern IntPtr LocalFree(IntPtr memory);
 }
 '@
+[Console]::Error.WriteLine('knowbook-restore-process:argv-ready')
 $result=[System.Collections.Generic.List[object]]::new()
+[Console]::Error.WriteLine('knowbook-restore-process:reading-processes')
 foreach($item in Get-CimInstance Win32_Process -Property ProcessId,Name,ExecutablePath,CreationDate,CommandLine) {
  if ($item.Name -notmatch '(?i)knowbook|electron|node' -and $item.CommandLine -notlike '*knowbookService*') { continue }
  $parts=$null
@@ -42,7 +45,9 @@ foreach($item in Get-CimInstance Win32_Process -Property ProcessId,Name,Executab
  }
  $result.Add([pscustomobject]@{pid=[int]$item.ProcessId; name=$item.Name; executable=$item.ExecutablePath; startToken=('windows:'+$item.CreationDate.ToUniversalTime().Ticks.ToString()); argv=$parts})
 }
-ConvertTo-Json -InputObject $result.ToArray() -Depth 4 -Compress`
+[Console]::Error.WriteLine('knowbook-restore-process:encoding-result')
+ConvertTo-Json -InputObject $result.ToArray() -Depth 4 -Compress
+[Console]::Error.WriteLine('knowbook-restore-process:complete')`
   let stdout: string
   try {
     ;({ stdout } = await promisify(execFile)('powershell.exe', [
