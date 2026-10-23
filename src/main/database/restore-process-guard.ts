@@ -18,36 +18,59 @@ export interface RestoreObservedProcess {
   argv: string[] | null
 }
 
+/** A bounded diagnostic codec, never raw execFile stderr or process data. */
+export function parseRestoreProcessQueryTrace(stderr: unknown): {
+  phases: string[]; timings: Array<{ phase: string; elapsedMs: number }>
+} {
+  const phases: string[] = [], timings: Array<{ phase: string; elapsedMs: number }> = []
+  if (typeof stderr !== 'string') return { phases, timings }
+  for (const line of stderr.split(/\r?\n/)) {
+    if (/^knowbook-restore-process:(started|argv-ready|reading-processes|encoding-result|complete)$/.test(line)) phases.push(line)
+    const match = /^knowbook-restore-timing:(started|argv-ready|reading-processes|encoding-result|complete):([0-9]{1,6})$/.exec(line)
+    if (match && Number(match[2]) <= 120_000) timings.push({ phase: match[1], elapsedMs: Number(match[2]) })
+  }
+  return { phases: phases.slice(-5), timings: timings.slice(-5) }
+}
+
 /** Enumerates argv as data; never executes any discovered command. */
 export async function listWindowsRestoreProcesses(): Promise<RestoreObservedProcess[]> {
   if (process.platform !== 'win32') throw new Error('数据库维护恢复目前仅支持 Windows。')
+  // Run-only P/Invoke bindings keep the native argv/free signatures without
+  // starting a C# compiler for each fresh snapshot.
   const script = `$ErrorActionPreference='Stop'
 [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false)
-[Console]::Error.WriteLine('knowbook-restore-process:started')
-Add-Type -TypeDefinition @'
-using System; using System.Runtime.InteropServices;
-public static class KnowBookRestoreArgv {
- [DllImport("shell32.dll",CharSet=CharSet.Unicode)] public static extern IntPtr CommandLineToArgvW(string command,out int count);
- [DllImport("kernel32.dll")] public static extern IntPtr LocalFree(IntPtr memory);
+$queryClock=[Diagnostics.Stopwatch]::StartNew()
+function Write-KnowBookRestorePhase([string]$phase) {
+ [Console]::Error.WriteLine('knowbook-restore-process:'+$phase)
+ [Console]::Error.WriteLine('knowbook-restore-timing:'+$phase+':'+$queryClock.ElapsedMilliseconds)
 }
-'@
-[Console]::Error.WriteLine('knowbook-restore-process:argv-ready')
+Write-KnowBookRestorePhase 'started'
+$assembly=[AppDomain]::CurrentDomain.DefineDynamicAssembly([Reflection.AssemblyName]::new('KnowBookRestoreInterop'),[Reflection.Emit.AssemblyBuilderAccess]::Run)
+$module=$assembly.DefineDynamicModule('Native')
+$type=$module.DefineType('KnowBookRestoreArgv',[Reflection.TypeAttributes]'Public,Abstract,Sealed')
+$attributes=[Reflection.MethodAttributes]'Public,Static,PinvokeImpl'
+$method=$type.DefinePInvokeMethod('CommandLineToArgvW','shell32.dll','CommandLineToArgvW',$attributes,[Reflection.CallingConventions]::Standard,[IntPtr],[Type[]]@([string],([int]).MakeByRefType()),[Runtime.InteropServices.CallingConvention]::Winapi,[Runtime.InteropServices.CharSet]::Unicode)
+$method.SetImplementationFlags([Reflection.MethodImplAttributes]::PreserveSig)
+$method=$type.DefinePInvokeMethod('LocalFree','kernel32.dll','LocalFree',$attributes,[Reflection.CallingConventions]::Standard,[IntPtr],[Type[]]@([IntPtr]),[Runtime.InteropServices.CallingConvention]::Winapi,[Runtime.InteropServices.CharSet]::Unicode)
+$method.SetImplementationFlags([Reflection.MethodImplAttributes]::PreserveSig)
+$native=$type.CreateType()
+Write-KnowBookRestorePhase 'argv-ready'
 $result=[System.Collections.Generic.List[object]]::new()
-[Console]::Error.WriteLine('knowbook-restore-process:reading-processes')
+Write-KnowBookRestorePhase 'reading-processes'
 foreach($item in Get-CimInstance Win32_Process -Property ProcessId,Name,ExecutablePath,CreationDate,CommandLine) {
  if ($item.Name -notmatch '(?i)knowbook|electron|node' -and $item.CommandLine -notlike '*knowbookService*') { continue }
  $parts=$null
  if ($item.CommandLine) {
-  $count=0; $memory=[KnowBookRestoreArgv]::CommandLineToArgvW($item.CommandLine,[ref]$count)
+  $count=0; $memory=$native::CommandLineToArgvW($item.CommandLine,[ref]$count)
   if($memory -eq [IntPtr]::Zero) { throw 'Cannot inspect process arguments.' }
   try { $parts=@(for($i=0;$i -lt $count;$i++) { [Runtime.InteropServices.Marshal]::PtrToStringUni([Runtime.InteropServices.Marshal]::ReadIntPtr($memory,$i*[IntPtr]::Size)) }) }
-  finally { [void][KnowBookRestoreArgv]::LocalFree($memory) }
+  finally { [void]$native::LocalFree($memory) }
  }
  $result.Add([pscustomobject]@{pid=[int]$item.ProcessId; name=$item.Name; executable=$item.ExecutablePath; startToken=('windows:'+$item.CreationDate.ToUniversalTime().Ticks.ToString()); argv=$parts})
 }
-[Console]::Error.WriteLine('knowbook-restore-process:encoding-result')
+Write-KnowBookRestorePhase 'encoding-result'
 ConvertTo-Json -InputObject $result.ToArray() -Depth 4 -Compress
-[Console]::Error.WriteLine('knowbook-restore-process:complete')`
+Write-KnowBookRestorePhase 'complete'`
   let stdout: string
   try {
     ;({ stdout } = await promisify(execFile)('powershell.exe', [
@@ -79,6 +102,7 @@ export async function stopDatabaseRestoreProcesses(input: {
   terminate?: (pid: number) => void
 }): Promise<number[]> {
   const list = input.list ?? listWindowsRestoreProcesses
+  const terminating = new Map<number, string>()
   const root = await resolveSystemPluginPhysicalPath(resolve(input.userDataRoot, 'system-plugins'))
   const isProfileEntry = async (arg: string) => {
     if (!isAbsolute(arg)) return false
@@ -92,7 +116,14 @@ export async function stopDatabaseRestoreProcesses(input: {
     for (const snapshot of all) {
       let observed = snapshot
       if (observed.pid === process.pid) continue
-      if (!observed.argv && /knowbook|electron/i.test(basename(observed.executable ?? observed.name ?? ''))) {
+      // After an authorized termination, any remaining row for that original
+      // creation is still present, even if its argv became unreadable or
+      // changed. Only a fresh absence can release this wait; this map never
+      // authorizes another termination or replacement.
+      const token = terminating.get(observed.pid)
+      if (token !== undefined && observed.startToken === token) { owned.push(observed); continue }
+      const expected = input.identities.find((identity) => identity.pid === observed.pid)
+      if (!observed.argv && (expected || /knowbook|electron/i.test(basename(observed.executable ?? observed.name ?? '')))) {
         // Windows can return a final process row with null command line while
         // that process is exiting. Only a fresh absence proves it is gone;
         // a still-live unreadable host must continue to block replacement.
@@ -103,7 +134,6 @@ export async function stopDatabaseRestoreProcesses(input: {
           throw new Error(`无法读取后台进程 PID ${observed.pid} 的命令，不能确保数据库已停止使用。请退出相关进程或重启系统后重试。`)
         }
       }
-      const expected = input.identities.find((identity) => identity.pid === observed.pid)
       // Metadata PID reuse alone is not ownership; never terminate the replacement process.
       const sameIdentity = expected && matches(expected, observed)
       let profileEntry = false
@@ -119,9 +149,11 @@ export async function stopDatabaseRestoreProcesses(input: {
   const initial = await inspect()
   const stopped: number[] = []
   for (const observed of initial) {
+    if (terminating.has(observed.pid)) continue
     const current = (await inspect()).find((item) => item.pid === observed.pid)
     if (!current) continue
     ;(input.terminate ?? ((pid) => process.kill(pid, 'SIGTERM')))(current.pid)
+    terminating.set(current.pid, current.startToken)
     stopped.push(current.pid)
   }
   const deadline = Date.now() + 10_000

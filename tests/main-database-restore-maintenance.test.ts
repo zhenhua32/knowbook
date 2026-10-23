@@ -8,7 +8,7 @@ import test from 'node:test'
 import { spawn } from 'node:child_process'
 import { KnowbookStore } from '../src/main/database/store'
 import { parseDatabaseRestoreArgument, recoverInterruptedDatabaseRestore, restoreKnowbookDatabase } from '../src/main/database/restore-maintenance'
-import { listWindowsRestoreProcesses, stopDatabaseRestoreProcesses, type RestoreProcessIdentity, type RestoreObservedProcess } from '../src/main/database/restore-process-guard'
+import { listWindowsRestoreProcesses, parseRestoreProcessQueryTrace, stopDatabaseRestoreProcesses, type RestoreProcessIdentity, type RestoreObservedProcess } from '../src/main/database/restore-process-guard'
 import { unknownGroup27 } from './helpers/synced-lifecycle-fixture'
 
 const require = createRequire(import.meta.url)
@@ -224,13 +224,11 @@ test('Windows process guard observes real creation token and waits for an owned 
     const cause = error instanceof Error ? error.cause : undefined
     if (cause instanceof Error) {
       const result = cause as Error & { code?: unknown; signal?: unknown; killed?: unknown; stderr?: unknown }
-      const phases = typeof result.stderr === 'string' ? result.stderr.split(/\r?\n/).filter(line =>
-        /^knowbook-restore-process:(started|argv-ready|reading-processes|encoding-result|complete)$/.test(line)).slice(-5) : []
       context.diagnostic(JSON.stringify({ kind: 'restore-process-query-failure',
         code: typeof result.code === 'number' && Number.isSafeInteger(result.code) ? result.code
           : typeof result.code === 'string' && /^E[A-Z0-9_]{1,63}$/.test(result.code) ? result.code : null,
         signal: typeof result.signal === 'string' && /^SIG[A-Z0-9]{1,16}$/.test(result.signal) ? result.signal : null,
-        killed: result.killed === true, phases }))
+        killed: result.killed === true, ...parseRestoreProcessQueryTrace(result.stderr) }))
     }
     throw error
   } finally {
