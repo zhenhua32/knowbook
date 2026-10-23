@@ -3,6 +3,7 @@ import type { ElectronApplication } from 'playwright'
 import { writeFileSync } from 'node:fs'
 import { getDatabaseWorkspaceText } from '../src/renderer/src/features/database/databaseText'
 import { hasBuiltElectronApp, withElectronApp } from './helpers/electron'
+import { attachFailureDiagnostic } from './helpers/failure-diagnostics'
 
 export type Language = 'en-US' | 'zh-CN'
 type Handler = (event: unknown, ...input: unknown[]) => unknown | Promise<unknown>
@@ -11,8 +12,36 @@ type Probe = typeof globalThis & { __bulkToolbarWrites?: WriteRequest[] }
 const sourceName = 'Bulk toolbar records'
 
 export async function settle(page: Page): Promise<void> {
-  await expect.poll(() => page.locator('.sidebar').evaluate(element => element.getAnimations({ subtree: true })
-    .filter(animation => animation.playState === 'running' || animation.pending).length)).toBe(0)
+  let lastPredicateSample: { count: number; sampledAt: string } | undefined
+  try {
+    await expect.poll(async () => {
+      const count = await page.locator('.sidebar').evaluate(element => element.getAnimations({ subtree: true })
+        .filter(animation => animation.playState === 'running' || animation.pending).length)
+      lastPredicateSample = { count, sampledAt: new Date().toISOString() }
+      return count
+    }).toBe(0)
+  } catch (error) {
+    await attachFailureDiagnostic(test.info(), 'sidebar-settle-failure', { lastPredicateSample, assertionError: String(error) }, () =>
+      page.locator('.sidebar').evaluate(element => ({
+        sampledAt: performance.now(), viewport: [innerWidth, innerHeight], visibilityState: document.visibilityState,
+        focused: document.hasFocus(), reducedMotion: matchMedia('(prefers-reduced-motion: reduce)').matches,
+        animations: element.getAnimations({ subtree: true }).map(animation => {
+          const target = animation.effect instanceof KeyframeEffect ? animation.effect.target : null
+          const style = target instanceof Element ? getComputedStyle(target) : null
+          const timing = animation.effect?.getComputedTiming()
+          return { id: animation.id, name: animation instanceof CSSAnimation ? animation.animationName : null,
+            property: animation instanceof CSSTransition ? animation.transitionProperty : null,
+            playState: animation.playState, pending: animation.pending, playbackRate: animation.playbackRate,
+            currentTime: String(animation.currentTime), startTime: String(animation.startTime),
+            timelineTime: String(animation.timeline?.currentTime), timing: timing && { delay: timing.delay,
+              duration: String(timing.duration), iterations: String(timing.iterations), endTime: String(timing.endTime),
+              localTime: String(timing.localTime), progress: timing.progress },
+            target: target instanceof Element ? { tag: target.tagName, id: target.id, className: target.getAttribute('class') } : null,
+            style: style && { animation: style.animation, transition: style.transition, display: style.display } }
+        })
+      })))
+    throw error
+  }
   await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
 }
 

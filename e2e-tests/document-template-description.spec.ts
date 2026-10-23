@@ -1,6 +1,7 @@
 import { expect, test, type Locator, type Page, type TestInfo } from '@playwright/test'
 import type { ElectronApplication } from 'playwright'
 import { uiText, withElectronApp } from './helpers/electron'
+import { attachFailureDiagnostic } from './helpers/failure-diagnostics'
 
 const marker = 'DescriptionTailUnique20261009'
 const names = { alpha: 'Template Guide Alpha', beta: 'Template Guide Beta', empty: 'Template Guide Empty' }
@@ -217,15 +218,37 @@ for (const scenario of [
       await expect(fullDescription(page)).toHaveAttribute('open', '')
       await twoFrames(page)
       let tail = await textVisibility(explanation, marker), pages = 0
-      while (!tail.visible && pages < 40) {
-        await page.keyboard.press('PageDown')
-        await twoFrames(page)
-        expectFrame(await frameState(page))
-        tail = await textVisibility(explanation, marker)
-        pages++
+      const samples: unknown[] = [{ pages, tail, sampledAt: new Date().toISOString() }]
+      try {
+        while (!tail.visible && pages < 40) {
+          await page.keyboard.press('PageDown')
+          await twoFrames(page)
+          const frame = await frameState(page)
+          const sample = { pages: pages + 1, frame, tailBefore: tail, tailAfter: null as typeof tail | null, sampledAt: new Date().toISOString() }
+          samples.push(sample)
+          expectFrame(frame)
+          tail = await textVisibility(explanation, marker)
+          sample.tailAfter = tail
+          pages++
+        }
+        expect(tail.found).toBe(true)
+        expect(tail.visible, 'Native PageDown must make the searched final instruction fully visible and hit-testable').toBe(true)
+      } catch (error) {
+        await attachFailureDiagnostic(info, `${scenario.language}-native-pagedown-failure`, { tail, pages, samples, scenario, assertionError: String(error) }, () =>
+          explanation.evaluate(element => {
+            const ancestors = []
+            for (let ancestor: Element | null = element; ancestor; ancestor = ancestor.parentElement) {
+              const style = getComputedStyle(ancestor), rect = ancestor.getBoundingClientRect()
+              ancestors.push({ tag: ancestor.tagName, className: ancestor.getAttribute('class'),
+                scrollTop: ancestor.scrollTop, scrollHeight: ancestor.scrollHeight, clientHeight: ancestor.clientHeight,
+                overflowY: style.overflowY, scrollBehavior: style.scrollBehavior,
+                top: rect.top, bottom: rect.bottom })
+            }
+            return { sampledAt: performance.now(), viewport: [innerWidth, innerHeight], visibilityState: document.visibilityState,
+              focused: document.hasFocus(), activeElement: document.activeElement?.outerHTML.slice(0, 1_000), ancestors }
+          }))
+        throw error
       }
-      expect(tail.found).toBe(true)
-      expect(tail.visible, 'Native PageDown must make the searched final instruction fully visible and hit-testable').toBe(true)
       const read = await record(page, app, info, `${scenario.language}-full-tail-read-through-native-keyboard`, { tail, pages, focus })
       expect(read.viewport).toEqual(scenario.viewport)
       expect(read.theme).toBe(scenario.theme)

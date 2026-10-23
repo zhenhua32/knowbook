@@ -5,6 +5,7 @@ import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { forceKillOwnedPosixHost } from './posix-process-group'
 
 export type ElectronAppContext = {
   app: ElectronApplication
@@ -256,9 +257,14 @@ export async function closeElectronApp(
   if (hostPid && closedGracefully) await waitForProcessExit(hostPid, 1_000)
   const hostStillAlive = hostPid ? processIsAlive(hostPid)
     : childProcess.exitCode === null && childProcess.signalCode === null
+  if (!closedGracefully) console.warn(`Electron E2E close did not finish within its graceful deadline: ${JSON.stringify({
+    hostPid, hostStillAlive, launcherPid: childProcess.pid, exitCode: childProcess.exitCode, signalCode: childProcess.signalCode,
+    stdoutEnded: childProcess.stdout?.readableEnded, stderrEnded: childProcess.stderr?.readableEnded,
+    preserveDetachedChildren: Boolean(options.preserveDetachedChildren)
+  })}`)
   if (hostStillAlive) {
-    console.warn(`Electron E2E host ${String(hostPid ?? childProcess.pid)} exceeded graceful close; forcing ${options.preserveDetachedChildren ? 'host only' : 'owned process tree'}.`)
     if (process.platform === 'win32') {
+      console.warn(`Electron E2E host ${String(hostPid ?? childProcess.pid)} exceeded graceful close; forcing ${options.preserveDetachedChildren ? 'host only' : 'owned process tree'}.`)
       // Limit forced cleanup to this exact launched host and its children. Never
       // select by executable name: other isolated E2Es may use the same build.
       if (!hostPid) {
@@ -271,8 +277,8 @@ export async function closeElectronApp(
         windowsHide: true, stdio: 'ignore', timeout: 10_000
       })
     } else {
-      if (hostPid) process.kill(hostPid, 'SIGKILL')
-      else childProcess.kill('SIGKILL')
+      const result = forceKillOwnedPosixHost(childProcess, hostPid, options.preserveDetachedChildren)
+      console.warn(`Electron E2E host ${String(result.hostPid)} exceeded graceful close; forced POSIX cleanup: ${JSON.stringify(result)}`)
     }
     if (hostPid) await waitForProcessExit(hostPid, 10_000)
   }
