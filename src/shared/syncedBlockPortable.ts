@@ -100,7 +100,7 @@ const portableSourceScheme = new RegExp([...assetPrefix.slice(0, -2)].map(char =
  * The normal HTML grammar intentionally excludes the portable URI scheme. An
  * equal-length local parsing alias lets that same grammar locate destinations
  * without changing original UTF-16 ranges or its code/literal exclusions. */
-export function collectSyncedMarkdownAssetDestinations(source: string): MarkdownDestination[] {
+function collectAssetDestinations(source: string, readPortable: (uri: string) => string): MarkdownDestination[] {
   const schemes = new Map<number, { scheme: string; alias: string }>()
   const parseSource = source.replace(portableSourceScheme, (scheme: string, from: number) => {
     const alias = 'file:///' + '_'.repeat(scheme.length - 8)
@@ -120,8 +120,7 @@ export function collectSyncedMarkdownAssetDestinations(source: string): Markdown
       const element = parseFragment(`<a href="${raw.replace(/"/g, '&quot;')}"></a>`).childNodes[0]
       const original = element && 'attrs' in element ? element.attrs.find(attr => attr.name === 'href')?.value : undefined
       if (original && /^\s*knowbook-asset:/i.test(original)) {
-        parseSyncedPortableAssetUri(original)
-        url = original
+        url = readPortable(original)
       } else if (original !== undefined) url = original.trim()
       else return invalidAsset()
     } else {
@@ -129,11 +128,20 @@ export function collectSyncedMarkdownAssetDestinations(source: string): Markdown
       if (scheme !== undefined) {
         if (!url.startsWith(scheme.alias)) return invalidAsset()
         url = scheme.scheme + url.slice(scheme.alias.length)
-        parseSyncedPortableAssetUri(url)
+        url = readPortable(url)
       }
     }
     return assetUrl(url) ? [{ ...destination, url }] : []
   })
+}
+export function collectSyncedMarkdownAssetDestinations(source: string): MarkdownDestination[] {
+  return collectAssetDestinations(source, uri => { parseSyncedPortableAssetUri(uri); return uri })
+}
+/** Stored ordinary drafts may contain broken or future portable URLs. Capture
+ * their actual Markdown/HTML destinations as data, without granting portable
+ * validity, file ownership, bytes or render permission. Plain words stay plain. */
+export function collectStoredMarkdownAssetDestinations(source: string): MarkdownDestination[] {
+  return collectAssetDestinations(source, uri => uri.trim())
 }
 function replacement(source: string, destination: MarkdownDestination, uri: string): ContentEdit {
   if (destination.syntax === 'wiki') return { from: destination.start, to: destination.end, text: escapeMarkdownDestination(uri, 'wiki') }
