@@ -259,10 +259,10 @@ jobs:
     name: Prepare CJK font package
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      KNOWBOOK_CJK_FONT_DIR: ${{ runner.temp }}/knowbook-cjk-fonts
     steps:
       - name: Download original CJK font package
+        env:
+          KNOWBOOK_CJK_FONT_DIR: ${{ runner.temp }}/knowbook-cjk-fonts
         run: |
           mkdir -p "$KNOWBOOK_CJK_FONT_DIR"
           cd "$KNOWBOOK_CJK_FONT_DIR"
@@ -274,7 +274,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: electron-e2e-cjk-fonts
-          path: ${{ env.KNOWBOOK_CJK_FONT_DIR }}/
+          path: ${{ runner.temp }}/knowbook-cjk-fonts/
           if-no-files-found: error
           retention-days: 1
 
@@ -283,8 +283,6 @@ jobs:
     needs: [validate, prepare-cjk-fonts]
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      KNOWBOOK_CJK_FONT_DIR: ${{ runner.temp }}/knowbook-cjk-fonts
     strategy:
       # Keep every shard's diagnostics when another shard fails.
       fail-fast: false
@@ -313,9 +311,11 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: electron-e2e-cjk-fonts
-          path: ${{ env.KNOWBOOK_CJK_FONT_DIR }}/
+          path: ${{ runner.temp }}/knowbook-cjk-fonts/
 
       - name: Install CJK fonts for desktop acceptance
+        env:
+          KNOWBOOK_CJK_FONT_DIR: ${{ runner.temp }}/knowbook-cjk-fonts
         run: |
           cd "$KNOWBOOK_CJK_FONT_DIR"
           sha256sum --check SHA256SUMS
