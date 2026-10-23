@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3'
-import { assertSyncedShape, isSyncedBlockId, isSyncedUuid, syncedPlainRecord, validateSyncedGroupWire } from '../../shared/syncedBlockValidation'
-import { decodeHostJournal, hostJournalKind, validateHostContent, validateHostSides } from './synced-host-journal'
+import { assertSyncedShape, isSyncedBlockId, isSyncedUuid, syncedPlainRecord, validateSyncedGroupWire, validatePersistedHostForest } from '../../shared/syncedBlockValidation'
+import { decodeHostJournal, hostJournalKind, validateHostSides } from './synced-host-journal'
 import type { SyncedHostHistoryBranchRow } from './synced-host-history-branch'
 import { parseInitialIncomingStored } from '../sync/synced-initial-incoming-model'
 import { publicationHash, publicationInvalid, publicationJson } from '../sync/synced-publication-model'
@@ -9,6 +9,7 @@ import { readRawCapsule2ContentOwned } from './restore-knowledge-capsule2-conten
 import { readRawCapsule2PhysicalGraphOwned } from './restore-knowledge-capsule2-physical-raw-read'
 import { assertRawCapsule2OrdinaryHistoryOwned } from './restore-knowledge-capsule2-ordinary-history-read'
 import { assertRawCapsule2TemplatesOwned } from './restore-knowledge-capsule2-templates-read'
+import { assertRawCapsule2MovesOwned } from './restore-knowledge-capsule2-moves-read'
 import { readRawCapsule2HistoricalEvidenceOwned } from './restore-knowledge-capsule2-history-read'
 import { CAPSULE2_READER, CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-model'
 
@@ -32,14 +33,16 @@ function json(source: string): unknown { return parseInitialIncomingStored(sourc
  *
  * This composes the exact former finite rawInitial history kernel with actual
  * total2 for reserved-family closure. Ordinary checkpoint/trash bodies and
- * metadata, and the complete stored-template family, are checked before the
- * former identity/history hash kernel below. Remaining source certifier seams
+ * metadata, the complete stored-template family and frozen ordinary moves are
+ * checked before the former identity/history hash kernel below. Source routes
+ * remain literal, including paths made by the old astral-prefix writer. Remaining source certifier seams
  * are still incomplete. */
 export function readRawCapsule2WorkspaceHistoryOwned(db: Database.Database): RawCapsule2WorkspaceHistoryObservation {
   const sourceContent = readRawCapsule2ContentOwned(db)
   const physical = readRawCapsule2PhysicalGraphOwned(db)
   assertRawCapsule2OrdinaryHistoryOwned(db)
   assertRawCapsule2TemplatesOwned(db)
+  assertRawCapsule2MovesOwned(db)
   const sourceContentHash = capsuleBytesHash('knowbook.capsule2.workspace-history-source-content.v1\0' + capsuleJson(sourceContent))
   const physicalObservationHash = capsuleBytesHash('knowbook.capsule2.workspace-history-physical-observation.v1\0' + capsuleJson(physical))
   const rawIdentities = db.prepare('SELECT id,last_owner_kind,last_owner_id,state,created_at FROM block_identities ORDER BY id').all() as InitialIncomingIdentity[]
@@ -94,11 +97,11 @@ export function readRawCapsule2WorkspaceHistoryOwned(db: Database.Database): Raw
         assertSyncedShape(item, ['documentId', 'path', 'updatedAt', 'content'])
         const key = document(item.documentId)
         if (seen.has(key)) return publicationInvalid('incoming 原移动文档重复。'); seen.add(key)
-        const checked = validateHostContent(item.content)
-        if (typeof item.path !== 'string' || !item.path || item.path.split('/').some(part => !part || part !== part.trim() || part === '.' || part === '..' || /[\\\x00-\x1f]/.test(part))
-          || item.path.split('/').at(-1) !== checked.title || checked.title !== checked.title.trim() || !checked.title
+        assertSyncedShape(item.content, ['title', 'summary', 'blocks'])
+        const checked = validatePersistedHostForest(item.content.blocks)
+        if (typeof item.path !== 'string' || typeof item.content.title !== 'string' || typeof item.content.summary !== 'string'
           || typeof item.updatedAt !== 'string' || !Number.isFinite(Date.parse(item.updatedAt))) return publicationInvalid('incoming 原移动 snapshot path/title/updatedAt 损坏。')
-        for (const child of checked.blocks) {
+        for (const child of checked) {
           block(child.id)
           if (owners.has(child.id)) return publicationInvalid('incoming 原移动同侧物理 ID 重复。')
           owners.set(child.id, key)

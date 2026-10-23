@@ -16,7 +16,9 @@ function time(value: unknown): void {
 }
 function title(value: unknown): string {
   const result = text(value)
-  if (!result || result !== result.trim() || result === '.' || result === '..' || /[\\/\x00-\x1f\x7f]/.test(result)) return bad('原普通标题无效')
+  // Match the actual ordinary writer: C0 and separators are invalid; DEL is
+  // preserved. This source assertion is separate from publication title rules.
+  if (!result || result !== result.trim() || result === '.' || result === '..' || /[\\/\x00-\x1f]/.test(result)) return bad('原普通标题无效')
   return result
 }
 function json(value: unknown): unknown {
