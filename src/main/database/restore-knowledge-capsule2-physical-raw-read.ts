@@ -9,6 +9,7 @@ import { readRawSyncedGroupSnapshotsOwned } from './synced-blocks-raw-read'
 import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-read'
 import { readRawCapsule2HostDocumentOwned } from './synced-host-document-read'
 import { assertSyncedStoredBindings } from './synced-stored-binding-read'
+import { assertRawCapsule2CatalogOwned } from './restore-knowledge-capsule2-catalog-read'
 
 type IdentityRow = { id: string; last_owner_kind: 'document' | 'group' | 'reserved'; last_owner_id: string;
   state: 'live' | 'retained'; created_at: string | null }
@@ -157,6 +158,7 @@ export function readRawCapsule2PhysicalGraphOwned(db: Database.Database): RawCap
     if (!item || item.groupId !== row.group_id || item.hostDocumentId !== row.host_document_id || item.bindingVersion !== row.binding_version
       || item.parentBlockId !== row.parent_block_id || item.depth !== row.depth) return invalid('原实例位置/绑定与完整组快照不一致')
   }
+  assertRawCapsule2CatalogOwned(db)
   // Origin is an immutable historical tuple. Neither its document nor the first
   // instance is required to be live; do not substitute the current owner/path.
   const observation: RawCapsule2PhysicalGraph = { kind: 'capsule2-raw-synced-physical-graph', version: 2, state: 'raw-physical-observation-only', certified: false,
