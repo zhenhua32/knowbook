@@ -37,6 +37,8 @@ export async function listWindowsRestoreProcesses(): Promise<RestoreObservedProc
   if (process.platform !== 'win32') throw new Error('数据库维护恢复目前仅支持 Windows。')
   // Run-only P/Invoke bindings keep the native argv/free signatures without
   // starting a C# compiler for each fresh snapshot.
+  // Encode plain scalar/argv dictionaries directly through the framework,
+  // avoiding ConvertTo-Json's cmdlet/module and PSObject formatting path.
   const script = `$ErrorActionPreference='Stop'
 [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false)
 $queryClock=[Diagnostics.Stopwatch]::StartNew()
@@ -66,10 +68,20 @@ foreach($item in Get-CimInstance Win32_Process -Property ProcessId,Name,Executab
   try { $parts=@(for($i=0;$i -lt $count;$i++) { [Runtime.InteropServices.Marshal]::PtrToStringUni([Runtime.InteropServices.Marshal]::ReadIntPtr($memory,$i*[IntPtr]::Size)) }) }
   finally { [void]$native::LocalFree($memory) }
  }
- $result.Add([pscustomobject]@{pid=[int]$item.ProcessId; name=$item.Name; executable=$item.ExecutablePath; startToken=('windows:'+$item.CreationDate.ToUniversalTime().Ticks.ToString()); argv=$parts})
+ $row=[System.Collections.Generic.Dictionary[string,object]]::new()
+ $row['pid']=[int]$item.ProcessId
+ $row['name']=$item.Name
+ $row['executable']=$item.ExecutablePath
+ $row['startToken']='windows:'+$item.CreationDate.ToUniversalTime().Ticks.ToString()
+ $row['argv']=$parts
+ $result.Add($row)
 }
 Write-KnowBookRestorePhase 'encoding-result'
-ConvertTo-Json -InputObject $result.ToArray() -Depth 4 -Compress
+[void][Reflection.Assembly]::Load('System.Web.Extensions, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35')
+$encoder=[System.Web.Script.Serialization.JavaScriptSerializer]::new()
+$encoder.MaxJsonLength=4*1024*1024
+$encoder.RecursionLimit=4
+[Console]::WriteLine($encoder.Serialize([object[]]$result.ToArray()))
 Write-KnowBookRestorePhase 'complete'`
   let stdout: string
   try {

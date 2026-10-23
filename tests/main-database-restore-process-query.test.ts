@@ -94,11 +94,25 @@ async function withChild(kind: 'node' | 'powershell', run: (child: ChildProcess,
   mkdirSync(join(entry, '..'), { recursive: true })
   writeFileSync(entry, kind === 'node' ? 'setInterval(() => {}, 1000)' : 'param([string]$Marker)\nwhile ($true) { Start-Sleep -Milliseconds 500 }')
   const args = kind === 'node' ? [entry, '', 'two words', '汉字😀', 'literal"quote', 'before\\\"after', '\\server\\share\\', '\t',
-    '$(not a command); & literal', '--knowbookService=fixture'] : ['-NoProfile', '-NonInteractive', '-File', entry, 'kNoWbOoKsErViCe']
+    '$(not a command); & literal', 'line one\r\nline two\b\f', '\u2028\u2029', '--knowbookService=fixture'] : ['-NoProfile', '-NonInteractive', '-File', entry, 'kNoWbOoKsErViCe']
   const child = spawn(kind === 'node' ? process.execPath : 'powershell.exe', args,
     { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, windowsHide: true, stdio: 'ignore' })
   const ended = once(child, 'exit')
   try { await once(child, 'spawn'); await run(child, args) }
+  catch (error) {
+    const cause = error instanceof Error ? error.cause : undefined
+    if (cause instanceof Error) {
+      const failed = cause as Error & { code?: unknown; signal?: unknown; killed?: unknown; stderr?: unknown }
+      // The execFile cause retains private command lines. Keep only fixed
+      // phase/timing tokens and bounded exit metadata when a real query fails.
+      console.error(JSON.stringify({ kind: 'restore-process-query-failure',
+        code: typeof failed.code === 'number' && Number.isSafeInteger(failed.code) ? failed.code
+          : typeof failed.code === 'string' && /^E[A-Z0-9_]{1,63}$/.test(failed.code) ? failed.code : null,
+        signal: failed.signal === 'SIGTERM' || failed.signal === 'SIGKILL' ? failed.signal : null,
+        killed: failed.killed === true, ...parseRestoreProcessQueryTrace(failed.stderr) }))
+    }
+    throw error
+  }
   finally {
     try {
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
