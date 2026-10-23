@@ -1509,11 +1509,11 @@ export class KnowbookStore {
     const oldPath = document.path
     const newPath = parentPath ? `${parentPath}/${normalizedTitle}` : normalizedTitle
     const pathChangedDocuments = newPath !== oldPath
-      ? this.getDocumentPathSubtree(oldPath)
+      ? this.getDocumentPathChanges(document.id, newPath)
       : []
     const changedReferenceTokens = new Set<string>()
     if (newPath !== oldPath) {
-      for (const token of this.getPathRewriteReferenceTokens(pathChangedDocuments, oldPath, newPath)) {
+      for (const token of this.getPathRewriteReferenceTokens(pathChangedDocuments)) {
         changedReferenceTokens.add(token)
       }
       changedReferenceTokens.add(document.title)
@@ -1554,7 +1554,7 @@ export class KnowbookStore {
     }
 
     const markdownChanges: MarkdownIndexedPathChange[] = !internal.skipLinkMaintenance && this.deferredLinkResyncDepth === 0
-      ? pathChangedDocuments.map((entry) => ({ id: entry.id, before: entry.path, after: entry.path === oldPath ? newPath : newPath + entry.path.slice(oldPath.length) }))
+      ? pathChangedDocuments.map((entry) => ({ id: entry.id, before: entry.path, after: entry.nextPath }))
       : []
     if (!internal.skipLinkMaintenance && this.deferredLinkResyncDepth === 0 && (blocksChanged || normalizedTitle !== document.title)) {
       const oldBlocks = this.markdownLinks.readDocument(documentId)!.blocks
@@ -1579,8 +1579,8 @@ export class KnowbookStore {
     `)
     const updateDescendantsStatement = this.db.prepare(`
       UPDATE documents
-      SET path = ? || substr(path, ?)
-      WHERE path LIKE ? ESCAPE '\\'
+      SET path = ?
+      WHERE id = ?
     `)
     const deleteBlockStatement = this.db.prepare('DELETE FROM blocks WHERE id = ? AND document_id = ?')
     const insertBlockStatement = this.db.prepare(`
@@ -1606,8 +1606,9 @@ export class KnowbookStore {
       }
 
       if (newPath !== oldPath) {
-        const oldPrefix = `${oldPath}/`
-        updateDescendantsStatement.run(`${newPath}/`, oldPrefix.length + 1, `${this.escapeLikePattern(oldPath)}/%`)
+        for (const entry of pathChangedDocuments) {
+          if (entry.id !== documentId) updateDescendantsStatement.run(entry.nextPath, entry.id)
+        }
       }
 
       for (const block of changedPersistedBlocks) {
@@ -1671,7 +1672,7 @@ export class KnowbookStore {
     })
 
     transaction()
-    return [...new Set([...(newPath !== oldPath ? this.getDocumentIdsInPathSubtree(newPath) : [documentId]), ...rewrittenDocumentIds])]
+    return [...new Set([...(newPath !== oldPath ? pathChangedDocuments.map(entry => entry.id) : [documentId]), ...rewrittenDocumentIds])]
   }
 
   updateDocumentSummary(documentId: string, summary: string): void {
@@ -1702,9 +1703,6 @@ export class KnowbookStore {
       ? (this.db.prepare('SELECT path FROM documents WHERE id = ?').get(document.parent_id) as { path: string } | undefined)?.path
       : null
 
-    const oldPrefix = `${document.path}/`
-    const newPrefix = parentPath ? `${parentPath}/` : ''
-
     const directChildren = this.db.prepare(`
       SELECT id, title
       FROM documents
@@ -1724,20 +1722,15 @@ export class KnowbookStore {
     `)
     const rewriteDescendantPathStatement = this.db.prepare(`
       UPDATE documents
-      SET path = ? || substr(path, ?), updated_at = ?
-      WHERE path LIKE ? ESCAPE '\\'
+      SET path = ?, updated_at = ?
+      WHERE id = ?
     `)
     const deleteDocumentStatement = this.db.prepare('DELETE FROM documents WHERE id = ?')
-    const affectedDescendants = this.db.prepare(`
-      SELECT id, path
-      FROM documents
-      WHERE path LIKE ? ESCAPE '\\'
-      ORDER BY path ASC
-    `).all(`${this.escapeLikePattern(oldPrefix)}%`) as Array<{ id: string; path: string }>
+    const affectedDescendants = this.getDocumentPathChanges(document.id, parentPath ?? '').filter(entry => entry.id !== document.id)
     const changedReferenceTokens = new Set<string>([document.title, document.path])
     for (const descendant of affectedDescendants) {
       changedReferenceTokens.add(descendant.path)
-      changedReferenceTokens.add(`${newPrefix}${descendant.path.slice(oldPrefix.length)}`)
+      changedReferenceTokens.add(descendant.nextPath)
     }
 
     let rewrittenDocumentIds: string[] = []
@@ -1746,12 +1739,12 @@ export class KnowbookStore {
       this.documentRecovery.archive(documentId)
       this.preserveBlockRoutes(affectedDescendants)
       reparentChildrenStatement.run(document.parent_id, now, document.id)
-      rewriteDescendantPathStatement.run(newPrefix, oldPrefix.length + 1, now, `${this.escapeLikePattern(oldPrefix)}%`)
+      for (const entry of affectedDescendants) rewriteDescendantPathStatement.run(entry.nextPath, now, entry.id)
       deleteDocumentStatement.run(document.id)
       const syncedMarkdownSources = new Set<string>()
       if (this.deferredLinkResyncDepth === 0) {
         rewrittenDocumentIds = this.markdownLinks.maintain(affectedDescendants.map((entry) => ({ id: entry.id, before: entry.path,
-          after: newPrefix + entry.path.slice(oldPrefix.length) })), [], now, undefined, syncedMarkdownSources)
+          after: entry.nextPath })), [], now, undefined, syncedMarkdownSources)
       }
       this.resyncLinksForReferenceChanges(changedReferenceTokens, rewrittenDocumentIds, syncedMarkdownSources)
     })
@@ -1892,7 +1885,9 @@ export class KnowbookStore {
       throw new Error('Target parent not found')
     }
 
-    if (targetParent && (targetParent.path === document.path || targetParent.path.startsWith(`${document.path}/`))) {
+    const newPath = targetParent ? `${targetParent.path}/${document.title}` : document.title
+    const pathChangedDocuments = this.getDocumentPathChanges(document.id, newPath)
+    if (targetParent && pathChangedDocuments.some(entry => entry.id === targetParent.id)) {
       throw new Error('Document cannot be moved into its own subtree')
     }
 
@@ -1900,19 +1895,11 @@ export class KnowbookStore {
       throw new Error('Target parent already contains a document with this title')
     }
 
-    const newPath = targetParent ? `${targetParent.path}/${document.title}` : document.title
     if (document.parent_id === (targetParent?.id ?? null) && newPath === document.path) {
       return [document.id]
     }
 
-    const oldPrefix = `${document.path}/`
-    const newPrefix = `${newPath}/`
-    const pathChangedDocuments = this.getDocumentPathSubtree(document.path)
-    const changedReferenceTokens = this.getPathRewriteReferenceTokens(
-      pathChangedDocuments,
-      document.path,
-      newPath
-    )
+    const changedReferenceTokens = this.getPathRewriteReferenceTokens(pathChangedDocuments)
 
     const maxSortOrderRow = this.db.prepare('SELECT COALESCE(MAX(sort_order), -1) AS max_sort_order FROM documents WHERE parent_id IS ?').get(newParentId) as { max_sort_order: number }
     const newSortOrder = (maxSortOrderRow.max_sort_order ?? -1) + 1
@@ -1925,24 +1912,26 @@ export class KnowbookStore {
     `)
     const updateDescendantsStatement = this.db.prepare(`
       UPDATE documents
-      SET path = ? || substr(path, ?), updated_at = ?
-      WHERE path LIKE ? ESCAPE '\\'
+      SET path = ?, updated_at = ?
+      WHERE id = ?
     `)
 
     const transaction = this.db.transaction(() => {
       this.preserveBlockRoutes(pathChangedDocuments)
       updateDocumentStatement.run(targetParent?.id ?? null, newPath, newSortOrder, now, document.id)
-      updateDescendantsStatement.run(newPrefix, oldPrefix.length + 1, now, `${this.escapeLikePattern(oldPrefix)}%`)
+      for (const entry of pathChangedDocuments) {
+        if (entry.id !== document.id) updateDescendantsStatement.run(entry.nextPath, now, entry.id)
+      }
       const syncedMarkdownSources = new Set<string>()
       if (this.deferredLinkResyncDepth === 0) {
         rewrittenDocumentIds = this.markdownLinks.maintain(pathChangedDocuments.map((entry) => ({ id: entry.id, before: entry.path,
-          after: entry.path === document.path ? newPath : newPath + entry.path.slice(document.path.length) })), [], now, undefined, syncedMarkdownSources)
+          after: entry.nextPath })), [], now, undefined, syncedMarkdownSources)
       }
       this.resyncLinksForReferenceChanges(changedReferenceTokens, rewrittenDocumentIds, syncedMarkdownSources)
     })
 
     transaction()
-    return [...new Set([...this.getDocumentIdsInPathSubtree(newPath), ...rewrittenDocumentIds])]
+    return [...new Set([...pathChangedDocuments.map(entry => entry.id), ...rewrittenDocumentIds])]
   }
 
   updateAiConfig(input: UpdateAiConfigInput): void {
@@ -2426,17 +2415,6 @@ export class KnowbookStore {
         contentHash: createHash('sha256').update(content).digest('hex')
       }
     })
-  }
-
-  private getDocumentIdsInPathSubtree(rootPath: string): string[] {
-    const rows = this.db.prepare(`
-      SELECT id
-      FROM documents
-      WHERE path = ? OR path LIKE ? ESCAPE '\\'
-      ORDER BY path ASC
-    `).all(rootPath, `${this.escapeLikePattern(rootPath)}/%`) as Array<{ id: string }>
-
-    return rows.map((row) => row.id)
   }
 
   getDocumentSuggestions(query: string, excludeDocumentId: string | null = null): DocumentSuggestion[] {
@@ -3848,26 +3826,52 @@ export class KnowbookStore {
     this.resyncLinks(sourceDocumentIds)
   }
 
-  private getDocumentPathSubtree(rootPath: string): Array<{ id: string; path: string }> {
-    return this.db.prepare(`
-      SELECT id, path
-      FROM documents
-      WHERE path = ? OR path LIKE ? ESCAPE '\\'
-      ORDER BY path ASC
-    `).all(rootPath, `${this.escapeLikePattern(rootPath)}/%`) as Array<{ id: string; path: string }>
+  private getDocumentPathChanges(rootId: string, rootPath: string): Array<{ id: string; path: string; nextPath: string }> {
+    // Parent identity defines the tree. LIKE is case-insensitive for ASCII and
+    // SQLite substr counts code points, whereas JS offsets count UTF-16 units.
+    // Keep original paths for route/link maintenance; build new paths from the
+    // actual titles without slicing either representation. UNION bounds even a
+    // corrupt parent cycle, which the traversal rejects before any writes.
+    const rows = this.db.prepare(`
+      WITH RECURSIVE subtree(id) AS (
+        SELECT id FROM documents WHERE id = ?
+        UNION
+        SELECT child.id FROM documents child JOIN subtree parent ON child.parent_id = parent.id
+      )
+      SELECT document.id, document.path, document.title, document.parent_id
+      FROM documents document JOIN subtree ON subtree.id = document.id
+      ORDER BY document.path, document.id
+    `).all(rootId) as Array<{ id: string; path: string; title: string; parent_id: string | null }>
+    const children = new Map<string, typeof rows>()
+    for (const row of rows) {
+      if (row.parent_id !== null) {
+        const siblings = children.get(row.parent_id) ?? []
+        siblings.push(row)
+        children.set(row.parent_id, siblings)
+      }
+    }
+    const root = rows.find(row => row.id === rootId)
+    if (!root) throw new Error('Document not found')
+    const changes = [{ id: root.id, path: root.path, nextPath: rootPath }]
+    const seen = new Set([rootId])
+    for (let index = 0; index < changes.length; index++) {
+      const parent = changes[index]
+      for (const child of children.get(parent.id) ?? []) {
+        if (seen.has(child.id)) throw new Error('Document subtree contains a parent cycle')
+        seen.add(child.id)
+        changes.push({ id: child.id, path: child.path, nextPath: parent.nextPath ? `${parent.nextPath}/${child.title}` : child.title })
+      }
+    }
+    return changes
   }
 
   private getPathRewriteReferenceTokens(
-    documents: Array<{ id: string; path: string }>,
-    oldRootPath: string,
-    newRootPath: string
+    documents: Array<{ path: string; nextPath: string }>
   ): Set<string> {
     const tokens = new Set<string>()
     for (const document of documents) {
       tokens.add(document.path)
-      tokens.add(document.path === oldRootPath
-        ? newRootPath
-        : `${newRootPath}${document.path.slice(oldRootPath.length)}`)
+      tokens.add(document.nextPath)
     }
     return tokens
   }
