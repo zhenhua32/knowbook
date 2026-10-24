@@ -3,7 +3,8 @@ import type { ElectronApplication } from 'playwright'
 import type { DatabaseViewConfigV1 } from '../src/shared/contracts'
 import { getDatabaseWorkspaceText } from '../src/renderer/src/features/database/databaseText'
 import { writeFileSync } from 'node:fs'
-import { hasBuiltElectronApp, withElectronApp } from './helpers/electron'
+import { hasBuiltElectronApp } from './helpers/electron'
+import { withElectronFailureTrace } from './helpers/electron-failure-trace'
 
 type Language = 'en-US' | 'zh-CN'
 type Handler = (event: unknown, ...input: unknown[]) => unknown | Promise<unknown>
@@ -216,7 +217,7 @@ for (const language of ['en-US', 'zh-CN'] as const) for (const kind of ['filter'
   test(`${kind} popover follows its summary and dismisses without losing drafts in ${language} @electron`, async ({}, info) => {
     test.setTimeout(180_000)
     test.skip(!hasBuiltElectronApp(), 'Run npm run build before Electron tests.')
-    await withElectronApp(async ({ page, app }) => {
+    await withElectronFailureTrace(info, async ({ page, app }) => {
       const errors: string[] = []
       page.on('pageerror', error => errors.push(error.message))
       await prepare(page, language)
