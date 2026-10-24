@@ -11,6 +11,7 @@ import { assertRawCapsule2OrdinaryHistoryOwned } from './restore-knowledge-capsu
 import { assertRawCapsule2TemplatesOwned } from './restore-knowledge-capsule2-templates-read'
 import { assertRawCapsule2MovesOwned } from './restore-knowledge-capsule2-moves-read'
 import { assertRawCapsule2AssistantHistoryOwned } from './restore-knowledge-capsule2-assistant-read'
+import { assertRawCapsule2PreferencesOwned } from './restore-knowledge-capsule2-preferences-read'
 import { readRawCapsule2HistoricalEvidenceOwned } from './restore-knowledge-capsule2-history-read'
 import { CAPSULE2_READER, CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-model'
 
@@ -45,6 +46,7 @@ export function readRawCapsule2WorkspaceHistoryOwned(db: Database.Database): Raw
   assertRawCapsule2TemplatesOwned(db)
   assertRawCapsule2MovesOwned(db)
   assertRawCapsule2AssistantHistoryOwned(db)
+  assertRawCapsule2PreferencesOwned(db)
   const sourceContentHash = capsuleBytesHash('knowbook.capsule2.workspace-history-source-content.v1\0' + capsuleJson(sourceContent))
   const physicalObservationHash = capsuleBytesHash('knowbook.capsule2.workspace-history-physical-observation.v1\0' + capsuleJson(physical))
   const rawIdentities = db.prepare('SELECT id,last_owner_kind,last_owner_id,state,created_at FROM block_identities ORDER BY id').all() as InitialIncomingIdentity[]

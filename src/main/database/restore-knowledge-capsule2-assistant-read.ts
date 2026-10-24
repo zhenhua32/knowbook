@@ -1,10 +1,8 @@
 import type Database from 'better-sqlite3'
 import { ASSISTANT_EVENT_SURFACES, assistantSessionId, type AssistantEventType } from '../../shared/assistant-session'
 import type { PluginJsonValue } from '../../shared/plugin-platform'
-import { parseStrictJson } from '../../shared/strictJson'
 import { assertAssistantEventPayload, assertAssistantSessionTransition, projectAssistantSessionState,
   type AssistantReplayState } from '../assistant/session-repository'
-import { capsuleJson } from './restore-knowledge-capsule-model'
 import { CAPSULE2_RAW_MAX_ROWS, CAPSULE2_RAW_MAX_VALUE_BYTES, capsule2ApplicationColumns,
   capsule2RawSqlValueBytesExpression } from './restore-knowledge-capsule2-raw-model'
 
@@ -21,8 +19,32 @@ function time(value: unknown): string {
   return raw
 }
 function json(value: unknown): PluginJsonValue {
-  try { return parseStrictJson(text(value), { maxBytes: CAPSULE2_RAW_MAX_VALUE_BYTES, maxDepth: 256 }) as PluginJsonValue }
-  catch { return bad('原JSON损坏、重复键或超来源预算') }
+  // Stored Main reads use JSON.parse. Keep legacy spelling and last-key
+  // meaning after the complete SQL byte preflight, independently of authored
+  // JSON complexity/key restrictions; the original TEXT is never rewritten.
+  try { return JSON.parse(text(value)) as PluginJsonValue }
+  catch { return bad('原JSON格式损坏') }
+}
+function sameStoredJson(left: PluginJsonValue, right: PluginJsonValue): boolean {
+  const pending: Array<[PluginJsonValue, PluginJsonValue]> = [[left, right]]
+  while (pending.length) {
+    const [a, b] = pending.pop()!
+    if (a === b) continue
+    if (a === null || b === null || typeof a !== 'object' || typeof b !== 'object') return false
+    if (Array.isArray(a)) {
+      if (!Array.isArray(b) || a.length !== b.length) return false
+      for (let index = 0; index < a.length; index++) pending.push([a[index], b[index]])
+    } else {
+      if (Array.isArray(b)) return false
+      const keys = Object.keys(a)
+      if (keys.length !== Object.keys(b).length) return false
+      for (const key of keys) {
+        if (!Object.hasOwn(b, key)) return false
+        pending.push([a[key], b[key]])
+      }
+    }
+  }
+  return true
 }
 
 /** The complete actual assistant family, independently bounded before reading
@@ -86,7 +108,7 @@ export function assertRawCapsule2AssistantHistoryOwned(db: Database.Database): v
           || candidate.workspaceId !== workspace
           || candidate.activeDocumentId !== null && typeof candidate.activeDocumentId !== 'string'
           || activeDocument !== null && activeDocument !== candidate.activeDocumentId
-          || capsuleJson(candidate.modelConfig) !== capsuleJson(config) || at !== createdAt) return bad('初始会话事实与原来源不符')
+          || !sameStoredJson(candidate.modelConfig, config) || at !== createdAt) return bad('初始会话事实与原来源不符')
         // ON DELETE SET NULL may erase the live document pointer. The original
         // event identity stays literal even if that document is later restored.
         state = { id: assistantSessionId(sessionId), title: candidate.title as string, status: 'active', activeTurnId: null }

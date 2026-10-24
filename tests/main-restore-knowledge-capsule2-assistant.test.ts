@@ -95,7 +95,7 @@ const faults: Array<[string, (f: V3Fixture) => void]> = [
   ['a prototype-name event type', f => { event(f.db, 'type', 'toString') }],
   ['a wrong event surface', f => { event(f.db, 'surface', 'audit-only') }],
   ['a missing payload object', f => { event(f.db, 'payload_json', 'null') }],
-  ['a duplicate raw payload key', f => { event(f.db, 'payload_json', '{"turnId":"source:turn","text":"first","text":"second"}') }],
+  ['a duplicate raw payload key whose stored last value is invalid', f => { event(f.db, 'payload_json', '{"turnId":"source:turn","text":"first","text":17}') }],
   ['a missing required payload field', f => { event(f.db, 'payload_json', '{"turnId":"source:turn"}') }],
   ['an indexed turn different from its original payload', f => { event(f.db, 'turn_id', 'forged-index') }],
   ['an indexed step different from its original payload', f => { event(f.db, 'step_id', 'forged-index', 'assistant.message') }],
