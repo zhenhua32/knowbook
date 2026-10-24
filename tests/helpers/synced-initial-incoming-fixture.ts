@@ -42,10 +42,14 @@ function bootstrap(root: string): Profile {
   const file = join(root, 'storage', 'knowbook.db'); mkdirSync(dirname(file), { recursive: true })
   const initial = new Database(file), defaultId = randomUUID(), time = new Date().toISOString()
   try {
-    initial.exec(appSchema)
-    initial.prepare('INSERT INTO databases(id,name,description,created_at,updated_at) VALUES(?,?,?,?,?)').run(defaultId, 'Default', 'Default database', localBirth, time)
-    initial.prepare('INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,?)').run('database.defaultId', defaultId, time)
-    initial.prepare('INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,?)').run('workspace.initialized', 'true', time)
+    // The private fixture is observed only after this complete initial commit.
+    // Keep every schema/seed statement and the real Main migrations below.
+    initial.transaction(() => {
+      initial.exec(appSchema)
+      initial.prepare('INSERT INTO databases(id,name,description,created_at,updated_at) VALUES(?,?,?,?,?)').run(defaultId, 'Default', 'Default database', localBirth, time)
+      initial.prepare('INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,?)').run('database.defaultId', defaultId, time)
+      initial.prepare('INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,?)').run('workspace.initialized', 'true', time)
+    })()
   } finally { initial.close() }
   const store = new KnowbookStore(file); store.destroy() // Real complete migrations, no starter seed, no lazy admission repair.
   const db = new Database(file); db.pragma('foreign_keys=ON')
