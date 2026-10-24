@@ -666,7 +666,7 @@ body:has(.app-notifications.is-compact .app-notification-summary) .dbw-form-dial
 }
 
 .dbw-save-button {
-  min-height: var(--kb-control-height-compact);
+  min-height: var(--kb-button-height);
   font-size: var(--kb-type-label);
 }
 

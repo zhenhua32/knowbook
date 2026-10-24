@@ -14,6 +14,8 @@ export type ElectronAppContext = {
 }
 
 export type ElectronLaunchOptions = {
+  /** Fix native DPI when a suite must exercise exact one-pixel media boundaries. */
+  deviceScaleFactor?: number
   /** Existing editing suites exercise Markdown mode; new suites explicitly exercise the rich text default. */
   editorMode?: 'markdown' | 'rich'
   /** Reuse a prior isolated user-data root to exercise restart-only behavior. */
@@ -138,6 +140,10 @@ export async function launchElectronApp(
   options: ElectronLaunchOptions = {}
 ): Promise<ElectronAppContext> {
   const target = getElectronLaunchTarget(extraEnv.KNOWBOOK_E2E_EXECUTABLE ?? process.env.KNOWBOOK_E2E_EXECUTABLE)
+  if (options.deviceScaleFactor !== undefined) {
+    if (!Number.isFinite(options.deviceScaleFactor) || options.deviceScaleFactor <= 0) throw new Error('Device scale factor must be positive and finite')
+    target.args.unshift(`--force-device-scale-factor=${options.deviceScaleFactor}`)
+  }
   const tempRoot = options.userDataRoot ?? mkdtempSync(join(tmpdir(), 'knowbook-e2e-'))
   const freshProfile = !existsSync(join(tempRoot, 'storage', 'knowbook.db'))
   const restoredSafeMode = existsSync(join(tempRoot, 'database-restore-safe-mode.json'))
@@ -331,9 +337,10 @@ async function waitForProcessExit(pid: number, timeoutMs: number): Promise<void>
 
 export async function withElectronApp(
   run: (context: ElectronAppContext) => Promise<void>,
-  extraEnv: Record<string, string> = {}
+  extraEnv: Record<string, string> = {},
+  options: ElectronLaunchOptions = {}
 ): Promise<void> {
-  const context = await launchElectronApp(extraEnv)
+  const context = await launchElectronApp(extraEnv, options)
   try {
     await run(context)
   } finally {

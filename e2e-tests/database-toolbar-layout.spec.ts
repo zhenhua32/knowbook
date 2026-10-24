@@ -3,6 +3,7 @@ import type { ElectronApplication } from 'playwright'
 import { writeFileSync } from 'node:fs'
 import { getDatabaseWorkspaceText } from '../src/renderer/src/features/database/databaseText'
 import { hasBuiltElectronApp, withElectronApp } from './helpers/electron'
+import { readDatabaseSnapshot } from './helpers/database-snapshot'
 
 type Language = 'en-US' | 'zh-CN'
 type Theme = 'light' | 'dark'
@@ -100,7 +101,7 @@ async function readProbe(app: ElectronApplication) {
   })
 }
 
-async function readStored(page: Page, app: ElectronApplication, language: Language) {
+async function readStored(page: Page, tempRoot: string, language: Language) {
   const api = await page.evaluate(async language => {
     const byId = (left: { id: string }, right: { id: string }) => left.id.localeCompare(right.id)
     const databases = (await window.knowbook.getDatabases()).sort(byId), catalog = (await window.knowbook.getDocumentCatalog()).sort(byId)
@@ -110,15 +111,7 @@ async function readStored(page: Page, app: ElectronApplication, language: Langua
         entities: (await window.knowbook.getDatabaseEntities(database.id)).sort(byId), fields: (await window.knowbook.getDocumentDatabaseColumns(database.id)).sort(byId),
         views: (await window.knowbook.getDatabaseSavedViews(database.id)).sort(byId) }))) }
   }, language)
-  const sql = await app.evaluate(({ app }) => {
-    const { createRequire } = process.getBuiltinModule('node:module')!, { join } = process.getBuiltinModule('node:path')!
-    const Database = createRequire(join(app.getAppPath(), 'package.json'))('better-sqlite3')
-    const database = new Database(join(app.getPath('userData'), 'storage', 'knowbook.db'), { readonly: true, fileMustExist: true })
-    try { return { schema: database.prepare("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name").all(),
-      tables: Object.fromEntries(['documents', 'blocks', 'links', 'databases', 'document_database_columns', 'database_entities',
-        'database_entity_values', 'document_database_values', 'database_saved_views'].map(table => [table, database.prepare(`SELECT * FROM "${table}" ORDER BY 1, 2`).all()])) }
-    } finally { database.close() }
-  })
+  const sql = await readDatabaseSnapshot(tempRoot)
   return { api, sql }
 }
 
@@ -304,7 +297,7 @@ function withoutViews(stored: Awaited<ReturnType<typeof readStored>>) {
 async function exerciseRealSaving(page: Page, app: ElectronApplication, tempRoot: string, info: TestInfo, language: Language, fixture: Awaited<ReturnType<typeof prepare>>) {
   const text = getDatabaseWorkspaceText(language)
   await selectSource(page, language, true); await collapse(page, false); await resize(page, app, 760)
-  const before = await readStored(page, app, language)
+  const before = await readStored(page, tempRoot, language)
   await expect(page.locator('.dbw-table tbody tr:not(.dbw-virtual-spacer)')).toHaveCount(2)
   await page.locator('.dbw-main-search input').fill('Original')
   await expect(page.locator('.dbw-table tbody tr:not(.dbw-virtual-spacer)')).toHaveCount(1)
@@ -314,11 +307,11 @@ async function exerciseRealSaving(page: Page, app: ElectronApplication, tempRoot
     await expect.poll(async () => (await readProbe(app)).pendingSave).toBe(true)
     await expect(page.locator('.dbw-save-as-button')).toBeDisabled()
     await recordToolbar(page, app, tempRoot, info, language, 760, 'business-pending-save', 'saving')
-    expect(await readStored(page, app, language)).toEqual(before)
+    expect(await readStored(page, tempRoot, language)).toEqual(before)
     expect((await readProbe(app)).completed).toEqual([])
   } finally { await app.evaluate(() => { (globalThis as ProbeGlobal).__databaseToolbarLayoutProbe!.release?.() }) }
   await expect(page.locator('.dbw-save-button')).toHaveText(text.saved); await expect(page.locator('.dbw-save-button')).toBeDisabled()
-  const afterSave = await readStored(page, app, language)
+  const afterSave = await readStored(page, tempRoot, language)
   expect(withoutViews(afterSave)).toEqual(withoutViews(before))
   const saved = afterSave.api.sources.find(source => source.id === fixture.customId)!.views.find(view => view.id === fixture.view.id)!
   expect(saved.config).toEqual({ ...fixture.view.config, query: 'Original' }); expect(saved.filterQuery).toBe('Original')
@@ -335,12 +328,12 @@ async function exerciseRealSaving(page: Page, app: ElectronApplication, tempRoot
   await dialog.getByRole('textbox', { name: text.name, exact: true }).fill('Copied toolbar view')
   await dialog.getByRole('button', { name: text.cancel, exact: true }).click()
   await expect(dialog).toHaveCount(0); await expect(page.locator('.dbw-save-as-button')).toBeFocused()
-  expect(await readStored(page, app, language)).toEqual(afterSave)
+  expect(await readStored(page, tempRoot, language)).toEqual(afterSave)
   await page.locator('.dbw-save-as-button').click()
   await dialog.getByRole('textbox', { name: text.name, exact: true }).fill('Copied toolbar view')
   await dialog.getByRole('button', { name: text.create, exact: true }).click(); await expect(dialog).toHaveCount(0)
   await expect(page.locator('.dbw-view-tab-wrap.is-active > .dbw-view-tab')).toHaveAttribute('title', 'Copied toolbar view')
-  const afterCopy = await readStored(page, app, language), probe = await readProbe(app)
+  const afterCopy = await readStored(page, tempRoot, language), probe = await readProbe(app)
   expect(withoutViews(afterCopy)).toEqual(withoutViews(before))
   const copy = afterCopy.api.sources.find(source => source.id === fixture.customId)!.views.find(view => view.name === 'Copied toolbar view')!
   expect(copy).toBeDefined(); expect(copy.config).toEqual(saved.config); expect(copy.id).not.toBe(saved.id)
@@ -359,9 +352,10 @@ for (const language of ['en-US', 'zh-CN'] as const) for (const theme of ['light'
   test(`database toolbar fits native breakpoints and saves real view drafts in ${language} ${theme} @electron`, async ({}, info) => {
     test.skip(!hasBuiltElectronApp(), 'Run npm run build before Electron tests.'); test.setTimeout(240_000)
     await withElectronApp(async ({ page, app, tempRoot }) => {
+      expect(await page.evaluate(() => devicePixelRatio)).toBe(1)
       const errors: string[] = []; page.on('pageerror', error => errors.push(error.message))
       const fixture = await prepare(page, language, theme); await installProbe(app)
-      const before = await readStored(page, app, language)
+      const before = await readStored(page, tempRoot, language)
       for (const custom of [false, true]) {
         await selectSource(page, language, custom)
         for (const collapsed of [false, true]) {
@@ -378,12 +372,12 @@ for (const language of ['en-US', 'zh-CN'] as const) for (const theme of ['light'
       await collapse(page, false); await resize(page, app, 760)
       await recordToolbar(page, app, tempRoot, info, language, 760, 'settings-return')
       if (language === 'en-US' && theme === 'light') await exerciseKeyboard(page, app, tempRoot, info)
-      const after = await readStored(page, app, language), probe = await readProbe(app)
+      const after = await readStored(page, tempRoot, language), probe = await readProbe(app)
       expect(after).toEqual(before); expect(probe.requests).toEqual([])
       writeFileSync(info.outputPath('local-persistence.json'), JSON.stringify({ before, after, probe }, null, 2))
       await exerciseRealSaving(page, app, tempRoot, info, language, fixture)
       expect(errors).toEqual([])
-    }, { PLAYWRIGHT_ELECTRON_LOCALE: language })
+    }, { PLAYWRIGHT_ELECTRON_LOCALE: language }, { deviceScaleFactor: 1 })
   })
 }
 
@@ -391,7 +385,7 @@ test('database toolbar preserves captions and native layout in all six built-in 
   test.skip(!hasBuiltElectronApp(), 'Run npm run build before Electron tests.'); test.setTimeout(180_000)
   await withElectronApp(async ({ page, app, tempRoot }) => {
     await prepare(page, 'en-US', 'light'); await installProbe(app)
-    const before = await readStored(page, app, 'en-US')
+    const before = await readStored(page, tempRoot, 'en-US')
     await expect.poll(async () => (await page.evaluate(() => window.knowbook.listSystemPlugins()))
       .find(plugin => plugin.pluginId === 'theme-switcher')?.runtimeStatus).toBe('active')
     for (const palette of ['cloud', 'paper', 'moss', 'bay', 'midnight', 'violet']) {
@@ -408,8 +402,32 @@ test('database toolbar preserves captions and native layout in all six built-in 
         }
       }
     }
-    const after = await readStored(page, app, 'en-US'), probe = await readProbe(app)
+    const after = await readStored(page, tempRoot, 'en-US'), probe = await readProbe(app)
     expect(after).toEqual(before); expect(probe.requests).toEqual([])
     writeFileSync(info.outputPath('local-persistence.json'), JSON.stringify({ before, after, probe }, null, 2))
   })
+})
+
+test('database toolbar keeps 40px save targets at 150 percent scale @electron', async ({}, info) => {
+  test.skip(!hasBuiltElectronApp(), 'Run npm run build before Electron tests.'); test.setTimeout(240_000)
+  await withElectronApp(async ({ page, app, tempRoot }) => {
+    expect(await page.evaluate(() => devicePixelRatio)).toBe(1.5)
+    const errors: string[] = []; page.on('pageerror', error => errors.push(error.message))
+    const fixture = await prepare(page, 'en-US', 'dark'); await installProbe(app)
+    const before = await readStored(page, tempRoot, 'en-US')
+    for (const custom of [false, true]) {
+      await selectSource(page, 'en-US', custom)
+      for (const collapsed of [false, true]) {
+        await collapse(page, collapsed)
+        for (const width of [1440, 1320, 1080, 900, 760]) {
+          await resize(page, app, width)
+          await localStates(page, app, tempRoot, info, 'en-US', width, `scale150-${custom ? 'custom' : 'catalog'}-${collapsed ? 'collapsed' : 'expanded'}-${width}`)
+        }
+      }
+    }
+    expect(await readStored(page, tempRoot, 'en-US')).toEqual(before)
+    expect((await readProbe(app)).requests).toEqual([])
+    await exerciseRealSaving(page, app, tempRoot, info, 'en-US', fixture)
+    expect(errors).toEqual([])
+  }, { PLAYWRIGHT_ELECTRON_LOCALE: 'en-US' }, { deviceScaleFactor: 1.5 })
 })
