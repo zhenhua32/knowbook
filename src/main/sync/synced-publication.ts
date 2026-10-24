@@ -35,6 +35,7 @@ import { assertSyncedShape, isSyncedUuid, parseSyncedBlockPayload } from '../../
 import { buildSyncedPortableAssetUri, parseSyncedPortableAssetUri, rewriteSyncedGroupAssets,
   rewriteSyncedPortableHostAssets, localizeSyncedPortableGroupAssets, localizeSyncedPortableHostAssets, syncedManagedAssetBudgetUri } from '../../shared/syncedBlockPortable'
 import { AttachmentStore } from '../attachments'
+import { readManagedAssetSource } from '../managed-asset-source'
 import { WebDavClient, WebDavHttpError, normalizeWebDavConfig } from './webdav-client'
 import { bindSyncedPublicationCapture, captureSyncedPublicationSnapshot, claimSyncedPublication, confirmSyncedPublication,
   currentSyncedPublicationMatches, readSyncedPublicationAttempt, readSyncedPublicationCapture, recoverSyncedPublicationClaim,
@@ -133,19 +134,10 @@ async function portable(snapshot: SyncedPublicationLocalSnapshot, paths: Paths):
   const records = mapPublicationCatalog(snapshot.records, snapshot.catalogId), wanted = new Set<string>()
   // Discovery output is discarded; syntactic placeholders are never spooled, sent or used as byte authority.
   recordAssets(records, uri => { wanted.add(uri); return /^file:/i.test(uri) ? syncedManagedAssetBudgetUri(uri) : uri })
-  const replacements = new Map<string, string>(), assets = new Map<string, Buffer>(), attachments = new AttachmentStore(paths.assetRoot)
+  const replacements = new Map<string, string>(), assets = new Map<string, Buffer>()
   try {
     for (const uri of wanted) {
-      let local: string, expectedHash: string, name: string
-      if (/^file:/i.test(uri)) {
-        local = attachments.resolve(uri); name = attachments.get(uri).name; const child = relative(paths.assetRoot, local).split(sep)
-        if (child.length !== 4 || child[0] !== 'attachments' || !/^[a-f0-9]{64}$/.test(child[2]) || child[1] !== child[2].slice(0, 2) || child[3] !== name) throw new Error('不是原 managed hash/name 路径。')
-        expectedHash = child[2]
-      } else { const asset = parseSyncedPortableAssetUri(uri); expectedHash = asset.hash; name = asset.name; local = attachments.resolve(pathToFileURL(join(paths.assetRoot, 'attachments', asset.hash.slice(0, 2), asset.hash, asset.name)).href) }
-      const info = lstatSync(local)
-      if (!info.isFile() || info.size > ATTACHMENT_MAX_FILE_BYTES) throw new Error('真实附件超过原单文件25MiB门槛。')
-      const bytes = await readFile(local)
-      if (bytes.length !== info.size || publicationHash(bytes) !== expectedHash) throw new Error('真实附件原 bytes 与 managed hash 不一致。')
+      const { hash: expectedHash, name, bytes } = await readManagedAssetSource(paths.assetRoot, uri)
       const previous = assets.get(expectedHash); if (previous && !previous.equals(bytes)) throw new Error('同hash附件 bytes 不一致。')
       assets.set(expectedHash, bytes); replacements.set(uri, buildSyncedPortableAssetUri({ hash: expectedHash, name }))
     }

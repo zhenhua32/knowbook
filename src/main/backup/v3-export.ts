@@ -1,11 +1,9 @@
 import type Database from 'better-sqlite3'
-import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, writeSync } from 'node:fs'
+import { closeSync, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync, writeSync } from 'node:fs'
 import { dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
-import { pathToFileURL } from 'node:url'
-import { AttachmentStore } from '../attachments'
-import { ATTACHMENT_MAX_FILE_BYTES } from '../../shared/attachments'
+import { readManagedAssetSourceSync as readAlias, type ManagedAssetSource } from '../managed-asset-source'
 import { assertSyncedShape, isSyncedUuid, validateSyncedHostForest } from '../../shared/syncedBlockValidation'
-import { buildSyncedPortableAssetUri, parseSyncedPortableAssetUri, rewriteSyncedGroupAssets, rewriteSyncedPortableHostAssets,
+import { buildSyncedPortableAssetUri, rewriteSyncedGroupAssets, rewriteSyncedPortableHostAssets,
   syncedManagedAssetBudgetUri, syncedPortableAssetBackupPath, measureSyncedPortableGroup, measureSyncedPortableHost } from '../../shared/syncedBlockPortable'
 import { buildBackupV3Files, parseBackupV3Files, type ArchiveV3Snapshot, type BackupV3File } from './v3-format'
 import { readBackupV3Files } from './v3-reader'
@@ -16,7 +14,7 @@ import { SyncedPublicationError, publicationHash, publicationJson, publicationCo
 export interface WriteSyncedBackupV3Input { userDataRoot: string; destination: string; snapshotId: string }
 export interface WriteSyncedBackupV3Result { snapshotId: string; documents: number; groups: number }
 type Paths = { root: string; storage: string; assets: string; destination: string; databasePath: string }
-type Alias = { uri: string; path: string; hash: string; name: string; bytes: Buffer }
+type Alias = ManagedAssetSource
 const assetTotalLimit = 500 * 1024 * 1024
 const spelling = (path: string): string => process.platform === 'win32' ? resolve(path).toLowerCase() : resolve(path)
 function error(code: 'asset' | 'spool' | 'unavailable', message: string, cause?: unknown): never { throw new SyncedPublicationError(code, message, cause) }
@@ -67,53 +65,17 @@ function rewrite(snapshot: SyncedBackupV3Snapshot, mapper: (uri: string) => stri
     groups: snapshot.groups.map(group => ({ ...group, wire: rewriteSyncedGroupAssets(group.wire, mapper) }))
   }
 }
-function readAlias(store: AttachmentStore, assetsRoot: string, uri: string): Alias {
-  let path: string, hash: string, name: string
-  if (/^file:/i.test(uri)) {
-    path = store.resolve(uri); const managed = store.get(uri); name = managed.name
-    const parts = relative(assetsRoot, path).split(sep)
-    if (parts.length !== 4 || parts[0] !== 'attachments' || !/^[a-f0-9]{64}$/.test(parts[2])
-      || parts[1] !== parts[2].slice(0, 2) || parts[3] !== name) throw new Error('附件不属于原 managed hash/name 路径。')
-    hash = parts[2]
-  } else {
-    const parsed = parseSyncedPortableAssetUri(uri); hash = parsed.hash; name = parsed.name
-    path = store.resolve(pathToFileURL(join(assetsRoot, 'attachments', hash.slice(0, 2), hash, name)).href)
-  }
-  const info = lstatSync(path)
-  if (!info.isFile() || !Number.isSafeInteger(info.size) || info.size < 0 || info.size > ATTACHMENT_MAX_FILE_BYTES) throw new Error('源附件不是原25MiB门槛内的普通文件。')
-  const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
-  try {
-    const before = fstatSync(fd)
-    const samePathDevice = before.dev === info.dev || process.platform === 'win32' && info.dev === 0
-    if (!before.isFile() || !samePathDevice || before.ino !== info.ino || before.size !== info.size
-      || before.mtimeMs !== info.mtimeMs || before.ctimeMs !== info.ctimeMs) throw new Error('附件在安全路径核验后已变化。')
-    // Read at most the checked size plus one byte, even if another process grows the file.
-    const buffer = Buffer.alloc(before.size + 1)
-    let length = 0
-    while (length < buffer.length) {
-      const count = readSync(fd, buffer, length, buffer.length - length, null)
-      if (!count) break
-      length += count
-    }
-    const after = fstatSync(fd)
-    if (length !== before.size || after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size
-      || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) throw new Error('附件在有界读取期间已变化。')
-    const bytes = buffer.subarray(0, length)
-    if (publicationHash(bytes) !== hash) throw new Error('附件原 bytes 不匹配 managed hash。')
-    return { uri, path, hash, name, bytes }
-  } finally { closeSync(fd) }
-}
 function portable(snapshot: SyncedBackupV3Snapshot, paths: Paths): { snapshot: ArchiveV3Snapshot; aliases: Alias[] } {
   const wanted = new Set<string>()
   // Only discovery uses syntactic placeholders, and its output is discarded.
   rewrite(snapshot, uri => { wanted.add(uri); return /^file:/i.test(uri) ? syncedManagedAssetBudgetUri(uri) : uri })
-  const store = new AttachmentStore(paths.assets), replacements = new Map<string, string>(), aliases: Alias[] = []
+  const replacements = new Map<string, string>(), aliases: Alias[] = []
   const files = new Map<string, ArchiveV3Snapshot['assets'][number]>()
   let total = 0
   try {
     for (const uri of wanted) {
       // Read every source alias even when another name/URI already has the same content hash.
-      const alias = readAlias(store, paths.assets, uri), canonical = buildSyncedPortableAssetUri(alias), relativePath = syncedPortableAssetBackupPath(canonical)
+      const alias = readAlias(paths.assets, uri), canonical = buildSyncedPortableAssetUri(alias), relativePath = syncedPortableAssetBackupPath(canonical)
       aliases.push(alias); replacements.set(uri, canonical)
       const existing = files.get(relativePath)
       if (existing) { if (!Buffer.from(existing.bytes).equals(alias.bytes)) throw new Error('同资产 alias 原字节不一致。') }
@@ -135,9 +97,8 @@ function portable(snapshot: SyncedBackupV3Snapshot, paths: Paths): { snapshot: A
 }
 function verifyAliases(aliases: Alias[], paths: Paths): void {
   try {
-    const store = new AttachmentStore(paths.assets)
     for (const old of aliases) {
-      const current = readAlias(store, paths.assets, old.uri)
+      const current = readAlias(paths.assets, old.uri)
       if (spelling(current.path) !== spelling(old.path) || current.hash !== old.hash || current.name !== old.name || !current.bytes.equals(old.bytes)) throw new Error('附件来源或原字节变化。')
     }
   } catch (cause) { return error('asset', 'V3 首文件前附件原映射/bytes 失效。', cause) }
