@@ -20,6 +20,45 @@ const summary = (page: Page) => fullDescription(page).locator('summary')
 const item = (page: Page, name: string) => picker(page).locator('.document-template-item').filter({ has: page.getByText(name, { exact: true }) })
 const twoFrames = (page: Page) => page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))))
 
+async function nativePageDown(page: Page) {
+  const workspace = picker(page).locator('.document-template-workspace')
+  const supported = await workspace.evaluate(element => {
+    type State = { keySeen: boolean; ended: boolean; atEnd: boolean; startTop: number; scrollEvents: number; cleanup: () => void }
+    const target = element as HTMLElement & { __knowbookNativePageDown?: State }
+    if (target.__knowbookNativePageDown) throw new Error('Previous native scroll observation was not disposed')
+    const state: State = { keySeen: false, ended: false, atEnd: target.scrollHeight - target.clientHeight - target.scrollTop <= 1,
+      startTop: target.scrollTop, scrollEvents: 0, cleanup: () => {} }
+    const key = (event: KeyboardEvent) => { if (event.key === 'PageDown') { state.keySeen = true; state.ended = false } }
+    const scroll = () => { if (state.keySeen) state.scrollEvents++ }
+    const end = () => { if (state.keySeen) state.ended = true }
+    state.cleanup = () => { target.removeEventListener('keydown', key, true); target.removeEventListener('scroll', scroll); target.removeEventListener('scrollend', end) }
+    target.addEventListener('keydown', key, true); target.addEventListener('scroll', scroll, { passive: true }); target.addEventListener('scrollend', end)
+    target.__knowbookNativePageDown = state
+    return 'onscrollend' in target
+  })
+  try {
+    expect(supported, 'The actual Electron renderer must expose native scrollend').toBe(true)
+    await page.keyboard.press('PageDown')
+    // Two animation frames do not finish Chromium's native key-scroll animation.
+    // Observe completion before another real key; never repair focus/scrollTop.
+    await expect.poll(() => workspace.evaluate(element => {
+      const state = (element as HTMLElement & { __knowbookNativePageDown?: { keySeen: boolean; ended: boolean; atEnd: boolean } }).__knowbookNativePageDown
+      return Boolean(state?.keySeen && (state.atEnd || state.ended))
+    }), { message: 'The delivered native PageDown must finish its own workspace scroll' }).toBe(true)
+    await twoFrames(page)
+    return await workspace.evaluate(element => {
+      const target = element as HTMLElement & { __knowbookNativePageDown?: { startTop: number; scrollEvents: number; ended: boolean; atEnd: boolean } }
+      const state = target.__knowbookNativePageDown!
+      return { startTop: state.startTop, endTop: target.scrollTop, scrollEvents: state.scrollEvents, nativeScrollEnd: state.ended, startedAtEnd: state.atEnd }
+    })
+  } finally {
+    await workspace.evaluate(element => {
+      const target = element as HTMLElement & { __knowbookNativePageDown?: { cleanup: () => void } }
+      target.__knowbookNativePageDown?.cleanup(); delete target.__knowbookNativePageDown
+    })
+  }
+}
+
 async function tabTo(page: Page, target: Locator) {
   await expect(target).toHaveCount(1)
   let reached = await target.evaluate(element => element === document.activeElement)
@@ -221,10 +260,9 @@ for (const scenario of [
       const samples: unknown[] = [{ pages, tail, sampledAt: new Date().toISOString() }]
       try {
         while (!tail.visible && pages < 40) {
-          await page.keyboard.press('PageDown')
-          await twoFrames(page)
+          const nativeScroll = await nativePageDown(page)
           const frame = await frameState(page)
-          const sample = { pages: pages + 1, frame, tailBefore: tail, tailAfter: null as typeof tail | null, sampledAt: new Date().toISOString() }
+          const sample = { pages: pages + 1, frame, nativeScroll, tailBefore: tail, tailAfter: null as typeof tail | null, sampledAt: new Date().toISOString() }
           samples.push(sample)
           expectFrame(frame)
           tail = await textVisibility(explanation, marker)
