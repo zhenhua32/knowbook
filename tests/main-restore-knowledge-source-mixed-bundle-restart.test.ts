@@ -2,15 +2,18 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { writeFile,rm } from 'node:fs/promises'
+import { writeFile,realpath } from 'node:fs/promises'
 import { join,relative,isAbsolute } from 'node:path'
 import { withMixedBundleFixture,readPreparedMixedOriginBundle } from './helpers/mixed-origin-bundle-fixture'
+import { removeRequiredDagFixtureDirectory } from './helpers/required-sql-dag-fixture'
 
 test('mixed capsule2 origin bundle independently restarts after source assets and exported catalog disappear and old verification SQL is poisoned',()=>withMixedBundleFixture([2,2],async f=>{
   for(const side of f.pair.sides)await writeFile(side.original.info.databasePath,'old scratch is not a mounted original')
-  for(const path of [join(f.source.userDataRoot,'storage','assets'),f.exported.directory]){
-    const child=relative(f.source.userDataRoot,path);assert.ok(child&&!child.startsWith('..')&&!isAbsolute(child))
-    await rm(path,{recursive:true,force:true})
+  // Windows TEMP may use an 8.3 alias; Main exports use the real owner path.
+  const sourceRoot=await realpath(f.source.userDataRoot)
+  for(const path of [join(sourceRoot,'storage','assets'),f.exported.directory]){
+    const child=relative(sourceRoot,path);assert.ok(child&&!child.startsWith('..')&&!isAbsolute(child))
+    await removeRequiredDagFixtureDirectory(path,sourceRoot)
   }
   // A new process must create its own verification profile from the mounted originals.
   const {readdir}=await import('node:fs/promises')
