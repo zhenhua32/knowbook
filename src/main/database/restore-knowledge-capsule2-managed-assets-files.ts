@@ -8,8 +8,10 @@ import { capsuleBytesHash, capsuleJson, freezeCapsuleValue, type DurableSqlCapsu
 import { CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-model'
 import { assertOwnedRawCapsuleOriginal, readOwnedRawCapsuleOriginal, type OwnedRawCapsuleOriginal } from './restore-knowledge-capsule-files'
 import { prepareCapsule2KnownAssetOriginals, readPreparedCapsule2KnownAssetOriginals,
+  reopenCapsule2KnownAssetOriginals, readCapsule2AssetManifest,
   assertCapsule2AssetDirectory as directory, writeCapsule2AssetCopy as writeNew, readCapsule2AssetCopy as readExact,
   type Capsule2KnownAssetManifest, type PreparedCapsule2KnownAssetOriginals } from './restore-knowledge-capsule2-assets-files'
+import { parseCapsule2ManagedAssetManifest } from './restore-knowledge-capsule2-assets-model'
 
 const maxFiles = 5_000, maxBytes = 500 * 1024 * 1024, maxEntries = 20_000
 const bad = (message: string): never => { throw new Error('capsule2管理附件原件无效：' + message + '；不改SQL/实时附件，不授认证或安装权，失败新目录保留。') }
@@ -159,4 +161,29 @@ export async function readPreparedCapsule2ManagedAssetOriginals(handle: Prepared
   const value = prepared.get(handle)
   if (!value) return bad('不是实际Main准备的管理文件句柄')
   return verify(value)
+}
+
+/** Hash-pinned prepared data restart, not an accepted Root/certificate. A real
+ * owning root supplies the commitment. Rebuild both private registries only
+ * after actual original SQL and all independent archived blobs are reread. */
+export async function reopenCapsule2ManagedAssetOriginals(original: OwnedRawCapsuleOriginal, expectedManifestHash: string): Promise<PreparedCapsule2ManagedAssetOriginals> {
+  const info = readOwnedRawCapsuleOriginal(original)
+  if (used.has(original)) return bad('同一原件已准备/重开或失败，不能重入')
+  used.add(original)
+  const capsuleId = basename(info.capsuleDirectory), output = join(info.recoveryDirectory, 'knowledge-managed-assets-v2', capsuleId)
+  await directory(output, info.profileRoot)
+  const text = await readCapsule2AssetManifest(join(output, 'manifest.json'), info.profileRoot)
+  const manifest = parseCapsule2ManagedAssetManifest(text, capsuleId, expectedManifestHash)
+  const known = await reopenCapsule2KnownAssetOriginals(original, manifest.knownAssetManifestHash)
+  const parent = await readPreparedCapsule2KnownAssetOriginals(known)
+  if (capsuleJson(manifest.sourceInventory) !== capsuleJson(parent.manifest.sourceInventory)
+    || manifest.schemaVersion !== parent.manifest.schemaVersion || manifest.sourceContentHash !== parent.manifest.sourceContentHash
+    || manifest.workspaceHistoryObservationHash !== parent.manifest.workspaceHistoryObservationHash
+    || manifest.assetReferencesObservationHash !== parent.manifest.assetReferencesObservationHash
+    || capsuleJson(manifest.knownAliases) !== capsuleJson(parent.manifest.aliases)) return bad('完整管理manifest不等于重验后的known实际来源')
+  const value: Saved = { original, known, root: info.profileRoot, directory: output, manifest, manifestBytes: Buffer.from(text), manifestHash: expectedManifestHash }
+  await verify(value)
+  const handle: PreparedCapsule2ManagedAssetOriginals = Object.freeze({ kind: 'prepared-capsule2-managed-asset-originals' })
+  prepared.set(handle, value)
+  return handle
 }

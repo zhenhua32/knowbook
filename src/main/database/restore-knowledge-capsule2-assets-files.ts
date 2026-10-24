@@ -13,6 +13,7 @@ import { assertOwnedRawCapsuleOriginal, assertOwnedRawCapsuleScratchReady, asser
   type OwnedRawCapsuleOriginal } from './restore-knowledge-capsule-files'
 import { assertRestorePath, restoreDirectory, syncRestoreDirectory } from './restore-safety-files'
 import { restoreSqliteFilename } from './restore-safety-sqlite-path'
+import { parseCapsule2KnownAssetManifest } from './restore-knowledge-capsule2-assets-model'
 
 // Finite preparation limits, matching existing V3 file/count budgets. This is
 // not a streaming1TiB certifier or a change to public wire/source SQL limits.
@@ -57,7 +58,7 @@ async function writeNew(path: string, bytes: Buffer, root: string): Promise<void
     if (!independent(after) || after.size !== bytes.length || !same(await lstat(path), after, true)) return bad('新副本写入身份变化')
   } finally { await fd.close() }
 }
-async function readExact(path: string, root: string, bytes: number, expectedHash: string, limit: number): Promise<Buffer> {
+async function readBounded(path: string, root: string, bytes: number, limit: number): Promise<Buffer> {
   if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > limit) return bad('完整文件超准备预算')
   await assertRestorePath(path, root)
   const info = await lstat(path)
@@ -72,9 +73,21 @@ async function readExact(path: string, root: string, bytes: number, expectedHash
     await assertRestorePath(path, root)
     if (length !== bytes || !same(before, after) || !same(await lstat(path), after, true)) return bad('归档有界读取时变化')
     const result = buffer.subarray(0, length)
-    if (capsuleBytesHash(result) !== expectedHash) return bad('归档原字节hash不符')
     return result
   } finally { await fd.close() }
+}
+async function readExact(path: string, root: string, bytes: number, expectedHash: string, limit: number): Promise<Buffer> {
+  const result = await readBounded(path, root, bytes, limit)
+  if (capsuleBytesHash(result) !== expectedHash) return bad('归档原字节hash不符')
+  return result
+}
+/** Untrusted manifest bytes only. Its owner must parse and check the pinned
+ * domain hash before using any field, and separately validate actual SQL. */
+export async function readCapsule2AssetManifest(path: string, root: string): Promise<string> {
+  await assertRestorePath(path, root)
+  const info = await lstat(path)
+  const bytes = await readBounded(path, root, info.size, CAPSULE2_RAW_MAX_JSON_BYTES)
+  return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes)
 }
 async function verify(value: Saved): Promise<PreparedCapsule2KnownAssetInfo> {
   await assertOwnedRawCapsuleOriginal(value.original)
@@ -196,6 +209,38 @@ export async function readPreparedCapsule2KnownAssetOriginals(handle: PreparedCa
   const value = prepared.get(handle)
   if (!value) return bad('不是实际Main准备的数据句柄')
   return verify(value)
+}
+
+/** Restart of prepared data only. The expected hash comes from the owning
+ * root; it is not SQL certification, file provenance or an installation permit.
+ * All Markdown holders are reread from fresh owned SQL, never from old scratch,
+ * a caller list or live managed files which may already have disappeared. */
+export async function reopenCapsule2KnownAssetOriginals(original: OwnedRawCapsuleOriginal, expectedManifestHash: string): Promise<PreparedCapsule2KnownAssetOriginals> {
+  const info = readOwnedRawCapsuleOriginal(original)
+  if (used.has(original)) return bad('同一原件已准备/重开或失败，不能重入')
+  used.add(original)
+  await assertOwnedRawCapsuleScratchReady(original)
+  const capsuleId = basename(info.capsuleDirectory), output = join(info.recoveryDirectory, 'knowledge-asset-originals-v2', capsuleId)
+  await directory(output, info.profileRoot)
+  const text = await readCapsule2AssetManifest(join(output, 'manifest.json'), info.profileRoot)
+  const manifest = parseCapsule2KnownAssetManifest(text, capsuleId, expectedManifestHash)
+  const db = new Database(restoreSqliteFilename(info.databasePath), { readonly: true, fileMustExist: true })
+  try {
+    db.pragma('query_only=ON'); db.pragma('foreign_keys=ON')
+    const observation = db.transaction(() => readRawCapsule2AssetReferencesOwned(db))()
+    const uris = [...new Set(observation.scopes.flatMap(scope => scope.destinations.map(item => item.uri)))].sort(compare)
+    if (manifest.schemaVersion !== db.pragma('user_version', { simple: true })
+      || capsuleJson(manifest.sourceInventory) !== capsuleJson(info.originalInventory)
+      || manifest.sourceContentHash !== observation.sourceContentHash || manifest.workspaceHistoryObservationHash !== observation.workspaceHistoryObservationHash
+      || manifest.assetReferencesObservationHash !== observation.observationHash || capsuleJson(manifest.aliases.map(alias => alias.uri)) !== capsuleJson(uris))
+      return bad('持久known manifest不等于完整实际原SQL来源/全部引用')
+  } finally { db.close() }
+  await assertOwnedRawCapsuleScratchContent(original)
+  const value: Saved = { original, root: info.profileRoot, directory: output, manifest, manifestBytes: Buffer.from(text), manifestHash: expectedManifestHash }
+  await verify(value)
+  const handle: PreparedCapsule2KnownAssetOriginals = Object.freeze({ kind: 'prepared-capsule2-known-asset-originals' })
+  prepared.set(handle, value)
+  return handle
 }
 
 // Filesystem data operations only. These do not mint an original, prepared

@@ -24,6 +24,12 @@ export interface PrepareDurableSqlCapsuleOriginalInput {
 export interface ReopenDurableSqlCapsuleOriginalInput {
   readonly profileRoot: string; readonly operationId: string; readonly capsuleId: string; readonly expectedManifestHash: string
 }
+/** Prepared-data restart locator. The owning root pins this complete inventory;
+ * this constructor copies bytes and never creates a SQL certificate or permit. */
+export interface ReopenPreparedRawCapsuleOriginalInput {
+  readonly profileRoot: string; readonly operationId: string; readonly capsuleId: string
+  readonly expectedInventory: readonly DurableSqlCapsuleFile[]
+}
 export interface OwnedRawCapsuleOriginalInfo {
   readonly profileRoot: string; readonly recoveryDirectory: string; readonly sealedDirectory: string
   readonly capsuleDirectory: string; readonly originalDirectory: string; readonly scratchDirectory: string
@@ -155,6 +161,30 @@ export async function reopenDurableSqlCapsuleOriginal(input: ReopenDurableSqlCap
   return handle
 }
 export function readOwnedRawCapsuleOriginal(handle: OwnedRawCapsuleOriginal): OwnedRawCapsuleOriginalInfo { return saved(handle).info }
+/** Capsule2 prepared originals have no legacy v1 SQL seal. Reopen their fixed
+ * original namespace into fresh exclusive scratch, never old scratch/current DB.
+ * Inventory equality is data integrity only; the new owner must reread semantics. */
+export async function reopenPreparedRawCapsuleOriginal(input: ReopenPreparedRawCapsuleOriginalInput): Promise<OwnedRawCapsuleOriginal> {
+  const row = capsuleRecord(input, ['profileRoot', 'operationId', 'capsuleId', 'expectedInventory'])
+  const profileRoot = await canonicalRestoreRoot(absolute(row.profileRoot))
+  if (!isSyncedUuid(row.operationId) || !isSyncedUuid(row.capsuleId)) return capsuleInvalid('prepared原件locator身份无效')
+  const inventory = validateDurableSqlCapsuleInventory(row.expectedInventory)
+  const recoveryDirectory = join(profileRoot, 'backups', 'database-restore', row.operationId)
+  const capsuleDirectory = join(recoveryDirectory, 'knowledge-capsules', row.capsuleId), originalDirectory = join(capsuleDirectory, 'original')
+  await directory(recoveryDirectory, profileRoot); await assertCapsuleDirectory(capsuleDirectory, profileRoot)
+  await assertInventory(originalDirectory, inventory, profileRoot)
+  const readsDirectory = join(recoveryDirectory, 'knowledge-capsule-reads')
+  await restoreDirectory(readsDirectory, profileRoot)
+  const scratchDirectory = join(readsDirectory, randomUUID())
+  await copyRestoreInventory(originalDirectory, scratchDirectory, inventory as RestoreRawFile[], profileRoot)
+  await assertInventory(scratchDirectory, inventory, profileRoot); await assertInventory(originalDirectory, inventory, profileRoot)
+  await assertCapsuleDirectory(capsuleDirectory, profileRoot)
+  const info = freezeCapsuleValue({ profileRoot, recoveryDirectory, sealedDirectory: originalDirectory, capsuleDirectory,
+    originalDirectory, scratchDirectory, databasePath: join(scratchDirectory, 'knowbook.db'), originalInventory: inventory, label: 'reopened prepared capsule2 original' })
+  const handle: OwnedRawCapsuleOriginal = Object.freeze({ kind: 'owned-raw-capsule-original' })
+  originals.set(handle, { info, busy: false, failed: false, origin: 'new', sealed: null })
+  return handle
+}
 /** Fixed persisted capsule namespace; old scratch contents are never input. */
 async function assertCapsuleDirectory(capsuleDirectory: string, profileRoot: string): Promise<void> {
   await directory(capsuleDirectory, profileRoot)

@@ -280,11 +280,21 @@ export async function extractRootKnowledgeMaterial(handle: CertifiedDurableSqlDa
   const expected = rootMaterialCapsules(entry), inputs = []
   // This exact private map is the whole authenticated closure, including shared
   // ancestors. No caller array/ref/visitor can select a smaller subset.
-  for (const item of entry.capsules.values()) {
-    const extracted = await extractCertifiedDurableSqlCapsuleKnowledge(item.capsule)
-    const payload = await readCertifiedCapsuleKnowledge(extracted)
-    if (capsuleJson(payload.capsule) !== capsuleJson(item.ref)) return durableSqlDagInvalid('K payload不属于准确DAG原capsule')
-    inputs.push(extracted)
+  // Independent originals may overlap their filesystem reads, with at most two
+  // active inputs. Every started SQL/scratch/FD operation settles before the
+  // original input-order error escapes; all fresh checks remain on every call.
+  const originals = [...entry.capsules.values()]
+  for (let from = 0; from < originals.length; from += 2) {
+    const results = await Promise.allSettled(originals.slice(from, from + 2).map(async item => {
+      const extracted = await extractCertifiedDurableSqlCapsuleKnowledge(item.capsule)
+      const payload = await readCertifiedCapsuleKnowledge(extracted)
+      if (capsuleJson(payload.capsule) !== capsuleJson(item.ref)) return durableSqlDagInvalid('K payload不属于准确DAG原capsule')
+      return extracted
+    }))
+    for (const result of results) {
+      if (result.status === 'rejected') throw result.reason
+      inputs.push(result.value)
+    }
   }
   const union = await unionCertifiedCapsuleKnowledge(inputs), diagnostic = await readCertifiedKnowledgeUnion(union)
   assertMaterialCapsules(expected, diagnostic)
