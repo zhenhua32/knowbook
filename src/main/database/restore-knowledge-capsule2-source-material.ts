@@ -5,7 +5,7 @@ import { readOwnedRawCapsuleOriginal, reopenPreparedRawCapsuleOriginal,
   assertOwnedRawCapsuleScratchReady, assertOwnedRawCapsuleScratchContent } from './restore-knowledge-capsule-files'
 import { readCapsule2AssetArchive, readCapsule2ArchiveSourceOriginal,
   type PreparedCapsule2AssetArchive } from './restore-knowledge-capsule2-asset-archive'
-import { readRawCapsule2AssetReferenceSourceOwned } from './restore-knowledge-capsule2-assets-read'
+import { readRawCapsule2SourceKnowledgeOwned } from './restore-knowledge-payload-raw-read'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_READER } from './restore-knowledge-capsule2-raw-model'
 import { restoreSqliteFilename } from './restore-safety-sqlite-path'
 
@@ -25,26 +25,26 @@ async function material(archive: PreparedCapsule2AssetArchive) {
   const actual = readOwnedRawCapsuleOriginal(fresh)
   await assertOwnedRawCapsuleScratchReady(fresh)
   const db = new Database(restoreSqliteFilename(actual.databasePath), { readonly: true, fileMustExist: true })
-  let source: ReturnType<typeof readRawCapsule2AssetReferenceSourceOwned>
+  let captured: ReturnType<typeof readRawCapsule2SourceKnowledgeOwned>
   try {
     db.pragma('query_only=ON'); db.pragma('foreign_keys=ON')
-    source = db.transaction(() => readRawCapsule2AssetReferenceSourceOwned(db))()
+    captured = db.transaction(() => readRawCapsule2SourceKnowledgeOwned(db))()
   } finally { db.close(); await assertOwnedRawCapsuleScratchContent(fresh) }
-  const references = source.assets, manifest = before.manifest
+  const { source, knowledge } = captured, references = source.assets, manifest = before.manifest
   if (source.sourceContent.schemaVersion !== manifest.schemaVersion || references.sourceContentHash !== manifest.sourceContentHash
     || references.workspaceHistoryObservationHash !== manifest.workspaceHistoryObservationHash || references.observationHash !== manifest.assetReferencesObservationHash
     || capsuleJson(info.originalInventory) !== capsuleJson(manifest.sourceInventory)) return bad('原SQL、完整来源与归档绑定不一致')
   const after = await readCapsule2AssetArchive(archive)
   if (after.manifestHash !== before.manifestHash) return bad('读取期间归档身份变化')
-  const body = { kind: 'capsule2-complete-source-material' as const, version: 1 as const, forReader: CAPSULE2_READER,
+  const body = { kind: 'capsule2-complete-source-material' as const, version: 2 as const, forReader: CAPSULE2_READER,
     sourceInventory: info.originalInventory, capsuleId: basename(info.capsuleDirectory), operationId: basename(info.recoveryDirectory),
-    source, assetArchive: before.manifest, assetArchiveHash: before.manifestHash,
+    source, knowledge, assetArchive: before.manifest, assetArchiveHash: before.manifestHash,
     priorCoverageRequirements: source.total.observer.coverage.requirements,
     certified: false as const, semanticValidationComplete: false as const, acceptedCoverage: false as const, effective: false as const, permit: false as const,
     unresolved: ['qualified-prior-root-resolution','streaming-source-adapter','complete-private-capsule2-certifier-and-installer'] as const }
   const encoded = capsuleJson(body)
   if (Buffer.byteLength(encoded) > CAPSULE2_RAW_MAX_JSON_BYTES) return bad('完整来源包超有限材料预算，不截断')
-  return freezeCapsuleValue({ ...body, materialHash: capsuleBytesHash('knowbook.capsule2.complete-source-material.v1\0' + encoded) })
+  return freezeCapsuleValue({ ...body, materialHash: capsuleBytesHash('knowbook.capsule2.complete-source-material.v2\0' + encoded) })
 }
 export async function extractCapsule2SourceMaterial(archive: PreparedCapsule2AssetArchive): Promise<PreparedCapsule2SourceMaterial> {
   const value = await material(archive), handle: PreparedCapsule2SourceMaterial = Object.freeze({ kind: 'prepared-capsule2-source-material' })
@@ -66,6 +66,7 @@ export async function diagnoseCapsule2SourceMaterial(handle: PreparedCapsule2Sou
     schemaVersion: value.source.sourceContent.schemaVersion, tables: value.source.sourceContent.tables.length,
     rows: value.source.sourceContent.tables.reduce((count, table) => count + table.rows.length, 0),
     assetFiles: value.assetArchive.tree.files.length, references: value.assetArchive.referenceCount,
+    knowledgeGroups: value.knowledge.groups.length, knowledgeOccupancy: value.knowledge.occupancy.length,
     requiredRoots: value.priorCoverageRequirements.entries.length, certified: false as const, semanticValidationComplete: false as const,
     acceptedCoverage: false as const, effective: false as const, permit: false as const })
 }

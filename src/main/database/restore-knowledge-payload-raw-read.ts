@@ -20,6 +20,10 @@ import { readRawSyncedGroupSnapshotsOwned } from './synced-blocks-raw-read'
 import { assertRawSyncedHistoricalEvidenceOwned } from './synced-operation-history-read'
 import { readHistoricalRowLocator } from './synced-history-evidence-support'
 import { readRawRestoreSqlInventoryOwned, type RawSqlInventory } from './restore-knowledge-sql-inventory'
+import { readRawCapsule2AssetReferenceSourceOwned } from './restore-knowledge-capsule2-assets-read'
+import { CAPSULE2_READER, CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-model'
+import { COVERAGE_ANCHOR_CHANNEL } from './restore-knowledge-coverage-model'
+import type { RawHistoricalEvidenceFact } from './synced-history-evidence-model'
 import { rawRestoreSqlCell } from './restore-knowledge-sql-cell'
 import { capsuleInvalid, capsuleJson, freezeCapsuleValue, type DurableSqlCapsuleDraft } from './restore-knowledge-capsule-model'
 import { knowledgeDocumentComparisonKey, knowledgeGroupComparisonKey, knowledgeHash,
@@ -147,6 +151,17 @@ export function readRawCapsuleKnowledgePayloadOwned(db: Database.Database, capsu
   const metadataKeys = new Set(history.facts.flatMap(fact => [fact.locator, ...fact.supports])
     .filter(locator => locator.table === 'app_settings').map(locator => text(locator.key[0])))
   const original = originals(db, inventory, metadataKeys)
+  const projection = readKnowledgeProjectionOwned(db, schemaVersion, original, history.facts)
+  return freezeCapsuleValue({ kind: 'durable-sql-knowledge-payload' as const, version: 1 as const, material: 'durable-sql-only' as const,
+    capsule, schemaVersion, workspaceScope: draft.workspaceScope, recoveryEpoch: draft.recoveryEpoch, schemaHash: draft.schemaHash,
+    inventoryHash: inventory.inventoryHash, encoding: inventory.encoding, lifecycleAvailability: schemaVersion === 27 ? 'schema27' as const : 'not-in-schema26' as const,
+    ...projection })
+}
+
+/** Data from the fixed owned readers above/below only. No callback, read mode,
+ * caller projection, certificate factory or effective source enters this core. */
+function readKnowledgeProjectionOwned(db: Database.Database, schemaVersion: 26 | 27,
+  original: ReturnType<typeof originals>, facts: readonly RawHistoricalEvidenceFact[]) {
   // The private owner already ran the exact original full draft validation in
   // this transaction. Ordinary historical strings retain that legacy JSON.parse
   // rule; synchronized formats already passed their stricter finite codecs.
@@ -155,7 +170,7 @@ export function readRawCapsuleKnowledgePayloadOwned(db: Database.Database, capsu
   // bytes remain in originals; this is not a certified-empty inference.
   const historyJson = (source: string): unknown => JSON.parse(source) as unknown
   const reference = (table: string, key: readonly (string | number)[]): KnowledgeRowRef => sourceOnly(original.lookup(table, key).source)
-  const material: KnowledgeHistoricalMaterial[] = history.facts.map(fact => {
+  const material: KnowledgeHistoricalMaterial[] = facts.map(fact => {
     for (const locator of [fact.locator, ...fact.supports]) if (readHistoricalRowLocator(db, locator.table, locator.key).rowHash !== locator.rowHash)
       return capsuleInvalid('K历史原locator未闭合')
     return { fact, primary: reference(fact.locator.table, fact.locator.key), supports: fact.supports.map(locator => reference(locator.table, locator.key)) }
@@ -400,9 +415,42 @@ export function readRawCapsuleKnowledgePayloadOwned(db: Database.Database, capsu
     cursor: text(row.value.cursor), position: integer(row.value.position), source: sourceOnly(row.source) }))
   const pins = original.rows('synced_group_pins').map(row => ({ groupId: text(row.value.group_id), kind: text(row.value.kind),
     pinId: text(row.value.pin_id), createdAt: text(row.value.created_at), source: sourceOnly(row.source) }))
-  return freezeCapsuleValue({ kind: 'durable-sql-knowledge-payload' as const, version: 1 as const, material: 'durable-sql-only' as const,
-    capsule, schemaVersion, workspaceScope: draft.workspaceScope, recoveryEpoch: draft.recoveryEpoch, schemaHash: draft.schemaHash,
-    inventoryHash: inventory.inventoryHash, encoding: inventory.encoding, lifecycleAvailability: schemaVersion === 27 ? 'schema27' as const : 'not-in-schema26' as const,
-    originals: original.tables, groups, exposures, observations, denials, occupancy, identities, instances, hostStates, pins, bindings, databaseViewReferences, hostJournals, groupHistories, archivedGroupHistories, exchangeCuts,
+  return freezeCapsuleValue({ originals: original.tables, groups, exposures, observations, denials, occupancy, identities, instances, hostStates, pins, bindings, databaseViewReferences, hostJournals, groupHistories, archivedGroupHistories, exchangeCuts,
     recoveryBoundaries, restoreLineage, historicalMaterial: material })
+}
+
+/** Complete typed K inputs from the same actual capsule2 source transaction.
+ * Prior-C is retained as unresolved original rows, never reclassified as an
+ * ordinary member attempt, accepted coverage, empty K or a v1 capsule. */
+export function readRawCapsule2SourceKnowledgeOwned(db: Database.Database) {
+  const source = readRawCapsule2AssetReferenceSourceOwned(db), content = source.sourceContent
+  const inventory = readRawRestoreSqlInventoryOwned(db)
+  if (inventory.schemaHash !== content.schemaHash || inventory.inventoryHash !== content.legacyInventoryHash)
+    return capsuleInvalid('capsule2 K与同一实际SQL完整typed清单不一致')
+  const references = source.total.originalReferences
+  const metadataKeys = new Set(references.filter(row => row.table === 'app_settings').map(row => text(row.key[0])))
+  const original = originals(db, inventory, metadataKeys)
+  const projection = readKnowledgeProjectionOwned(db, content.schemaVersion, original, source.total.legacyFacts)
+  const reference = (table: string, key: readonly (string | number)[]) => sourceOnly(original.lookup(table, key).source)
+  const coverageMaterial = source.total.coverageSyntaxFacts.map(fact => ({ fact,
+    primary: reference(fact.locator.table, fact.locator.key), supports: fact.supports.map(row => reference(row.table, row.key)) }))
+  const coverageAnchors = projection.exposures.filter(row => row.attempt.channel === COVERAGE_ANCHOR_CHANNEL)
+    .map(row => ({ ...row, kind: 'unresolved-coverage-anchor' as const, acceptedCoverage: false as const, effective: false as const }))
+  if (coverageAnchors.length !== source.total.observer.coverage.requirements.entries.length)
+    return capsuleInvalid('capsule2 K完整prior-C与真实coverage锚不闭合')
+  const body = { kind: 'capsule2-source-knowledge-projection' as const, version: 1 as const, forReader: CAPSULE2_READER,
+    state: 'prepared-original-knowledge-only' as const, schemaVersion: content.schemaVersion, encoding: content.encoding,
+    workspaceScope: content.workspaceScope, recoveryEpoch: content.recoveryEpoch, schemaHash: content.schemaHash,
+    inventoryHash: inventory.inventoryHash, sourceContentHash: source.policy.sourceContentHash,
+    workspaceHistoryObservationHash: source.history.observationHash, assetReferencesObservationHash: source.assets.observationHash,
+    ...projection, exposures: projection.exposures.filter(row => row.attempt.channel !== COVERAGE_ANCHOR_CHANNEL),
+    coverageAnchors, coverageMaterial, priorCoverageRequirements: source.total.observer.coverage.requirements,
+    legacyRestoreReceipts: source.total.legacyRestoreReceipt1.map(locator => ({ locator, source: reference(locator.table, locator.key) })),
+    certified: false as const, acceptedCoverage: false as const, semanticValidationComplete: false as const,
+    effective: false as const, permit: false as const,
+    unresolved: ['qualified-origin-and-prior-root-resolution','streaming-source-adapter','complete-private-capsule2-certifier-and-installer'] as const }
+  const encoded = capsuleJson(body)
+  if (Buffer.byteLength(encoded) > CAPSULE2_RAW_MAX_JSON_BYTES) return capsuleInvalid('capsule2完整K输入超有限准备预算，不截断')
+  return Object.freeze({ source, knowledge: freezeCapsuleValue({ ...body,
+    observationHash: knowledgeHash('knowbook.capsule2.source-knowledge-projection.v1', body) }) })
 }
