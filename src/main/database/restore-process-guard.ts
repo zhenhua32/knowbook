@@ -3,6 +3,7 @@ import { basename, isAbsolute, relative, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
 import { setTimeout as delay } from 'node:timers/promises'
 import { resolveSystemPluginPhysicalPath } from '../system-plugin/managed-paths'
+import { WINDOWS_RESTORE_PROCESS_JSON_SOURCE } from './restore-process-json'
 
 export interface RestoreProcessIdentity {
   pid: number
@@ -25,8 +26,8 @@ export function parseRestoreProcessQueryTrace(stderr: unknown): {
   const phases: string[] = [], timings: Array<{ phase: string; elapsedMs: number }> = []
   if (typeof stderr !== 'string') return { phases, timings }
   for (const line of stderr.split(/\r?\n/)) {
-    if (/^knowbook-restore-process:(started|argv-ready|reading-processes|encoding-result|complete)$/.test(line)) phases.push(line)
-    const match = /^knowbook-restore-timing:(started|argv-ready|reading-processes|encoding-result|complete):([0-9]{1,6})$/.exec(line)
+    if (/^knowbook-restore-process:(started|argv-ready|reading-processes|encoding-result|encoded-result|complete)$/.test(line)) phases.push(line)
+    const match = /^knowbook-restore-timing:(started|argv-ready|reading-processes|encoding-result|encoded-result|complete):([0-9]{1,6})$/.exec(line)
     if (match && Number(match[2]) <= 120_000) timings.push({ phase: match[1], elapsedMs: Number(match[2]) })
   }
   return { phases: phases.slice(-5), timings: timings.slice(-5) }
@@ -37,8 +38,8 @@ export async function listWindowsRestoreProcesses(): Promise<RestoreObservedProc
   if (process.platform !== 'win32') throw new Error('数据库维护恢复目前仅支持 Windows。')
   // Run-only P/Invoke bindings keep the native argv/free signatures without
   // starting a C# compiler for each fresh snapshot.
-  // Encode plain scalar/argv dictionaries directly through the framework,
-  // avoiding ConvertTo-Json's cmdlet/module and PSObject formatting path.
+  // Encode the fixed scalar/argv dictionaries with already loaded primitives,
+  // avoiding serializer assembly loading and PSObject reflection traversal.
   const script = `$ErrorActionPreference='Stop'
 [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false)
 $queryClock=[Diagnostics.Stopwatch]::StartNew()
@@ -77,11 +78,10 @@ foreach($item in Get-CimInstance Win32_Process -Property ProcessId,Name,Executab
  $result.Add($row)
 }
 Write-KnowBookRestorePhase 'encoding-result'
-[void][Reflection.Assembly]::Load('System.Web.Extensions, Version=4.0.0.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35')
-$encoder=[System.Web.Script.Serialization.JavaScriptSerializer]::new()
-$encoder.MaxJsonLength=4*1024*1024
-$encoder.RecursionLimit=4
-[Console]::WriteLine($encoder.Serialize([object[]]$result.ToArray()))
+${WINDOWS_RESTORE_PROCESS_JSON_SOURCE}
+$json=ConvertTo-KnowBookProcessJson -Rows ($result.ToArray())
+Write-KnowBookRestorePhase 'encoded-result'
+[Console]::WriteLine($json)
 Write-KnowBookRestorePhase 'complete'`
   let stdout: string
   try {

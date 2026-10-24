@@ -78,6 +78,9 @@ test('process query trace exposes only fixed phase names and bounded elapsed tim
   assert.deepEqual(value, { phases: ['knowbook-restore-process:started', 'knowbook-restore-process:argv-ready'],
     timings: [{ phase: 'started', elapsedMs: 8 }, { phase: 'argv-ready', elapsedMs: 33 }] })
   assert.equal(JSON.stringify(value).includes(privateText), false)
+  assert.deepEqual(parseRestoreProcessQueryTrace('knowbook-restore-process:encoded-result\nknowbook-restore-timing:encoded-result:44\n' + privateText), {
+    phases: ['knowbook-restore-process:encoded-result'], timings: [{ phase: 'encoded-result', elapsedMs: 44 }]
+  })
 })
 
 test('process query trace keeps only its final five bounded observations and ignores non-text data', () => {
