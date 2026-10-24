@@ -5,14 +5,7 @@ import type { SyncedHostHistoryBranchRow } from './synced-host-history-branch'
 import { parseInitialIncomingStored } from '../sync/synced-initial-incoming-model'
 import { publicationHash, publicationInvalid, publicationJson } from '../sync/synced-publication-model'
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
-import { readRawCapsule2ContentOwned } from './restore-knowledge-capsule2-content-raw-read'
-import { readRawCapsule2PhysicalGraphOwned } from './restore-knowledge-capsule2-physical-raw-read'
-import { assertRawCapsule2OrdinaryHistoryOwned } from './restore-knowledge-capsule2-ordinary-history-read'
-import { assertRawCapsule2TemplatesOwned } from './restore-knowledge-capsule2-templates-read'
-import { assertRawCapsule2MovesOwned } from './restore-knowledge-capsule2-moves-read'
-import { assertRawCapsule2AssistantHistoryOwned } from './restore-knowledge-capsule2-assistant-read'
-import { assertRawCapsule2PreferencesOwned } from './restore-knowledge-capsule2-preferences-read'
-import { assertRawCapsule2PluginPolicyOwned } from './restore-knowledge-capsule2-plugin-policy-read'
+import { readRawCapsule2OrdinaryPolicySourceOwned } from './restore-knowledge-capsule2-policy-source-read'
 import { readRawCapsule2HistoricalEvidenceOwned } from './restore-knowledge-capsule2-history-read'
 import { CAPSULE2_READER, CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-model'
 
@@ -41,15 +34,8 @@ function json(source: string): unknown { return parseInitialIncomingStored(sourc
  * remain literal, including paths made by the old astral-prefix writer. Remaining source certifier seams
  * are still incomplete. */
 export function readRawCapsule2WorkspaceHistoryOwned(db: Database.Database): RawCapsule2WorkspaceHistoryObservation {
-  const sourceContent = readRawCapsule2ContentOwned(db)
-  const physical = readRawCapsule2PhysicalGraphOwned(db)
-  assertRawCapsule2OrdinaryHistoryOwned(db)
-  assertRawCapsule2TemplatesOwned(db)
-  assertRawCapsule2MovesOwned(db)
-  assertRawCapsule2AssistantHistoryOwned(db)
-  assertRawCapsule2PreferencesOwned(db)
-  assertRawCapsule2PluginPolicyOwned(db)
-  const sourceContentHash = capsuleBytesHash('knowbook.capsule2.workspace-history-source-content.v1\0' + capsuleJson(sourceContent))
+  const { physical, policy } = readRawCapsule2OrdinaryPolicySourceOwned(db)
+  const sourceContentHash = policy.sourceContentHash
   const physicalObservationHash = capsuleBytesHash('knowbook.capsule2.workspace-history-physical-observation.v1\0' + capsuleJson(physical))
   const rawIdentities = db.prepare('SELECT id,last_owner_kind,last_owner_id,state,created_at FROM block_identities ORDER BY id').all() as InitialIncomingIdentity[]
   const identities = new Map<string, InitialIncomingIdentity>()
