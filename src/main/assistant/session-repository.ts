@@ -25,6 +25,7 @@ const MAX_EVENT_ITEMS = 20_000
 const MAX_EVENT_PAGE_SIZE = 1_000
 
 export type AssistantSessionRecord = AssistantSessionSummary
+export type AssistantReplayState = Pick<AssistantSessionRecord, 'id' | 'title' | 'status' | 'activeTurnId'>
 
 export interface CreateAssistantSessionInput {
   id?: AssistantSessionId
@@ -124,7 +125,7 @@ export class SqliteAssistantSessionRepository {
     const id = normalizeId(sessionId, 'Assistant session id')
     const type = normalizeAppendableEventType(input.type)
     const payload = normalizeEventJson(input.payload, `Assistant event ${type}`)
-    validateEventPayload(type, payload)
+    assertAssistantEventPayload(type, payload)
     const now = this.now().toISOString()
 
     const transaction = this.db.transaction(() => {
@@ -201,30 +202,7 @@ export class SqliteAssistantSessionRepository {
     type: Exclude<AssistantEventType, 'session.created'>,
     payload: PluginJsonValue
   ): void {
-    if (session.status !== 'active') {
-      throw new Error(`Assistant session "${session.id}" is ${session.status}.`)
-    }
-    const candidate = payload as Record<string, PluginJsonValue>
-    const payloadTurnId = typeof candidate.turnId === 'string' ? candidate.turnId : null
-
-    if (type === 'turn.started') {
-      if (session.activeTurnId) {
-        throw new Error(`Assistant session already has active turn "${session.activeTurnId}".`)
-      }
-      return
-    }
-    if (type === 'turn.ended') {
-      if (!session.activeTurnId || payloadTurnId !== session.activeTurnId) {
-        throw new Error('Assistant turn end does not match the active turn.')
-      }
-      return
-    }
-    if (payloadTurnId && payloadTurnId !== session.activeTurnId) {
-      throw new Error('Assistant event turn does not match the active turn.')
-    }
-    if (requiresActiveTurn(type) && !session.activeTurnId) {
-      throw new Error(`Assistant event "${type}" requires an active turn.`)
-    }
+    assertAssistantSessionTransition(session, type, payload)
   }
 
   private applySessionProjection(
@@ -234,23 +212,7 @@ export class SqliteAssistantSessionRepository {
     nextSeq: number,
     now: string
   ): void {
-    const candidate = payload as Record<string, PluginJsonValue>
-    let title = session.title
-    let status = session.status
-    let activeTurnId: string | null = session.activeTurnId
-    if (type === 'session.title.updated') {
-      title = candidate.title as string
-    } else if (type === 'turn.started') {
-      activeTurnId = candidate.turnId as string
-    } else if (type === 'turn.ended') {
-      activeTurnId = null
-    } else if (type === 'session.cancelled') {
-      status = 'cancelled'
-      activeTurnId = null
-    } else if (type === 'session.error') {
-      status = 'error'
-      activeTurnId = null
-    }
+    const { title, status, activeTurnId } = projectAssistantSessionState(session, type, payload)
 
     this.db.prepare(`
       UPDATE assistant_sessions
@@ -317,6 +279,35 @@ export class SqliteAssistantSessionRepository {
   }
 }
 
+/** Pure persisted-event rules shared by the live writer and readonly source
+ * validation. These helpers never append recovery events or grant approvals. */
+export function assertAssistantSessionTransition(session: AssistantReplayState, type: Exclude<AssistantEventType, 'session.created'>, payload: PluginJsonValue): void {
+  if (session.status !== 'active') throw new Error(`Assistant session "${session.id}" is ${session.status}.`)
+  const candidate = payload as Record<string, PluginJsonValue>
+  const payloadTurnId = typeof candidate.turnId === 'string' ? candidate.turnId : null
+  if (type === 'turn.started') {
+    if (session.activeTurnId) throw new Error(`Assistant session already has active turn "${session.activeTurnId}".`)
+    return
+  }
+  if (type === 'turn.ended') {
+    if (!session.activeTurnId || payloadTurnId !== session.activeTurnId) throw new Error('Assistant turn end does not match the active turn.')
+    return
+  }
+  if (payloadTurnId && payloadTurnId !== session.activeTurnId) throw new Error('Assistant event turn does not match the active turn.')
+  if (requiresActiveTurn(type) && !session.activeTurnId) throw new Error(`Assistant event "${type}" requires an active turn.`)
+}
+
+export function projectAssistantSessionState(session: AssistantReplayState, type: Exclude<AssistantEventType, 'session.created'>, payload: PluginJsonValue): AssistantReplayState {
+  const candidate = payload as Record<string, PluginJsonValue>
+  let { title, status, activeTurnId } = session
+  if (type === 'session.title.updated') title = candidate.title as string
+  else if (type === 'turn.started') activeTurnId = candidate.turnId as AssistantTurnId
+  else if (type === 'turn.ended') activeTurnId = null
+  else if (type === 'session.cancelled') { status = 'cancelled'; activeTurnId = null }
+  else if (type === 'session.error') { status = 'error'; activeTurnId = null }
+  return { id: session.id, title, status, activeTurnId }
+}
+
 function mapSession(row: SessionRow): AssistantSessionRecord {
   if (!Number.isSafeInteger(row.next_seq) || row.next_seq < 2) {
     throw new Error('Assistant session sequence is corrupt.')
@@ -343,7 +334,7 @@ function mapEvent(row: EventRow): AssistantEvent {
     throw new Error(`Stored assistant event "${row.id}" has an invalid surface.`)
   }
   const payload = parseJson(row.payload_json, `Assistant event ${row.id}`)
-  validateEventPayload(row.type, payload)
+  assertAssistantEventPayload(row.type, payload)
   return {
     id: row.id,
     sessionId: assistantSessionId(row.session_id),
@@ -366,7 +357,7 @@ function normalizeAppendableEventType(value: unknown): Exclude<AssistantEventTyp
   return value as Exclude<AssistantEventType, 'session.created'>
 }
 
-function validateEventPayload(type: AssistantEventType, payload: PluginJsonValue): void {
+export function assertAssistantEventPayload(type: AssistantEventType, payload: PluginJsonValue): void {
   if (!isPlainObject(payload)) {
     throw new Error(`Assistant event "${type}" payload must be an object.`)
   }

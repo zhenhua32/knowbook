@@ -47,11 +47,27 @@ async function captureDirectory(profileRoot: string, operationId: string, source
   return { capsule, seal, info, ref }
 }
 async function setupPair(f: V3Fixture) {
+  const started = performance.now()
   const profileRoot = await realpath(f.userDataRoot), operationId = randomUUID()
   const foreign = createV3Fixture(join(f.root, 'independent-DAG-source'))
   try {
-    const source = await captureDirectory(profileRoot, operationId, dirname(foreign.file))
-    const current = await captureDirectory(profileRoot, operationId, dirname(f.file))
+    const ready = performance.now() - started
+    // The two databases, sealed inputs, capsule IDs and scratch directories are
+    // independent. Both captures still perform every original inventory,
+    // identity, fsync and SQL certification check. Settle both before closing
+    // either fixture, including when one fails.
+    const elapsed: number[] = []
+    const captures = await Promise.allSettled([dirname(foreign.file), dirname(f.file)].map(async (directory, index) => {
+      const captured = await captureDirectory(profileRoot, operationId, directory)
+      elapsed[index] = performance.now() - started
+      return captured
+    }))
+    console.error(`[dag-pair-fixture] ${JSON.stringify({ readyMs: ready, sourceMs: elapsed[0] ?? null, currentMs: elapsed[1] ?? null, settledMs: performance.now() - started })}`)
+    const failures = captures.filter(result => result.status === 'rejected').map(result => result.reason)
+    if (failures.length) throw new AggregateError(failures, 'Both genuine independent capsule captures must finish before cleanup')
+    const [left, right] = captures
+    assert.equal(left.status, 'fulfilled'); assert.equal(right.status, 'fulfilled')
+    const source = left.value, current = right.value
     assert.notEqual(source.seal.manifest.workspaceScope, current.seal.manifest.workspaceScope)
     assert.notEqual(foreign.groupId, f.groupId)
     assert.ok(source.seal.facts.some(fact => fact.family === 'host-create-ack'))
