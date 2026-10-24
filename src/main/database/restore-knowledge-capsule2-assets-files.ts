@@ -197,3 +197,7 @@ export async function readPreparedCapsule2KnownAssetOriginals(handle: PreparedCa
   if (!value) return bad('不是实际Main准备的数据句柄')
   return verify(value)
 }
+
+// Filesystem data operations only. These do not mint an original, prepared
+// handle, certificate or permit; each owning adapter authenticates its root.
+export { directory as assertCapsule2AssetDirectory, writeNew as writeCapsule2AssetCopy, readExact as readCapsule2AssetCopy }
