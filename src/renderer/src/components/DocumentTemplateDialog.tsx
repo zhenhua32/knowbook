@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { CreateDocumentFromTemplateInput, DocumentTemplate, DocumentTreeNode } from '@shared/contracts'
 import { serializeBlocksToMarkdown } from '@shared/markdown'
@@ -85,7 +85,7 @@ export default function DocumentTemplateDialog({ isZh, documentTree, initialPare
     }
   }, [trackCloseFocus])
   useEffect(() => { void load() }, [load])
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!selected) return
     const next = expandDocumentTemplateVariables(selected.title, selected.name, date)
     const previousAutomaticTitle = automaticTitle.current
