@@ -81,3 +81,9 @@ export async function readCertifiedCapsule2SourceMaterial(handle: CertifiedCapsu
   if (!entry) return bad('不是Main认证的私有来源句柄')
   return (await verify(entry)).value
 }
+/** Fixed Main reader dispatch uses this registry, never caller kind/getters.
+ * A matched reader must fully reauthenticate its original before returning. */
+export async function tryReadCertifiedCapsule2SourceInputs(handle: unknown) {
+  const entry = certified.get(handle as CertifiedCapsule2NoPriorSource)
+  return entry ? { ...await verify(entry), profileRoot: entry.root } : undefined
+}
