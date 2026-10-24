@@ -92,6 +92,13 @@ export async function readSealedCapsule2SourceMaterial(handle: SealedCapsule2Sou
   if (!entry) return bad('不是Main实际封存的私有来源句柄')
   return (await verify(entry)).value
 }
+/** Main-only certification seam: both values come from the same complete
+ * original verification, never from independently supplied DTOs or counts. */
+export async function readSealedCapsule2SourceInputs(handle: SealedCapsule2Source) {
+  const entry = sealed.get(handle)
+  if (!entry) return bad('不是Main实际封存的私有来源句柄')
+  return { ...await verify(entry), profileRoot: entry.root }
+}
 export async function diagnoseSealedCapsule2Source(handle: SealedCapsule2Source) {
   const info = await readSealedCapsule2Source(handle)
   return freezeCapsuleValue({ kind: 'sealed-capsule2-source-summary' as const, manifestHash: info.manifestHash,
