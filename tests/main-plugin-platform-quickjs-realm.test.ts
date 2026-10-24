@@ -209,6 +209,13 @@ test('QuickJS runs state migration inside the isolated realm before commit', asy
 })
 
 test('QuickJS interrupts an infinite handler without blocking the host process', async () => {
+  const fixtureStartedAt = performance.now()
+  // Emit before each awaited boundary so a killed test worker still identifies
+  // the last completed phase. Keep the original slice and elapsed assertion.
+  const markPhase = (phase: string) => console.log('[quickjs-spin-fixture]', JSON.stringify({
+    phase, elapsedMs: Math.round(performance.now() - fixtureStartedAt), processUptimeMs: Math.round(process.uptime() * 1000)
+  }))
+  markPhase('started')
   const package_ = buildPluginRevisionPackage({
     manifest: manifest(),
     workerSource: `
@@ -217,6 +224,7 @@ test('QuickJS interrupts an infinite handler without blocking the host process',
       };
     `
   }).package
+  markPhase('package-built')
   const identity = activationIdentity(package_.revisionId)
   const realm = await QuickJsWasiPluginRealm.create({
     identity,
@@ -224,18 +232,24 @@ test('QuickJS interrupts an infinite handler without blocking the host process',
     callCapability: async () => null,
     options: { executionSliceMs: 25 }
   })
+  markPhase('realm-created')
 
   try {
     const owner = activeOwner(identity)
     realm.commit(owner)
+    markPhase('committed')
+    markPhase('invoke-started')
     const startedAt = Date.now()
     await assert.rejects(
       () => realm.invokeHandler(owner, 'spin', null, new AbortController().signal),
       /interrupted/i
     )
     assert.ok(Date.now() - startedAt < 1_000)
+    markPhase('invoke-assertions-passed')
   } finally {
+    markPhase('dispose-started')
     await realm.dispose()
+    markPhase('disposed')
   }
 })
 

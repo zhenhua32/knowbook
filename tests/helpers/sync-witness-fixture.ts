@@ -12,8 +12,19 @@ import { captureKnowledgeOriginal, type CapturedKnowledgeOriginal } from './rest
 export async function prepareSyncWitnessPair(f: V3Fixture) {
   const operationId = randomUUID(), foreign = createV3Fixture(join(f.root, 'sync-witness-foreign'))
   try {
-    const source = await captureKnowledgeOriginal(f.userDataRoot, dirname(foreign.file), operationId)
-    const current = await captureKnowledgeOriginal(f.userDataRoot, dirname(f.file), operationId)
+    const startedAt = performance.now()
+    // Separate databases and capsule/scratch identities. Preserve every real
+    // inventory, fsync and certification step and settle both before closing
+    // the foreign fixture, including when either capture fails.
+    const captures = await Promise.allSettled([dirname(foreign.file), dirname(f.file)].map(directory =>
+      captureKnowledgeOriginal(f.userDataRoot, directory, operationId)))
+    console.log('[sync-witness-pair-fixture]', JSON.stringify({ settledMs: Math.round(performance.now() - startedAt),
+      processUptimeMs: Math.round(process.uptime() * 1000) }))
+    const failures = captures.filter(result => result.status === 'rejected').map(result => result.reason)
+    if (failures.length) throw new AggregateError(failures, 'Both genuine witness captures must finish before cleanup')
+    const [left, right] = captures
+    assert.equal(left.status, 'fulfilled'); assert.equal(right.status, 'fulfilled')
+    const source = left.value, current = right.value
     assert.notEqual(source.ref.capsuleId, current.ref.capsuleId)
     assert.notEqual(source.seal.manifest.workspaceScope, current.seal.manifest.workspaceScope)
     const dag = await captureDurableSqlDag({ profileRoot: current.profileRoot, operationId, dagId: randomUUID(), source: source.capsule, current: current.capsule, parents: [] })

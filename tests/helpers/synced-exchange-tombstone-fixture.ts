@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { independentPeerReads } from './independent-peer-read-fixture'
 import type Database from 'better-sqlite3'
 import { join } from 'node:path'
 import { AttachmentStore } from '../../src/main/attachments'
@@ -58,11 +59,15 @@ export async function withTombstones(run: (fixture: Fixture) => Promise<void>, o
     const groupId = source.ack.createdLifecycle.groupId, orphanId = source.orphanId
     const originalGroup = snapshot(S.db, groupId), originalOrphan = snapshot(S.db, orphanId)
     await source.send(S)
-    accepted(await source.track(receiveInitialSyncedSnapshot(A.db, source.input(randomUUID(), A), runtime)))
-    accepted(await source.receive())
+    const received = await independentPeerReads(source.server, 'initial-receivers', [
+      () => source.track(receiveInitialSyncedSnapshot(A.db, source.input(randomUUID(), A), runtime)),
+      () => source.receive()
+    ])
+    accepted(received[0]); accepted(received[1])
     const exchange: Fixture['exchange'] = (profile = B, operationId = randomUUID(), signal) =>
       source.track(exchangeSyncedSnapshot(profile.db, source.input(operationId, profile), { ...runtime, ...(signal ? { signal } : {}) }))
-    completed(await exchange(A), 'noop'); completed(await exchange(B), 'noop')
+    const baselines = await independentPeerReads(source.server, 'initial-baselines', [() => exchange(A), () => exchange(B)])
+    completed(baselines[0], 'noop'); completed(baselines[1], 'noop')
     for (const profile of [A, B]) {
       assert.equal(count(profile.db, 'synced_instances', 'group_id', orphanId), 0)
       assert.equal(count(profile.db, 'synced_group_pins', 'group_id', orphanId), 0, 'A real initial receiver does not import the source create/removal history pins')

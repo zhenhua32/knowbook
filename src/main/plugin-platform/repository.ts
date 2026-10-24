@@ -2807,6 +2807,39 @@ export class SqlitePluginPlatformRepository {
   }
 }
 
+export const STORED_PLUGIN_POLICY_TABLES = Object.freeze(['plugin_definitions', 'plugin_revisions', 'plugin_installations', 'plugin_grants', 'plugin_runs',
+  'plugin_state', 'plugin_state_snapshots', 'plugin_logs', 'system_plugin_install_requests', 'system_plugin_packages',
+  'system_plugin_installations', 'system_plugin_runs', 'system_plugin_audit', 'system_plugin_dependency_jobs',
+  'system_plugin_crash_markers', 'system_plugin_os_persistence'] as const)
+export type StoredPluginPolicyTable = typeof STORED_PLUGIN_POLICY_TABLES[number]
+
+/** The same pure stored-row decoders used below by repository reads. This
+ * assertion returns no decoded policy, artifact approval, run or grant handle.
+ * It never constructs a repository, accesses files or performs recovery. */
+export function assertStoredPluginPolicyRow(table: StoredPluginPolicyTable, row: Record<string, unknown>): void {
+  switch (table) {
+    case 'plugin_definitions': mapDefinition(row as unknown as DefinitionRow); return
+    case 'plugin_revisions': mapRevision(row as unknown as RevisionRow); return
+    case 'plugin_installations': mapInstallation(row as unknown as InstallationRow); return
+    case 'plugin_grants': mapGrantSet(row as unknown as GrantRow); return
+    case 'plugin_runs': mapRun(row as unknown as RunRow); return
+    case 'plugin_logs': mapPluginLog(row as unknown as LogRow); return
+    case 'plugin_state': parseJson(row.value_json as string, 'Plugin state'); return
+    case 'plugin_state_snapshots':
+      normalizeStateSchemaVersion(row.schema_version)
+      normalizeStateValues(parseJson(row.state_json as string, 'Plugin state snapshot')); return
+    case 'system_plugin_install_requests': mapSystemPluginInstallRequest(row as unknown as SystemPluginInstallRequestRow); return
+    case 'system_plugin_packages': mapSystemPluginPackage(row as unknown as SystemPluginPackageRow); return
+    case 'system_plugin_installations': mapSystemPluginInstallation(row as unknown as SystemPluginInstallationRow); return
+    case 'system_plugin_runs': mapSystemPluginRun(row as unknown as SystemPluginRunRow); return
+    case 'system_plugin_audit': mapSystemPluginAudit(row as unknown as SystemPluginAuditRow); return
+    case 'system_plugin_dependency_jobs': mapSystemPluginDependencyJob(row as unknown as SystemPluginDependencyJobRow); return
+    case 'system_plugin_crash_markers': mapSystemPluginCrashMarker(row as unknown as SystemPluginCrashMarkerRow); return
+    case 'system_plugin_os_persistence': mapSystemPluginOsPersistence(row as unknown as SystemPluginOsPersistenceRow); return
+    default: throw new Error('Unknown stored plugin policy table.')
+  }
+}
+
 function mapDefinition(row: DefinitionRow): PluginDefinitionRecord {
   return {
     id: row.id,

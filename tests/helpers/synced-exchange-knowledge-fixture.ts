@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { independentPeerReads } from './independent-peer-read-fixture'
 import type Database from 'better-sqlite3'
 import { previewSyncedExchangeConflicts, resolveSyncedExchangeConflicts, previewSyncedExchangeBoth, resolveSyncedExchangeBoth } from '../../src/main/sync/synced-exchange'
 import { withTombstones, deleteGroup, deleteDocument, document, completed, randomUUID, runtime, state,
@@ -39,7 +40,8 @@ export async function withKnowledge(run: (f: Fixture) => Promise<void>, options:
       denialKey = 'group:' + f.orphanId
       f.remoteFinal(records => { deleteGroup(records, f.orphanId) })
     }
-    completed(await f.exchange(f.A), 'applied'); completed(await f.exchange(f.B), 'applied')
+    const absence = await independentPeerReads(f.server, 'knowledge-absence', [() => f.exchange(f.A), () => f.exchange(f.B)])
+    completed(absence[0], 'applied'); completed(absence[1], 'applied')
     const denialA = captureDenial(f.A.db, denialKey), denialB = captureDenial(f.B.db, denialKey)
     if (denial === 'origin') for (const profile of [f.A, f.B]) {
       const live = snapshot(profile.db, f.groupId)
