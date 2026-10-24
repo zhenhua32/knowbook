@@ -193,6 +193,13 @@ async function assertScratchContent(info: OwnedRawCapsuleOriginalInfo): Promise<
     || (originalWal.bytes > 0 ? capsuleJson(actual[1]) !== capsuleJson(originalWal) : actual[1].bytes !== 0))
     return capsuleInvalid('scratch DB/WAL已不属于封存原件')
 }
+/** Post-read guard for Main-owned adapters. SQLite's derived SHM/empty WAL may
+ * change, but the actual original DB/nonempty WAL must still bind the read. */
+export async function assertOwnedRawCapsuleScratchContent(handle: OwnedRawCapsuleOriginal): Promise<void> {
+  const { info } = saved(handle)
+  await assertOwnedRawCapsuleOriginal(handle)
+  await assertScratchContent(info)
+}
 
 async function writeExclusive(path: string, text: string, root: string): Promise<void> {
   await assertRestorePath(path, root)
