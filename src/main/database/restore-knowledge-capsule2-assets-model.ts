@@ -4,6 +4,7 @@ import { capsuleBytesHash, capsuleJson, capsuleRecord, capsuleText, freezeCapsul
 import { CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-model'
 import type { Capsule2KnownAssetManifest } from './restore-knowledge-capsule2-assets-files'
 import type { Capsule2ManagedAssetManifest } from './restore-knowledge-capsule2-managed-assets-files'
+import type { Capsule2ManagedTreeData } from './restore-knowledge-capsule2-managed-assets-files'
 
 type Alias = Capsule2ManagedAssetManifest['aliases'][number]
 type KnownAlias = Capsule2KnownAssetManifest['aliases'][number]
@@ -80,17 +81,26 @@ export function parseCapsule2KnownAssetManifest(text: string, capsuleId: string,
 export function parseCapsule2ManagedAssetManifest(text: string, capsuleId: string, expectedHash: string): Capsule2ManagedAssetManifest {
   const row = parse(text, expectedHash, 'knowbook.capsule2.managed-asset-originals.v1', [...baseKeys, 'knownAssetManifestHash', 'knownAliases', 'rootPresent', 'directories'])
   if (row.kind !== 'capsule2-managed-asset-originals' || row.state !== 'all-managed-files-only' || typeof row.rootPresent !== 'boolean') return bad('未知完整管理原件格式')
-  const actualAliases = aliases(row.aliases, false) as Alias[], knownAliases = aliases(row.knownAliases, true) as KnownAlias[]
+  const tree = validateCapsule2ManagedTree({ rootPresent: row.rootPresent, directories: row.directories, aliases: row.aliases, files: row.files })
+  const knownAliases = aliases(row.knownAliases, true) as KnownAlias[]
+  if (!tree.rootPresent && knownAliases.length) return bad('原管理根存在状态不闭合')
+  const byPath = new Map(tree.aliases.map(alias => [alias.relativePath, alias]))
+  for (const alias of knownAliases) { const actual = byPath.get(alias.relativePath); if (!actual || actual.hash !== alias.hash || actual.name !== alias.name || actual.bytes !== alias.bytes) return bad('known alias不是完整管理原件子集') }
+  return freezeCapsuleValue({ kind: row.kind, state: row.state, ...base(row, capsuleId),
+    knownAssetManifestHash: hash(row.knownAssetManifestHash), knownAliases, ...tree })
+}
+
+/** Pure complete-tree shape, shared by strict-known and literal-reference
+ * archives. This accepts file data only and cannot create an owning handle. */
+export function validateCapsule2ManagedTree(value: unknown): Capsule2ManagedTreeData {
+  const row = capsuleRecord(value, ['rootPresent', 'directories', 'aliases', 'files'])
+  if (typeof row.rootPresent !== 'boolean') return bad('原管理根存在状态无效')
+  const actualAliases = aliases(row.aliases, false) as Alias[]
   const directories = ordered(list(row.directories, maxEntries).map(value => pathParts(value, false).join('/')), value => value)
   if (directories.length + actualAliases.length > maxEntries) return bad('完整目录和文件项超过原准备预算')
-  if (row.rootPresent ? directories[0] !== '' : directories.length !== 0 || actualAliases.length !== 0 || knownAliases.length !== 0) return bad('原管理根存在状态不闭合')
+  if (row.rootPresent ? directories[0] !== '' : directories.length !== 0 || actualAliases.length !== 0) return bad('原管理根存在状态不闭合')
   const directorySet = new Set(directories)
   for (const directory of directories) if (directory && !directorySet.has(directory.split('/').slice(0, -1).join('/'))) return bad('缺原目录祖先')
-  const byPath = new Map(actualAliases.map(alias => [alias.relativePath, alias]))
   for (const alias of actualAliases) if (!directorySet.has(alias.relativePath.split('/').slice(0, -1).join('/'))) return bad('alias缺原父目录')
-  for (const alias of knownAliases) { const actual = byPath.get(alias.relativePath); if (!actual || actual.hash !== alias.hash || actual.name !== alias.name || actual.bytes !== alias.bytes) return bad('known alias不是完整管理原件子集') }
-  return freezeCapsuleValue({    
-kind: row.kind, state: row.state, ...base(row, capsuleId), knownAssetManifestHash: hash(row.knownAssetManifestHash), knownAliases,
-    rootPresent: row.rootPresent, directories, aliases: actualAliases, files: files(row.files, actualAliases)  
-})
+  return freezeCapsuleValue({ rootPresent: row.rootPresent, directories, aliases: actualAliases, files: files(row.files, actualAliases) })
 }

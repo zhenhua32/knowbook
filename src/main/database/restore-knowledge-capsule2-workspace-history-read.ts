@@ -34,7 +34,14 @@ function json(source: string): unknown { return parseInitialIncomingStored(sourc
  * remain literal, including paths made by the old astral-prefix writer. Remaining source certifier seams
  * are still incomplete. */
 export function readRawCapsule2WorkspaceHistoryOwned(db: Database.Database): RawCapsule2WorkspaceHistoryObservation {
-  const { physical, policy } = readRawCapsule2OrdinaryPolicySourceOwned(db)
+  return readRawCapsule2WorkspaceHistorySourceOwned(db).history
+}
+
+/** Same fixed checks and history result, retaining the complete actual source
+ * for the private material owner. No DTO, selected rows or read mode enters. */
+export function readRawCapsule2WorkspaceHistorySourceOwned(db: Database.Database) {
+  const source = readRawCapsule2OrdinaryPolicySourceOwned(db)
+  const { physical, policy } = source
   const sourceContentHash = policy.sourceContentHash
   const physicalObservationHash = capsuleBytesHash('knowbook.capsule2.workspace-history-physical-observation.v1\0' + capsuleJson(physical))
   const rawIdentities = db.prepare('SELECT id,last_owner_kind,last_owner_id,state,created_at FROM block_identities ORDER BY id').all() as InitialIncomingIdentity[]
@@ -192,5 +199,6 @@ export function readRawCapsule2WorkspaceHistoryOwned(db: Database.Database): Raw
       'source-policy-and-assets', 'required-root-resolution', 'streaming-source-adapter', 'complete-private-capsule2-certifier-and-installer'] }
   const result = { ...body, observationHash: capsuleBytesHash('knowbook.capsule2.workspace-identity-history-observation.v1\0' + capsuleJson(body)) }
   if (Buffer.byteLength(capsuleJson(result)) > CAPSULE2_RAW_MAX_JSON_BYTES) return publicationInvalid('workspace history2完整JSON超准备预算，不截断。')
-  return freezeCapsuleValue(result)
+  const history: RawCapsule2WorkspaceHistoryObservation = freezeCapsuleValue(result)
+  return Object.freeze({ ...source, history, total })
 }

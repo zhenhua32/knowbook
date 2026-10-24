@@ -5,8 +5,7 @@ import { serializeMarkdownWithBlockRanges } from '../../shared/markdown'
 import { collectStoredMarkdownAssetDestinations } from '../../shared/syncedBlockPortable'
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-model'
-import { readRawCapsule2PhysicalGraphOwned } from './restore-knowledge-capsule2-physical-raw-read'
-import { readRawCapsule2WorkspaceHistoryOwned } from './restore-knowledge-capsule2-workspace-history-read'
+import { readRawCapsule2WorkspaceHistorySourceOwned } from './restore-knowledge-capsule2-workspace-history-read'
 import { decodeHostJournal, hostJournalKind, validateHostSides } from './synced-host-journal'
 import type { SyncedHostHistoryBranchRow } from './synced-host-history-branch'
 import { decodeSyncedOperationAck } from './synced-host-operation-receipt'
@@ -41,7 +40,13 @@ const opaque = new Set(['code', 'code-block', 'math', 'frontmatter', 'database-v
  * formats' explicit bodies are visited, never arbitrary JSON strings/paths.
  * Remaining policy and all file authority stay explicitly uncertified. */
 export function readRawCapsule2AssetReferencesOwned(db: Database.Database): RawCapsule2AssetReferences {
-  const history = readRawCapsule2WorkspaceHistoryOwned(db), physical = readRawCapsule2PhysicalGraphOwned(db)
+  return readRawCapsule2AssetReferenceSourceOwned(db).assets
+}
+
+/** One fixed same-transaction source pipeline for the material owner; the
+ * public raw observation above keeps its exact original DTO/hash domain. */
+export function readRawCapsule2AssetReferenceSourceOwned(db: Database.Database) {
+  const source = readRawCapsule2WorkspaceHistorySourceOwned(db), { history, physical } = source
   const scopes: Scope[] = [], keys = new Set<string>()
   let bytes = 0
   const add = (source: string[], body: Body) => {
@@ -229,5 +234,6 @@ export function readRawCapsule2AssetReferencesOwned(db: Database.Database): RawC
     unresolved: ['remaining-policy-held-payload-asset-scopes', 'source-file-ownership-and-bytes', 'durable-asset-originals', 'complete-private-capsule2-certifier'] as const }
   const encoded = capsuleJson(value)
   if (Buffer.byteLength(encoded) > CAPSULE2_RAW_MAX_JSON_BYTES) return bad('完整观察超准备预算，不能截断')
-  return freezeCapsuleValue({ ...value, observationHash: capsuleBytesHash('knowbook.capsule2.known-markdown-asset-references.v3\0' + encoded) })
+  const assets: RawCapsule2AssetReferences = freezeCapsuleValue({ ...value, observationHash: capsuleBytesHash('knowbook.capsule2.known-markdown-asset-references.v3\0' + encoded) })
+  return Object.freeze({ ...source, assets })
 }

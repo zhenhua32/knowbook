@@ -17,6 +17,10 @@ const maxFiles = 5_000, maxBytes = 500 * 1024 * 1024, maxEntries = 20_000
 const bad = (message: string): never => { throw new Error('capsule2管理附件原件无效：' + message + '；不改SQL/实时附件，不授认证或安装权，失败新目录保留。') }
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0
 type Alias = { relativePath: string; hash: string; name: string; bytes: number }
+export interface Capsule2ManagedTreeData {
+  readonly rootPresent: boolean; readonly directories: readonly string[]; readonly aliases: readonly Alias[]
+  readonly files: readonly { hash: string; bytes: number }[]
+}
 type Layout = { rootPresent: boolean; directories: string[]; paths: string[] }
 export interface Capsule2ManagedAssetManifest {
   readonly kind: 'capsule2-managed-asset-originals'; readonly version: 1; readonly state: 'all-managed-files-only'
@@ -72,6 +76,40 @@ async function layout(root: string, profile: string): Promise<Layout> {
   return { rootPresent: true, directories: directories.sort(compare), paths: paths.sort(compare) }
 }
 
+/** Filesystem data only. The Main owner supplies its fixed root/output; this
+ * copies the entire native managed tree and never interprets a reference URI. */
+export async function captureCapsule2ManagedTreeData(root: string, profile: string, filesDirectory: string): Promise<Capsule2ManagedTreeData> {
+  const initial = await layout(root, profile), aliases: Alias[] = [], files = new Map<string, number>()
+  let sourceBytes = 0, uniqueBytes = 0
+  const read = async (path: string) => {
+    await directory(root, profile)
+    await assertRestorePath(join(root, path), root)
+    const result = await readManagedAssetSource(root, pathToFileURL(join(root, path)).href)
+    await assertRestorePath(join(root, path), root); await directory(root, profile)
+    if (relative(root, result.path).split(sep).join('/') !== path) return bad('实际管理文件映射变化')
+    return result
+  }
+  for (const path of initial.paths) {
+    const source = await read(path)
+    sourceBytes += source.bytes.length
+    if (sourceBytes > maxBytes) return bad('完整alias字节集合超有限准备预算')
+    aliases.push({ relativePath: path, hash: source.hash, name: source.name, bytes: source.bytes.length })
+    if (!files.has(source.hash)) {
+      uniqueBytes += source.bytes.length
+      if (uniqueBytes > maxBytes) return bad('完整blob集合超有限准备预算')
+      await writeNew(join(filesDirectory, source.hash), source.bytes, profile); files.set(source.hash, source.bytes.length)
+    } else if (files.get(source.hash) !== source.bytes.length) return bad('同hash实际长度不同')
+  }
+  await syncRestoreDirectory(filesDirectory)
+  for (const alias of aliases) {
+    const source = await read(alias.relativePath)
+    if (source.hash !== alias.hash || source.name !== alias.name || source.bytes.length !== alias.bytes) return bad('manifest前管理alias变化')
+  }
+  if (capsuleJson(await layout(root, profile)) !== capsuleJson(initial)) return bad('完整实时目录闭集在读取期间变化')
+  return freezeCapsuleValue({ rootPresent: initial.rootPresent, directories: initial.directories, aliases,
+    files: [...files].sort(([a], [b]) => compare(a, b)).map(([hash, bytes]) => ({ hash, bytes })) })
+}
+
 async function verify(value: Saved): Promise<PreparedCapsule2ManagedAssetInfo> {
   await assertOwnedRawCapsuleOriginal(value.original)
   const known = await readPreparedCapsule2KnownAssetOriginals(value.known)
@@ -102,46 +140,19 @@ export async function prepareCapsule2ManagedAssetOriginals(original: OwnedRawCap
   const capsuleId = basename(info.capsuleDirectory), base = join(info.recoveryDirectory, 'knowledge-managed-assets-v2'), output = join(base, capsuleId)
   await restoreDirectory(base, info.profileRoot); await restoreDirectory(output, info.profileRoot, true)
   const filesDirectory = join(output, 'files'); await restoreDirectory(filesDirectory, info.profileRoot, true)
-  const root = join(info.profileRoot, 'storage', 'assets'), initial = await layout(root, info.profileRoot)
-  const aliases: Alias[] = [], files = new Map<string, number>(); let sourceBytes = 0, uniqueBytes = 0
-  const read = async (path: string) => {
-    await directory(root, info.profileRoot)
-    await assertRestorePath(join(root, path), root)
-    const result = await readManagedAssetSource(root, pathToFileURL(join(root, path)).href)
-    await assertRestorePath(join(root, path), root); await directory(root, info.profileRoot)
-    if (relative(root, result.path).split(sep).join('/') !== path) return bad('实际管理文件映射变化')
-    return result
-  }
-  for (const path of initial.paths) {
-    const source = await read(path)
-    sourceBytes += source.bytes.length
-    if (sourceBytes > maxBytes) return bad('完整alias字节集合超有限准备预算')
-    aliases.push({ relativePath: path, hash: source.hash, name: source.name, bytes: source.bytes.length })
-    if (!files.has(source.hash)) {
-      uniqueBytes += source.bytes.length
-      if (uniqueBytes > maxBytes) return bad('完整blob集合超有限准备预算')
-      await writeNew(join(filesDirectory, source.hash), source.bytes, info.profileRoot); files.set(source.hash, source.bytes.length)
-    } else if (files.get(source.hash) !== source.bytes.length) return bad('同hash实际长度不同')
-  }
-  const byPath = new Map(aliases.map(alias => [alias.relativePath, alias]))
+  const tree = await captureCapsule2ManagedTreeData(join(info.profileRoot, 'storage', 'assets'), info.profileRoot, filesDirectory)
+  const byPath = new Map(tree.aliases.map(alias => [alias.relativePath, alias]))
   for (const alias of knownInfo.manifest.aliases) {
     const actual = byPath.get(alias.relativePath)
     if (!actual || actual.hash !== alias.hash || actual.name !== alias.name || actual.bytes !== alias.bytes) return bad('已知SQL alias不在完整管理原件内')
   }
-  await syncRestoreDirectory(filesDirectory)
-  for (const alias of aliases) {
-    const source = await read(alias.relativePath)
-    if (source.hash !== alias.hash || source.name !== alias.name || source.bytes.length !== alias.bytes) return bad('manifest前管理alias变化')
-  }
-  if (capsuleJson(await layout(root, info.profileRoot)) !== capsuleJson(initial)) return bad('完整实时目录闭集在读取期间变化')
   await readPreparedCapsule2KnownAssetOriginals(known)
   const parent = knownInfo.manifest
   const manifest: Capsule2ManagedAssetManifest = freezeCapsuleValue({ kind: 'capsule2-managed-asset-originals', version: 1, state: 'all-managed-files-only',
     certified: false, semanticValidationComplete: false, permit: false, capsuleId, schemaVersion: parent.schemaVersion, sourceInventory: parent.sourceInventory,
     sourceContentHash: parent.sourceContentHash, workspaceHistoryObservationHash: parent.workspaceHistoryObservationHash,
     assetReferencesObservationHash: parent.assetReferencesObservationHash, knownAssetManifestHash: knownInfo.manifestHash, knownAliases: parent.aliases,
-    rootPresent: initial.rootPresent, directories: initial.directories, aliases,
-    files: [...files].sort(([a], [b]) => compare(a, b)).map(([hash, bytes]) => ({ hash, bytes })) })
+    ...tree })
   const encoded = capsuleJson(manifest), manifestBytes = Buffer.from(encoded + '\n')
   if (manifestBytes.length > CAPSULE2_RAW_MAX_JSON_BYTES) return bad('完整manifest超准备预算，不截断')
   await writeNew(join(output, 'manifest.json'), manifestBytes, info.profileRoot)
