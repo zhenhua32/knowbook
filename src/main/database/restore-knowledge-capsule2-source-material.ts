@@ -3,7 +3,7 @@ import { basename } from 'node:path'
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { readOwnedRawCapsuleOriginal, reopenPreparedRawCapsuleOriginal,
   assertOwnedRawCapsuleScratchReady, assertOwnedRawCapsuleScratchContent } from './restore-knowledge-capsule-files'
-import { readCapsule2AssetArchive, readCapsule2ArchiveSourceOriginal,
+import { readCapsule2AssetArchive, readCapsule2ArchiveSourceOriginal, readCapsule2ArchiveSourceInputs,
   type PreparedCapsule2AssetArchive } from './restore-knowledge-capsule2-asset-archive'
 import { readRawCapsule2SourceKnowledgeOwned } from './restore-knowledge-payload-raw-read'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_READER } from './restore-knowledge-capsule2-raw-model'
@@ -18,8 +18,7 @@ const bad = (message: string): never => { throw new Error('capsule2完整来源�
  * Old scratch is not input. The complete fixed source pipeline runs in one
  * readonly/query-only/FKON transaction; no source DTO/ref/selector is accepted. */
 async function material(archive: PreparedCapsule2AssetArchive) {
-  const original = await readCapsule2ArchiveSourceOriginal(archive), info = readOwnedRawCapsuleOriginal(original)
-  const before = await readCapsule2AssetArchive(archive)
+  const { original, value: before } = await readCapsule2ArchiveSourceInputs(archive), info = readOwnedRawCapsuleOriginal(original)
   const fresh = await reopenPreparedRawCapsuleOriginal({ profileRoot: info.profileRoot, operationId: basename(info.recoveryDirectory),
     capsuleId: basename(info.capsuleDirectory), expectedInventory: info.originalInventory })
   const actual = readOwnedRawCapsuleOriginal(fresh)
@@ -47,9 +46,14 @@ async function material(archive: PreparedCapsule2AssetArchive) {
   return freezeCapsuleValue({ ...body, materialHash: capsuleBytesHash('knowbook.capsule2.complete-source-material.v2\0' + encoded) })
 }
 export async function extractCapsule2SourceMaterial(archive: PreparedCapsule2AssetArchive): Promise<PreparedCapsule2SourceMaterial> {
+  return (await captureCapsule2SourceMaterial(archive)).material
+}
+/** Only a genuine archive can start this complete SQL capture. The initial
+ * value belongs to the same capture that mints the new material handle. */
+export async function captureCapsule2SourceMaterial(archive: PreparedCapsule2AssetArchive) {
   const value = await material(archive), handle: PreparedCapsule2SourceMaterial = Object.freeze({ kind: 'prepared-capsule2-source-material' })
   materials.set(handle, { archive, expectedHash: value.materialHash })
-  return handle
+  return Object.freeze({ material: handle, value })
 }
 /** This is private original data for the future full certifier and installer.
  * Requerying all SQL and archive bytes precedes every use; no global cache. */

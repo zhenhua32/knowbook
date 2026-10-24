@@ -2,8 +2,7 @@ import { capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-mod
 import { knowledgeHash } from './restore-knowledge-payload-model'
 import { captureOwnedFirstImportedKnowledgeSource, readOwnedFirstImportedKnowledgeSource,
   type PreparedOriginBundle, type OwnedFirstImportedKnowledgeSource, type OwnedFirstImportedKnowledgeData } from './restore-knowledge-origin-bundle-read'
-import { validateQualifiedKnowledgePayload2, qualifiedKnowledgePayload2Hash } from './restore-knowledge-qualified-payload-model'
-import { unionQualifiedKnowledgeDiagnostics2, qualifiedKnowledgeUnion2Hash } from './restore-knowledge-qualified-union-model'
+import { unionQualifiedKnowledgeDiagnostics2 } from './restore-knowledge-qualified-union-model'
 import { originBundleInvalid } from './restore-knowledge-origin-bundle-model'
 
 /** Only prepared evidence identity. No accepted/live/source installer, Root3,
@@ -11,15 +10,18 @@ import { originBundleInvalid } from './restore-knowledge-origin-bundle-model'
 export interface PreparedFirstImportedQualifiedKnowledge { readonly kind: 'prepared-first-imported-qualified-knowledge' }
 type Source = OwnedFirstImportedKnowledgeData
 function materialValue(source: Source) {
-  const payloads = source.inputs.map(input => validateQualifiedKnowledgePayload2({
+  // The union validates every complete payload and returns those immutable
+  // validated values. Hash that actual result in the unchanged hash domains;
+  // do not rebuild the full union or revalidate the same payload again here.
+  const union = unionQualifiedKnowledgeDiagnostics2(source.inputs.map(input => ({
     kind: 'qualified-durable-sql-knowledge-payload-diagnostic', version: 2, capsule: input.capsule,
     originalBinding: input.binding, originalOrigin: input.origin, projection: input.projection, projectionHash: input.projectionHash,
     projectionStructure: 'descriptor-safe-local-rows-only', projectionSemanticsAuthenticated: false,
-    certified: false, acceptedCoverage: false, effective: false, permit: false }))
-  const union = unionQualifiedKnowledgeDiagnostics2(payloads), unionHash = qualifiedKnowledgeUnion2Hash(payloads)
+    certified: false, acceptedCoverage: false, effective: false, permit: false })))
+  const payloads = union.payloads, unionHash = knowledgeHash('knowbook.knowledge.qualified-union.v2', union)
   const inputBindings = source.inputs.map((input, index) => ({ role: input.role, locator: input.locator,
     capsule: input.capsule, originalCapsule: input.originalCapsule, originalBinding: input.binding, originalOrigin: input.origin,
-    originalFiles: input.originalFiles, projectionHash: input.projectionHash, payloadHash: qualifiedKnowledgePayload2Hash(payloads[index]) }))
+    originalFiles: input.originalFiles, projectionHash: input.projectionHash, payloadHash: knowledgeHash('knowbook.knowledge.qualified-payload.v2', payloads[index]) }))
   const body = { kind: 'prepared-first-imported-qualified-knowledge-data' as const, version: 1 as const,
     scope: 'one-actual-first-bundle-whole-private-map' as const, descriptorHash: source.descriptorHash,
     inputSetCompleteness: 'exact-actual-saved-first-bundle-input-set' as const,

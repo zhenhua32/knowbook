@@ -141,3 +141,15 @@ export async function readCapsule2ArchiveSourceOriginal(handle: PreparedCapsule2
   await verify(value)
   return value.original
 }
+
+/** Pure original manifest codec; parsing never creates an archive/source handle. */
+export const parseCapsule2CompleteAssetArchiveManifest = parse
+
+/** One complete fresh archive read supplies both facts to the fixed SQL owner.
+ * The private registry binds the original; no caller pair or inventory can
+ * choose it. Every original, manifest and blob check remains in verify. */
+export async function readCapsule2ArchiveSourceInputs(handle: PreparedCapsule2AssetArchive) {
+  const value = archives.get(handle)
+  if (!value) return bad('不是Main实际准备的私有句柄')
+  return Object.freeze({ original: value.original, value: await verify(value) })
+}

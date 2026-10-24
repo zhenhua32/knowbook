@@ -5,7 +5,7 @@ import { restoreDirectory, syncRestoreDirectory } from './restore-safety-files'
 import { capsuleBytesHash, capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { durableSqlDagUuid } from './restore-knowledge-dag-model'
 import { assertCapsule2AssetDirectory, readCapsule2AssetManifest, readCapsule2AssetCopy, writeCapsule2AssetCopy } from './restore-knowledge-capsule2-assets-files'
-import { readSealedCapsule2SourceInputs, reopenSealedCapsule2Source, type SealedCapsule2Source } from './restore-knowledge-capsule2-source-seal'
+import { readSealedCapsule2SourceInputs, captureReopenedSealedCapsule2Source, type SealedCapsule2Source } from './restore-knowledge-capsule2-source-seal'
 import { CAPSULE2_READER } from './restore-knowledge-capsule2-raw-model'
 import { CAPSULE2_SOURCE_CERTIFICATE_MAX_BYTES, capsule2NoPriorSourceCertificateHash, parseCapsule2NoPriorSourceCertificate,
   sourceCertificateInvalid as bad, type Capsule2NoPriorSourceCertificate } from './restore-knowledge-capsule2-source-certificate-model'
@@ -61,15 +61,31 @@ export async function certifyCapsule2Source(source: SealedCapsule2Source): Promi
   const entry: Saved = { source, root, directory, bytes, certificate, certificateHash: capsule2NoPriorSourceCertificateHash(certificate) }
   await verify(entry); return Object.freeze({ status: 'certified-without-prior-coverage', source: mint(entry) })
 }
-export async function reopenCertifiedCapsule2Source(input: { profileRoot: string; operationId: string; capsuleId: string; expectedCertificateHash: string }): Promise<CertifiedCapsule2NoPriorSource> {
+export async function reopenCertifiedCapsule2Source(input: Parameters<typeof captureReopenedCertifiedCapsule2Source>[0]): Promise<CertifiedCapsule2NoPriorSource> {
+  return (await captureReopenedCertifiedCapsule2Source(input)).source
+}
+/** A fresh fixed-path source factory supplies the complete captured SQL packet.
+ * Certificate bytes and closure bracket that actual factory; callers cannot
+ * provide a source handle, cached packet, selector or verification callback. */
+export async function captureReopenedCertifiedCapsule2Source(input: { profileRoot: string; operationId: string; capsuleId: string; expectedCertificateHash: string }) {
   const row = capsuleRecord(input, ['profileRoot','operationId','capsuleId','expectedCertificateHash']), root = await canonicalRequiredSqlDagRoot(row.profileRoot)
   const operationId = durableSqlDagUuid(row.operationId), capsuleId = durableSqlDagUuid(row.capsuleId)
   const directory = join(root, 'backups', 'database-restore', operationId, 'knowledge-source-certificates-v2', capsuleId)
+  const closure = async () => {
+    await assertCapsule2AssetDirectory(directory, root)
+    if (capsuleJson(await readdir(directory)) !== capsuleJson(['certificate.json'])) return bad('来源证书目录闭集变化')
+  }
+  await closure()
   const text = await readCapsule2AssetManifest(join(directory, 'certificate.json'), root, CAPSULE2_SOURCE_CERTIFICATE_MAX_BYTES)
   const certificate = parseCapsule2NoPriorSourceCertificate(text, operationId, capsuleId, row.expectedCertificateHash)
-  const source = await reopenSealedCapsule2Source({ profileRoot: root, operationId, capsuleId, expectedManifestHash: certificate.sourceManifestHash })
-  const entry: Saved = { source, root, directory, certificate, certificateHash: capsule2NoPriorSourceCertificateHash(certificate), bytes: Buffer.from(text) }
-  await verify(entry); return mint(entry)
+  const bytes = Buffer.from(text), path = join(directory, 'certificate.json')
+  await readCapsule2AssetCopy(path, root, bytes.length, capsuleBytesHash(bytes), CAPSULE2_SOURCE_CERTIFICATE_MAX_BYTES)
+  const captured = await captureReopenedSealedCapsule2Source({ profileRoot: root, operationId, capsuleId, expectedManifestHash: certificate.sourceManifestHash })
+  if (capsuleJson(certificateFor(captured)) !== capsuleJson(certificate)) return bad('证书与完整实际来源不符')
+  await closure(); await readCapsule2AssetCopy(path, root, bytes.length, capsuleBytesHash(bytes), CAPSULE2_SOURCE_CERTIFICATE_MAX_BYTES)
+  const entry: Saved = { source: captured.source, root, directory, certificate, certificateHash: capsule2NoPriorSourceCertificateHash(certificate), bytes }
+  return Object.freeze({ source: mint(entry), value: captured.value, profileRoot: root,
+    info: freezeCapsuleValue({ certificate, certificateHash: entry.certificateHash, directory }) })
 }
 export async function readCertifiedCapsule2Source(handle: CertifiedCapsule2NoPriorSource): Promise<Info> {
   const entry = certified.get(handle)

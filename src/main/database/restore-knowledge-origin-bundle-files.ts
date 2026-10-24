@@ -227,3 +227,10 @@ export async function createOriginBundleVerificationProfile(input: Awaited<Retur
   await syncRestoreDirectory(profile); await syncAncestors(collection, input.profileRoot)
   return canonicalRoot(profile)
 }
+
+// Main-internal byte/FD primitives shared by the mixed-reader catalog owner.
+// These perform file IO only; no exported primitive can mint an owned source.
+export { canonicalRoot as canonicalOriginCatalogRoot, directory as assertOriginCatalogDirectory,
+  local as originCatalogLocalPath, streamFile as readOriginCatalogFile,
+  copyFileExclusive as copyOriginCatalogFile, settledBundleBatch as settleOriginCatalogBatch,
+  syncAncestors as syncOriginCatalogAncestors }
