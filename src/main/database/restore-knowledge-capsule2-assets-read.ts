@@ -19,12 +19,15 @@ import { RECOVERY_BOUNDARY_PREFIX, validateSyncedRecoveryHistoryBoundary } from 
 
 type Body = { summary: string; blocks: Array<DocumentBlockDraft | SyncedStableBlockDraft> }
 type Destination = { section: 'summary' | 'body'; uri: string; raw: string; from: number; to: number; kind: string; syntax: string }
-type Scope = { source: string[]; contentHash: string; bodyProjectionHash: string; destinations: Destination[] }
+type AssistantPart = { eventId: string; seq: number; turnId: string; text: string }
+type AssistantSource = { kind: 'message' | 'retained-stream'; sessionId: string; stepId: string;
+  parts: Array<{ eventId: string; seq: number; turnId: string; from: number; to: number }> }
+type Scope = { source: string[]; contentHash: string; bodyProjectionHash: string; destinations: Destination[]; assistant?: AssistantSource }
 export interface RawCapsule2AssetReferences {
-  readonly kind: 'capsule2-known-markdown-asset-references'; readonly version: 2
+  readonly kind: 'capsule2-known-markdown-asset-references'; readonly version: 3
   readonly state: 'source-markdown-destinations-only'; readonly certified: false; readonly semanticValidationComplete: false; readonly permit: false
   readonly sourceFileOwnershipVerified: false; readonly sourceFileBytesVerified: false
-  readonly destinationCoordinates: 'original-summary-or-masked-body-markdown-utf16'
+  readonly destinationCoordinates: 'original-summary-or-masked-body-or-source-assistant-markdown-utf16'
   readonly sourceContentHash: string; readonly workspaceHistoryObservationHash: string
   readonly scopes: readonly Scope[]; readonly observationHash: string
   readonly unresolved: readonly ['remaining-policy-held-payload-asset-scopes', 'source-file-ownership-and-bytes', 'durable-asset-originals', 'complete-private-capsule2-certifier']
@@ -32,7 +35,7 @@ export interface RawCapsule2AssetReferences {
 const bad = (message: string): never => { throw new Error('capsule2 asset references无效：' + message + '；不访问资产文件，不授认证或安装权。') }
 const opaque = new Set(['code', 'code-block', 'math', 'frontmatter', 'database-view', 'synced-block'])
 
-/** Known ordinary/synced Markdown holders from the same actual readonly
+/** Known ordinary/synced/assistant Markdown holders from the same actual readonly
  * snapshot, after full source/history checks. No caller IDs, URLs, paths, asset
  * roots, group DTOs or filesystem capability are accepted. Only the validated
  * formats' explicit bodies are visited, never arbitrary JSON strings/paths.
@@ -153,14 +156,78 @@ export function readRawCapsule2AssetReferencesOwned(db: Database.Database): RawC
       }
     }
   }
+  const assistantScope = (sessionId: string, stepId: string, kind: AssistantSource['kind'], parts: AssistantPart[]) => {
+    const source = ['assistant_events', parts[0].eventId, 'payload_json', 'text', ...(kind === 'retained-stream' ? ['retained-stream'] : [])]
+    const key = capsuleJson(source)
+    if (keys.has(key)) return bad('原助手scope定位重复')
+    // Check a lower bound incrementally before duplicating large source IDs
+    // into the complete metadata/hash frames. The final accounting below is
+    // exact and shared with every existing document/history scope.
+    const assistant: AssistantSource = { kind, sessionId, stepId, parts: [] }
+    let minimum = Buffer.byteLength(key) + Buffer.byteLength(capsuleJson(assistant)), position = 0
+    if (bytes + minimum > CAPSULE2_RAW_MAX_JSON_BYTES) return bad('完整助手定位超准备预算，不能截断')
+    for (const part of parts) {
+      const span = { eventId: part.eventId, seq: part.seq, turnId: part.turnId, from: position, to: position + part.text.length }
+      minimum += Buffer.byteLength(capsuleJson(span))
+      if (bytes + minimum > CAPSULE2_RAW_MAX_JSON_BYTES) return bad('完整助手贡献集合超准备预算，不能截断')
+      assistant.parts.push(span); position = span.to
+    }
+    keys.add(key)
+    const contentHash = capsuleBytesHash('knowbook.capsule2.asset-assistant-content.v1\0' + capsuleJson({ kind, sessionId, stepId,
+      parts: parts.map(part => capsuleBytesHash('knowbook.capsule2.asset-assistant-part.v1\0' + capsuleJson(part))) }))
+    const markdown = parts.map(part => part.text).join('')
+    const bodyProjectionHash = capsuleBytesHash('knowbook.capsule2.asset-assistant-markdown-projection.v1\0' + capsuleJson(markdown))
+    const destinations: Destination[] = []
+    bytes += Buffer.byteLength(capsuleJson({ source, contentHash, bodyProjectionHash, destinations: [], assistant }))
+    if (bytes > CAPSULE2_RAW_MAX_JSON_BYTES) return bad('完整助手scope超准备预算，不能截断')
+    for (const item of collectStoredMarkdownAssetDestinations(markdown)) {
+      const destination: Destination = { section: 'body', uri: item.url, raw: markdown.slice(item.start, item.end), from: item.start, to: item.end, kind: item.kind, syntax: item.syntax ?? 'markdown' }
+      bytes += Buffer.byteLength(capsuleJson(destination))
+      if (bytes > CAPSULE2_RAW_MAX_JSON_BYTES) return bad('完整助手目标集合超准备预算，不能截断')
+      destinations.push(destination)
+    }
+    scopes.push({ source, contentHash, bodyProjectionHash, destinations, assistant })
+  }
+  // Full source/history preflight above already validates and bounds every
+  // event. Use the actual renderer's per-session, literal stepId accumulation,
+  // including legacy reuse across turns. A final message replaces that visible
+  // stream; its prior complete Markdown is still retained historical data.
+  // Do not parse individual fragments, clamp provider context, strip legacy
+  // provider-looking tags or interpret other payload strings as Markdown.
+  let sessionId: string | undefined
+  const streams = new Map<string, AssistantPart[]>()
+  const finish = (stepId: string) => {
+    const parts = streams.get(stepId)
+    if (parts) { assistantScope(sessionId!, stepId, 'retained-stream', parts); streams.delete(stepId) }
+  }
+  for (const row of rows<{ id: string; session_id: string; seq: number; type: string; payload_json: string }>('assistant_events', 'session_id,seq')) {
+    if (row.session_id !== sessionId) {
+      for (const stepId of streams.keys()) finish(stepId)
+      sessionId = row.session_id
+    }
+    if (row.type !== 'assistant.chunk' && row.type !== 'assistant.message') continue
+    // Match the existing stored Main JSON.parse semantics after its complete
+    // typed payload check; original SQL spelling is bound by sourceContentHash.
+    const payload = JSON.parse(row.payload_json) as { turnId: string; stepId: string; text: string }
+    const part: AssistantPart = { eventId: row.id, seq: row.seq, turnId: payload.turnId, text: payload.text }
+    if (row.type === 'assistant.chunk') {
+      const parts = streams.get(payload.stepId)
+      if (parts) parts.push(part)
+      else streams.set(payload.stepId, [part])
+    } else {
+      finish(payload.stepId)
+      assistantScope(row.session_id, payload.stepId, 'message', [part])
+    }
+  }
+  for (const stepId of streams.keys()) finish(stepId)
   scopes.sort((a, b) => { const left = capsuleJson(a.source), right = capsuleJson(b.source); return left < right ? -1 : left > right ? 1 : 0 })
-  const value = { kind: 'capsule2-known-markdown-asset-references' as const, version: 2 as const,
+  const value = { kind: 'capsule2-known-markdown-asset-references' as const, version: 3 as const,
     state: 'source-markdown-destinations-only' as const, certified: false as const, semanticValidationComplete: false as const, permit: false as const,
     sourceFileOwnershipVerified: false as const, sourceFileBytesVerified: false as const,
-    destinationCoordinates: 'original-summary-or-masked-body-markdown-utf16' as const,
+    destinationCoordinates: 'original-summary-or-masked-body-or-source-assistant-markdown-utf16' as const,
     sourceContentHash: history.sourceContentHash, workspaceHistoryObservationHash: history.observationHash, scopes,
     unresolved: ['remaining-policy-held-payload-asset-scopes', 'source-file-ownership-and-bytes', 'durable-asset-originals', 'complete-private-capsule2-certifier'] as const }
   const encoded = capsuleJson(value)
   if (Buffer.byteLength(encoded) > CAPSULE2_RAW_MAX_JSON_BYTES) return bad('完整观察超准备预算，不能截断')
-  return freezeCapsuleValue({ ...value, observationHash: capsuleBytesHash('knowbook.capsule2.known-markdown-asset-references.v2\0' + encoded) })
+  return freezeCapsuleValue({ ...value, observationHash: capsuleBytesHash('knowbook.capsule2.known-markdown-asset-references.v3\0' + encoded) })
 }

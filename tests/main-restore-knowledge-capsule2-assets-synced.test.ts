@@ -24,7 +24,7 @@ async function observe(f: V3Fixture, check: (value: RawCapsule2AssetReferences, 
   await withCapsule2RawCopy(f, db => db.transaction(() => {
     const before = readRawCapsule2ContentOwned(db), history = readRawCapsule2WorkspaceHistoryOwned(db)
     const value = readRawCapsule2AssetReferencesOwned(db)
-    assert.equal(value.version, 2)
+    assert.equal(value.version, 3)
     assert.equal(value.workspaceHistoryObservationHash, history.observationHash)
     assert.equal(value.sourceContentHash, history.sourceContentHash)
     check(value, db)

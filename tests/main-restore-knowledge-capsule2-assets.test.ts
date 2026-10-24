@@ -61,7 +61,7 @@ test('capsule2 asset discovery reads real ordinary and canonical scopes with bot
     assert.ok(value.scopes.find(scope => scope.source[0] === 'synced_groups' && scope.source[1] === command.action.groupId)?.destinations.some(item => item.uri === aliases[1].url))
     assert.ok(urls(value).includes(aliases[0].url)); assert.ok(urls(value).includes(aliases[1].url))
     assert.equal(value.kind, 'capsule2-known-markdown-asset-references')
-    assert.equal(value.version, 2)
+    assert.equal(value.version, 3)
     assert.ok(value.unresolved.includes('remaining-policy-held-payload-asset-scopes'))
   })
 }))

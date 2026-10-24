@@ -25,7 +25,7 @@ async function observe(profile: { db: Database.Database; file: string }, check: 
   await withObserver2Copy(profile.db, profile.file, db => db.transaction(() => {
     const before = readRawCapsule2ContentOwned(db), history = readRawCapsule2WorkspaceHistoryOwned(db)
     const value = readRawCapsule2AssetReferencesOwned(db)
-    assert.equal(value.version, 2); assert.equal(value.sourceContentHash, history.sourceContentHash)
+    assert.equal(value.version, 3); assert.equal(value.sourceContentHash, history.sourceContentHash)
     assert.equal(value.workspaceHistoryObservationHash, history.observationHash)
     check(value)
     assert.deepEqual(readRawCapsule2ContentOwned(db), before)
