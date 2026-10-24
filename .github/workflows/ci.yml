@@ -440,6 +440,9 @@ jobs:
       - name: Run controlled database restore regression tests
         run: npm run test:database-restore
 
+      - name: Run V3 archive reader regression tests
+        run: npm run test:backup-v3-reader
+
       - name: Run synced recovery boundary regression tests
         run: npm run test:synced-recovery-boundary
 
