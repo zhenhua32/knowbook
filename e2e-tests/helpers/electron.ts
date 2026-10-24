@@ -1,4 +1,4 @@
-import { expect, type Page } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
 import { _electron as electron, type ElectronApplication } from 'playwright'
 import { spawnSync, type ChildProcess } from 'node:child_process'
 import { existsSync, mkdtempSync, rmSync, statSync } from 'node:fs'
@@ -174,6 +174,12 @@ export async function launchElectronApp(
     // Keep CI and local runs independent of the operating system language.
     // Override explicitly when checking the other supported UI language.
     app = await electron.launch({ ...target, env, locale: process.env.PLAYWRIGHT_ELECTRON_LOCALE ?? 'en-US' })
+    // Electron's independently created context bypasses Playwright's browser
+    // fixture setup. Apply the project's configured action/navigation limits
+    // before any native-page work, including pages created after startup.
+    const { actionTimeout, navigationTimeout } = test.info().project.use
+    app.context().setDefaultTimeout(actionTimeout ?? 0)
+    app.context().setDefaultNavigationTimeout(navigationTimeout ?? 0)
     childProcess = app.process()
     electronChildProcesses.set(app, childProcess)
     electronHostPids.set(app, await readElectronHostPid(app, childProcess))
