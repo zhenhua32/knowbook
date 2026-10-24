@@ -60,6 +60,17 @@ export async function readCapsule2SourceMaterial(handle: PreparedCapsule2SourceM
   if (value.materialHash !== entry.expectedHash) return bad('完整来源包或哈希变化')
   return value
 }
+
+/** Main-internal durable owner seam. Authenticate the real material registry
+ * and rebuild its complete source before revealing its actual original owner.
+ * This does not resolve original native/imported domains or grant admission. */
+export async function readCapsule2SourceSealInput(handle: PreparedCapsule2SourceMaterial) {
+  const entry = materials.get(handle)
+  if (!entry) return bad('不是实际Main完整来源私有句柄')
+  const value = await readCapsule2SourceMaterial(handle)
+  const original = await readCapsule2ArchiveSourceOriginal(entry.archive)
+  return Object.freeze({ value, original })
+}
 export async function diagnoseCapsule2SourceMaterial(handle: PreparedCapsule2SourceMaterial) {
   const value = await readCapsule2SourceMaterial(handle)
   return freezeCapsuleValue({ kind: 'capsule2-source-material-diagnostic' as const, materialHash: value.materialHash,
