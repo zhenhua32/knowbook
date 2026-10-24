@@ -3,6 +3,7 @@ import test from 'node:test'
 import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, writeFile, unlink, readdir, link, realpath, lstat, rename, symlink } from 'node:fs/promises'
 import { join, basename, relative, resolve, sep, isAbsolute } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import Database from 'better-sqlite3'
 import { AttachmentStore } from '../src/main/attachments'
 import { KnowbookStore } from '../src/main/database/store'
@@ -15,6 +16,7 @@ import { restoreInventory } from '../src/main/database/restore-safety-files'
 import { withV3Fixture, addV3Assets, allTables, request, applied, applySyncedHostFinal, type V3Fixture } from './helpers/synced-backup-v3-fixture'
 import { withIncomingFixture, accepted } from './helpers/synced-initial-incoming-fixture'
 import { removeSchema27ForLegacyFixture } from './helpers/schema27-legacy-fixture'
+import { windowsShortPath } from './helpers/windows-short-path'
 
 async function original(f: Pick<V3Fixture, 'userDataRoot' | 'db'>) {
   const profileRoot = await realpath(f.userDataRoot), recoveryDirectory = join(profileRoot, 'backups', 'database-restore', randomUUID())
@@ -55,6 +57,56 @@ test('capsule2 known asset originals remain readable from actual copies after al
   for (const asset of added.attachments) await unlink(f.assets.resolve(asset.url))
   assert.deepEqual(await readPreparedCapsule2KnownAssetOriginals(handle), value)
   assert.deepEqual(await readFile(join(value.directory, 'files', added.hash)), added.bytes)
+}))
+
+test('capsule2 known asset originals preserve actual Main imports through a native Windows short profile alias', { skip: process.platform !== 'win32' }, t => withV3Fixture(async f => {
+  const profileRoot = await realpath(f.userDataRoot), shortRoot = windowsShortPath(profileRoot)
+  if (shortRoot.toLowerCase() === profileRoot.toLowerCase()) { t.skip('This native volume does not provide a distinct 8.3 profile alias'); return }
+  const assets = new AttachmentStore(join(shortRoot, 'storage', 'assets')), bytes = Buffer.from('actual native short-profile import')
+  const [asset] = await assets.import([{ name: 'actual-short-profile.png', bytes }])
+  summary(f, '[native](<' + asset.url + '>)')
+  const source = await original(f), before = allTables(f.db)
+  assert.equal(source.info.profileRoot.toLowerCase(), profileRoot.toLowerCase())
+  assert.notEqual(fileURLToPath(asset.url).toLowerCase(), (await realpath(fileURLToPath(asset.url))).toLowerCase())
+  t.diagnostic(JSON.stringify({ nativeShortRoot: shortRoot, canonicalProfileRoot: profileRoot, originalUri: asset.url }))
+  const handle = await prepareCapsule2KnownAssetOriginals(source.handle), value = await readPreparedCapsule2KnownAssetOriginals(handle)
+  assert.equal(value.manifest.aliases.length, 1); assert.equal(value.manifest.aliases[0].uri, asset.url)
+  assert.equal(value.manifest.aliases[0].name, asset.name)
+  assert.deepEqual(await readFile(join(value.directory, 'files', value.manifest.files[0].hash)), bytes)
+  assert.deepEqual(allTables(f.db), before)
+  assert.deepEqual(await restoreInventory(source.info.originalDirectory), source.inventory)
+}))
+
+test('capsule2 known asset preparation rejects a real foreign asset reached through a native Windows short alias', { skip: process.platform !== 'win32' }, t => withV3Fixture(async f => {
+  const physical = await realpath(f.root), shortRoot = windowsShortPath(physical)
+  if (shortRoot.toLowerCase() === physical.toLowerCase()) { t.skip('This native volume does not provide a distinct 8.3 fixture alias'); return }
+  await mkdir(f.assets.root, { recursive: true })
+  const foreign = new AttachmentStore(join(shortRoot, 'foreign-assets'))
+  const [asset] = await foreign.import([{ name: 'actual-foreign-short.png', bytes: Buffer.from('foreign native alias') }])
+  summary(f, '[foreign](<' + asset.url + '>)')
+  const source = await original(f), before = allTables(f.db)
+  await assert.rejects(prepareCapsule2KnownAssetOriginals(source.handle), /路径越过真实profile|outside the workspace/)
+  assert.deepEqual(await readdir(join(source.output, 'files')), [])
+  await assert.rejects(readFile(join(source.output, 'manifest.json')))
+  assert.deepEqual(allTables(f.db), before)
+  assert.deepEqual(await restoreInventory(source.info.originalDirectory), source.inventory)
+}))
+
+test('capsule2 known asset preparation rejects a native Windows short URI through a junction even when its physical file is owned', { skip: process.platform !== 'win32' }, t => withV3Fixture(async f => {
+  const profileRoot = await realpath(f.userDataRoot), shortRoot = windowsShortPath(profileRoot)
+  if (shortRoot.toLowerCase() === profileRoot.toLowerCase()) { t.skip('This native volume does not provide a distinct 8.3 profile alias'); return }
+  const [asset] = await f.assets.import([{ name: 'owned-through-junction.png', bytes: Buffer.from('actual owned junction target') }])
+  const junction = join(profileRoot, 'asset-junction')
+  await symlink(await realpath(f.assets.root), junction, 'junction')
+  const alias = pathToFileURL(join(shortRoot, 'asset-junction', relative(f.assets.root, fileURLToPath(asset.url)))).href
+  assert.equal((await realpath(fileURLToPath(alias))).toLowerCase(), (await realpath(fileURLToPath(asset.url))).toLowerCase())
+  summary(f, '[junction](<' + alias + '>)')
+  const source = await original(f), before = allTables(f.db)
+  await assert.rejects(prepareCapsule2KnownAssetOriginals(source.handle), /symlink|junction/)
+  assert.deepEqual(await readdir(join(source.output, 'files')), [])
+  await assert.rejects(readFile(join(source.output, 'manifest.json')))
+  assert.deepEqual(allTables(f.db), before)
+  assert.deepEqual(await restoreInventory(source.info.originalDirectory), source.inventory)
 }))
 
 test('capsule2 known asset originals copy actual incoming hardlink names into an independent durable blob', () => withIncomingFixture(async f => {
@@ -127,9 +179,9 @@ test('capsule2 known asset preparation rejects an actual storage ancestor juncti
   await f.publish(); accepted(await f.receive())
   const source = await original({ userDataRoot: f.B.root, db: f.B.db })
   f.B.db.close()
-  const storage = join(f.B.root, 'storage'), foreign = join(f.folder, 'outside-receiver-storage')
   const owned = await realpath(f.folder)
-  for (const path of [await realpath(storage), resolve(foreign)]) {
+  const storage = await realpath(join(f.B.root, 'storage')), foreign = join(owned, 'outside-receiver-storage')
+  for (const path of [storage, resolve(foreign)]) {
     const child = relative(owned, path)
     assert.ok(child && child !== '..' && !child.startsWith('..' + sep) && !isAbsolute(child), 'Both native move targets stay in the actual isolated fixture root')
   }

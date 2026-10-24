@@ -2,6 +2,7 @@ import Database from 'better-sqlite3'
 import { constants, type Stats } from 'node:fs'
 import { lstat, open, readdir, realpath } from 'node:fs/promises'
 import { basename, join, relative, resolve, sep } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { readManagedAssetSource } from '../managed-asset-source'
 import { isSyncedUuid } from '../../shared/syncedBlockValidation'
 import { ATTACHMENT_MAX_FILE_BYTES } from '../../shared/attachments'
@@ -121,9 +122,28 @@ export async function prepareCapsule2KnownAssetOriginals(original: OwnedRawCapsu
     // The shared byte reader validates below its root; this owning adapter
     // must also authenticate every ancestor back to the actual profile.
     await directory(assetsRoot, info.profileRoot)
-    const source = await readManagedAssetSource(assetsRoot, uri)
+    let aliasPath: string | undefined, localUri = uri
+    if (/^file:/i.test(uri)) {
+      if (uri.length > 8192) return bad('原file URI超过原附件长度边界')
+      const parsed = new URL(uri)
+      if (parsed.protocol !== 'file:' || parsed.hostname && parsed.hostname !== 'localhost') return bad('原file URI不是本地附件')
+      aliasPath = resolve(fileURLToPath(parsed))
+      // A native Windows 8.3 spelling is not a junction. Check every original
+      // ancestor before realpath, then bind the physical file to this owner's
+      // canonical assets root before the shared bounded byte reader opens it.
+      await assertRestorePath(aliasPath)
+      const physical = await realpath(aliasPath)
+      await assertRestorePath(physical, assetsRoot)
+      localUri = pathToFileURL(physical).href
+    }
+    const source = await readManagedAssetSource(assetsRoot, localUri)
+    if (aliasPath) {
+      await assertRestorePath(aliasPath)
+      if (!samePath(await realpath(aliasPath), source.path)) return bad('原file URI在读取期间改变实际映射')
+      await assertRestorePath(source.path, assetsRoot)
+    }
     await directory(assetsRoot, info.profileRoot)
-    return source
+    return { ...source, uri }
   }
   const uris = [...new Set(observation.scopes.flatMap(scope => scope.destinations.map(item => item.uri)))].sort(compare)
   const aliases: Alias[] = [], files = new Map<string, number>(); let total = 0, aliasBytes = 2, sourceBytes = 0
