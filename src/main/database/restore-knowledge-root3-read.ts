@@ -54,3 +54,18 @@ export async function readRootKnowledgeConservationPlan3(handle: RootKnowledgeCo
   if (value.conservationHash !== entry.expectedHash) return root3Invalid('完整原域知识或规划变化')
   return owned(value)
 }
+
+/** Main-private complete business inputs for the content planner. The fixed
+ * original reader, not caller packets or a K-to-content conversion, supplies
+ * both roles. Rebuild the same complete qualified constraints in this read. */
+export async function readRootKnowledgeConservationContent3(handle: RootKnowledgeConservationPlan3) {
+  const entry = plans.get(handle)
+  if (!entry) return root3Invalid('不是实际Main完整知识规划句柄')
+  const { readCompleteOriginalContentPair3 } = await import('./restore-knowledge-qualified-originals')
+  const actual = await readCompleteOriginalContentPair3(entry.original)
+  const constraints = deriveRoot3KnowledgeConstraints(actual.originalPackage.original,
+    await readRoot3OriginalReferenceResolutions(actual.originalPackage))
+  await assertCompleteOriginalPackageBytes(entry.original)
+  if (constraints.conservationHash !== entry.expectedHash) return root3Invalid('完整内容读取期间原域知识或规划变化')
+  return Object.freeze({ knowledge: owned(constraints), source: actual.source, current: actual.current })
+}

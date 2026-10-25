@@ -1,0 +1,12 @@
+(async () => {
+  const assert = require('node:assert/strict'), fs = require('node:fs/promises')
+  const { captureReopenedRootKnowledgeConservationPlan3 } = await import('../../src/main/database/restore-knowledge-root3-read.ts')
+  const { prepareRootRestoreContentPlan3, readRootRestoreContentPlan3 } = await import('../../src/main/database/restore-knowledge-content3-read.ts')
+  const { expectedPath, ...locator } = JSON.parse(process.argv[2])
+  const expected = JSON.parse(await fs.readFile(expectedPath, 'utf8'))
+  const knowledge = await captureReopenedRootKnowledgeConservationPlan3(locator)
+  const prepared = await prepareRootRestoreContentPlan3(knowledge.knowledgePlan)
+  assert.deepEqual(prepared.value, expected)
+  assert.deepEqual(await readRootRestoreContentPlan3(prepared.plan), expected)
+  process.stdout.write(JSON.stringify({ pid: process.pid, selectionHash: prepared.value.selectionHash, nodes: knowledge.knowledgeValue.constraints.nodes.length }))
+})().catch(error => { console.error(error); process.exitCode = 1 })

@@ -36,7 +36,7 @@ type Source = CertifiedDurableSqlCapsule | CertifiedCapsule2NoPriorSource | Boun
 type Inventory = { files: readonly ReferenceContextFile[]; directories: readonly ReferenceContextDirectory[] }
 type NodeReaders = { profile: string; sources: Map<string, CertifiedDurableSqlCapsule | CertifiedCapsule2NoPriorSource | SealedCapsule2Source> }
 type ReaderState = Map<string, NodeReaders>
-type View = Inventory & { directory: string; profileRoot: string; descriptorText: string; readers: ReaderState }
+type View = Inventory & { directory: string; profileRoot: string; descriptorText: string; readers: ReaderState; flatMixed?: true }
 type Saved = { profileRoot: string; operationId: string; mountId: string; directory: string; hash: string; readers: ReaderState }
 const bundles = new WeakMap<QualifiedOriginalBundle, Saved>()
 // Only genuine SQL-reader handles are retained. Every hot use rereads their
@@ -48,6 +48,10 @@ const starts = (frame: readonly string[], prefix: readonly string[]) => prefix.l
 const sorted = <T extends Pick<ReferenceContextFile, 'frame' | 'path'>>(items: readonly T[]): T[] => [...items].sort((a, b) => referenceContextFileKey(a) < referenceContextFileKey(b) ? -1 : 1)
 const header = (text: string): ReferenceContextFile => ({ frame: [], path: 'descriptor.json', bytes: Buffer.byteLength(text), sha256: capsuleBytesHash(text) })
 function viewPath(view: View, file: ReferenceContextFile): string {
+  if (view.flatMixed) {
+    if (file.frame.length) return bad('flat mixed原件不能含嵌套frame')
+    return originCatalogLocalPath(view.directory, file.path)
+  }
   return !file.frame.length && file.path === 'descriptor.json' ? join(view.directory, 'descriptor.json')
     : originCatalogLocalPath(view.directory, referenceContextObjectPath(file.frame, file.path))
 }
@@ -407,4 +411,50 @@ export async function captureMixedOriginalPackageWithInitialInputs(input: { prof
     directories: mixedOriginBundleDirectories(descriptor).map(path => ({ frame: [], path })) })
   await assertCompleteOriginalPackageBytes(captured.bundle)
   return Object.freeze({ ...captured, originalPackage })
+}
+
+// Only genuine readers survive calls; complete SQL packets are never cached.
+const contentReaders = new WeakMap<CompleteOriginalBundle, NodeReaders>()
+/** Complete business content cannot be reconstructed from K. Read the two
+ * root sources from this bundle's independently copied originals, including
+ * after the originating profiles have been retired. Ancestors remain part of
+ * the complete knowledge read; they are not additional installation payloads.
+ * Legacy v1 has no complete managed-source archive and must not be upgraded by
+ * filling missing business/policy/asset facts from its knowledge projection. */
+export async function readCompleteOriginalContentPair3(handle: CompleteOriginalBundle) {
+  const entry = bundles.get(handle as QualifiedOriginalBundle)
+  let actual: CompleteOriginalPackage, readers: NodeReaders
+  if (entry) {
+    actual = await readCompleteOriginalPackage(handle)
+    readers = entry.readers.get(capsuleJson([]))!
+  } else {
+    const mounted = await readPreparedMixedOriginBundleOriginalInputs(handle as PreparedMixedOriginBundle)
+    const descriptor = mounted.descriptor, inventory = {
+      files: mixedOriginBundleFiles(descriptor).map(file => ({ ...file, frame: [] as string[] })),
+      directories: mixedOriginBundleDirectories(descriptor).map(path => ({ frame: [] as string[], path })) }
+    const view = viewFor(mounted.directory, mounted.profileRoot, capsuleJson(descriptor) + '\n', inventory)
+    view.flatMixed = true
+    const saved = contentReaders.get(handle)
+    if (saved) view.readers.set(capsuleJson([]), saved)
+    const original = await walk(view, [], 'prepared-mixed-v2', mounted.descriptorHash, budget(), 1)
+    actual = packageFrom(view, 'prepared-mixed-v2', mounted.descriptorHash, original)
+    readers = view.readers.get(capsuleJson([]))!
+    contentReaders.set(handle, readers)
+  }
+  const { tryReadCertifiedCapsule2SourceInputs } = await import('./restore-knowledge-capsule2-source-certificate')
+  const packets = [] as Array<Awaited<ReturnType<typeof readSealedCapsule2SourceInputs>>['value']>
+  for (const binding of [actual.original.node.source, actual.original.node.current]) {
+    if (binding.capsule.readerVersion !== CAPSULE2_READER) return bad('完整内容选择要求真实capsule2来源；v1知识不能补造安装正文或附件')
+    const source = readers.sources.get(requiredDagCapsuleLocator(binding))
+    if (!source) return bad('完整内容缺实际Main原件reader')
+    const certified = await tryReadCertifiedCapsule2SourceInputs(source)
+    const { value } = certified ?? await readSealedCapsule2SourceInputs(source as SealedCapsule2Source)
+    const input = actual.original.inputs.find(input => same(input.binding, binding))
+    if (!input || value.capsuleId !== binding.capsule.capsuleId || value.operationId !== binding.capsule.operationId
+      || value.materialHash !== input.knowledge.sourceMaterialHash || value.assetArchiveHash !== input.knowledge.assetArchiveHash
+      || value.knowledge.observationHash !== input.knowledge.projectionHash) return bad('完整内容包不属于本次root的实际source/current')
+    packets.push(value)
+  }
+  await assertCompleteOriginalPackageBytes(handle)
+  return Object.freeze({ originalPackage: actual, source: packets[0], current: packets[1] })
 }
