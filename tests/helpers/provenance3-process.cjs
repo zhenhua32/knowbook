@@ -1,0 +1,17 @@
+(async () => {
+  const assert = require('node:assert/strict'), fs = require('node:fs/promises')
+  const { locator, identityLocator, expectedPath } = JSON.parse(process.argv[2])
+  const { reopenPreparedMixedOriginBundle } = await import('../../src/main/database/restore-knowledge-mixed-origin-bundle-read.ts')
+  const { prepareRootKnowledgeConservationPlan3 } = await import('../../src/main/database/restore-knowledge-root3-read.ts')
+  const { reopenRootRestoreIdentityPlan3 } = await import('../../src/main/database/restore-knowledge-identity3-read.ts')
+  const { prepareRootRestoreProvenanceSources3, readRootRestoreProvenanceSources3 } = await import('../../src/main/database/restore-knowledge-provenance3-read.ts')
+  const original = await reopenPreparedMixedOriginBundle(locator)
+  const knowledge = await prepareRootKnowledgeConservationPlan3(original)
+  const identity = await reopenRootRestoreIdentityPlan3(knowledge.plan, identityLocator)
+  const captured = await prepareRootRestoreProvenanceSources3(identity.plan)
+  // The expected value is comparison data, opened after all Main owners exist.
+  const expected = JSON.parse(await fs.readFile(expectedPath, 'utf8'))
+  assert.deepEqual(captured.value, expected)
+  assert.deepEqual(await readRootRestoreProvenanceSources3(captured.source), expected)
+  process.stdout.write(JSON.stringify({ pid: process.pid, provenanceSourceHash: captured.value.provenanceSourceHash }))
+})().catch(error => { console.error(error); process.exitCode = 1 })
