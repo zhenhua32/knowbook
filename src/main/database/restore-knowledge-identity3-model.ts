@@ -163,8 +163,8 @@ export function deriveRootRestoreIdentityPlan3(input: Identity3Inputs, kernel: I
       if (sourceInstance && currentInstances.get(target)?.groupId !== physicalTargets.get(key('group', sourceInstance.groupId))) return false
       const knownBirths = new Set(physical.flatMap(item => item.knownBirth === null ? [] : [item.knownBirth]))
       const sameBirth = demand.birth !== null && knownBirths.size === 1 && knownBirths.has(demand.birth)
-      // Columns/views/entities have no birth column in the actual schema.
-      // Only an exact current lineage row can authorize reusing those slots.
+      // A projection without a birth fact cannot establish the incarnation.
+      // Reuse of such column/view/entity slots also needs exact current lineage.
       const lineageWithoutBirth = ownLineage && demand.birth === null && ['column', 'view', 'entity'].includes(demand.kind)
       return (sameBirth || lineageWithoutBirth) && (demand.kind !== 'column' || sourceColumnTypes.get(demand.sourceId) === currentColumnTypes.get(target))
         && physical.every(item => demand.ownerKind === null || item.ownerKind === demand.ownerKind && item.ownerId === owner)
@@ -174,6 +174,10 @@ export function deriveRootRestoreIdentityPlan3(input: Identity3Inputs, kernel: I
     if (lineage.length > 1) return identity3Invalid('相同精确来源有多个恢复映射')
     const available = (target: string, ownLineage = false) => {
       if (claimed.has(key(demand.kind, target))) return false
+      // Birth/owner compatibility is not authority to overwrite a slot that
+      // another exact source reserved. An owned alias cannot erase that fact.
+      const reservations = lineageTargets.get(key(demand.kind, target)) ?? []
+      if (reservations.some(row => row !== lineage[0])) return false
       const occupied = currentOccupancy.get(key(demand.kind, target)) ?? []
       if (!occupied.length) return true
       if (!demand.physical) return ownLineage && currentOnlyRestoreMap.has(key(demand.kind, target))
