@@ -104,3 +104,9 @@ export function parseMixedOriginBundleDescriptor(text:string) {
   if(text!==capsuleJson(value)+'\n')return bad('mixed descriptor不是准确canonical原字节')
   return value
 }
+
+/** Fixed legacy side codec shared by the complete qualified-input transport.
+ * This is data validation only; private SQL owners still authenticate sources. */
+export function mixedOriginBundleSideFiles(value: MixedOriginBundleSide, binding: CoverageInputBinding) {
+  return freezeCapsuleValue(side(value, binding))
+}

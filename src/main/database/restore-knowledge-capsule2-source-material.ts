@@ -85,3 +85,12 @@ export async function diagnoseCapsule2SourceMaterial(handle: PreparedCapsule2Sou
     requiredRoots: value.priorCoverageRequirements.entries.length, certified: false as const, semanticValidationComplete: false as const,
     acceptedCoverage: false as const, effective: false as const, permit: false as const })
 }
+
+/** Bytes only, not a source projection or semantic capability. A surrounding
+ * Main factory has just captured the actual SQL; this closes its copy bracket
+ * against the same private archive/original without querying that SQL twice. */
+export async function assertCapsule2SourceOriginalBytes(handle: PreparedCapsule2SourceMaterial): Promise<void> {
+  const entry = materials.get(handle)
+  if (!entry) return bad('不是实际Main完整来源私有句柄')
+  await readCapsule2AssetArchive(entry.archive)
+}

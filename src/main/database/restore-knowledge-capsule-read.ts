@@ -336,3 +336,50 @@ export async function captureCertifiedCapsuleNoPriorSourceInputs(handle: Certifi
     return freezeCapsuleValue({ seal: final, value, projection: captured.projection })
   } finally { db?.close() }
 }
+
+/** Cold capture only: original draft, complete raw prior-C and K come from the
+ * same real readonly transaction. No existing handle or caller packet enters.
+ * Ordinary later readers above retain their complete original validation. */
+export async function captureReopenedCertifiedCapsuleNoPriorSourceInputs(input: ReopenDurableSqlCapsuleOriginalInput) {
+  const original = await reopenDurableSqlCapsuleOriginal(input), info = readOwnedRawCapsuleOriginal(original)
+  const before = await readDurableSqlCapsuleSeal(original)
+  if (before.manifest.version !== 1 || before.manifest.readerVersion !== 'knowbook-durable-sql-v1' || before.manifest.material !== 'durable-sql-only')
+    return capsuleInvalid('cold paired v1来源拒绝未知格式')
+  const parts = relative(info.profileRoot, before.manifestPath).split(sep)
+  if (parts.length !== 6 || parts[0] !== 'backups' || parts[1] !== 'database-restore'
+    || parts[3] !== 'knowledge-capsules' || parts[5] !== 'manifest.json') return capsuleInvalid('cold paired v1来源不在固定Main目录')
+  const reference: KnowledgeCapsuleRef = Object.freeze({ kind: 'durable-sql-capsule-ref', version: 1,
+    operationId: parts[2], capsuleId: parts[4], manifestHash: before.manifestHash })
+  if (certifying.has(original)) return capsuleInvalid('原件已在认证中')
+  certifying.add(original)
+  let db: Sqlite.Database | undefined
+  try {
+    await assertOwnedRawCapsuleScratchReady(original)
+    db = new Database(restoreSqliteFilename(info.databasePath), { readonly: true, fileMustExist: true })
+    db.pragma('query_only=ON'); db.pragma('foreign_keys=ON')
+    const current = db
+    const captured = current.transaction(() => {
+      const draft = readDurableSqlCapsuleDraftOwned(current)
+      if (!('facts' in draft)) return capsuleInvalid('cold paired v1来源缺完整原SQL adapter')
+      const requirements = readRawPriorKnowledgeCoverageOwned(current)
+      if (requirements.entries.length) return capsuleInvalid('真实v1 prior-C未解决，不能降empty')
+      return { draft, requirements, projection: readRawCapsuleKnowledgePayloadOwned(current, reference, draft) }
+    })()
+    db.close(); db = undefined
+    const completed = await completeDurableSqlCapsuleSeal(original, captured.draft)
+    if (completed.manifestHash !== before.manifestHash) return capsuleInvalid('cold paired完整SQL draft不等于原manifest')
+    await assertOwnedRawCapsuleOriginal(original)
+    const final = await readDurableSqlCapsuleSeal(original)
+    if (final.manifestHash !== completed.manifestHash) return capsuleInvalid('cold paired来源读取期间原件变化')
+    await assertOwnedRawCapsuleOriginal(original)
+    const value: UnresolvedCertifiedCapsulePriorCoverage = freezeCapsuleValue({ kind: 'unresolved-certified-capsule-prior-coverage', version: 1,
+      capsule: { operationId: parts[2], capsuleId: parts[4], manifestHash: final.manifestHash, readerVersion: 'knowbook-durable-sql-v1' },
+      originalFiles: final.manifest.files, requirements: captured.requirements,
+      rawRequirementsHash: rawPriorCoverageRequirementsHash(captured.requirements),
+      namespaceResolved: false, emptyKnowledgeProven: false, acceptedCoverage: false })
+    knowledgePayloadHash(captured.projection)
+    const source: CertifiedDurableSqlCapsule = Object.freeze({ kind: 'certified-durable-sql-capsule' })
+    certified.set(source, { original, manifestHash: final.manifestHash })
+    return freezeCapsuleValue({ source, seal: final, value, projection: captured.projection })
+  } finally { db?.close(); certifying.delete(original) }
+}

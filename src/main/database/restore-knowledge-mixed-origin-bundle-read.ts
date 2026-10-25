@@ -1,9 +1,13 @@
-import { capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
+import { capsuleBytesHash, capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { durableSqlDagHash } from './restore-knowledge-dag-model'
 import { validateCoverageCapsuleReference, validateCoverageRootReference } from './restore-knowledge-coverage-model'
 import { reopenActualFirstRequiredSqlDagWithInitialMaterial, readActualFirstRequiredSqlDagMaterial, type ActualFirstRequiredSqlDag } from './restore-knowledge-mixed-required-dag-read'
 import { importMixedOriginBundleOriginal, readMountedMixedOriginBundle, writeMixedOriginBundle, createMixedOriginVerificationProfile } from './restore-knowledge-mixed-origin-bundle-files'
 import { originBundleInvalid as bad } from './restore-knowledge-origin-bundle-model'
+import { mixedOriginBundleDirectories, mixedOriginBundleFiles, MIXED_ORIGIN_BUNDLE_MAX_DESCRIPTOR_BYTES } from './restore-knowledge-mixed-origin-bundle-model'
+import { readCapsule2AssetManifest } from './restore-knowledge-capsule2-assets-files'
+import { originCatalogLocalPath } from './restore-knowledge-origin-bundle-files'
+import { join } from 'node:path'
 
 export interface PreparedMixedOriginBundle { readonly kind:'prepared-mixed-origin-bundle' }
 type Mounted=Awaited<ReturnType<typeof readMountedMixedOriginBundle>>
@@ -60,4 +64,31 @@ function qualifiedMaterial(entry:Saved,material:Material) {
     interpretation:'actual-immutable-single-first-mixed-bundle-domain' as const,
     preparedEvidence:true as const,fullRootInputSetProven:true as const,emptyKnowledgeProven:false as const,
     acceptedCoverage:false as const,effective:false as const,permit:false as const})
+}
+
+/** A fixed complete original source for the Main reference-context owner.
+ * The private registry and both real SQL readers are checked before any paths
+ * are exposed. A caller cannot supply a file list, a prefix or a saved DTO.
+ * These are original inputs; this seam never upgrades a prepared root into
+ * accepted coverage or grants a native-profile interpretation to its SQL. */
+export async function readPreparedMixedOriginBundleOriginalInputs(handle:PreparedMixedOriginBundle) {
+  const entry=bundles.get(handle);if(!entry)return bad('不是Main真实mixed bundle原件句柄')
+  const value=await readPreparedMixedOriginBundle(handle)
+  const mounted=await readMountedMixedOriginBundle(entry.profileRoot,entry.operationId,entry.mountId,entry.original.descriptorHash)
+  const original=mounted.original
+  const descriptorPath=join(original.directory,'descriptor.json')
+  const descriptorText=await readCapsule2AssetManifest(descriptorPath,entry.profileRoot,MIXED_ORIGIN_BUNDLE_MAX_DESCRIPTOR_BYTES)
+  const descriptorBytes=Buffer.from(descriptorText,'utf8')
+  const files=[{path:'descriptor.json',bytes:descriptorBytes.length,sha256:capsuleBytesHash(descriptorBytes),sourcePath:descriptorPath},
+    ...mixedOriginBundleFiles(original.descriptor).map(file=>({...file,sourcePath:originCatalogLocalPath(original.directory,file.path)}))]
+  await readMountedMixedOriginBundle(entry.profileRoot,entry.operationId,entry.mountId,original.descriptorHash)
+  return freezeCapsuleValue({profileRoot:entry.profileRoot,directory:original.directory,descriptor:original.descriptor,
+    descriptorHash:original.descriptorHash,files,directories:mixedOriginBundleDirectories(original.descriptor),value,
+    rootScope:'prepared-first-mixed-original-inputs' as const,acceptedCoverage:false as const,effective:false as const,permit:false as const})
+}
+
+/** Immutable original bytes only; returns no cached SQL/material authority. */
+export async function assertPreparedMixedOriginBundleOriginalBytes(handle:PreparedMixedOriginBundle):Promise<void> {
+  const entry=bundles.get(handle);if(!entry)return bad('不是Main真实mixed bundle原件句柄')
+  await readMountedMixedOriginBundle(entry.profileRoot,entry.operationId,entry.mountId,entry.original.descriptorHash)
 }

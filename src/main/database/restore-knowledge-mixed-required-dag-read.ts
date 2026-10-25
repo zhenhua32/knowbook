@@ -191,3 +191,9 @@ export async function reopenActualFirstRequiredSqlDagWithInitialMaterial(input:P
   const value=freezeCapsuleValue({...body,materialHash:knowledgeHash('knowbook.knowledge.actual-required-root-material.v3',body)})
   return Object.freeze({dag,value})
 }
+
+/** Fixed Main-private no-prior input seam. Unknown objects reach the original
+ * registries without inspecting their properties. No caller projection enters. */
+export async function readActualNoPriorOriginalInput(profileRoot: string, source: Source) {
+  return readInput(await canonicalRequiredSqlDagRoot(profileRoot), source)
+}

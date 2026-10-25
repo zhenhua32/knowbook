@@ -4,10 +4,11 @@ import { basename, join } from 'node:path'
 import type Database from 'better-sqlite3'
 import { prepareDurableSqlCapsuleOriginal, readOwnedRawCapsuleOriginal } from '../../src/main/database/restore-knowledge-capsule-files'
 import { restoreInventory } from '../../src/main/database/restore-safety-files'
+import { durableSqlDagUuid } from '../../src/main/database/restore-knowledge-dag-model'
 
 /** Actual native SQLite online backup and the existing Main original owner. */
-export async function captureAssetOriginal(source: { userDataRoot: string; db: Database.Database }) {
-  const profileRoot = await realpath(source.userDataRoot), recoveryDirectory = join(profileRoot, 'backups', 'database-restore', randomUUID())
+export async function captureAssetOriginal(source: { userDataRoot: string; db: Database.Database }, operationId: string = randomUUID()) {
+  const profileRoot = await realpath(source.userDataRoot), recoveryDirectory = join(profileRoot, 'backups', 'database-restore', durableSqlDagUuid(operationId))
   const sealedDirectory = join(recoveryDirectory, 'sealed')
   await mkdir(sealedDirectory, { recursive: true }); await source.db.backup(join(sealedDirectory, 'knowbook.db'))
   const original = await prepareDurableSqlCapsuleOriginal({ profileRoot, recoveryDirectory, sealedDirectory, capsuleId: randomUUID(), label: 'actual-managed-assets' })
