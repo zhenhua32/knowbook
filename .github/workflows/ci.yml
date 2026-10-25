@@ -48,6 +48,66 @@ jobs:
       - name: Run unit and integration tests
         run: npm test
 
+      - name: Check Markdown performance regression ceilings
+        run: npm run benchmark:markdown
+
+      - name: Check Markdown link maintenance regression ceilings
+        run: npm run benchmark:markdown-links
+
+      - name: Check full Markdown source editing regression ceilings
+        run: npm run benchmark:markdown-source
+
+      - name: Verify consecutive synced source Apply lineage
+        run: npm run benchmark:synced-source -- --output-dir test-results/synced-source-checkpoint-ci
+
+      - name: Upload synced source checkpoint benchmark
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: synced-source-checkpoint-report
+          path: test-results/synced-source-checkpoint-ci/**
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload Markdown performance report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: markdown-quality-report
+          path: |
+            test-results/markdown-quality-report.json
+            test-results/markdown-link-report.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Build application
+        run: npm run build
+
+      - name: Upload built application for desktop acceptance
+        uses: actions/upload-artifact@v4
+        with:
+          name: electron-e2e-build
+          path: out/
+          if-no-files-found: error
+          retention-days: 1
+
+  legacy-compatibility:
+    name: Legacy protocol and recovery compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
       - name: Fetch pinned protocol5 v1 exchange source
         run: git fetch --no-tags --depth=1 origin 852fd18d9c842082015ef7359696659a7a866980
 
@@ -212,49 +272,6 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-      - name: Check Markdown performance regression ceilings
-        run: npm run benchmark:markdown
-
-      - name: Check Markdown link maintenance regression ceilings
-        run: npm run benchmark:markdown-links
-
-      - name: Check full Markdown source editing regression ceilings
-        run: npm run benchmark:markdown-source
-
-      - name: Verify consecutive synced source Apply lineage
-        run: npm run benchmark:synced-source -- --output-dir test-results/synced-source-checkpoint-ci
-
-      - name: Upload synced source checkpoint benchmark
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: synced-source-checkpoint-report
-          path: test-results/synced-source-checkpoint-ci/**
-          if-no-files-found: ignore
-          retention-days: 14
-
-      - name: Upload Markdown performance report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: markdown-quality-report
-          path: |
-            test-results/markdown-quality-report.json
-            test-results/markdown-link-report.json
-          if-no-files-found: ignore
-          retention-days: 14
-
-      - name: Build application
-        run: npm run build
-
-      - name: Upload built application for desktop acceptance
-        uses: actions/upload-artifact@v4
-        with:
-          name: electron-e2e-build
-          path: out/
-          if-no-files-found: error
-          retention-days: 1
-
   prepare-cjk-fonts:
     name: Prepare CJK font package
     runs-on: ubuntu-latest
@@ -280,7 +297,7 @@ jobs:
 
   electron-e2e:
     name: Electron E2E (shard ${{ matrix.shard }}/4)
-    needs: [validate, prepare-cjk-fonts]
+    needs: [validate, legacy-compatibility, prepare-cjk-fonts]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
