@@ -458,3 +458,14 @@ export async function readCompleteOriginalContentPair3(handle: CompleteOriginalB
   await assertCompleteOriginalPackageBytes(handle)
   return Object.freeze({ originalPackage: actual, source: packets[0], current: packets[1] })
 }
+
+/** Staging metadata from the actual private owner; never a caller path. */
+export async function readCompleteOriginalPlanLocation(handle: CompleteOriginalBundle) {
+  const entry = bundles.get(handle as QualifiedOriginalBundle)
+  if (entry) {
+    await assertCompleteOriginalPackageBytes(handle)
+    return Object.freeze({ profileRoot: entry.profileRoot, operationId: entry.operationId, descriptorHash: entry.hash })
+  }
+  const { readPreparedMixedOriginalPlanLocation } = await import('./restore-knowledge-mixed-origin-bundle-read')
+  return readPreparedMixedOriginalPlanLocation(handle as PreparedMixedOriginBundle)
+}

@@ -69,3 +69,17 @@ export async function readRootKnowledgeConservationContent3(handle: RootKnowledg
   if (constraints.conservationHash !== entry.expectedHash) return root3Invalid('完整内容读取期间原域知识或规划变化')
   return Object.freeze({ knowledge: owned(constraints), source: actual.source, current: actual.current })
 }
+
+/** Actual owner metadata/byte bracket for durable candidate plans. Neither
+ * function returns knowledge or upgrades this owner into an install permit. */
+export async function readRootKnowledgePlanLocation3(handle: RootKnowledgeConservationPlan3) {
+  const entry = plans.get(handle)
+  if (!entry) return root3Invalid('不是实际Main完整知识规划句柄')
+  const { readCompleteOriginalPlanLocation } = await import('./restore-knowledge-qualified-originals')
+  return readCompleteOriginalPlanLocation(entry.original)
+}
+export async function assertRootKnowledgePlanOriginalBytes3(handle: RootKnowledgeConservationPlan3) {
+  const entry = plans.get(handle)
+  if (!entry) return root3Invalid('不是实际Main完整知识规划句柄')
+  await assertCompleteOriginalPackageBytes(entry.original)
+}

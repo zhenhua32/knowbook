@@ -16,8 +16,9 @@ const tableHash = (table: Capsule2RawSqlTable) => capsuleBytesHash('knowbook.res
 /** Data only. Source rows are candidate business values, still in their exact
  * original encoding/storage classes. Nothing here is executable SQL or an ID
  * allocation. Every other table has an explicit disposition and a binding to
- * its complete original; no history cursor, credential or plugin grant is
- * copied into the candidate business tables. */
+ * its complete original. Group headers still contain original CAS/cursors as
+ * evidence; the explicit execution-column plan below requires replacing them.
+ * Credentials and plugin grants are outside the candidate business tables. */
 export function selectRootRestoreContent3(inputs: Inputs) {
   const { source, current, knowledge } = inputs
   const candidateTables = source.source.sourceContent.tables.filter(table => table.role === 'content')
@@ -37,6 +38,14 @@ export function selectRootRestoreContent3(inputs: Inputs) {
     sourceSchemaVersion: source.source.sourceContent.schemaVersion, currentSchemaVersion: current.source.sourceContent.schemaVersion,
     sourceAssetArchiveHash: source.assetArchiveHash, currentAssetArchiveHash: current.assetArchiveHash,
     candidateTables, dispositions,
+    executionColumns: [
+      { table: 'documents', column: 'updated_at', action: 'fresh-document-cas' },
+      { table: 'synced_groups', column: 'revision', action: 'fresh-group-cas' },
+      { table: 'synced_groups', column: 'topology_revision', action: 'fresh-topology-cas' },
+      { table: 'synced_groups', column: 'history_cursor', action: 'fresh-history-baseline' },
+      { table: 'synced_groups', column: 'history_position', action: 'reset-history-position-to-zero' },
+      { table: 'synced_instances', column: 'binding_version', action: 'fresh-instance-binding' }
+    ] as const,
     derivedTables: ([['source', source], ['current', current]] as const).flatMap(([side, packet]) =>
       packet.source.sourceContent.derivedTablesNotRepeated.map(table => ({ side, table, action: 'rebuild' as const }))),
     identities: 'requires-complete-qualified-allocation-and-reference-rewrite' as const,

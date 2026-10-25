@@ -100,3 +100,11 @@ export async function readPreparedMixedOriginalDirectoryBytes(handle:PreparedMix
   return freezeCapsuleValue({directory:entry.original.directory,scope:'verified-original-directory-bytes-only' as const,
     semanticValidationComplete:false as const,acceptedCoverage:false as const,effective:false as const,permit:false as const})
 }
+
+/** Fixed Main staging location, outside the immutable original directory.
+ * Location metadata grants no SQL, accepted coverage or installation rights. */
+export async function readPreparedMixedOriginalPlanLocation(handle: PreparedMixedOriginBundle) {
+  const entry = bundles.get(handle); if (!entry) return bad('不是Main真实mixed bundle原件句柄')
+  await assertPreparedMixedOriginBundleOriginalBytes(handle)
+  return Object.freeze({ profileRoot: entry.profileRoot, operationId: entry.operationId, descriptorHash: entry.original.descriptorHash })
+}

@@ -131,9 +131,20 @@ export function readRawCapsule2WorkspaceHistorySourceOwned(db: Database.Database
       }
     }
   }
-  const restore = db.prepare('SELECT * FROM backup_restore_identities ORDER BY lineage,kind,source_database_id,source_id,state').all() as Array<{ kind: string; target_id: string }>
+  const restore = db.prepare('SELECT * FROM backup_restore_identities ORDER BY lineage,kind,source_database_id,source_id,state').all() as Array<{ kind: string; state: string; target_id: string }>
   historyRows.push(restore)
-  for (const row of restore) { if (row.kind === 'block') block(row.target_id); else if (row.kind === 'document') document(row.target_id) }
+  for (const row of restore) {
+    if (row.kind === 'block' && row.state === 'missing' && !identities.has(row.target_id)) {
+      // V2 deliberately reserves a missing reference in its lineage journal
+      // without inventing a live block or a ledger birth. Preserve that exact
+      // fact without inventing a ledger. A mapping's historical state is not
+      // an assertion that its target remains free today; occupancy and stale
+      // mappings are both retained for the complete allocation planner.
+      const target = id(row.target_id)
+      historyBlocks.add(target)
+    } else if (row.kind === 'block') block(row.target_id)
+    else if (row.kind === 'document') document(row.target_id)
+  }
   const routes = db.prepare('SELECT document_path,block_id FROM document_block_routes ORDER BY document_path,block_id').all() as Array<{ block_id: string }>
   historyRows.push(routes); for (const row of routes) block(row.block_id)
   const hostRows = db.prepare('SELECT id,action_json,before_json,after_json,before_hash,after_hash,created_at FROM synced_host_history ORDER BY id').all() as SyncedHostHistoryBranchRow[]
