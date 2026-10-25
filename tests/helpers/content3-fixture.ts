@@ -12,12 +12,17 @@ import { tryReadCertifiedCapsule2SourceInputs } from '../../src/main/database/re
 type SourcePacket = NonNullable<Awaited<ReturnType<typeof tryReadCertifiedCapsule2SourceInputs>>>['value']
 type BeforeCurrent = (source: Parameters<typeof captureMixedSource>[0], original: SourcePacket) => void | Promise<void>
 export async function withContent3Fixture(run: (f: Awaited<ReturnType<typeof setup>>) => Promise<void>, beforeCurrent?: BeforeCurrent,
-  beforeSource?: (source: Parameters<typeof captureMixedSource>[0]) => void | Promise<void>) {
-  await withV3Fixture(source => withV3Fixture(async receiver => { await run(await setup(source, receiver, beforeCurrent, beforeSource)) }))
+  beforeSource?: (source: Parameters<typeof captureMixedSource>[0]) => void | Promise<void>,
+  beforeOrdinary?: (source: Parameters<typeof captureMixedSource>[0]) => void | Promise<void>) {
+  await withV3Fixture(source => withV3Fixture(async receiver => { await run(await setup(source, receiver, beforeCurrent, beforeSource,beforeOrdinary)) }))
 }
 async function setup(source: Parameters<typeof captureMixedSource>[0], receiver: Parameters<typeof captureMixedSource>[0], beforeCurrent?: BeforeCurrent,
-  beforeSource?: (source: Parameters<typeof captureMixedSource>[0]) => void | Promise<void>) {
+  beforeSource?: (source: Parameters<typeof captureMixedSource>[0]) => void | Promise<void>,
+  beforeOrdinary?: (source: Parameters<typeof captureMixedSource>[0]) => void | Promise<void>) {
   await addV3Assets(source)
+  // Fixture-only initialization hook: genuine Main commands precede the raw
+  // ordinary body below, whose literal file URL is not a portable asset.
+  await beforeOrdinary?.(source)
   const ordinary = writeMixedOrdinary501(source)
   source.store.saveSetting('ai.apiKey', 'source-private-key-must-never-be-in-business-candidate')
   // Real raw SQLite TEXT bytes, including NUL and a path-looking literal, are

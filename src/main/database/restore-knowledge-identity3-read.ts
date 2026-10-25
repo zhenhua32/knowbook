@@ -44,13 +44,14 @@ async function readManifest(saved: Saved) {
   if (text !== capsuleJson(value) + '\n' || manifestHash(value) !== saved.manifestHash) return identity3Invalid('持久预分配清单字节或hash变化')
   return value
 }
-async function reconstruct(saved: Saved) {
+async function reconstructInputs(saved: Saved) {
   const before = await readManifest(saved), inputs = await readRootKnowledgeConservationContent3(saved.knowledge)
   const value = deriveRootRestoreIdentityPlan3(inputs, before.kernel), actual = manifestBody(saved.location, saved.planId, inputs, before.kernel, value)
   if (capsuleJson(actual) !== capsuleJson(before)) return identity3Invalid('实际完整SQL/K/内容不等于持久预分配输入')
   await readManifest(saved); await assertRootKnowledgePlanOriginalBytes3(saved.knowledge)
-  return value
+  return Object.freeze({ value, inputs, kernel: before.kernel })
 }
+async function reconstruct(saved: Saved) { return (await reconstructInputs(saved)).value }
 function mint(saved: Saved) {
   const plan: RootRestoreIdentityPlan3 = Object.freeze({ kind: 'main-root-restore-identity-plan' })
   plans.set(plan, saved); return plan
@@ -77,6 +78,19 @@ export async function readRootRestoreIdentityPlan3(handle: RootRestoreIdentityPl
   const entry = plans.get(handle)
   if (!entry) return identity3Invalid('不是实际Main持久身份规划句柄')
   return reconstruct(entry)
+}
+/** Fixed Main-only joint read for the graph planner. Both the allocation and
+ * complete business originals belong to this same authenticated SQL read;
+ * caller DTOs, returned rows and callbacks cannot replace either side. */
+export async function readRootRestoreIdentityGraphInputs3(handle: RootRestoreIdentityPlan3) {
+  const entry = plans.get(handle)
+  if (!entry) return identity3Invalid('不是实际Main持久身份规划句柄')
+  return reconstructInputs(entry)
+}
+export async function assertRootRestoreIdentityOriginalBytes3(handle: RootRestoreIdentityPlan3) {
+  const entry = plans.get(handle)
+  if (!entry) return identity3Invalid('不是实际Main持久身份规划句柄')
+  await readManifest(entry); await assertRootKnowledgePlanOriginalBytes3(entry.knowledge); await readManifest(entry)
 }
 /** Restart accepts only a genuine newly reconstructed knowledge owner and the
  * exact durable plan locator/hash. A saved allocation DTO cannot mint a plan. */
