@@ -13,6 +13,7 @@ import { structureFixture, tupleFor } from './coverage-structure-fixture'
 import type { CoverageRootReference } from '../../src/main/database/restore-knowledge-coverage-model'
 import type { V3Fixture } from './synced-backup-v3-fixture'
 import type { captureMixedSource } from './mixed-required-source-fixture'
+import { captureRootKnowledgeConservationPlanFromReferences3 } from '../../src/main/database/restore-knowledge-root3-read'
 export type SourceProfile = Pick<V3Fixture, 'db' | 'userDataRoot'>
 
 /** Deliberately untrusted C syntax referencing real original inputs, with an
@@ -42,13 +43,15 @@ export async function sealedReferenceSource(f: SourceProfile, operationId?: stri
   const actual = await captureSealedCapsule2SourceFromArchive(archive)
   return { original, source: actual.source, actual }
 }
-export async function nextQualifiedBundle(f: SourceProfile, candidates: readonly { bundle: CompleteOriginalBundle; original: CoverageRootReference }[], current: Pick<Awaited<ReturnType<typeof captureMixedSource>>, 'handle'>, operationId?: string) {
+export async function nextQualifiedBundle(f: SourceProfile, candidates: readonly { bundle: CompleteOriginalBundle; original: CoverageRootReference }[], current: Pick<Awaited<ReturnType<typeof captureMixedSource>>, 'handle'>, operationId?: string, withKnowledgePlan = false) {
   const sealed = await sealedReferenceSource(f, operationId)
   const parents = requiredReferenceRoots(sealed.actual.value.priorCoverageRequirements).map(root => {
     const found = candidates.find(candidate => candidate.original.operationId === root.operationId && candidate.original.dagId === root.dagId && candidate.original.rootHash === root.rootHash)
     assert.ok(found, 'Every actual original SQL reference has a genuine supplied parent'); return found.bundle
   })
-  const saved = await captureQualifiedOriginalBundleFromReferences({ profileRoot: sealed.actual.profileRoot, operationId: sealed.actual.value.operationId,
-    dagId: randomUUID(), source: sealed.source, parents, current: current.handle })
-  return { ...saved, sealed }
+  const input = { profileRoot: sealed.actual.profileRoot, operationId: sealed.actual.value.operationId,
+    dagId: randomUUID(), source: sealed.source, parents, current: current.handle }
+  const knowledge = withKnowledgePlan ? await captureRootKnowledgeConservationPlanFromReferences3(input) : null
+  const saved = knowledge ?? await captureQualifiedOriginalBundleFromReferences(input)
+  return { ...saved, sealed, knowledgePlan: knowledge?.knowledgePlan, knowledgeValue: knowledge?.knowledgeValue }
 }

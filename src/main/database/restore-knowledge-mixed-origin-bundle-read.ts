@@ -92,3 +92,11 @@ export async function assertPreparedMixedOriginBundleOriginalBytes(handle:Prepar
   const entry=bundles.get(handle);if(!entry)return bad('不是Main真实mixed bundle原件句柄')
   await readMountedMixedOriginBundle(entry.profileRoot,entry.operationId,entry.mountId,entry.original.descriptorHash)
 }
+
+/** Location metadata after a complete byte check, never SQL/K authority. */
+export async function readPreparedMixedOriginalDirectoryBytes(handle:PreparedMixedOriginBundle) {
+  const entry=bundles.get(handle);if(!entry)return bad('不是Main真实mixed bundle原件句柄')
+  await assertPreparedMixedOriginBundleOriginalBytes(handle)
+  return freezeCapsuleValue({directory:entry.original.directory,scope:'verified-original-directory-bytes-only' as const,
+    semanticValidationComplete:false as const,acceptedCoverage:false as const,effective:false as const,permit:false as const})
+}

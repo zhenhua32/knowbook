@@ -386,3 +386,25 @@ export async function captureReopenedQualifiedOriginalBundle(input: Parameters<t
   const actual = await readDirectory(directory, profileRoot, hash)
   return Object.freeze({ bundle: mint({ profileRoot, operationId, mountId, directory, hash, readers: capturedReaders.get(actual)! }), value: actual.original, originalPackage: actual })
 }
+
+/** Fixed initial-capture adapter for the complete knowledge owner. The only K
+ * packet comes from the SQL certification performed inside this invocation;
+ * no caller DTO or previously returned packet can be supplied. */
+export async function captureMixedOriginalPackageWithInitialInputs(input: { profileRoot: string; operationId: string; sourceDirectory: string }) {
+  const { capturePreparedMixedOriginBundle } = await import('./restore-knowledge-mixed-origin-bundle-read')
+  const { readMountedMixedOriginBundle } = await import('./restore-knowledge-mixed-origin-bundle-files')
+  const { mixedOriginBundleFiles, mixedOriginBundleDirectories } = await import('./restore-knowledge-mixed-origin-bundle-model')
+  const captured = await capturePreparedMixedOriginBundle(input), value = captured.value, namespace = value.root.namespace
+  if (namespace.kind !== 'imported-bundle') return bad('完整mixed初始捕获缺实际mount')
+  const mounted = await readMountedMixedOriginBundle(input.profileRoot, input.operationId, namespace.mountId, value.descriptorHash)
+  const descriptor = mounted.original.descriptor, directory = mounted.original.directory, descriptorText = capsuleJson(descriptor) + '\n'
+  const original = legacyData(descriptor, { root: value.originalRoot, node: value.originalNode, inputs: value.inputs,
+    materialHash: value.sourceMaterialHash, originalSqlBytes: value.originalSqlBytes, managedOriginalBytes: value.managedOriginalBytes })
+  const files = [header(descriptorText), ...mixedOriginBundleFiles(descriptor).map(file => ({ ...file, frame: [] as string[] }))]
+  const originalPackage: CompleteOriginalPackage = freezeCapsuleValue({ reader: 'prepared-mixed-v2', directory,
+    descriptorHash: value.descriptorHash, descriptorText, original,
+    files: sorted(files).map(file => ({ ...file, sourcePath: originCatalogLocalPath(directory, file.path), sourceRoot: directory })),
+    directories: mixedOriginBundleDirectories(descriptor).map(path => ({ frame: [], path })) })
+  await assertCompleteOriginalPackageBytes(captured.bundle)
+  return Object.freeze({ ...captured, originalPackage })
+}

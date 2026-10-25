@@ -8,8 +8,9 @@ import { randomUUID } from 'node:crypto'
 import { prepareQualifiedOriginalImport, reopenQualifiedOriginalBundle, readCompleteOriginalPackage } from '../src/main/database/restore-knowledge-qualified-originals'
 import { referenceContextObjectPath } from '../src/main/database/restore-knowledge-reference-context-model'
 import { withNestedOriginalScenario } from './helpers/qualified-originals-nested-scenario'
+import { assertRoot3NestedKnowledge } from './helpers/root3-nested-plan-assertions'
 
-test('qualified originals carry every native and imported C1/C2 domain through independent copying and a fresh process after all earlier sources retire', () => withNestedOriginalScenario(async ({ f, second, stage }) => {
+test('qualified originals carry every native and imported C1/C2 domain through independent copying and a fresh process after all earlier sources retire', t => withNestedOriginalScenario(async ({ f, second, stage }) => {
   const importedOperation = randomUUID(), imported = await prepareQualifiedOriginalImport({ profileRoot: f.receiver.userDataRoot,
     operationId: importedOperation, sourceDirectory: second.directory, expectedDescriptorHash: second.descriptorHash })
   assert.equal(imported.scope, 'copied-original-bytes-only'); assert.equal(imported.semanticValidationComplete, false)
@@ -24,6 +25,9 @@ test('qualified originals carry every native and imported C1/C2 domain through i
   const { stdout } = await running
   const reopened = JSON.parse(stdout)
   assert.notEqual(reopened.pid, process.pid); assert.deepEqual(reopened.original, second.value)
+  await t.test('complete Root3 planner retains four C1/C2 original domains, repeated originals and every unresolved coverage support after source retirement', async inner => {
+    await assertRoot3NestedKnowledge(inner, second, reopened.knowledge)
+  })
   stage('independent-process')
   const stored = imported
   const nestedSql = stored.files.find(file => file.frame.length >= 4 && file.path.endsWith('/original/knowbook.db'))!
