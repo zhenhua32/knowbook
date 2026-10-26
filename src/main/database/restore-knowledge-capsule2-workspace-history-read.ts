@@ -120,7 +120,10 @@ export function readRawCapsule2WorkspaceHistorySourceOwned(db: Database.Database
     const templates = db.prepare('SELECT id,blocks_json FROM document_templates ORDER BY id').all() as Array<{ id: string; blocks_json: string }>
     historyRows.push(templates)
     for (const row of templates) {
-      const blocks = json(row.blocks_json)
+      // The complete ordinary-template leaf already checked this exact row.
+      // Saved JSON follows its writer's JSON.parse semantics, including the
+      // last effective key. Reserved history formats keep their strict codec.
+      const blocks: unknown = JSON.parse(row.blocks_json)
       if (!Array.isArray(blocks)) return publicationInvalid('incoming 本机历史正文损坏。')
       for (const item of blocks) {
         if (!syncedPlainRecord(item)) return publicationInvalid('incoming 历史块不是对象。')

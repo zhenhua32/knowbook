@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { TextDecoder } from 'node:util'
 import { parseStrictJson } from '../../shared/strictJson'
 import { collectDatabaseViewFieldIds, parseDatabaseViewPayload } from '../../shared/databaseViewBlock'
-import { isSyncedBlockId, parseSyncedBlockPayload, validateSyncedGroupWire } from '../../shared/syncedBlockValidation'
+import { isSyncedBlockId, parseSyncedBlockPayload, SyncedValidationError, validateSyncedGroupWire } from '../../shared/syncedBlockValidation'
 import { publicationCompare, publicationHash, publicationJson } from '../sync/synced-publication-model'
 import { LOGICAL_DELETION_CHANNEL } from '../sync/synced-logical-deletion-model'
 import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-read'
@@ -310,7 +310,17 @@ function readKnowledgeProjectionOwned(db: Database.Database, schemaVersion: 26 |
       if (block.id !== undefined) occupy('block', block.id, kind, source, ownerId ? 'document' : null, ownerId, ordinaryHistoricalBirth(block))
       databaseReference(block.type, block.content, source)
       if (block.type === 'synced-block') {
-        const payload = parseSyncedBlockPayload(text(block.content)), group = groupById.get(payload.groupId)
+        let payload: ReturnType<typeof parseSyncedBlockPayload>
+        try { payload = parseSyncedBlockPayload(text(block.content)) }
+        catch (error) {
+          // A saved template is an uninstantiated ordinary draft. Opaque or
+          // variable payloads grant no group/instance facts. Valid strict
+          // payloads retain the original K projection and hash unchanged;
+          // persisted history/host formats still fail closed on corruption.
+          if (kind === 'template' && error instanceof SyncedValidationError) continue
+          throw error
+        }
+        const group = groupById.get(payload.groupId)
         if (block.id !== undefined) occupy('instance', block.id, 'history', source, ownerId ? 'document' : null, ownerId, ordinaryHistoricalBirth(block))
         occupy('group', payload.groupId, 'history', source, null, null, group?.tuple.createdAt ?? null, group?.comparisonKey ?? null)
       }
