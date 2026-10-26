@@ -12,7 +12,7 @@ import { captureSyncedCreateSourceFacts } from './synced-host-create-plan'
 type SourceLocation = { table: 'blocks' | 'synced_group_blocks' | 'documents'; sourceRowId: string; column: 'content' | 'summary';
   blockId: string | null; groupId: string | null; instanceId: string | null;
   blockIdentity: IdentityReference | null; instanceIdentity: IdentityReference | null }
-type IdentityReference = { id: string; birth: string; assignmentKey: string; targetId: string; ownerKind: 'document' | 'group' | null; ownerId: string | null }
+type IdentityReference = { id: string; birth: string; assignmentKey: string | null; targetId: string; ownerKind: 'document' | 'group' | null; ownerId: string | null }
 type Heading = ReturnType<typeof getMarkdownHeadingTargets>[number] & { location: SourceLocation | null }
 type Route = { table: 'document_block_routes'; sourceRowId: string; path: string; blockId: string }
 type Target =
@@ -37,8 +37,8 @@ class AmbiguousLookup extends Error {
  * Actual physical births authorize ordinary navigation observations only.
  * A canonical destination keeps its captured historical binding; resolving its
  * spelling in today's host would replace its provenance. */
-export function deriveRootRestoreNavigationRewriteInputs3(data: Graph3Inputs) {
-  const source = data.inputs.source.source, physical = source.physical, raw = source.sourceContent
+function deriveSideNavigationRewriteInputs3(data: Graph3Inputs, side: 'source' | 'current') {
+  const source = data.inputs[side].source, physical = source.physical, raw = source.sourceContent
   const rowIndex = (name: string, column: string) => {
     const rows = new Map<string, ReturnType<typeof graph3Rows>[number]>()
     for (const row of graph3Rows(raw, name)) {
@@ -60,6 +60,9 @@ export function deriveRootRestoreNavigationRewriteInputs3(data: Graph3Inputs) {
     if (!row) return graph3Conflict('navigation-missing-physical-row', { kind, id })
     const birth = text(row.value.created_at), ownerKind = kind === 'document' ? null : blockRows.has(id) ? 'document' : 'group'
     const ownerId = ownerKind === null ? null : text(row.value[ownerKind === 'document' ? 'document_id' : 'group_id'])
+    // Current is already in the destination namespace. This is an actual
+    // physical observation, not a fabricated source allocation or write grant.
+    if (side === 'current') return { id, birth, assignmentKey: null, targetId: id, ownerKind, ownerId }
     const slots = (assignments.get(graph3Key(kind, id)) ?? []).filter(item => item.physical && !item.ambiguous
       && item.birth === birth && item.ownerKind === ownerKind && item.ownerId === ownerId)
     if (slots.length !== 1) return graph3Conflict('navigation-physical-allocation', { kind, id, birth, ownerKind, ownerId })
@@ -103,7 +106,7 @@ export function deriveRootRestoreNavigationRewriteInputs3(data: Graph3Inputs) {
     return routeIndex.has(graph3Key(path, fragmentId(token))) ? blockAt(path, token) : null
   }
   const snapshots = physical.groups.flatMap(group => group.snapshot ? [group.snapshot] : [])
-  const groupKnowledge = new Map(data.inputs.source.knowledge.groups.map(group => [group.tuple.groupId, group]))
+  const groupKnowledge = new Map(data.inputs[side].knowledge.groups.map(group => [group.tuple.groupId, group]))
   const snapshotsById = new Map(snapshots.map(group => [group.groupId, group]))
   const bindingIndexes = new Map(snapshots.map(group => [group.groupId, new Map(group.bindings.map(binding => [
     graph3Key(binding.blockId, binding.from, binding.to, binding.raw, binding.syntax), binding
@@ -278,9 +281,12 @@ export function deriveRootRestoreNavigationRewriteInputs3(data: Graph3Inputs) {
     return result
   }
   const scopes = physical.documents.flatMap(document => [scope(document, 'body'), scope(document, 'summary')])
+  const currentPayloads = side === 'current' ? data.inputs.knowledge.constraints.payloads.filter(payload => !payload.witness.domain.length && payload.witness.side === 'current') : []
+  if (side === 'current' && currentPayloads.length !== 1) return graph3Conflict('navigation-current-payload-closure', null)
   const body = { kind: 'complete-root-restore-navigation-rewrite-inputs' as const, version: 3 as const,
-    scope: 'root-source-document-body-and-summary' as const, root: data.inputs.knowledge.constraints.root,
-    sourceWitness: data.value.sourceWitness, sourcePayload: data.value.sourcePayload,
+    scope: side === 'source' ? 'root-source-document-body-and-summary' as const : 'root-current-document-body-and-summary' as const, root: data.inputs.knowledge.constraints.root,
+    sourceWitness: side === 'source' ? data.value.sourceWitness : currentPayloads[0].witness,
+    sourcePayload: side === 'source' ? data.value.sourcePayload : currentPayloads[0].key,
     conservationHash: data.inputs.knowledge.conservationHash, identityAllocationHash: data.value.allocationHash,
     sourceMaterialHash: data.inputs.source.materialHash, currentMaterialHash: data.inputs.current.materialHash,
     scopes, headingNamespaces, ordinaryNavigationCaptured: true as const, templateNavigationCaptured: false as const,
@@ -291,5 +297,11 @@ export function deriveRootRestoreNavigationRewriteInputs3(data: Graph3Inputs) {
     sourcePolicyReplayed: false as const, sourceHistoryReplayed: false as const, acceptedCoverage: false as const, effective: false as const, permit: false as const }
   const encoded = capsuleJson(body)
   if (Buffer.byteLength(encoded) > CAPSULE2_RAW_MAX_JSON_BYTES) return graph3Conflict('complete-navigation-input-budget', null)
-  return freezeCapsuleValue({ ...body, navigationInputHash: capsuleBytesHash('knowbook.restore.navigation3.inputs.v1\0' + encoded) })
+  return freezeCapsuleValue({ ...body, navigationInputHash: capsuleBytesHash((side === 'source'
+    ? 'knowbook.restore.navigation3.inputs.v1\0' : 'knowbook.restore.navigation3.current-inputs.v1\0') + encoded) })
 }
+
+/** The original source DTO/hash preimage is unchanged. */
+export function deriveRootRestoreNavigationRewriteInputs3(data: Graph3Inputs) { return deriveSideNavigationRewriteInputs3(data, 'source') }
+/** Actual current originals, no source/current DTO swap or invented assignment. */
+export function deriveRootRestoreCurrentNavigationRewriteInputs3(data: Graph3Inputs) { return deriveSideNavigationRewriteInputs3(data, 'current') }
