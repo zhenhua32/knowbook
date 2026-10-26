@@ -83,3 +83,10 @@ export async function assertRootKnowledgePlanOriginalBytes3(handle: RootKnowledg
   if (!entry) return root3Invalid('不是实际Main完整知识规划句柄')
   await assertCompleteOriginalPackageBytes(entry.original)
 }
+/** Fixed Main ownership routing only. This returns the genuine lower owner,
+ * never a path/packet-derived authority and never a cached SQL projection. */
+export function readRootKnowledgeOriginalOwnerForCopy3(handle: RootKnowledgeConservationPlan3) {
+  const entry = plans.get(handle)
+  if (!entry) return root3Invalid('不是实际Main完整知识规划句柄')
+  return entry.original
+}

@@ -51,6 +51,114 @@ AFTER DELETE ON blocks BEGIN
 END;
 `
 
+// Shared verbatim with Store initialization and the private restore writer.
+export const databaseEntityConstraintSchema = `
+      CREATE TRIGGER IF NOT EXISTS trg_document_database_columns_database_id_insert
+      BEFORE INSERT ON document_database_columns
+      FOR EACH ROW
+      WHEN NEW.database_id IS NULL OR trim(NEW.database_id) = ''
+      BEGIN
+        SELECT RAISE(ABORT, 'Database id is required.');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_document_database_columns_database_id_update
+      BEFORE UPDATE OF database_id ON document_database_columns
+      FOR EACH ROW
+      WHEN NEW.database_id IS NULL OR trim(NEW.database_id) = ''
+      BEGIN
+        SELECT RAISE(ABORT, 'Database id is required.');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_database_entities_document_unique_insert
+      BEFORE INSERT ON database_entities
+      FOR EACH ROW
+      WHEN NEW.document_id IS NOT NULL AND EXISTS (
+        SELECT 1
+        FROM database_entities
+        WHERE database_id = NEW.database_id AND document_id = NEW.document_id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'A database record already exists for this document in this database.');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_database_entities_document_unique_update
+      BEFORE UPDATE OF database_id, document_id ON database_entities
+      FOR EACH ROW
+      WHEN NEW.document_id IS NOT NULL AND EXISTS (
+        SELECT 1
+        FROM database_entities
+        WHERE database_id = NEW.database_id
+          AND document_id = NEW.document_id
+          AND id != OLD.id
+      )
+      BEGIN
+        SELECT RAISE(ABORT, 'A database record already exists for this document in this database.');
+      END;
+    `
+
+// Original schema3 migration SQL, including its initial count update.
+// Store executes it verbatim; private stage validation extracts only CREATE TRIGGER DDL.
+export const documentStatisticsSchema = `
+      UPDATE documents
+      SET
+        block_count = (SELECT COUNT(*) FROM blocks WHERE blocks.document_id = documents.id),
+        link_count = (SELECT COUNT(*) FROM links WHERE links.source_document_id = documents.id),
+        child_count = (SELECT COUNT(*) FROM documents AS children WHERE children.parent_id = documents.id);
+
+      CREATE TRIGGER IF NOT EXISTS trg_document_stats_block_insert
+      AFTER INSERT ON blocks BEGIN
+        UPDATE documents SET block_count = block_count + 1 WHERE id = new.document_id;
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_document_stats_block_delete
+      AFTER DELETE ON blocks BEGIN
+        UPDATE documents SET block_count = MAX(0, block_count - 1) WHERE id = old.document_id;
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_document_stats_block_move
+      AFTER UPDATE OF document_id ON blocks
+      WHEN old.document_id != new.document_id BEGIN
+        UPDATE documents SET block_count = MAX(0, block_count - 1) WHERE id = old.document_id;
+        UPDATE documents SET block_count = block_count + 1 WHERE id = new.document_id;
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_document_stats_link_insert
+      AFTER INSERT ON links BEGIN
+        UPDATE documents SET link_count = link_count + 1 WHERE id = new.source_document_id;
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_document_stats_link_delete
+      AFTER DELETE ON links BEGIN
+        UPDATE documents SET link_count = MAX(0, link_count - 1) WHERE id = old.source_document_id;
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_document_stats_link_move
+      AFTER UPDATE OF source_document_id ON links
+      WHEN old.source_document_id != new.source_document_id BEGIN
+        UPDATE documents SET link_count = MAX(0, link_count - 1) WHERE id = old.source_document_id;
+        UPDATE documents SET link_count = link_count + 1 WHERE id = new.source_document_id;
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_document_stats_child_insert
+      AFTER INSERT ON documents
+      WHEN new.parent_id IS NOT NULL BEGIN
+        UPDATE documents SET child_count = child_count + 1 WHERE id = new.parent_id;
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_document_stats_child_delete
+      AFTER DELETE ON documents
+      WHEN old.parent_id IS NOT NULL BEGIN
+        UPDATE documents SET child_count = MAX(0, child_count - 1) WHERE id = old.parent_id;
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS trg_document_stats_child_move
+      AFTER UPDATE OF parent_id ON documents
+      WHEN old.parent_id IS NOT new.parent_id BEGIN
+        UPDATE documents SET child_count = MAX(0, child_count - 1) WHERE id = old.parent_id;
+        UPDATE documents SET child_count = child_count + 1 WHERE id = new.parent_id;
+      END;
+    `
+
 export const appSchema = `
 CREATE TABLE IF NOT EXISTS document_history (
   id TEXT PRIMARY KEY,

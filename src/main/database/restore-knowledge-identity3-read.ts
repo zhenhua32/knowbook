@@ -6,6 +6,7 @@ import { restoreDirectory, syncRestoreDirectory } from './restore-safety-files'
 import { readCapsule2AssetManifest, writeCapsule2AssetCopy } from './restore-knowledge-capsule2-assets-files'
 import { syncOriginCatalogAncestors } from './restore-knowledge-origin-bundle-files'
 import { readRootKnowledgeConservationContent3, readRootKnowledgePlanLocation3, assertRootKnowledgePlanOriginalBytes3,
+  readRootKnowledgeOriginalOwnerForCopy3,
   type RootKnowledgeConservationPlan3 } from './restore-knowledge-root3-read'
 import { deriveRootRestoreIdentityPlan3, identity3Invalid, type Identity3Kernel, type Identity3Inputs } from './restore-knowledge-identity3-model'
 
@@ -101,6 +102,13 @@ export async function assertRootRestoreIdentityOriginalBytes3(handle: RootRestor
   const entry = plans.get(handle)
   if (!entry) return identity3Invalid('不是实际Main持久身份规划句柄')
   await readManifest(entry); await assertRootKnowledgePlanOriginalBytes3(entry.knowledge); await readManifest(entry)
+}
+/** The surrounding reference owner authenticates both manifests. Registry
+ * identity alone routes the copy capability; caller metadata never enters. */
+export function readRootRestoreIdentityOriginalOwnerForCopy3(handle: RootRestoreIdentityPlan3) {
+  const entry = plans.get(handle)
+  if (!entry) return identity3Invalid('不是实际Main持久身份规划句柄')
+  return readRootKnowledgeOriginalOwnerForCopy3(entry.knowledge)
 }
 /** Restart accepts only a genuine newly reconstructed knowledge owner and the
  * exact durable plan locator/hash. A saved allocation DTO cannot mint a plan. */

@@ -12,6 +12,9 @@ import { ORIGIN_BUNDLE_MAX_DESCRIPTOR_BYTES, originBundleDescriptorHash, originB
 export interface OriginBundleOriginal {
   readonly directory: string; readonly descriptor: FirstOriginBundleDescriptor; readonly descriptorHash: string
 }
+export interface OriginCatalogFileIdentity3 {
+  readonly dev: bigint; readonly ino: bigint
+}
 const samePath = (a: string, b: string): boolean => process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b
 const regular = (value: BigIntStats): boolean => value.isFile() && !value.isSymbolicLink() && value.nlink === 1n && value.ino !== 0n
 const sameFd = (a: BigIntStats, b: BigIntStats): boolean => regular(a) && regular(b) && a.dev === b.dev && a.ino === b.ino
@@ -57,7 +60,8 @@ async function streamFile(path: string, root: string, expected?: OriginBundleFil
     return { bytes: offset, sha256, content: collect ? Buffer.concat(chunks) : null }
   } finally { await fd.close() }
 }
-async function copyFileExclusive(from: string, sourceRoot: string, to: string, targetRoot: string, expected: OriginBundleFile): Promise<void> {
+async function copyFileExclusiveWithIdentity3(from: string, sourceRoot: string, to: string, targetRoot: string,
+  expected: OriginBundleFile): Promise<OriginCatalogFileIdentity3> {
   await assertRestorePath(from, sourceRoot); await assertRestorePath(to, targetRoot)
   const prior = await lstat(from, { bigint: true })
   if (!regular(prior) || prior.size !== BigInt(expected.bytes)) return originBundleInvalid('复制源不是准确独立文件')
@@ -84,8 +88,17 @@ async function copyFileExclusive(from: string, sourceRoot: string, to: string, t
       await assertRestorePath(from, sourceRoot); await assertRestorePath(to, targetRoot)
       if (!sameFd(before, after) || !samePathFd(sourcePath, after) || !regular(targetAfter) || !samePathFd(targetPath, targetAfter)
         || targetBefore.dev !== targetAfter.dev || targetBefore.ino !== targetAfter.ino || targetAfter.size !== BigInt(expected.bytes)) return originBundleInvalid('复制期间源/目标身份变化')
+      // These values belong to the original wx target descriptor, still open
+      // here. A later path stat cannot recover this creation identity.
+      return Object.freeze({ dev: targetAfter.dev, ino: targetAfter.ino })
     } finally { await target.close() }
   } finally { await source.close() }
+}
+/** Keep the existing byte-copy API void, including its successful undefined
+ * result. All IO/check/finally-close behavior lives in the shared implementation. */
+async function copyFileExclusive(from: string, sourceRoot: string, to: string, targetRoot: string,
+  expected: OriginBundleFile): Promise<void> {
+  await copyFileExclusiveWithIdentity3(from, sourceRoot, to, targetRoot, expected)
 }
 async function writeDescriptor(path: string, descriptor: FirstOriginBundleDescriptor, root: string): Promise<void> {
   await assertRestorePath(path, root)
@@ -233,4 +246,5 @@ export async function createOriginBundleVerificationProfile(input: Awaited<Retur
 export { canonicalRoot as canonicalOriginCatalogRoot, directory as assertOriginCatalogDirectory,
   local as originCatalogLocalPath, streamFile as readOriginCatalogFile,
   copyFileExclusive as copyOriginCatalogFile, settledBundleBatch as settleOriginCatalogBatch,
+  copyFileExclusiveWithIdentity3 as copyOriginCatalogFileWithIdentity3,
   syncAncestors as syncOriginCatalogAncestors }

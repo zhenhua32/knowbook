@@ -9,11 +9,12 @@ import { parseRequiredSqlDagNode, requiredDagCapsuleLocator, requiredDagParentUn
 import { readActualNoPriorOriginalInput, readActualNoPriorOriginalInputWithContent3, type reopenActualFirstRequiredSqlDagWithInitialMaterial } from './restore-knowledge-mixed-required-dag-read'
 import { readPreparedMixedOriginBundleOriginalInputs, readPreparedMixedOriginBundleContentPair3, readPreparedMixedOriginalContentLocation3,
   assertPreparedMixedOriginBundleOriginalBytes, type PreparedMixedOriginBundle } from './restore-knowledge-mixed-origin-bundle-read'
-import { parseMixedOriginBundleDescriptor, mixedOriginBundleHash, mixedOriginBundleFiles, mixedOriginBundleDirectories,
+import { parseMixedOriginBundleDescriptor, mixedOriginBundleHash, mixedOriginBundleFiles, mixedOriginBundleDirectories, mixedOriginCapsulePath,
   mixedOriginBundleSideFiles, type MixedOriginBundleDescriptor } from './restore-knowledge-mixed-origin-bundle-model'
 import { captureReopenedCertifiedCapsuleNoPriorSourceInputs, type CertifiedDurableSqlCapsule } from './restore-knowledge-capsule-read'
 import { captureReopenedCertifiedCapsule2Source, type CertifiedCapsule2NoPriorSource } from './restore-knowledge-capsule2-source-certificate'
-import { CAPSULE2_SOURCE_CERTIFICATE_MAX_BYTES } from './restore-knowledge-capsule2-source-certificate-model'
+import { CAPSULE2_SOURCE_CERTIFICATE_MAX_BYTES, parseCapsule2NoPriorSourceCertificate } from './restore-knowledge-capsule2-source-certificate-model'
+import { parseCapsule2SourceManifest, type Capsule2SourceManifest } from './restore-knowledge-capsule2-source-seal-model'
 import { captureReopenedSealedCapsule2Source, readSealedCapsule2SourceInputs, type SealedCapsule2Source } from './restore-knowledge-capsule2-source-seal'
 import { rawPriorCoverageRequirementsHash, validateCoverageCapsuleReference, type CoverageInputBinding } from './restore-knowledge-coverage-model'
 import { knowledgeHash, knowledgePayloadHash } from './restore-knowledge-payload-model'
@@ -481,4 +482,61 @@ export async function readCompleteOriginalPlanLocation(handle: CompleteOriginalB
   }
   const { readPreparedMixedOriginalPlanLocation } = await import('./restore-knowledge-mixed-origin-bundle-read')
   return readPreparedMixedOriginalPlanLocation(handle as PreparedMixedOriginBundle)
+}
+
+export interface RootCurrentOriginalFiles3 {
+  readonly scope: 'root-current-original-files'
+  readonly profileRoot: string; readonly operationId: string; readonly descriptorHash: string
+  readonly reader: CompleteOriginalPackage['reader']; readonly root: CompleteOriginalRootData['root']
+  readonly binding: CoverageInputBinding; readonly origin: OriginalSourceInput['origin']
+  readonly sourceManifest: Capsule2SourceManifest
+  readonly files: readonly OriginalFrameCopy[]
+}
+/** Registry dispatch precedes property access. This is a complete byte-only
+ * catalog read, not SQL/K recertification. Selection is always root.current,
+ * frame [], exact finite capsule path and full original three-file inventory;
+ * ancestors, source-role originals and prior verification scratch are excluded. */
+export async function readCompleteOriginalRootCurrentFiles3(handle: CompleteOriginalBundle): Promise<RootCurrentOriginalFiles3> {
+  const entry = bundles.get(handle as QualifiedOriginalBundle)
+  let view: View, root: CompleteOriginalRootData['root'], node: RequiredSqlDagNode
+  let side: QualifiedOriginalSide, operationId: string, descriptorHash: string
+  let reader: CompleteOriginalPackage['reader']
+  if (entry) {
+    const actual = await readDirectoryBytes(entry.directory, entry.profileRoot, entry.hash)
+    view = actual.view; root = actual.descriptor.root; node = parseRequiredSqlDagNode(actual.descriptor.nodeText)
+    side = qualifiedOriginalSide(actual.descriptor.current, node.current, node.origins.current).value
+    operationId = entry.operationId; descriptorHash = entry.hash; reader = 'qualified-originals-v1'
+  } else {
+    const actual = await readPreparedMixedOriginalContentLocation3(handle as PreparedMixedOriginBundle)
+    const descriptor = actual.descriptor
+    view = viewFor(actual.directory, actual.profileRoot, capsuleJson(descriptor) + '\n', {
+      files: mixedOriginBundleFiles(descriptor).map(file => ({ ...file, frame: [] as string[] })),
+      directories: mixedOriginBundleDirectories(descriptor).map(path => ({ frame: [] as string[], path })) })
+    view.flatMixed = true; root = descriptor.root; node = parseRequiredSqlDagNode(descriptor.nodeText)
+    side = mixedOriginBundleSideFiles(descriptor.current, node.current).value
+    const location = await readCompleteOriginalPlanLocation(handle)
+    operationId = location.operationId; descriptorHash = actual.descriptorHash; reader = 'prepared-mixed-v2'
+  }
+  const binding = node.current, origin = node.origins.current, ref = binding.capsule
+  if (ref.readerVersion !== CAPSULE2_READER || side.kind === 'durable-sql-v1')
+    return bad('root current不是完整capsule2原件，v1知识不能补造current业务副本')
+  const expectedSourceManifestHash = side.kind === 'bound-capsule2'
+    ? parseCapsule2BoundSourceManifest(side.bindingText, ref.operationId, ref.capsuleId, ref.manifestHash).sourceManifestHash
+    : parseCapsule2NoPriorSourceCertificate(side.certificateText, ref.operationId, ref.capsuleId, ref.manifestHash).sourceManifestHash
+  const sourceManifest = parseCapsule2SourceManifest(side.sourceManifestText, ref.operationId, ref.capsuleId, expectedSourceManifestHash)
+  if (requiredDagDatabaseFilesHash(sourceManifest.files) !== origin.databaseFilesHash)
+    return bad('root current原三文件清单不属于该角色的exact origin')
+  const byKey = new Map(view.files.map(file => [referenceContextFileKey(file), file]))
+  const files: OriginalFrameCopy[] = []
+  for (const file of sourceManifest.files) {
+    const logical = mixedOriginCapsulePath(binding, 'knowledge-capsules') + '/original/' + file.name
+    const found = byKey.get(referenceContextFileKey({ frame: [], path: logical }))
+    if (!file.present) { if (found) return bad('root current声明缺失的sidecar却有实际原文件'); continue }
+    if (!found || found.bytes !== file.bytes || found.sha256 !== file.sha256)
+      return bad('root current原文件缺exact frame/path/size/hash闭合')
+    files.push({ ...found, sourcePath: viewPath(view, found), sourceRoot: view.directory })
+  }
+  await assertCompleteOriginalPackageBytes(handle)
+  return freezeCapsuleValue({ scope: 'root-current-original-files', profileRoot: view.profileRoot,
+    operationId, descriptorHash, reader, root, binding, origin, sourceManifest, files })
 }

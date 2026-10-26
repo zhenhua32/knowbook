@@ -6,7 +6,8 @@ import { readCapsule2AssetManifest, writeCapsule2AssetCopy } from './restore-kno
 import { syncOriginCatalogAncestors } from './restore-knowledge-origin-bundle-files'
 import { restoreDirectory, syncRestoreDirectory } from './restore-safety-files'
 import { assertRootRestoreIdentityOriginalBytes3, readRootRestoreIdentityGraphInputs3,
-  readRootRestoreIdentityPlanLocation3, type RootRestoreIdentityPlan3 } from './restore-knowledge-identity3-read'
+  readRootRestoreIdentityPlanLocation3, readRootRestoreIdentityOriginalOwnerForCopy3,
+  type RootRestoreIdentityPlan3 } from './restore-knowledge-identity3-read'
 import { deriveRootRestoreReferenceAllocation3, normalizeReference3Choices, validateReference3Kernel,
   type Reference3Allocation, type Reference3Choices, type Reference3Kernel } from './restore-knowledge-reference3-model'
 import { deriveRootRestoreCanonicalCandidate3 } from './restore-knowledge-canonical3-model'
@@ -160,6 +161,25 @@ export async function assertRootRestoreReferenceOriginalBytes3(plan: RootRestore
   await readManifest(saved)
   await assertRootRestoreIdentityOriginalBytes3(saved.identity)
   await readManifest(saved)
+}
+/** Fixed bytes-only downstream seam. No complete SQL/K read occurs here.
+ * The future stage factory separately performs exactly one fresh joint read;
+ * this routes only the genuine original owner and pinned manifest metadata. */
+export async function readRootRestoreReferenceCopySource3(plan: RootRestoreReferencePlan3) {
+  const saved = owners.get(plan)
+  if (!saved) return invalid('不是实际Main持久引用规划句柄')
+  const before = await readManifest(saved)
+  await readBaseLocation(saved)
+  const original = readRootRestoreIdentityOriginalOwnerForCopy3(saved.identity)
+  await readManifest(saved)
+  return Object.freeze({ original, referencePlanId: saved.planId, referenceManifestHash: saved.manifestHash,
+    baseIdentityPlanId: before.baseIdentityPlanId, baseIdentityManifestHash: before.baseIdentityManifestHash,
+    baseIdentityAllocationHash: before.baseIdentityAllocationHash,
+    derivedReferenceAllocationHash: before.derivedReferenceAllocationHash,
+    checkedCanonicalCandidateHash: before.checkedCanonicalCandidateHash,
+    sourceMaterialHash: before.sourceMaterialHash, currentMaterialHash: before.currentMaterialHash,
+    conservationHash: before.conservationHash, originalDescriptorHash: before.originalDescriptorHash,
+    location: Object.freeze({ ...saved.location }) })
 }
 /** Reopening dispatches only the known policy/purpose version. It never mints
  * a new seed, migrates a base manifest or silently chooses a newer policy. */
