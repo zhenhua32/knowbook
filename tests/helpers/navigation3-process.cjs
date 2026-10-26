@@ -1,0 +1,17 @@
+(async () => {
+  const assert = require('node:assert/strict'), fs = require('node:fs/promises')
+  const { locator, identityLocator, expectedPath } = JSON.parse(process.argv[2])
+  const { reopenPreparedMixedOriginBundle } = await import('../../src/main/database/restore-knowledge-mixed-origin-bundle-read.ts')
+  const { prepareRootKnowledgeConservationPlan3 } = await import('../../src/main/database/restore-knowledge-root3-read.ts')
+  const { reopenRootRestoreIdentityPlan3 } = await import('../../src/main/database/restore-knowledge-identity3-read.ts')
+  const { prepareRootRestoreNavigationRewriteInputs3, readRootRestoreNavigationRewriteInputs3 } = await import('../../src/main/database/restore-knowledge-navigation3-read.ts')
+  const original = await reopenPreparedMixedOriginBundle(locator)
+  const knowledge = await prepareRootKnowledgeConservationPlan3(original)
+  const identity = await reopenRootRestoreIdentityPlan3(knowledge.plan, identityLocator)
+  const navigation = await prepareRootRestoreNavigationRewriteInputs3(identity.plan)
+  // This DTO is opened after all Main owners exist and only supplies an oracle.
+  const expected = JSON.parse(await fs.readFile(expectedPath, 'utf8'))
+  assert.deepEqual(navigation.value, expected)
+  assert.deepEqual(await readRootRestoreNavigationRewriteInputs3(navigation.source), expected)
+  process.stdout.write(JSON.stringify({ pid: process.pid, navigationInputHash: navigation.value.navigationInputHash }))
+})().catch(error => { console.error(error); process.exitCode = 1 })
