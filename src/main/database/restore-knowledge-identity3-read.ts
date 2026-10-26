@@ -87,6 +87,16 @@ export async function readRootRestoreIdentityGraphInputs3(handle: RootRestoreIde
   if (!entry) return identity3Invalid('不是实际Main持久身份规划句柄')
   return reconstructInputs(entry)
 }
+/** Main-only genuine-owner metadata. This performs no SQL projection and is
+ * not a substitute for the fresh complete read. Only the private Saved entry
+ * supplies the directory, operation and base manifest binding. */
+export async function readRootRestoreIdentityPlanLocation3(handle: RootRestoreIdentityPlan3) {
+  const entry = plans.get(handle)
+  if (!entry) return identity3Invalid('不是实际Main持久身份规划句柄')
+  await readManifest(entry)
+  return Object.freeze({ planId: entry.planId, manifestHash: entry.manifestHash,
+    location: Object.freeze({ ...entry.location }) })
+}
 export async function assertRootRestoreIdentityOriginalBytes3(handle: RootRestoreIdentityPlan3) {
   const entry = plans.get(handle)
   if (!entry) return identity3Invalid('不是实际Main持久身份规划句柄')
