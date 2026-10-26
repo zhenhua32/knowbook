@@ -197,3 +197,12 @@ export async function reopenActualFirstRequiredSqlDagWithInitialMaterial(input:P
 export async function readActualNoPriorOriginalInput(profileRoot: string, source: Source) {
   return readInput(await canonicalRequiredSqlDagRoot(profileRoot), source)
 }
+
+/** The packet and no-prior input come from one real certification in this
+ * invocation. Neither is retained in the DAG registry or supplied by a caller. */
+export async function readActualNoPriorOriginalInputWithContent3(profileRoot: string, source: Source) {
+  const profile = await canonicalRequiredSqlDagRoot(profileRoot)
+  const captured = await tryReadCertifiedCapsule2SourceInputs(source)
+  if (captured) return { input: capsule2Input(profile, source, captured), packet: captured.value }
+  return { input: await readInput(profile, source), packet: null }
+}

@@ -8,6 +8,7 @@ import { mixedOriginBundleDirectories, mixedOriginBundleFiles, MIXED_ORIGIN_BUND
 import { readCapsule2AssetManifest } from './restore-knowledge-capsule2-assets-files'
 import { originCatalogLocalPath } from './restore-knowledge-origin-bundle-files'
 import { join } from 'node:path'
+import { requiredDagCapsuleLocator } from './restore-knowledge-required-dag-model'
 
 export interface PreparedMixedOriginBundle { readonly kind:'prepared-mixed-origin-bundle' }
 type Mounted=Awaited<ReturnType<typeof readMountedMixedOriginBundle>>
@@ -107,4 +108,35 @@ export async function readPreparedMixedOriginalPlanLocation(handle: PreparedMixe
   const entry = bundles.get(handle); if (!entry) return bad('不是Main真实mixed bundle原件句柄')
   await assertPreparedMixedOriginBundleOriginalBytes(handle)
   return Object.freeze({ profileRoot: entry.profileRoot, operationId: entry.operationId, descriptorHash: entry.original.descriptorHash })
+}
+
+/** Only fixed location/descriptor metadata after checking this real owner's
+ * mounted bytes. This grants no SQL/K, coverage or installation authority. */
+export async function readPreparedMixedOriginalContentLocation3(handle: PreparedMixedOriginBundle) {
+  const entry = bundles.get(handle); if (!entry) return bad('不是Main真实mixed bundle原件句柄')
+  const mounted = await readMountedMixedOriginBundle(entry.profileRoot, entry.operationId, entry.mountId, entry.original.descriptorHash)
+  return freezeCapsuleValue({ profileRoot: entry.profileRoot, directory: mounted.original.directory,
+    descriptor: mounted.original.descriptor, descriptorHash: mounted.original.descriptorHash,
+    scope: 'verified-original-content-location-bytes-only' as const, acceptedCoverage: false as const, effective: false as const, permit: false as const })
+}
+
+/** Reauthenticate this same logical mixed domain with the complete content
+ * readers. The fixed helper accepts only this genuine handle, never caller
+ * packets/callbacks. Its actual SQL inputs must equal the original DAG's full
+ * pinned material; the other public DAG readers retain their own rereads. */
+export async function readPreparedMixedOriginBundleContentPair3(handle: PreparedMixedOriginBundle) {
+  const entry = bundles.get(handle); if (!entry) return bad('不是Main真实mixed bundle原件句柄')
+  const { readMixedOriginalContentPair3 } = await import('./restore-knowledge-qualified-originals')
+  const result = await readMixedOriginalContentPair3(handle), actual = result.originalPackage, original = actual.original
+  const inputs = original.inputs.map(input => ({ capsule: input.binding.capsule, binding: input.binding, origin: input.origin, knowledge: input.knowledge }))
+    .sort((a, b) => requiredDagCapsuleLocator(a.binding) < requiredDagCapsuleLocator(b.binding) ? -1 : 1)
+  const material = { kind: 'actual-required-root-source-material', version: 3, scope: 'exact-first-generation-original-input-pair',
+    root: original.root, node: original.node, inputs, originalSqlBytes: original.originalSqlBytes, managedOriginalBytes: original.managedOriginalBytes,
+    totalOriginalBytes: original.originalSqlBytes + original.managedOriginalBytes, preparedEvidence: true, fullRootInputSetProven: true,
+    emptyKnowledgeProven: false, acceptedCoverage: false, effective: false, permit: false, materialHash: original.materialHash }
+  if (capsuleJson(material) !== capsuleJson(entry.material) || actual.directory !== entry.original.directory
+    || actual.descriptorHash !== entry.original.descriptorHash || actual.descriptorText !== capsuleJson(entry.original.descriptor) + '\n')
+    return bad('mixed本次完整内容原件与原认证DAG材料或catalog不同')
+  await readMountedMixedOriginBundle(entry.profileRoot, entry.operationId, entry.mountId, entry.original.descriptorHash)
+  return result
 }
