@@ -37,6 +37,8 @@ import { toReference3GraphInputs } from './restore-knowledge-reference3-model'
 import { searchIndexSchema, databaseEntityConstraintSchema, documentStatisticsSchema } from './schema'
 import { publicationCompare, publicationHash, publicationJson } from '../sync/synced-publication-model'
 import { durableSqlDagHash, durableSqlDagUuid } from './restore-knowledge-dag-model'
+import { planRootRestoreStage3RetainedCut3, assertRootRestoreStage3RetainedCutObserved3 } from './restore-knowledge-stage3-cut'
+import { hasAnySyncedObservationPending } from './synced-remote-observation-pending'
 
 export interface RootRestorePhysicalStage3 { readonly kind: 'main-root-restore-non-executable-physical-stage' }
 type Actual = Awaited<ReturnType<typeof readRootRestoreReferenceGraphInputs3>>
@@ -113,7 +115,7 @@ function acceptCandidate(actual: Actual) {
   if (value.tables.length !== MERGE3_CONTENT_TABLES.length || new Set(value.tables.map(table => table.name)).size !== MERGE3_CONTENT_TABLES.length)
     return fail('候选不是准确完整12表')
 }
-function planSql(actual: Actual, preparedAt: string) {
+function planSql(actual: Actual, preparedAt: string, cutContext: { stageId: string; copyId: string; copyManifestHash: string }) {
   acceptCandidate(actual)
   const current = actual.data.inputs.current.source.sourceContent, enc = current.encoding
   const originalTables=actual.candidate.tables.map(rawTarget)
@@ -253,18 +255,25 @@ function planSql(actual: Actual, preparedAt: string) {
       created_at: preparedAt, updated_at: preparedAt }) })
   }
   assertAddedBudget('lifecycle', lifecycleAdded)
-  const app = raw(actual, 'app_settings'), markerRowId = nextIds(app.rows)()
-  const physical12TablesHash=hash('knowbook.restore.stage3.planned-content.v1',tables)
+  const app = raw(actual, 'app_settings'), appRowIds = nextIds(app.rows), markerRowId = appRowIds(), retainedCutRowId = appRowIds()
+  const preCutPhysical12TablesHash=hash('knowbook.restore.stage3.planned-content.v1',tables)
   const stageExecution={scope:'new-incoming-allocation-and-current-boundary-preservation' as const,
     canonicalCandidateHash:actual.candidate.canonicalCandidateHash,checkedCanonicalCandidateHash:actual.candidate.checkedCanonicalCandidateHash,
-    sourceCandidate12TablesHash,physical12TablesHash,derivedReferenceAllocationHash:actual.allocation.derivedReferenceAllocationHash,
+    sourceCandidate12TablesHash,physical12TablesHash:preCutPhysical12TablesHash,derivedReferenceAllocationHash:actual.allocation.derivedReferenceAllocationHash,
     executionChanges,currentExecutionBoundariesPreserved:true as const,workspaceEpochAndDocumentCasAndHostCutPending:true as const,
     finalCurrentRetainedCutComplete:false as const}
   assertMerge3JsonBudget(stageExecution)
-  const stageExecutionHash=hash('knowbook.restore.stage3.execution-transition.v1',stageExecution)
-  return { tables, ledger: { ...oldLedger, rows: ledger }, ledgerAdded, lifecycleAdded, markerRowId,
+  const preCutStageExecutionHash=hash('knowbook.restore.stage3.execution-transition.v1',stageExecution)
+  const retainedCut=planRootRestoreStage3RetainedCut3(actual,tables,{...cutContext,preparedAt})
+  const physical12TablesHash=hash('knowbook.restore.stage3.planned-content.v1',retainedCut.tables)
+  const stageExecutionHash=hash('knowbook.restore.stage3.execution-transition.v1',{
+    scope:'incoming-staging-and-complete-current-retained-cut',preCutStageExecutionHash,preCutPhysical12TablesHash,
+    physical12TablesHash,retainedCutHash:retainedCut.cutHash,currentExecutionBoundariesPreserved:false,
+    workspaceEpochAndDocumentCasAndHostCutPending:false,finalCurrentRetainedCutComplete:true})
+  return { tables:retainedCut.tables,preCutTables:tables,retainedCut,retainedCutRowId,
+    ledger: { ...oldLedger, rows: ledger }, ledgerAdded, lifecycleAdded, markerRowId,
     lifecycle: { ...oldLife, rows: [...oldLife.rows, ...lifecycleAdded].sort(rowOrder) }, encoding: enc,
-    sourceCandidate12TablesHash,physical12TablesHash,executionChanges,stageExecutionHash }
+    sourceCandidate12TablesHash,physical12TablesHash,executionChanges,stageExecutionHash,preCutPhysical12TablesHash,preCutStageExecutionHash }
 }
 function binding(actual: Actual, copy: CopyInfo, reference: RootRestoreReferencePlan3) {
   const value = copy.value
@@ -451,12 +460,18 @@ function ftsProjection(db:Database.Database,integrity:boolean) {
   }
   return metrics
 }
+function retainedCutRecordRow(actual:Actual,plan:Planned):Row {
+  const app=raw(actual,'app_settings')
+  return {sourceRowId:plan.retainedCutRowId,cells:encodeValues(app.columns,plan.encoding,
+    {key:plan.retainedCut.record.key,value:plan.retainedCut.record.json,updated_at:plan.retainedCut.context.preparedAt})}
+}
 function protectedTables(actual:Actual,plan:Planned,marker:RootRestoreStage3Marker) {
   const app=raw(actual,'app_settings'), markerRow:Row={sourceRowId:plan.markerRowId,cells:encodeValues(app.columns,plan.encoding,
     {key:stage3MarkerKey(marker.stageId),value:stage3MarkerJson(marker),updated_at:marker.preparedAt})}
+  const cutTables=new Map(plan.retainedCut.protectedTables.map(table=>[table.name,table]))
   return actual.data.inputs.current.source.sourceContent.tables.filter(table=>!contentNames.has(table.name)&&!ftsFootprint.has(table.name))
     .map(table=>table.name==='block_identities'?plan.ledger:table.name==='synced_group_lifecycle'?plan.lifecycle:table.name==='app_settings'
-      ?{...app,rows:[...app.rows,markerRow].sort(rowOrder)}:table)
+      ?{...app,rows:[...app.rows,markerRow,retainedCutRecordRow(actual,plan)].sort(rowOrder)}:cutTables.get(table.name)??table)
 }
 function observeSql(db:Database.Database,actual:Actual,plan:Planned,marker:RootRestoreStage3Marker,readonly:boolean) {
   context(db,plan.encoding,readonly);assertSchema(db,actual)
@@ -494,35 +509,53 @@ function observeSql(db:Database.Database,actual:Actual,plan:Planned,marker:RootR
     projectSyncedGroupBudget(wire);assertSyncedStoredBindings(db,wire.origin,wire.blocks,wire.bindings);wires.push(wire)
   }
   validateSyncedWorkspaceGraph(final.documents.map(document=>({documentId:document.id,blocks:(byDoc.get(document.id)??[]).map(block=>block.block)})),wires)
-  const instancesByGroup=new Map<string,Array<{instanceId:string;hostDocumentId:string;bindingVersion:string}>>()
-  for(const instance of graph3Rows({tables,encoding:plan.encoding},'synced_instances')){
-    const id=text(instance.value.group_id),list=instancesByGroup.get(id)??[]
+  const activationInstancesByGroup=new Map<string,Array<{instanceId:string;hostDocumentId:string;bindingVersion:string}>>()
+  for(const instance of graph3Rows({tables:plan.preCutTables,encoding:plan.encoding},'synced_instances')){
+    const id=text(instance.value.group_id),list=activationInstancesByGroup.get(id)??[]
     list.push({instanceId:text(instance.value.instance_id),hostDocumentId:text(instance.value.host_document_id),bindingVersion:text(instance.value.binding_version)})
-    instancesByGroup.set(id,list)
+    activationInstancesByGroup.set(id,list)
   }
-  for(const list of instancesByGroup.values())list.sort((a,b)=>a.instanceId<b.instanceId?-1:a.instanceId>b.instanceId?1:0)
+  for(const list of activationInstancesByGroup.values())list.sort((a,b)=>a.instanceId<b.instanceId?-1:a.instanceId>b.instanceId?1:0)
   for(const row of plan.lifecycleAdded){const value=values({columns:plan.lifecycle.columns,encoding:plan.encoding},row),id=text(value.group_id),life=lifecycles.get(id),wire=wanted.get(id)
     if(!life||!wire||life.state!=='active'||life.exposure!=='unknown'||life.createHistoryId!==null||life.stateVersion!==1
       ||life.activationHash!==syncedLifecycleSemanticHash(wire))return fail('new lifecycle实际activation不等于最终wire')
-    const actualInstances=instancesByGroup.get(id)??[]
-    if(!same(life.activationInstances,actualInstances))return fail('new lifecycle实际activation实例闭包不符')
+    const activationInstances=activationInstancesByGroup.get(id)??[]
+    if(!same(life.activationInstances,activationInstances))return fail('new lifecycle原allocation activation实例闭包不符')
   }
+  const retainedCut=assertRootRestoreStage3RetainedCutObserved3(db,actual,plan.retainedCut)
   if(readonly){assertRawCapsule2CatalogOwned(db);readRootRestoreStage3MarkerOwned(db,marker)}
   const body={tables:actualTables,ledger:plan.ledger,lifecycleAdded:plan.lifecycleAdded,protectedObservations,nativeFtsProjection:lookup,
     canonicalCandidateHash:actual.candidate.canonicalCandidateHash,sourceCandidate12TablesHash:plan.sourceCandidate12TablesHash,
     physical12TablesHash,executionChanges:plan.executionChanges,stageExecutionHash:plan.stageExecutionHash,
-    currentExecutionBoundariesPreserved:true as const,workspaceEpochAndDocumentCasAndHostCutPending:true as const,
+    preCutPhysical12TablesHash:plan.preCutPhysical12TablesHash,preCutStageExecutionHash:plan.preCutStageExecutionHash,retainedCut,
+    currentExecutionBoundariesPreserved:false as const,workspaceEpochAndDocumentCasAndHostCutPending:false as const,
     activeWireHashes:wires.map(wire=>({id:wire.id,hash:syncedLifecycleSemanticHash(wire)})),finalSyntaxIndexHash:final.indexHash,
     actual12TablesRead:true as const,actualLedgerRead:true as const,actualLifecycleRead:true as const,
-    currentHistoryRowsPreserved:true as const,currentStageComplete:false as const,historyCutComplete:false as const,
+    currentHistoryEvidenceRetained:true as const,currentExecutableHistoryCut:true as const,currentStageComplete:false as const,historyCutComplete:false as const,
     canonicalExpandedSearchComplete:false as const,routesRebuilt:false as const,linkCountsRebuilt:false as const,
     semanticValidationComplete:false as const,acceptedCoverage:false as const,effective:false as const,permit:false as const}
   assertMerge3JsonBudget(body)
   return freezeCapsuleValue({...body,physicalObservationHash:hash('knowbook.restore.stage3.physical-observation.v1',body)})
 }
+function writeRetainedCutSql(db:Database.Database,actual:Actual,plan:Planned) {
+  const allowed=new Set(['synced_workspace_state','synced_host_history_state','synced_host_history_documents','synced_group_history'])
+  if(plan.retainedCut.protectedTables.length!==allowed.size)return fail('retained cut不是准确四张执行控制表')
+  for(const table of plan.retainedCut.protectedTables){
+    if(!allowed.delete(table.name))return fail('retained cut控制表重复或越界')
+    const original=raw(actual,table.name),wanted=new Set(table.rows.map(row=>row.sourceRowId))
+    for(const row of original.rows)if(!wanted.has(row.sourceRowId)){
+      if(db.prepare('DELETE FROM main.'+quote(table.name)+' WHERE _rowid_=?').run(int64(row.sourceRowId)).changes!==1)
+        return fail('retained cut未移出准确原执行行：'+table.name)
+    }
+    upsertTargets(db,table,original,plan.encoding)
+    exactTable(db,table,plan.encoding)
+  }
+  insertRow(db,raw(actual,'app_settings'),retainedCutRecordRow(actual,plan),plan.encoding)
+}
 function writeSql(db:Database.Database,actual:Actual,plan:Planned,marker:RootRestoreStage3Marker) {
   db.pragma('foreign_keys=ON');db.pragma('synchronous=FULL')
   db.transaction(()=>{
+    if(hasAnySyncedObservationPending())return fail('仍有未持久化的远端观察，不能建立恢复执行cut')
     context(db,plan.encoding,false);assertSchema(db,actual)
     for(const table of actual.data.inputs.current.source.sourceContent.tables)if(!ftsFootprint.has(table.name))exactTable(db,table,plan.encoding)
     db.pragma('defer_foreign_keys=ON')
@@ -588,6 +621,7 @@ function writeSql(db:Database.Database,actual:Actual,plan:Planned,marker:RootRes
       expectedCounts.delete(row[0].toString())
     }
     if(expectedCounts.size)return fail('candidate/layout统计文档遗漏')
+    writeRetainedCutSql(db,actual,plan)
     // Every protected original row, including history/pins/life/settings and
     // all non-FTS derived rows, is compared before commit. Native FTS has the
     // sole fixed compiled-trigger footprint and its own exact final projection.
@@ -602,6 +636,9 @@ function intentBody(stageId:string,preparedAt:string,actual:Actual,copy:CopyInfo
     originalCurrentSchemaHash:actual.data.inputs.current.source.sourceContent.schemaHash,targetEncoding:plan.encoding,
     planned12TablesHash:hash('knowbook.restore.stage3.planned-content.v1',plan.tables),
     sourceCandidate12TablesHash:plan.sourceCandidate12TablesHash,stageExecutionHash:plan.stageExecutionHash,
+    preCutPhysical12TablesHash:plan.preCutPhysical12TablesHash,preCutStageExecutionHash:plan.preCutStageExecutionHash,
+    retainedCutHash:plan.retainedCut.cutHash,retainedCutRecordHash:plan.retainedCut.record.hash,retainedCutRowId:plan.retainedCutRowId,
+    finalCurrentRetainedCutComplete:true as const,
     plannedLedgerHash:hash('knowbook.restore.stage3.planned-ledger.v1',plan.ledger),
     plannedNewLifecycleHash:hash('knowbook.restore.stage3.planned-new-lifecycle.v1',plan.lifecycleAdded),markerRowId:plan.markerRowId,
     addedRowsBudget:{version:1,maxRowsPerAddedFamily:CAPSULE2_RAW_MAX_ROWS,maxValueBytesPerAddedFamily:CAPSULE2_RAW_MAX_VALUE_BYTES,
@@ -625,6 +662,8 @@ function manifestBody(intent:Intent,inventory:readonly DurableSqlCapsuleFile[],o
     referenceManifestHash:intent.referenceManifestHash,copyId:intent.copyId,copyManifestHash:intent.copyManifestHash,
     sealedInventory:inventory,physicalObservationHash:observation.physicalObservationHash,
     nativeFtsProjection:observation.nativeFtsProjection,currentStageComplete:false as const,historyCutComplete:false as const,
+    retainedCutHash:intent.retainedCutHash,retainedCutRecordHash:intent.retainedCutRecordHash,
+    finalCurrentRetainedCutComplete:observation.retainedCut.finalCurrentRetainedCutComplete,
     semanticValidationComplete:false as const,acceptedCoverage:false as const,effective:false as const,permit:false as const}
 }
 const stageManifestHash=(body:Manifest)=>hash('knowbook.restore.stage3.physical-manifest.v1',body)
@@ -695,7 +734,7 @@ function stageValue(saved:Saved,observation:Observation) {
     stageId:saved.intent.stageId,stageManifestHash:saved.manifestHash,stageIntentHash:saved.intentHash,
     checkedCanonicalCandidateHash:saved.intent.checkedCanonicalCandidateHash,...observation,
     materializedInIndependentSql:true as const,ordinaryNativeFtsProjectionReadback:true as const,
-    finalCurrentRetainedCutComplete:false as const,portableAssetsInstalled:false as const,
+    finalCurrentRetainedCutComplete:observation.retainedCut.finalCurrentRetainedCutComplete,portableAssetsInstalled:false as const,
     installPermit:false as const}
   assertMerge3JsonBudget(value)
   return freezeCapsuleValue(value)
@@ -736,7 +775,7 @@ async function reconstruct(saved:Saved) {
   // Exactly one complete original SQL/K/reference joint read for this public
   // call. Copy, marker and stage readback do no second original certification.
   const actual=await readRootRestoreReferenceGraphInputs3(saved.reference),copy=await readRootRestoreCurrentCopyForStage3(saved.copy)
-  const plan=planSql(actual,saved.intent.preparedAt)
+  const plan=planSql(actual,saved.intent.preparedAt,{stageId:saved.intent.stageId,copyId:copy.copyId,copyManifestHash:copy.manifestHash})
   const intended=intentBody(saved.intent.stageId,saved.intent.preparedAt,actual,copy,saved.reference,plan,saved.intent.originalRecoveryFamily)
   if(!same(intended,saved.intent)||intentHash(intended)!==saved.intentHash)return fail('fresh原件/reference不等于持久物化intent')
   const observed=await observeIndependent(saved,actual,plan,markerFor(saved.intent),saved.manifest.sealedInventory)
@@ -748,12 +787,14 @@ async function reconstruct(saved:Saved) {
  * callback enters. currentCopy remains unopened; only its fresh exclusive
  * working three-file copy is opened as an independent main database. */
 export async function prepareRootRestorePhysicalStage3(reference:RootRestoreReferencePlan3) {
+  if(hasAnySyncedObservationPending())return fail('仍有未持久化的远端观察，不能准备恢复执行cut')
   const actual=await readRootRestoreReferenceGraphInputs3(reference)
   acceptCandidate(actual)
   const preparedCopy=await prepareRootRestoreCurrentCopy3(reference)
   const copy=await readRootRestoreCurrentCopyForStage3(preparedCopy.copy)
   binding(actual,copy,reference)
-  const stageId=randomUUID(),preparedAt=new Date().toISOString(),plan=planSql(actual,preparedAt)
+  const stageId=randomUUID(),preparedAt=new Date().toISOString(),plan=planSql(actual,preparedAt,
+    {stageId,copyId:copy.copyId,copyManifestHash:copy.manifestHash})
   const collection=join(copy.profileRoot,'backups','database-restore',copy.operationId,'restore-physical-stages-v3')
   const directory=join(collection,stageId),databaseDirectory=join(directory,'database'),checksDirectory=join(directory,'checks')
   await restoreDirectory(collection,copy.profileRoot);await restoreDirectory(directory,copy.profileRoot,true)
@@ -803,10 +844,13 @@ export async function readRootRestorePhysicalStage3(stage:RootRestorePhysicalSta
 const coldIntentKeys = ['kind','version','stageId','preparedAt','copyId','copyManifestHash','referencePlanId','referenceManifestHash',
   'baseIdentityAllocationHash','derivedReferenceAllocationHash','checkedCanonicalCandidateHash','sourceMaterialHash','currentMaterialHash',
   'conservationHash','originalDescriptorHash','currentOriginalInventoryHash','originalRecoveryFamily','originalCurrentSchemaHash','targetEncoding',
-  'planned12TablesHash','sourceCandidate12TablesHash','stageExecutionHash','plannedLedgerHash','plannedNewLifecycleHash','markerRowId','addedRowsBudget','currentStageComplete','historyCutComplete',
+  'planned12TablesHash','sourceCandidate12TablesHash','stageExecutionHash','preCutPhysical12TablesHash','preCutStageExecutionHash',
+  'retainedCutHash','retainedCutRecordHash','retainedCutRowId','finalCurrentRetainedCutComplete',
+  'plannedLedgerHash','plannedNewLifecycleHash','markerRowId','addedRowsBudget','currentStageComplete','historyCutComplete',
   'semanticValidationComplete','acceptedCoverage','effective','permit'] as const
 const coldManifestKeys = ['kind','version','stageId','stageIntentHash','markerHash','referencePlanId','referenceManifestHash','copyId',
-  'copyManifestHash','sealedInventory','physicalObservationHash','nativeFtsProjection','currentStageComplete','historyCutComplete',
+  'copyManifestHash','sealedInventory','physicalObservationHash','nativeFtsProjection','retainedCutHash','retainedCutRecordHash',
+  'finalCurrentRetainedCutComplete','currentStageComplete','historyCutComplete',
   'semanticValidationComplete','acceptedCoverage','effective','permit'] as const
 async function coldSmall(path:string,root:string) {
   const bytes=await readCapsule2AssetManifest(path,root,maxSmallBytes)
@@ -832,6 +876,7 @@ export async function reopenRootRestorePhysicalStage3(reference:RootRestoreRefer
     return fail('cold stage未知版本或不是同genuine reference')
   for(const key of ['currentStageComplete','historyCutComplete','semanticValidationComplete','acceptedCoverage','effective','permit'] as const)
     if(manifestRow[key]!==false)return fail('cold stage非法升级完成/许可')
+  if(manifestRow.finalCurrentRetainedCutComplete!==true)return fail('cold stage缺完整current retained cut')
   const sealedInventory=validateDurableSqlCapsuleInventory(manifestRow.sealedInventory)
   const untrustedManifest={...manifestRow,sealedInventory} as unknown as Manifest
   if(manifestFile.bytes!==capsuleJson(untrustedManifest)+'\n'||stageManifestHash(untrustedManifest)!==expected)
@@ -844,7 +889,8 @@ export async function reopenRootRestorePhysicalStage3(reference:RootRestoreRefer
   // One complete original SQL/K read in this public call. The following extra
   // native read is only the small original recovery-family footprint, on its
   // own fresh currentCopy probe; it is not another complete certification.
-  const actual=await readRootRestoreReferenceGraphInputs3(reference),plan=planSql(actual,preparedAt)
+  const actual=await readRootRestoreReferenceGraphInputs3(reference),plan=planSql(actual,preparedAt,
+    {stageId,copyId,copyManifestHash:copyHash})
   const reopenedCopy=await reopenRootRestoreCurrentCopy3(reference,{copyId,expectedManifestHash:copyHash})
   const copy=await readRootRestoreCurrentCopyForStage3(reopenedCopy.copy)
   binding(actual,copy,reference)

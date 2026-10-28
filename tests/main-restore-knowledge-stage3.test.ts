@@ -22,6 +22,7 @@ import { parseSyncedBlockPayload } from '../src/shared/syncedBlockValidation'
 import { allTables } from './helpers/synced-backup-v3-fixture'
 import { withStage3Fixture } from './helpers/stage3-fixture'
 import { expectedStage3Execution } from './helpers/stage3-execution-oracle'
+import { assertStage3PreCutOracle, assertStage3PostCutNative, stage3CutProtectedTables } from './helpers/stage3-native-assertions'
 import { graph3Text } from '../src/main/database/restore-knowledge-graph3-data'
 
 type NativeRow = { sourceRowId: string; cells: readonly RawRestoreSqlCell[] }
@@ -86,12 +87,11 @@ test('actual Main physical stage atomically materializes the complete candidate 
     await t.test('all twelve real SQL tables preserve target rowids storage classes canonical text and native ordinary title and template meaning', async () => {
       mark('case-native-content')
       assert.deepEqual([...value.tables.map(table => table.name)].sort(), [...MERGE3_CONTENT_TABLES].sort())
-      assert.deepEqual(value.tables, expected.tables, 'Only the exact declared execution columns may differ from the complete canonical candidate')
-      assert.deepEqual(value.executionChanges, expected.executionChanges)
+      assertStage3PreCutOracle(value, expected)
       assert.equal(value.checkedCanonicalCandidateHash, f.prepared.value.candidate.checkedCanonicalCandidateHash)
       assert.equal(value.sourceCandidate12TablesHash, expected.sourceCandidate12TablesHash)
-      assert.equal(value.physical12TablesHash, expected.physical12TablesHash)
-      assert.equal(value.stageExecutionHash, expected.stageExecutionHash)
+      assert.equal(value.preCutPhysical12TablesHash, expected.physical12TablesHash)
+      assert.equal(value.preCutStageExecutionHash, expected.stageExecutionHash)
       assert.ok(expected.executionChanges.some(change => change.table === 'synced_groups' && change.proofKind === 'new-incoming-allocation'))
       assert.ok(expected.executionChanges.some(change => change.table === 'synced_instances' && change.proofKind === 'new-incoming-allocation'))
       for (const [packet, names] of [[f.sourcePacket, f.cases.sourceSwapViews], [f.currentPacket, f.cases.currentSwapViews]] as const) {
@@ -129,6 +129,8 @@ test('actual Main physical stage atomically materializes the complete candidate 
       await probe(databaseDirectory, f.receiver.root, db => {
         assert.equal(db.pragma('integrity_check', { simple: true }), 'ok')
         assert.deepEqual(db.pragma('foreign_key_check'), [])
+        assertStage3PostCutNative(db, value, expected, f.sourcePacket.source.sourceContent,
+          f.currentPacket.source.sourceContent, f.prepared.value.candidate.activeGroupWires.map(wire => wire.id))
         for (const table of value.tables) {
           const actual = nativeTable(db, table.name)
           assert.deepEqual(actual.columns, table.columns)
@@ -197,8 +199,19 @@ test('actual Main physical stage atomically materializes the complete candidate 
           assert.equal(life.state, 'active'); assert.equal(life.state_version, 1); assert.equal(life.exposure_state, 'unknown'); assert.equal(life.create_history_id, null)
           assert.equal(life.activation_revision, allocated.revision); assert.equal(life.activation_topology_revision, allocated.topologyRevision)
           assert.equal(life.activation_hash, syncedLifecycleSemanticHash(wire))
-          const actual = db.prepare('SELECT instance_id AS instanceId,host_document_id AS hostDocumentId,binding_version AS bindingVersion FROM synced_instances WHERE group_id=? ORDER BY instance_id').all(wire.id)
-          assert.deepEqual(JSON.parse(String(life.activation_instances_json)), actual)
+          const preCutInstances = expected.tables.find(table => table.name === 'synced_instances')!
+          const activation = preCutInstances.rows.filter(row => graph3Text(row.cells[preCutInstances.columns.indexOf('group_id')], preCutInstances.encoding) === wire.id)
+            .map(row => ({ instanceId: graph3Text(row.cells[preCutInstances.columns.indexOf('instance_id')], preCutInstances.encoding),
+              hostDocumentId: graph3Text(row.cells[preCutInstances.columns.indexOf('host_document_id')], preCutInstances.encoding),
+              bindingVersion: graph3Text(row.cells[preCutInstances.columns.indexOf('binding_version')], preCutInstances.encoding) }))
+            .sort((a, b) => a.instanceId < b.instanceId ? -1 : a.instanceId > b.instanceId ? 1 : 0)
+          assert.deepEqual(JSON.parse(String(life.activation_instances_json)), activation, 'Activation retains the original incoming allocation evidence')
+          const actual = db.prepare('SELECT instance_id AS instanceId,host_document_id AS hostDocumentId,binding_version AS bindingVersion FROM synced_instances WHERE group_id=? ORDER BY instance_id')
+            .all(wire.id) as Array<{ instanceId: string; hostDocumentId: string; bindingVersion: string }>
+          assert.deepEqual(actual.map(({ bindingVersion: _binding, ...instance }) => instance), activation.map(({ bindingVersion: _binding, ...instance }) => instance))
+          for (const instance of actual) assert.notEqual(instance.bindingVersion, activation.find(row => row.instanceId === instance.instanceId)!.bindingVersion)
+          const live = db.prepare('SELECT revision,topology_revision FROM synced_groups WHERE id=?').get(wire.id) as { revision: string; topology_revision: string }
+          assert.notEqual(live.revision, life.activation_revision); assert.notEqual(live.topology_revision, life.activation_topology_revision)
           assertSyncedStoredBindings(db, wire.origin, wire.blocks, wire.bindings)
         }
         const orphanId = slot('group', f.cases.orphanGroupId).targetId
@@ -214,13 +227,13 @@ test('actual Main physical stage atomically materializes the complete candidate 
       assert.deepEqual(value.protectedObservations.map(table => table.table).sort(), expectedNames)
       await probe(databaseDirectory, f.receiver.root, db => {
         for (const table of f.currentPacket.source.sourceContent.tables) {
-          if (content.has(table.name) || fts.has(table.name) || table.name === 'block_identities') continue
+          if (content.has(table.name) || fts.has(table.name) || table.name === 'block_identities' || stage3CutProtectedTables.has(table.name)) continue
           const actual = nativeTable(db, table.name)
           assert.deepEqual(actual.columns, table.columns)
           if (table.name === 'app_settings' || table.name === 'synced_group_lifecycle') {
             const original = new Map(table.rows.map(row => [row.sourceRowId, row]))
             assert.deepEqual(actual.rows.filter(row => original.has(row.sourceRowId)), sorted(table.rows), table.name)
-            assert.equal(actual.rows.length - original.size, table.name === 'app_settings' ? 1 : value.lifecycleAdded.length)
+            assert.equal(actual.rows.length - original.size, table.name === 'app_settings' ? 2 : value.lifecycleAdded.length)
           } else assert.deepEqual(actual.rows, sorted(table.rows), table.name)
         }
         const own = db.prepare('SELECT value FROM app_settings WHERE key=?').get(stage3MarkerKey(prepared.stageId)) as { value: string }
@@ -231,7 +244,8 @@ test('actual Main physical stage atomically materializes the complete candidate 
     })
     await t.test('a genuine stage remains non-executable and copied handles cannot supply source paths rows or installation rights', async () => {
       mark('case-private-owner')
-      for (const key of ['currentStageComplete', 'historyCutComplete', 'finalCurrentRetainedCutComplete', 'semanticValidationComplete', 'acceptedCoverage', 'effective', 'permit', 'installPermit'] as const)
+      assert.equal(value.finalCurrentRetainedCutComplete, true)
+      for (const key of ['currentStageComplete', 'historyCutComplete', 'semanticValidationComplete', 'acceptedCoverage', 'effective', 'permit', 'installPermit'] as const)
         assert.equal(value[key], false)
       assert.equal(value.materializedInIndependentSql, true)
       await assert.rejects(prepareRootRestorePhysicalStage3({ ...f.prepared.plan }))

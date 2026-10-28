@@ -14,6 +14,7 @@ import { prepareRootRestorePhysicalStage3 } from '../src/main/database/restore-k
 import { allTables } from './helpers/synced-backup-v3-fixture'
 import { withStage3Fixture } from './helpers/stage3-fixture'
 import { expectedStage3Execution } from './helpers/stage3-execution-oracle'
+import { assertStage3PreCutOracle, assertStage3PostCutNative, stage3CutProtectedTables } from './helpers/stage3-native-assertions'
 
 const quote = (value: string) => '"' + value.replaceAll('"', '""') + '"'
 function rows(db: Database.Database, name: string) {
@@ -52,13 +53,9 @@ test('preserving an exact current group tuple retains the actual later current e
     assert.equal(expected.executionChanges.some(change => change.proofKind === 'new-incoming-allocation'), false)
 
     const prepared = await prepareRootRestorePhysicalStage3(f.prepared.plan), value = prepared.value
-    assert.deepEqual(value.tables, expected.tables)
-    assert.deepEqual(value.executionChanges, expected.executionChanges)
-    assert.equal(value.sourceCandidate12TablesHash, expected.sourceCandidate12TablesHash)
-    assert.equal(value.physical12TablesHash, expected.physical12TablesHash)
-    assert.equal(value.stageExecutionHash, expected.stageExecutionHash)
+    assertStage3PreCutOracle(value, expected)
     assert.deepEqual(value.lifecycleAdded, [], 'Existing current lifecycles are never re-created or patched to fake a cut')
-    assert.equal(value.historyCutComplete, false); assert.equal(value.finalCurrentRetainedCutComplete, false)
+    assert.equal(value.historyCutComplete, false); assert.equal(value.finalCurrentRetainedCutComplete, true)
     assert.equal(value.currentStageComplete, false); assert.equal(value.installPermit, false)
 
     const manifest = JSON.parse(await readFile(join(prepared.directory, 'manifest.json'), 'utf8')) as {
@@ -76,6 +73,7 @@ test('preserving an exact current group tuple retains the actual later current e
     try {
       db.pragma('foreign_keys=ON'); db.pragma('query_only=ON')
       db.transaction(() => {
+        assertStage3PostCutNative(db, value, expected, source, current, candidate.activeGroupWires.map(wire => wire.id))
         for (const table of value.tables) assert.deepEqual(rows(db, table.name), table.rows
           .map(row => ({ sourceRowId: row.targetRowId, cells: row.cells })).sort((a, b) => BigInt(a.sourceRowId) < BigInt(b.sourceRowId) ? -1 : BigInt(a.sourceRowId) > BigInt(b.sourceRowId) ? 1 : 0), table.name)
         const nativeGroups = rows(db, 'synced_groups'), groupIdColumn = currentGroups.columns.indexOf('id')
@@ -85,7 +83,10 @@ test('preserving an exact current group tuple retains the actual later current e
           assert.ok(actual)
           for (const column of ['revision', 'topology_revision', 'history_cursor', 'history_position']) {
             const index = currentGroups.columns.indexOf(column)
-            assert.deepEqual(actual.cells[index], prior.cells[index], id + ':' + column)
+            if (candidate.activeGroupWires.some(wire => wire.id === id)) {
+              if (column === 'history_position') assert.deepEqual(actual.cells[index], ['integer', '0'], id + ':' + column)
+              else assert.notDeepEqual(actual.cells[index], prior.cells[index], id + ':' + column + ' must cross the real current cut')
+            } else assert.deepEqual(actual.cells[index], prior.cells[index], id + ':' + column + ' inactive evidence')
           }
         }
         const currentInstances = current.tables.find(table => table.name === 'synced_instances')!, nativeInstances = rows(db, 'synced_instances')
@@ -93,17 +94,17 @@ test('preserving an exact current group tuple retains the actual later current e
         for (const prior of currentInstances.rows) {
           const id = graph3Text(prior.cells[idColumn], current.encoding)
           const actual = nativeInstances.find(row => graph3Text(row.cells[idColumn], current.encoding) === id)!
-          assert.ok(actual); assert.deepEqual(actual.cells[bindingColumn], prior.cells[bindingColumn])
+          assert.ok(actual); assert.notDeepEqual(actual.cells[bindingColumn], prior.cells[bindingColumn])
         }
         assert.deepEqual(db.prepare('SELECT group_id,host_document_id FROM synced_instances WHERE instance_id=?').get(f.cases.externalInstanceId),
           { group_id: f.cases.linkedGroupId, host_document_id: f.cases.externalHostId })
         const content = new Set<string>(MERGE3_CONTENT_TABLES), fts = new Set([...capsule2DerivedFtsTables(), 'document_search_ids', 'block_search_ids'])
         for (const table of current.tables) {
-          if (content.has(table.name) || fts.has(table.name) || table.name === 'block_identities') continue
+          if (content.has(table.name) || fts.has(table.name) || table.name === 'block_identities' || stage3CutProtectedTables.has(table.name)) continue
           const actual = rows(db, table.name)
           if (table.name === 'app_settings') {
             const originalIds = new Set(table.rows.map(row => row.sourceRowId))
-            assert.equal(actual.length, originalIds.size + 1)
+            assert.equal(actual.length, originalIds.size + 2)
             assert.deepEqual(actual.filter(row => originalIds.has(row.sourceRowId)), table.rows)
           } else assert.deepEqual(actual, table.rows, table.name)
         }
