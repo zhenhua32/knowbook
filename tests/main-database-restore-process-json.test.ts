@@ -3,15 +3,32 @@ import { execFile } from 'node:child_process'
 import test from 'node:test'
 import { promisify } from 'node:util'
 import { WINDOWS_RESTORE_PROCESS_JSON_SOURCE } from '../src/main/database/restore-process-json'
+import { parseRestoreProcessQueryTrace } from '../src/main/database/restore-process-guard'
 
 const windowsOnly = { skip: process.platform !== 'win32' }
 // Pure scalar codec controls, not a fabricated CIM snapshot or an identity
 // passed to the restore guard. Run the exact production encoder in Windows
 // PowerShell with its original hidden20s/4MiB transport limits.
 async function encode(fixture: string) {
-  const source = `$ErrorActionPreference='Stop'\n[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)\n${WINDOWS_RESTORE_PROCESS_JSON_SOURCE}\n${fixture}\n[Console]::WriteLine((ConvertTo-KnowBookProcessJson -Rows ([object[]]$rows)))`
-  return promisify(execFile)('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(source, 'utf16le').toString('base64')],
-    { windowsHide: true, timeout: 20_000, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' })
+  const startedAt = Date.now()
+  const source = `$ErrorActionPreference='Stop'\n[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)\n$codecClock=[Diagnostics.Stopwatch]::StartNew()\nfunction Write-KnowBookCodecPhase([string]$phase) {\n [Console]::Error.WriteLine('knowbook-restore-process:'+$phase)\n [Console]::Error.WriteLine('knowbook-restore-timing:'+$phase+':'+$codecClock.ElapsedMilliseconds)\n}\nWrite-KnowBookCodecPhase 'started'\n${WINDOWS_RESTORE_PROCESS_JSON_SOURCE}\nWrite-KnowBookCodecPhase 'encoder-defined'\n${fixture}\nWrite-KnowBookCodecPhase 'fixture-ready'\nWrite-KnowBookCodecPhase 'encoding-result'\n$json=ConvertTo-KnowBookProcessJson -Rows ([object[]]$rows)\nWrite-KnowBookCodecPhase 'encoded-result'\n[Console]::WriteLine($json)\nWrite-KnowBookCodecPhase 'complete'`
+  try {
+    return await promisify(execFile)('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(source, 'utf16le').toString('base64')],
+      { windowsHide: true, timeout: 20_000, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' })
+  } catch (error) {
+    const failed = error as Error & { code?: unknown; signal?: unknown; killed?: unknown; stdout?: unknown; stderr?: unknown }
+    // Fixed phase/exit/size facts only. No command, raw stderr, fixture or stdout is printed.
+    console.error(JSON.stringify({ kind: 'restore-process-codec-failure',
+      elapsedMs: Math.min(120_000, Math.max(0, Date.now() - startedAt)),
+      code: typeof failed.code === 'number' && Number.isSafeInteger(failed.code) ? failed.code
+        : typeof failed.code === 'string' && /^E[A-Z0-9_]{1,63}$/.test(failed.code) ? failed.code : null,
+      signal: typeof failed.signal === 'string' && /^SIG[A-Z0-9]{1,16}$/.test(failed.signal) ? failed.signal : null,
+      killed: failed.killed === true,
+      stdoutBytes: typeof failed.stdout === 'string' ? Buffer.byteLength(failed.stdout) : Buffer.isBuffer(failed.stdout) ? failed.stdout.byteLength : null,
+      stderrBytes: typeof failed.stderr === 'string' ? Buffer.byteLength(failed.stderr) : Buffer.isBuffer(failed.stderr) ? failed.stderr.byteLength : null,
+      ...parseRestoreProcessQueryTrace(failed.stderr) }))
+    throw error
+  }
 }
 const row = String.raw`
 $row=[Collections.Generic.Dictionary[string,object]]::new()

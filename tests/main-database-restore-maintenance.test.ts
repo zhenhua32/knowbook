@@ -223,12 +223,15 @@ test('Windows process guard observes real creation token and waits for an owned 
     // message, command, stdout or arbitrary PowerShell stderr.
     const cause = error instanceof Error ? error.cause : undefined
     if (cause instanceof Error) {
-      const result = cause as Error & { code?: unknown; signal?: unknown; killed?: unknown; stderr?: unknown }
+      const result = cause as Error & { code?: unknown; signal?: unknown; killed?: unknown; stdout?: unknown; stderr?: unknown }
       context.diagnostic(JSON.stringify({ kind: 'restore-process-query-failure',
         code: typeof result.code === 'number' && Number.isSafeInteger(result.code) ? result.code
           : typeof result.code === 'string' && /^E[A-Z0-9_]{1,63}$/.test(result.code) ? result.code : null,
         signal: typeof result.signal === 'string' && /^SIG[A-Z0-9]{1,16}$/.test(result.signal) ? result.signal : null,
-        killed: result.killed === true, ...parseRestoreProcessQueryTrace(result.stderr) }))
+        killed: result.killed === true,
+        stdoutBytes: typeof result.stdout === 'string' ? Buffer.byteLength(result.stdout) : Buffer.isBuffer(result.stdout) ? result.stdout.byteLength : null,
+        stderrBytes: typeof result.stderr === 'string' ? Buffer.byteLength(result.stderr) : Buffer.isBuffer(result.stderr) ? result.stderr.byteLength : null,
+        ...parseRestoreProcessQueryTrace(result.stderr) }))
     }
     throw error
   } finally {

@@ -78,6 +78,10 @@ test('process query trace exposes only fixed phase names and bounded elapsed tim
   assert.deepEqual(value, { phases: ['knowbook-restore-process:started', 'knowbook-restore-process:argv-ready'],
     timings: [{ phase: 'started', elapsedMs: 8 }, { phase: 'argv-ready', elapsedMs: 33 }] })
   assert.equal(JSON.stringify(value).includes(privateText), false)
+  assert.deepEqual(parseRestoreProcessQueryTrace('knowbook-restore-process:signatures-ready\nknowbook-restore-timing:signatures-ready:17\nknowbook-restore-process:fixture-ready\nknowbook-restore-timing:fixture-ready:19\n' + privateText), {
+    phases: ['knowbook-restore-process:signatures-ready', 'knowbook-restore-process:fixture-ready'],
+    timings: [{ phase: 'signatures-ready', elapsedMs: 17 }, { phase: 'fixture-ready', elapsedMs: 19 }]
+  })
   assert.deepEqual(parseRestoreProcessQueryTrace('knowbook-restore-process:encoded-result\nknowbook-restore-timing:encoded-result:44\n' + privateText), {
     phases: ['knowbook-restore-process:encoded-result'], timings: [{ phase: 'encoded-result', elapsedMs: 44 }]
   })
@@ -105,14 +109,17 @@ async function withChild(kind: 'node' | 'powershell', run: (child: ChildProcess,
   catch (error) {
     const cause = error instanceof Error ? error.cause : undefined
     if (cause instanceof Error) {
-      const failed = cause as Error & { code?: unknown; signal?: unknown; killed?: unknown; stderr?: unknown }
+      const failed = cause as Error & { code?: unknown; signal?: unknown; killed?: unknown; stdout?: unknown; stderr?: unknown }
       // The execFile cause retains private command lines. Keep only fixed
       // phase/timing tokens and bounded exit metadata when a real query fails.
       console.error(JSON.stringify({ kind: 'restore-process-query-failure',
         code: typeof failed.code === 'number' && Number.isSafeInteger(failed.code) ? failed.code
           : typeof failed.code === 'string' && /^E[A-Z0-9_]{1,63}$/.test(failed.code) ? failed.code : null,
         signal: failed.signal === 'SIGTERM' || failed.signal === 'SIGKILL' ? failed.signal : null,
-        killed: failed.killed === true, ...parseRestoreProcessQueryTrace(failed.stderr) }))
+        killed: failed.killed === true,
+        stdoutBytes: typeof failed.stdout === 'string' ? Buffer.byteLength(failed.stdout) : Buffer.isBuffer(failed.stdout) ? failed.stdout.byteLength : null,
+        stderrBytes: typeof failed.stderr === 'string' ? Buffer.byteLength(failed.stderr) : Buffer.isBuffer(failed.stderr) ? failed.stderr.byteLength : null,
+        ...parseRestoreProcessQueryTrace(failed.stderr) }))
     }
     throw error
   }

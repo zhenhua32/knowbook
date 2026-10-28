@@ -26,8 +26,8 @@ export function parseRestoreProcessQueryTrace(stderr: unknown): {
   const phases: string[] = [], timings: Array<{ phase: string; elapsedMs: number }> = []
   if (typeof stderr !== 'string') return { phases, timings }
   for (const line of stderr.split(/\r?\n/)) {
-    if (/^knowbook-restore-process:(started|argv-ready|reading-processes|encoding-result|encoded-result|complete)$/.test(line)) phases.push(line)
-    const match = /^knowbook-restore-timing:(started|argv-ready|reading-processes|encoding-result|encoded-result|complete):([0-9]{1,6})$/.exec(line)
+    if (/^knowbook-restore-process:(started|assembly-ready|module-ready|type-ready|signatures-ready|argv-ready|reading-processes|processes-started|processes-read|encoder-defined|fixture-ready|encoding-result|encoded-result|complete)$/.test(line)) phases.push(line)
+    const match = /^knowbook-restore-timing:(started|assembly-ready|module-ready|type-ready|signatures-ready|argv-ready|reading-processes|processes-started|processes-read|encoder-defined|fixture-ready|encoding-result|encoded-result|complete):([0-9]{1,6})$/.exec(line)
     if (match && Number(match[2]) <= 120_000) timings.push({ phase: match[1], elapsedMs: Number(match[2]) })
   }
   return { phases: phases.slice(-5), timings: timings.slice(-5) }
@@ -49,18 +49,24 @@ function Write-KnowBookRestorePhase([string]$phase) {
 }
 Write-KnowBookRestorePhase 'started'
 $assembly=[AppDomain]::CurrentDomain.DefineDynamicAssembly([Reflection.AssemblyName]::new('KnowBookRestoreInterop'),[Reflection.Emit.AssemblyBuilderAccess]::Run)
+Write-KnowBookRestorePhase 'assembly-ready'
 $module=$assembly.DefineDynamicModule('Native')
+Write-KnowBookRestorePhase 'module-ready'
 $type=$module.DefineType('KnowBookRestoreArgv',[Reflection.TypeAttributes]'Public,Abstract,Sealed')
+Write-KnowBookRestorePhase 'type-ready'
 $attributes=[Reflection.MethodAttributes]'Public,Static,PinvokeImpl'
 $method=$type.DefinePInvokeMethod('CommandLineToArgvW','shell32.dll','CommandLineToArgvW',$attributes,[Reflection.CallingConventions]::Standard,[IntPtr],[Type[]]@([string],([int]).MakeByRefType()),[Runtime.InteropServices.CallingConvention]::Winapi,[Runtime.InteropServices.CharSet]::Unicode)
 $method.SetImplementationFlags([Reflection.MethodImplAttributes]::PreserveSig)
 $method=$type.DefinePInvokeMethod('LocalFree','kernel32.dll','LocalFree',$attributes,[Reflection.CallingConventions]::Standard,[IntPtr],[Type[]]@([IntPtr]),[Runtime.InteropServices.CallingConvention]::Winapi,[Runtime.InteropServices.CharSet]::Unicode)
 $method.SetImplementationFlags([Reflection.MethodImplAttributes]::PreserveSig)
+Write-KnowBookRestorePhase 'signatures-ready'
 $native=$type.CreateType()
 Write-KnowBookRestorePhase 'argv-ready'
 $result=[System.Collections.Generic.List[object]]::new()
 Write-KnowBookRestorePhase 'reading-processes'
+$sawProcess=$false
 foreach($item in Get-CimInstance Win32_Process -Property ProcessId,Name,ExecutablePath,CreationDate,CommandLine) {
+ if(-not $sawProcess) { Write-KnowBookRestorePhase 'processes-started'; $sawProcess=$true }
  if ($item.Name -notmatch '(?i)knowbook|electron|node' -and $item.CommandLine -notlike '*knowbookService*') { continue }
  $parts=$null
  if ($item.CommandLine) {
@@ -77,8 +83,10 @@ foreach($item in Get-CimInstance Win32_Process -Property ProcessId,Name,Executab
  $row['argv']=$parts
  $result.Add($row)
 }
+Write-KnowBookRestorePhase 'processes-read'
 Write-KnowBookRestorePhase 'encoding-result'
 ${WINDOWS_RESTORE_PROCESS_JSON_SOURCE}
+Write-KnowBookRestorePhase 'encoder-defined'
 $json=ConvertTo-KnowBookProcessJson -Rows ($result.ToArray())
 Write-KnowBookRestorePhase 'encoded-result'
 [Console]::WriteLine($json)
