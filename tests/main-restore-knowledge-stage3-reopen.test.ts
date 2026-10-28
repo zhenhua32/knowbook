@@ -48,6 +48,11 @@ async function retire(root: string, path: string): Promise<boolean> {
 
 test('independent cold physical stage reopens the same reference and current copy in a new profile without earlier operation or verification paths',
   { timeout: 120_000 }, () => withStage3Fixture(f => withV3Fixture(async cold => {
+    // Main owners return canonical paths. TEMP may use a native Windows 8.3
+    // alias, so derive both fixture boundaries and destinations from real roots.
+    const [sourceRoot, receiverRoot, coldRoot] = await Promise.all([
+      realpath(f.source.userDataRoot), realpath(f.receiver.userDataRoot), realpath(cold.userDataRoot)
+    ])
     const physical = await prepareRootRestorePhysicalStage3(f.prepared.plan)
     assert.equal(physical.value.tables.length, 12)
     assert.ok(physical.value.lifecycleAdded.length > 0)
@@ -67,32 +72,32 @@ test('independent cold physical stage reopens the same reference and current cop
     assert.notEqual(cold.userDataRoot, f.receiver.userDataRoot)
     assert.notEqual(cold.userDataRoot, f.source.userDataRoot)
     const oldLocation = await readRootKnowledgePlanLocation3(f.saved.knowledgePlan), operationId = randomUUID()
-    const imported = await importMixedOriginBundleOriginal(cold.userDataRoot, operationId, f.saved.originalPackage.directory)
+    const imported = await importMixedOriginBundleOriginal(coldRoot, operationId, f.saved.originalPackage.directory)
     assert.notEqual(operationId, oldLocation.operationId)
-    const operation = join(cold.userDataRoot, 'backups', 'database-restore', operationId)
+    const operation = join(coldRoot, 'backups', 'database-restore', operationId)
     for (const [collection, kernel] of [['restore-identity-plans-v3', f.base], ['restore-reference-plans-v3', f.prepared]] as const) {
       const to = join(operation, collection, kernel.planId)
-      await restoreDirectory(dirname(to), cold.userDataRoot); await restoreDirectory(to, cold.userDataRoot, true)
-      await transportFile(join(kernel.directory, 'manifest.json'), f.receiver.userDataRoot, join(to, 'manifest.json'), cold.userDataRoot)
+      await restoreDirectory(dirname(to), coldRoot); await restoreDirectory(to, coldRoot, true)
+      await transportFile(join(kernel.directory, 'manifest.json'), receiverRoot, join(to, 'manifest.json'), coldRoot)
       assert.deepEqual(await readFile(join(to, 'manifest.json')), await readFile(join(kernel.directory, 'manifest.json')))
     }
     const copyTarget = join(operation, 'restore-current-copies-v3', copied.copyId)
-    await transportTree(copied.directory, f.receiver.userDataRoot, copyTarget, cold.userDataRoot,
+    await transportTree(copied.directory, receiverRoot, copyTarget, coldRoot,
       ['manifest.json'], copied.value.originalInventory, false)
     const stageTarget = join(operation, 'restore-physical-stages-v3', physical.stageId)
     // Old mutable checks are deliberately absent. The new process creates its
     // own exclusive native probes from the two independent sealed originals.
-    await transportTree(physical.directory, f.receiver.userDataRoot, stageTarget, cold.userDataRoot,
+    await transportTree(physical.directory, receiverRoot, stageTarget, coldRoot,
       ['intent.json', 'manifest.json'], stageInventory, true)
-    assert.equal(await retire(f.source.userDataRoot, join(f.source.userDataRoot, 'backups')), true)
-    assert.equal(await retire(f.receiver.userDataRoot, join(f.receiver.userDataRoot, 'backups')), true)
-    await retire(f.source.userDataRoot, join(f.source.userDataRoot, 'original-input-verification'))
-    assert.equal(await retire(f.receiver.userDataRoot, join(f.receiver.userDataRoot, 'original-input-verification')), true)
+    assert.equal(await retire(sourceRoot, join(sourceRoot, 'backups')), true)
+    assert.equal(await retire(receiverRoot, join(receiverRoot, 'backups')), true)
+    await retire(sourceRoot, join(sourceRoot, 'original-input-verification'))
+    assert.equal(await retire(receiverRoot, join(receiverRoot, 'original-input-verification')), true)
     await assert.rejects(readRootRestoreIdentityPlan3(f.base.plan))
     await assert.rejects(readRootRestoreReferencePlan3(f.prepared.plan))
     await assert.rejects(readRootRestoreCurrentCopy3(copied.copy))
     await assert.rejects(readRootRestorePhysicalStage3(physical.stage))
-    const expectedPath = join(cold.userDataRoot, 'expected-physical-stage-' + randomUUID() + '.json')
+    const expectedPath = join(coldRoot, 'expected-physical-stage-' + randomUUID() + '.json')
     await writeFile(expectedPath, JSON.stringify({ identity: f.base.value, reference: f.prepared.value,
       copy: copied.value, stage: physical.value }), { flag: 'wx' })
     const { stdout } = await promisify(execFile)(process.execPath,
