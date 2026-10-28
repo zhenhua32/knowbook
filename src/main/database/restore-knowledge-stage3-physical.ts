@@ -22,7 +22,7 @@ import { MERGE3_CONTENT_TABLES, assertMerge3JsonBudget } from './restore-knowled
 import { rawRestoreSqlCell, type RawRestoreSqlCell } from './restore-knowledge-sql-cell'
 import { readCapsule2AssetManifest, writeCapsule2AssetCopy } from './restore-knowledge-capsule2-assets-files'
 import { assertOriginCatalogDirectory, readOriginCatalogFile, copyOriginCatalogFileWithIdentity3, syncOriginCatalogAncestors } from './restore-knowledge-origin-bundle-files'
-import { holdRootRestoreStage3Files3, holdRootRestoreStage3DatabaseFiles3, assertRootRestoreStage3FilesHeld3,
+import { holdRootRestoreStage3Files3, holdRootRestoreStage3DatabaseFiles3, verifyRootRestoreStage3FilesHeld3, assertRootRestoreStage3FilesHeld3,
   assertRootRestoreStage3WritableMain3, assertRootRestoreStage3WrittenMainClosed3, closeRootRestoreStage3FilesHeld3 } from './restore-knowledge-stage3-files'
 import { restoreDirectory, syncRestoreDirectory, syncRestoreFile } from './restore-safety-files'
 import { restoreSqliteFilename } from './restore-safety-sqlite-path'
@@ -720,6 +720,7 @@ async function finishHeldStageRead(saved: Saved, observation: Observation, mode:
     await assertRootRestoreReferenceOriginalBytes3(saved.reference)
     await readSmall(join(saved.directory, 'intent.json'), saved.intent, saved.root)
     await readSmall(join(saved.directory, 'manifest.json'), saved.manifest, saved.root)
+    await verifyRootRestoreStage3FilesHeld3(held)
     const value = stageValue(saved, observation)
     assertRootRestoreStage3FilesHeld3(held)
     if (mode === 'read') return value
@@ -770,6 +771,7 @@ export async function prepareRootRestorePhysicalStage3(reference:RootRestoreRefe
     inventory: copy.value.originalInventory, purpose: 'writable-open', expectedCreatedIdentities: createdWorking })
   let db: Database.Database | undefined, authorized = false
   try {
+    await verifyRootRestoreStage3FilesHeld3(writable)
     assertRootRestoreStage3FilesHeld3(writable)
     db = new Database(restoreSqliteFilename(join(databaseDirectory, 'knowbook.db')), { fileMustExist: true })
     assertRootRestoreStage3WritableMain3(writable, db); authorized = true

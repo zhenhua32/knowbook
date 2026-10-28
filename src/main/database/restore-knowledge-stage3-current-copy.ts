@@ -12,7 +12,7 @@ import { readCapsule2AssetManifest, writeCapsule2AssetCopy } from './restore-kno
 import { copyOriginCatalogFile, readOriginCatalogFile,
   syncOriginCatalogAncestors } from './restore-knowledge-origin-bundle-files'
 import { restoreDirectory, syncRestoreDirectory } from './restore-safety-files'
-import { holdRootRestoreStage3Files3, assertRootRestoreStage3FilesHeld3,
+import { holdRootRestoreStage3Files3, verifyRootRestoreStage3FilesHeld3, assertRootRestoreStage3FilesHeld3,
   closeRootRestoreStage3FilesHeld3 } from './restore-knowledge-stage3-files'
 
 export interface RootRestoreCurrentCopy3 { readonly kind: 'main-root-restore-current-original-copy' }
@@ -95,6 +95,7 @@ async function reconstruct(saved: Saved): Promise<Value> {
   try {
     await assertRootRestoreReferenceOriginalBytes3(saved.reference)
     await readCopyManifest(saved)
+    await verifyRootRestoreStage3FilesHeld3(held)
     assertRootRestoreStage3FilesHeld3(held)
     return copyValue(saved)
   } finally { closeRootRestoreStage3FilesHeld3(held) }

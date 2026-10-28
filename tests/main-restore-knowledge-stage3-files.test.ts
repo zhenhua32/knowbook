@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import Database from 'better-sqlite3'
+import fs from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
 import { createHash } from 'node:crypto'
 import { lstat, mkdir, mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -9,7 +11,7 @@ import { setImmediate as nextTurn } from 'node:timers/promises'
 import { copyOriginCatalogFile, copyOriginCatalogFileWithIdentity3 } from '../src/main/database/restore-knowledge-origin-bundle-files'
 import type { DurableSqlCapsuleFile } from '../src/main/database/restore-knowledge-capsule-model'
 import { restoreSqliteFilename } from '../src/main/database/restore-safety-sqlite-path'
-import { holdRootRestoreStage3DatabaseFiles3, assertRootRestoreStage3FilesHeld3,
+import { holdRootRestoreStage3DatabaseFiles3, verifyRootRestoreStage3FilesHeld3, assertRootRestoreStage3FilesHeld3,
   assertRootRestoreStage3WritableMain3, assertRootRestoreStage3WrittenMainClosed3, closeRootRestoreStage3FilesHeld3,
   type RootRestoreStage3HeldDatabaseFiles3, type RootRestoreStage3CreatedDatabaseFileIdentity3 }
   from '../src/main/database/restore-knowledge-stage3-files'
@@ -128,8 +130,45 @@ test('stage3 native file leaf rejects actual SQL-cell bytes changed during an aw
       await writeFile(f.working, changed, { flag: 'r+' })
       assert.equal(value(f.working), 'tampered', 'The actual native SQLite row has changed, not a returned DTO')
       assert.notDeepEqual(await readFile(f.working), f.original)
-      assert.throws(() => assertRootRestoreStage3FilesHeld3(guard), /metadata|闭集/)
+      await assert.rejects(verifyRootRestoreStage3FilesHeld3(guard), /metadata|闭集|内容|bytes|hash/)
     } finally { closeRootRestoreStage3FilesHeld3(guard) }
+    assert.deepEqual(await readFile(f.victim), f.original)
+  }))
+
+test('stage3 native file leaf verifies actual changed SQL bytes when only timestamp observations remain unchanged', t =>
+  withFiles(async f => {
+    const guard = await tail(f)
+    const nativeFstat = fs.fstatSync, nativeLstat = fs.lstatSync
+    const captured = nativeLstat(f.working, { bigint: true })
+    // Model a cached/coarse timestamp observation only. All real native inode,
+    // size, mode, link, path, byte reads and SQLite results remain unmodified.
+    const capturedTimes = <T extends fs.Stats | fs.BigIntStats>(stat: T): T => {
+      if (typeof stat.ino !== 'bigint' || stat.ino !== captured.ino || !stat.isFile()) return stat
+      return Object.assign(Object.create(Object.getPrototypeOf(stat)), stat,
+        { mtimeNs: captured.mtimeNs, ctimeNs: captured.ctimeNs }) as T
+    }
+    try {
+      await verifyRootRestoreStage3FilesHeld3(guard)
+      t.mock.method(fs, 'fstatSync', function (...args: unknown[]) {
+        return capturedTimes(Reflect.apply(nativeFstat, fs, args) as fs.Stats | fs.BigIntStats)
+      } as typeof fs.fstatSync)
+      t.mock.method(fs, 'lstatSync', function (...args: unknown[]) {
+        const stat = Reflect.apply(nativeLstat, fs, args) as fs.Stats | fs.BigIntStats
+        return args[0] === f.working ? capturedTimes(stat) : stat
+      } as typeof fs.lstatSync)
+      syncBuiltinESMExports()
+      await nextTurn()
+      const changed = Buffer.from(f.original), index = changed.indexOf(Buffer.from('baseline'))
+      assert.ok(index >= 0)
+      Buffer.from('tampered').copy(changed, index)
+      await writeFile(f.working, changed, { flag: 'r+' })
+      assert.equal(value(f.working), 'tampered')
+      assert.notDeepEqual(await readFile(f.working), f.original)
+      assert.doesNotThrow(() => assertRootRestoreStage3FilesHeld3(guard), 'Metadata equality alone is not a content check')
+      await assert.rejects(verifyRootRestoreStage3FilesHeld3(guard), /内容.*hash/)
+    } finally {
+      t.mock.restoreAll(); syncBuiltinESMExports(); closeRootRestoreStage3FilesHeld3(guard)
+    }
     assert.deepEqual(await readFile(f.victim), f.original)
   }))
 

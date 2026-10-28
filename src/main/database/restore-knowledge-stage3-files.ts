@@ -27,12 +27,12 @@ interface DatabaseInput {
 export type RootRestoreStage3HeldDatabaseInput3 = DatabaseInput & (
   { readonly purpose: 'writable-open'; readonly expectedCreatedIdentities: readonly RootRestoreStage3CreatedDatabaseFileIdentity3[] }
   | { readonly purpose?: 'readonly-tail'; readonly expectedCreatedIdentities?: readonly RootRestoreStage3CreatedDatabaseFileIdentity3[] })
-type FileRecord = { path: string; fd: number; stat: BigIntStats; closed: boolean }
+type FileRecord = { path: string; fd: number; stat: BigIntStats; bytes: number; sha256: string; closed: boolean }
 type DirectoryRecord = { path: string; stat: BigIntStats; entries: readonly string[] }
 type AncestorRecord = { path: string; stat: BigIntStats }
 type Saved = {
   root: string; files: FileRecord[]; directories: DirectoryRecord[]; ancestors: AncestorRecord[]; absentFiles: string[]
-  closed: boolean
+  closed: boolean; verifying: boolean
   database?: { directory: string; main: FileRecord; connection?: Database.Database; writeAuthorized: boolean; closedChecked: boolean;
     purpose: 'readonly-tail' | 'writable-open'; creationBound: boolean }
 }
@@ -138,7 +138,7 @@ async function capture(input: RootRestoreStage3HeldFilesInput3): Promise<Saved> 
     return fail('固定保持集合超5文件/3目录格式范围')
   const root = exactPath(input.profileRoot)
   if (!samePath(realpathSync.native(root), root)) return fail('profile不是准确真实目录')
-  const saved: Saved = { root, files: [], directories: [], ancestors: [], absentFiles: [], closed: false }
+  const saved: Saved = { root, files: [], directories: [], ancestors: [], absentFiles: [], closed: false, verifying: false }
   const parents = new Map<string, DirectoryRecord>(), ancestors = new Map<string, AncestorRecord>(), paths = new Set<string>()
   try {
     for (const supplied of input.directories) {
@@ -184,7 +184,7 @@ async function capture(input: RootRestoreStage3HeldFilesInput3): Promise<Saved> 
           digest.update(buffer.subarray(0, amount)); offset += amount
         }
         if (await readPart(fd, buffer, 1, offset) || digest.digest('hex') !== file.sha256) return fail('保持文件尾bytes/hash变化')
-        const record: FileRecord = { path: file.path, fd, stat: before, closed: false }
+        const record: FileRecord = { path: file.path, fd, stat: before, bytes: file.bytes, sha256: file.sha256, closed: false }
         assertFileUnchanged(record)
         saved.files.push(record); retained = true
       } finally { if (!retained) closeSync(fd) }
@@ -229,10 +229,41 @@ export async function holdRootRestoreStage3DatabaseFiles3(input: RootRestoreStag
   const guard: RootRestoreStage3HeldDatabaseFiles3 = Object.freeze({ kind: 'main-root-restore-stage3-held-files', databaseFiles: true })
   guards.set(guard, saved); return guard
 }
-/** Synchronous tail only: call after the last await, immediately before mint or
- * writable open. Parent directory metadata and exact names remain unchanged. */
+/** Synchronous identity/metadata/namespace tail, after content verification's
+ * last await and immediately before mint or writable open. This check alone
+ * does not authenticate unchanged file bytes when timestamp observations match. */
 export function assertRootRestoreStage3FilesHeld3(guard: RootRestoreStage3HeldFiles3): void {
   assertUnchanged(owned(guard))
+}
+/** Rehash each actual held FD after the caller's final original/manifest awaits.
+ * Memory stays at 64KiB and the original complete inventory budget is retained.
+ * This verifies the bytes read in this pass; it is not a filesystem snapshot,
+ * a write exclusion lock, or atomic proof against all concurrent OS writes.
+ * The fixed consumer must immediately do its synchronous tail/mint/open with
+ * no further await. The caller retains ownership of closing all FDs in finally. */
+export async function verifyRootRestoreStage3FilesHeld3(guard: RootRestoreStage3HeldFiles3): Promise<void> {
+  const saved = owned(guard)
+  if (saved.verifying) return fail('同一保持集合的内容复核仍在进行')
+  assertUnchanged(saved)
+  saved.verifying = true
+  try {
+    const buffer = Buffer.alloc(64 * 1024)
+    for (const file of saved.files) {
+      assertUnchanged(saved)
+      const digest = createHash('sha256'); let offset = 0
+      while (offset < file.bytes) {
+        const amount = await readPart(file.fd, buffer, Math.min(buffer.length, file.bytes - offset), offset)
+        if (saved.closed || saved.database?.writeAuthorized) return fail('内容复核期间保持集合关闭或进入写入阶段')
+        if (!amount) return fail('已保持文件内容复核提前EOF')
+        digest.update(buffer.subarray(0, amount)); offset += amount
+      }
+      const extra = await readPart(file.fd, buffer, 1, offset)
+      if (saved.closed || saved.database?.writeAuthorized) return fail('内容复核期间保持集合关闭或进入写入阶段')
+      assertUnchanged(saved)
+      if (extra || digest.digest('hex') !== file.sha256) return fail('已保持文件内容bytes/hash变化')
+    }
+    assertUnchanged(saved)
+  } finally { saved.verifying = false }
 }
 function sqliteFilename(value: string): string {
   if (typeof value !== 'string') return fail('SQLite main filename不是TEXT')
@@ -251,7 +282,7 @@ function sqliteFilename(value: string): string {
  * race path-based SQLite opening; JS cannot prove that native FD atomically. */
 export function assertRootRestoreStage3WritableMain3(guard: RootRestoreStage3HeldDatabaseFiles3, db: Database.Database): void {
   const saved = owned(guard), held = saved.database
-  if (!held || held.purpose !== 'writable-open' || !held.creationBound || held.writeAuthorized || !db.open || db.memory || db.readonly)
+  if (saved.verifying || !held || held.purpose !== 'writable-open' || !held.creationBound || held.writeAuthorized || !db.open || db.memory || db.readonly)
     return fail('不是创建身份完整绑定的单次自有writable连接')
   assertUnchanged(saved)
   const list = db.pragma('database_list') as Array<{ seq: number; name: string; file: string }>
