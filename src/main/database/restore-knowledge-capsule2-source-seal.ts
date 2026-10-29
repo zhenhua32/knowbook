@@ -7,7 +7,8 @@ import { readOwnedRawCapsuleOriginal, assertOwnedRawCapsuleOriginal, reopenPrepa
   type OwnedRawCapsuleOriginal } from './restore-knowledge-capsule-files'
 import { assertCapsule2AssetDirectory as directory, readCapsule2AssetManifest, readCapsule2AssetCopy as readExact,
   writeCapsule2AssetCopy as writeNew } from './restore-knowledge-capsule2-assets-files'
-import { reopenCapsule2AssetArchive, readCapsule2ArchiveSourceOriginal, type PreparedCapsule2AssetArchive } from './restore-knowledge-capsule2-asset-archive'
+import { reopenCapsule2AssetArchive, readCapsule2ArchiveSourceOriginal, prepareCapsule2AssetArchiveWithProvenance3,
+  type PreparedCapsule2AssetArchive } from './restore-knowledge-capsule2-asset-archive'
 import { captureCapsule2SourceMaterial, readCapsule2SourceMaterial, readCapsule2SourceSealInput,
   assertCapsule2SourceOriginalBytes, type PreparedCapsule2SourceMaterial } from './restore-knowledge-capsule2-source-material'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_READER } from './restore-knowledge-capsule2-raw-model'
@@ -158,4 +159,11 @@ export async function captureSealedCapsule2SourceFromArchive(archive: PreparedCa
   await assertSealedCapsule2SourceOriginalBytes(source)
   return Object.freeze({ source, value, profileRoot: info.profileRoot,
     info: freezeCapsuleValue({ directory: output, manifest, manifestHash: entry.manifestHash }) })
+}
+
+/** Explicit base-observer URI ownership producer. The unchanged source seal
+ * hashes the actual nested archive v2, including strict partial coverage.
+ * Future supplemental/context capture requires a distinct archive version. */
+export async function captureSealedCapsule2SourceWithAssetProvenance3(original: OwnedRawCapsuleOriginal) {
+  return captureSealedCapsule2SourceFromArchive(await prepareCapsule2AssetArchiveWithProvenance3(original))
 }

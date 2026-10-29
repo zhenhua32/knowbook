@@ -13,21 +13,33 @@ import { CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-mo
 import { readRawCapsule2AssetReferencesOwned } from './restore-knowledge-capsule2-assets-read'
 import { captureCapsule2ManagedTreeData, type Capsule2ManagedTreeData } from './restore-knowledge-capsule2-managed-assets-files'
 import { validateCapsule2ManagedTree } from './restore-knowledge-capsule2-assets-model'
+import { captureCapsule2AssetReferenceProvenanceOwned3, validateCapsule2AssetReferenceProvenance1,
+  type Capsule2AssetReferenceProvenance1 } from './restore-knowledge-capsule2-asset-provenance'
 import { assertCapsule2AssetDirectory as directory, readCapsule2AssetManifest,
   writeCapsule2AssetCopy as writeNew, readCapsule2AssetCopy as readExact } from './restore-knowledge-capsule2-assets-files'
 
 /** The physical Main-managed tree and the SQL's actual reference literals are
  * separate source facts. Missing, foreign and future reference targets never
  * cause automatic file/network access or disappear from the original SQL. */
-export interface Capsule2AssetArchiveManifest {
-  readonly kind: 'capsule2-complete-asset-archive'; readonly version: 1
+interface Capsule2AssetArchiveBase {
+  readonly kind: 'capsule2-complete-asset-archive'
   readonly material: 'main-managed-tree-and-original-reference-literals'
-  readonly referencePolicy: 'retain-literals-without-reference-file-access'
   readonly certified: false; readonly semanticValidationComplete: false; readonly permit: false
   readonly capsuleId: string; readonly schemaVersion: 26 | 27; readonly sourceInventory: readonly DurableSqlCapsuleFile[]
   readonly sourceContentHash: string; readonly workspaceHistoryObservationHash: string; readonly assetReferencesObservationHash: string
   readonly referenceCount: number; readonly referenceUris: readonly string[]; readonly tree: Capsule2ManagedTreeData
 }
+export interface Capsule2AssetReferenceCoverage2 {
+  readonly kind: 'base-asset-observation-capture-only'; readonly version: 1; readonly baseObserverVersion: 3
+  readonly assetReferencesObservationHash: string; readonly baseTypedScopesCaptured: true
+  readonly supplementalCustomMergeScopesCaptured: false; readonly allAssetScopesCaptured: false
+  readonly semanticSelectionPermission: false; readonly finalAssetClosureComplete: false
+  readonly acceptedCoverage: false; readonly effective: false; readonly installPermit: false
+}
+export type Capsule2AssetArchiveManifest = Capsule2AssetArchiveBase & (
+  { readonly version: 1; readonly referencePolicy: 'retain-literals-without-reference-file-access' }
+  | { readonly version: 2; readonly referencePolicy: 'capture-owned-aliases-retain-unresolved-literals';
+    readonly referenceProvenance: Capsule2AssetReferenceProvenance1; readonly coverage: Capsule2AssetReferenceCoverage2 })
 export interface PreparedCapsule2AssetArchive { readonly kind: 'prepared-capsule2-complete-asset-archive' }
 export interface Capsule2AssetArchiveInfo { readonly directory: string; readonly manifest: Capsule2AssetArchiveManifest; readonly manifestHash: string }
 type Saved = Capsule2AssetArchiveInfo & { original: OwnedRawCapsuleOriginal; root: string; bytes: Buffer }
@@ -36,15 +48,26 @@ const domain = 'knowbook.capsule2.complete-asset-archive.v1'
 const bad = (message: string): never => { throw new Error('capsule2完整附件归档无效：' + message + '；原引用保留，不授外部文件读取、认证或安装权。') }
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0
 const hash = (value: unknown): string => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value) ? value : bad('原hash无效')
-const manifestHash = (value: Capsule2AssetArchiveManifest) => capsuleBytesHash(domain + '\0' + capsuleJson(value))
+const archiveDomain = (version: 1 | 2) => version === 1 ? domain : 'knowbook.capsule2.complete-asset-archive.v2'
+const manifestHash = (value: Capsule2AssetArchiveManifest) => capsuleBytesHash(archiveDomain(value.version) + '\0' + capsuleJson(value))
+function baseCoverage(assetReferencesObservationHash: string): Capsule2AssetReferenceCoverage2 {
+  return freezeCapsuleValue({ kind: 'base-asset-observation-capture-only', version: 1, baseObserverVersion: 3,
+    assetReferencesObservationHash, baseTypedScopesCaptured: true, supplementalCustomMergeScopesCaptured: false,
+    allAssetScopesCaptured: false, semanticSelectionPermission: false, finalAssetClosureComplete: false,
+    acceptedCoverage: false, effective: false, installPermit: false })
+}
 
 function parse(text: string, capsuleId: string, expectedHash: string): Capsule2AssetArchiveManifest {
   const parsed = parseStrictJson(text, { maxBytes: CAPSULE2_RAW_MAX_JSON_BYTES, maxDepth: 12 })
+  const version = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>).version : null
+  if (version !== 1 && version !== 2) return bad('未知archive版本，不降级或补造权属')
   const row = capsuleRecord(parsed, ['kind','version','material','referencePolicy','certified','semanticValidationComplete','permit',
-    'capsuleId','schemaVersion','sourceInventory','sourceContentHash','workspaceHistoryObservationHash','assetReferencesObservationHash','referenceCount','referenceUris','tree'])
-  if (text !== capsuleJson(parsed) + '\n' || capsuleBytesHash(domain + '\0' + capsuleJson(parsed)) !== hash(expectedHash)) return bad('规范原字节或预期hash不符')
-  if (row.kind !== 'capsule2-complete-asset-archive' || row.version !== 1 || row.material !== 'main-managed-tree-and-original-reference-literals'
-    || row.referencePolicy !== 'retain-literals-without-reference-file-access' || row.certified !== false || row.semanticValidationComplete !== false
+    'capsuleId','schemaVersion','sourceInventory','sourceContentHash','workspaceHistoryObservationHash','assetReferencesObservationHash','referenceCount','referenceUris','tree',
+    ...(version === 2 ? ['referenceProvenance','coverage'] : [])])
+  if (text !== capsuleJson(parsed) + '\n' || capsuleBytesHash(archiveDomain(version) + '\0' + capsuleJson(parsed)) !== hash(expectedHash)) return bad('规范原字节或预期hash不符')
+  if (row.kind !== 'capsule2-complete-asset-archive' || row.material !== 'main-managed-tree-and-original-reference-literals'
+    || row.referencePolicy !== (version === 1 ? 'retain-literals-without-reference-file-access' : 'capture-owned-aliases-retain-unresolved-literals')
+    || row.certified !== false || row.semanticValidationComplete !== false
     || row.permit !== false || row.capsuleId !== capsuleId || row.schemaVersion !== 26 && row.schemaVersion !== 27) return bad('格式、身份或权限标志无效')
   if (typeof row.referenceCount !== 'number' || !Number.isSafeInteger(row.referenceCount) || row.referenceCount < 0
     || !Array.isArray(row.referenceUris) || row.referenceUris.length > row.referenceCount) return bad('完整引用计数不闭合')
@@ -52,12 +75,16 @@ function parse(text: string, capsuleId: string, expectedHash: string): Capsule2A
   if (row.referenceCount > 0 && uris.length === 0) return bad('非空引用被降为空集合')
   for (let index = 1; index < uris.length; index++) if (uris[index - 1] >= uris[index]) return bad('原引用未排序或重复')
   const schemaVersion: 26 | 27 = row.schemaVersion
-  return freezeCapsuleValue({ kind: 'capsule2-complete-asset-archive', version: 1,
-    material: 'main-managed-tree-and-original-reference-literals', referencePolicy: 'retain-literals-without-reference-file-access',
-    certified: false, semanticValidationComplete: false, permit: false, capsuleId, schemaVersion,
+  const base = { kind: 'capsule2-complete-asset-archive' as const, material: 'main-managed-tree-and-original-reference-literals' as const,
+    certified: false as const, semanticValidationComplete: false as const, permit: false as const, capsuleId, schemaVersion,
     sourceInventory: validateDurableSqlCapsuleInventory(row.sourceInventory), sourceContentHash: hash(row.sourceContentHash),
     workspaceHistoryObservationHash: hash(row.workspaceHistoryObservationHash), assetReferencesObservationHash: hash(row.assetReferencesObservationHash),
-    referenceCount: row.referenceCount, referenceUris: uris, tree: validateCapsule2ManagedTree(row.tree) })
+    referenceCount: row.referenceCount, referenceUris: uris, tree: validateCapsule2ManagedTree(row.tree) }
+  if (version === 1) return freezeCapsuleValue({ ...base, version: 1, referencePolicy: 'retain-literals-without-reference-file-access' })
+  const coverage = baseCoverage(base.assetReferencesObservationHash)
+  if (capsuleJson(row.coverage) !== capsuleJson(coverage)) return bad('部分覆盖策略不可被caller DTO升级或改变观察域')
+  return freezeCapsuleValue({ ...base, version: 2, referencePolicy: 'capture-owned-aliases-retain-unresolved-literals', coverage,
+    referenceProvenance: validateCapsule2AssetReferenceProvenance1(row.referenceProvenance, base, base.tree) })
 }
 
 async function source(original: OwnedRawCapsuleOriginal) {
@@ -98,14 +125,19 @@ function register(value: Saved): PreparedCapsule2AssetArchive {
   archives.set(handle, value)
   return handle
 }
-export async function prepareCapsule2AssetArchive(original: OwnedRawCapsuleOriginal): Promise<PreparedCapsule2AssetArchive> {
+async function prepareArchive(original: OwnedRawCapsuleOriginal, version: 1 | 2): Promise<PreparedCapsule2AssetArchive> {
   const info = start(original), observed = await source(original), capsuleId = basename(info.capsuleDirectory)
   const base = join(info.recoveryDirectory, 'knowledge-complete-assets-v2'), output = join(base, capsuleId), files = join(output, 'files')
   await restoreDirectory(base, info.profileRoot); await restoreDirectory(output, info.profileRoot, true); await restoreDirectory(files, info.profileRoot, true)
   const tree = await captureCapsule2ManagedTreeData(join(info.profileRoot, 'storage', 'assets'), info.profileRoot, files)
-  const manifest: Capsule2AssetArchiveManifest = freezeCapsuleValue({ kind: 'capsule2-complete-asset-archive', version: 1,
-    material: 'main-managed-tree-and-original-reference-literals', referencePolicy: 'retain-literals-without-reference-file-access',
-    certified: false, semanticValidationComplete: false, permit: false, capsuleId, sourceInventory: info.originalInventory, ...observed, tree })
+  const common = { kind: 'capsule2-complete-asset-archive' as const, material: 'main-managed-tree-and-original-reference-literals' as const,
+    certified: false as const, semanticValidationComplete: false as const, permit: false as const, capsuleId,
+    sourceInventory: info.originalInventory, ...observed, tree }
+  const manifest: Capsule2AssetArchiveManifest = version === 1
+    ? freezeCapsuleValue({ ...common, version: 1, referencePolicy: 'retain-literals-without-reference-file-access' })
+    : freezeCapsuleValue({ ...common, version: 2, referencePolicy: 'capture-owned-aliases-retain-unresolved-literals',
+      coverage: baseCoverage(observed.assetReferencesObservationHash),
+      referenceProvenance: await captureCapsule2AssetReferenceProvenanceOwned3(original, observed, tree) })
   const bytes = Buffer.from(capsuleJson(manifest) + '\n')
   if (bytes.length > CAPSULE2_RAW_MAX_JSON_BYTES) return bad('完整manifest超预算，不截断')
   await assertOwnedRawCapsuleOriginal(original)
@@ -114,6 +146,15 @@ export async function prepareCapsule2AssetArchive(original: OwnedRawCapsuleOrigi
   const saved: Saved = { original, root: info.profileRoot, directory: output, manifest, bytes, manifestHash: manifestHash(manifest) }
   await verify(saved)
   return register(saved)
+}
+/** Legacy capture stays archive v1, without inferred file URI authority. */
+export async function prepareCapsule2AssetArchive(original: OwnedRawCapsuleOriginal): Promise<PreparedCapsule2AssetArchive> {
+  return prepareArchive(original, 1)
+}
+/** Explicit Main producer; only the genuine original chooses the profile,
+ * base typed observation and captured tree. No caller proofs/paths/URI list. */
+export async function prepareCapsule2AssetArchiveWithProvenance3(original: OwnedRawCapsuleOriginal): Promise<PreparedCapsule2AssetArchive> {
+  return prepareArchive(original, 2)
 }
 export async function reopenCapsule2AssetArchive(original: OwnedRawCapsuleOriginal, expectedManifestHash: string): Promise<PreparedCapsule2AssetArchive> {
   const info = start(original), capsuleId = basename(info.capsuleDirectory), output = join(info.recoveryDirectory, 'knowledge-complete-assets-v2', capsuleId)

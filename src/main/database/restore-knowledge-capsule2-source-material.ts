@@ -8,6 +8,7 @@ import { readCapsule2AssetArchive, readCapsule2ArchiveSourceOriginal, readCapsul
 import { readRawCapsule2SourceKnowledgeOwned } from './restore-knowledge-payload-raw-read'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_READER } from './restore-knowledge-capsule2-raw-model'
 import { restoreSqliteFilename } from './restore-safety-sqlite-path'
+import { validateCapsule2AssetReferenceProvenance1 } from './restore-knowledge-capsule2-asset-provenance'
 
 export interface PreparedCapsule2SourceMaterial { readonly kind: 'prepared-capsule2-source-material' }
 type SourcePacket = Awaited<ReturnType<typeof material>>
@@ -33,6 +34,16 @@ async function material(archive: PreparedCapsule2AssetArchive) {
   if (source.sourceContent.schemaVersion !== manifest.schemaVersion || references.sourceContentHash !== manifest.sourceContentHash
     || references.workspaceHistoryObservationHash !== manifest.workspaceHistoryObservationHash || references.observationHash !== manifest.assetReferencesObservationHash
     || capsuleJson(info.originalInventory) !== capsuleJson(manifest.sourceInventory)) return bad('原SQL、完整来源与归档绑定不一致')
+  if (manifest.version === 2) {
+    const referenceUris = [...new Set(references.scopes.flatMap(scope => scope.destinations.map(item => item.uri)))].sort()
+    if (capsuleJson(referenceUris) !== capsuleJson(manifest.referenceUris)) return bad('captured URI证明不属于本次原SQL base scope集合')
+    validateCapsule2AssetReferenceProvenance1(manifest.referenceProvenance, {
+      sourceContentHash: references.sourceContentHash, workspaceHistoryObservationHash: references.workspaceHistoryObservationHash,
+      assetReferencesObservationHash: references.observationHash, referenceUris }, manifest.tree)
+    // All original SQL, including custom merge payloads, remains in source.
+    // This producer captures only the existing base observer's scopes; v2
+    // coverage keeps supplemental/full/final/install false, hash-bound below.
+  }
   const after = await readCapsule2AssetArchive(archive)
   if (after.manifestHash !== before.manifestHash) return bad('读取期间归档身份变化')
   const body = { kind: 'capsule2-complete-source-material' as const, version: 2 as const, forReader: CAPSULE2_READER,
