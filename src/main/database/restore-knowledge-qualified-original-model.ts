@@ -35,7 +35,8 @@ export function qualifiedOriginalSide(value: unknown, binding: CoverageInputBind
     if (origin.kind !== 'no-prior-coverage-references') return bad('无prior来源不能解释bound origin')
     const side = mixedOriginBundleSideFiles(value as MixedOriginBundleSide, binding)
     if (requiredDagDatabaseFilesHash(side.inventory) !== origin.databaseFilesHash) return bad('实际原SQL清单与origin不同')
-    return { value: side.value as QualifiedOriginalSide, files: side.files, emptyDirectory: side.emptyDirectory, context: null }
+    return { value: side.value as QualifiedOriginalSide, files: side.files, emptyDirectory: side.emptyDirectory,
+      ...('emptyDirectories' in side && side.emptyDirectories ? { emptyDirectories: side.emptyDirectories } : {}), context: null }
   }
   if (origin.kind !== 'bound-original-bundle' || binding.capsule.readerVersion !== CAPSULE2_READER) return bad('bound来源reader/origin不准确')
   const row = capsuleRecord(value, ['kind','bindingText','sourceManifestText','assetManifestText','contextText']), ref = binding.capsule
@@ -64,8 +65,9 @@ export function qualifiedOriginalSide(value: unknown, binding: CoverageInputBind
   add(assets + '/manifest.json', assetManifestText)
   for (const file of source.files) if (file.present) files.push({ path: mixedOriginCapsulePath(binding, 'knowledge-capsules') + '/original/' + file.name, bytes: file.bytes, sha256: file.sha256! })
   for (const file of archive.tree.files) files.push({ path: assets + '/files/' + file.hash, bytes: file.bytes, sha256: file.hash })
+  if (archive.version === 3) for (const file of archive.contextOriginals.files) files.push({ path: assets + '/contexts/' + file.sha256, bytes: file.bytes, sha256: file.sha256 })
   return { value: { kind: 'bound-capsule2', bindingText, sourceManifestText, assetManifestText, contextText } as QualifiedOriginalSide,
-    files, emptyDirectory: assets + '/files', context }
+    files, emptyDirectory: assets + '/files', ...(archive.version === 3 ? { emptyDirectories: [assets + '/contexts'] } : {}), context }
 }
 export function validateQualifiedOriginalDescriptor(value: unknown): QualifiedOriginalDescriptor {
   const row = capsuleRecord(value, ['kind','version','root','nodeText','source','current','acceptedCoverage','effective','permit'])
@@ -86,6 +88,7 @@ export function qualifiedOriginalInventory(value: QualifiedOriginalDescriptor): 
   const files: ReferenceContextFile[] = own.map(file => ({ ...file, frame: [] })), dirs = new Set<string>(['catalog'])
   for (const file of own) { const parts = file.path.split('/'); for (let n = 1; n < parts.length; n++) dirs.add(parts.slice(0, n).join('/')) }
   for (const side of sides) dirs.add(side.emptyDirectory)
+  for (const side of sides) if ('emptyDirectories' in side) for (const directory of side.emptyDirectories ?? []) dirs.add(directory)
   const directories: ReferenceContextDirectory[] = [...dirs].map(path => ({ frame: [], path }))
   for (const context of sides.map(side => side.context).filter((c): c is Capsule2ReferenceContextDescriptor => !!c))
     for (const parent of context.parents) {

@@ -14,7 +14,14 @@ import { readRawCapsule2AssetReferencesOwned } from './restore-knowledge-capsule
 import { captureCapsule2ManagedTreeData, type Capsule2ManagedTreeData } from './restore-knowledge-capsule2-managed-assets-files'
 import { validateCapsule2ManagedTree } from './restore-knowledge-capsule2-assets-model'
 import { captureCapsule2AssetReferenceProvenanceOwned3, validateCapsule2AssetReferenceProvenance1,
-  type Capsule2AssetReferenceProvenance1 } from './restore-knowledge-capsule2-asset-provenance'
+  captureCapsule2AssetReferenceProvenance2Owned3, validateCapsule2AssetReferenceProvenance2,
+  type Capsule2AssetReferenceProvenance1, type Capsule2AssetReferenceProvenance2 } from './restore-knowledge-capsule2-asset-provenance'
+import { DURABLE_SQL_DAG_MAX_ORIGINAL_BYTES } from './restore-knowledge-dag-model'
+import { prepareCapsule2MergeContextOriginals3, reopenCapsule2MergeContextOriginals3, visitCapsule2MergeContextOriginals3, assertCapsule2MergeContextOriginalBytes3,
+  validateCapsule2MergeContextInventory3, type Capsule2MergeContextInventory3, type PreparedCapsule2MergeContexts3 } from './restore-knowledge-capsule2-merge-contexts'
+import { createRootRestoreSupplementalAssetObserver3 } from './restore-knowledge-assets3-supplement'
+import { describeCapsule2AssetScopeSupplement3, validateCapsule2AssetScopeSupplementDescriptor3, capsule2CombinedAssetUris3,
+  type Capsule2AssetScopeSupplementDescriptor3 } from './restore-knowledge-capsule2-asset-supplement-model'
 import { assertCapsule2AssetDirectory as directory, readCapsule2AssetManifest,
   writeCapsule2AssetCopy as writeNew, readCapsule2AssetCopy as readExact } from './restore-knowledge-capsule2-assets-files'
 
@@ -36,19 +43,31 @@ export interface Capsule2AssetReferenceCoverage2 {
   readonly semanticSelectionPermission: false; readonly finalAssetClosureComplete: false
   readonly acceptedCoverage: false; readonly effective: false; readonly installPermit: false
 }
+export interface Capsule2AssetReferenceCoverage3 {
+  readonly kind: 'base-and-supplemental-asset-observation-capture'; readonly version: 1
+  readonly baseObserverVersion: 3; readonly supplementalObserverVersion: 1
+  readonly assetReferencesObservationHash: string; readonly supplementalObservationHash: string
+  readonly baseTypedScopesCaptured: true; readonly supplementalCustomMergeScopesCaptured: boolean
+  readonly allAssetScopesCaptured: false; readonly semanticSelectionPermission: false
+  readonly finalAssetClosureComplete: false; readonly acceptedCoverage: false; readonly effective: false; readonly installPermit: false
+  readonly wholeContextInputsMemoryBounded: false; readonly completeV3AssetAdapter: false
+}
 export type Capsule2AssetArchiveManifest = Capsule2AssetArchiveBase & (
   { readonly version: 1; readonly referencePolicy: 'retain-literals-without-reference-file-access' }
   | { readonly version: 2; readonly referencePolicy: 'capture-owned-aliases-retain-unresolved-literals';
-    readonly referenceProvenance: Capsule2AssetReferenceProvenance1; readonly coverage: Capsule2AssetReferenceCoverage2 })
+    readonly referenceProvenance: Capsule2AssetReferenceProvenance1; readonly coverage: Capsule2AssetReferenceCoverage2 }
+  | { readonly version: 3; readonly referencePolicy: 'capture-owned-base-and-supplemental-aliases-retain-unresolved-literals';
+    readonly referenceProvenance: Capsule2AssetReferenceProvenance2; readonly contextOriginals: Capsule2MergeContextInventory3;
+    readonly assetScopeSupplement: Capsule2AssetScopeSupplementDescriptor3; readonly coverage: Capsule2AssetReferenceCoverage3 })
 export interface PreparedCapsule2AssetArchive { readonly kind: 'prepared-capsule2-complete-asset-archive' }
 export interface Capsule2AssetArchiveInfo { readonly directory: string; readonly manifest: Capsule2AssetArchiveManifest; readonly manifestHash: string }
-type Saved = Capsule2AssetArchiveInfo & { original: OwnedRawCapsuleOriginal; root: string; bytes: Buffer }
+type Saved = Capsule2AssetArchiveInfo & { original: OwnedRawCapsuleOriginal; root: string; bytes: Buffer; contextOwner?: PreparedCapsule2MergeContexts3 }
 const archives = new WeakMap<PreparedCapsule2AssetArchive, Saved>(), used = new WeakSet<OwnedRawCapsuleOriginal>()
 const domain = 'knowbook.capsule2.complete-asset-archive.v1'
 const bad = (message: string): never => { throw new Error('capsule2完整附件归档无效：' + message + '；原引用保留，不授外部文件读取、认证或安装权。') }
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0
 const hash = (value: unknown): string => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value) ? value : bad('原hash无效')
-const archiveDomain = (version: 1 | 2) => version === 1 ? domain : 'knowbook.capsule2.complete-asset-archive.v2'
+const archiveDomain = (version: 1 | 2 | 3) => version === 1 ? domain : version === 2 ? 'knowbook.capsule2.complete-asset-archive.v2' : 'knowbook.capsule2.complete-asset-archive.v3'
 const manifestHash = (value: Capsule2AssetArchiveManifest) => capsuleBytesHash(archiveDomain(value.version) + '\0' + capsuleJson(value))
 function baseCoverage(assetReferencesObservationHash: string): Capsule2AssetReferenceCoverage2 {
   return freezeCapsuleValue({ kind: 'base-asset-observation-capture-only', version: 1, baseObserverVersion: 3,
@@ -56,17 +75,24 @@ function baseCoverage(assetReferencesObservationHash: string): Capsule2AssetRefe
     allAssetScopesCaptured: false, semanticSelectionPermission: false, finalAssetClosureComplete: false,
     acceptedCoverage: false, effective: false, installPermit: false })
 }
+function supplementalCoverage(assetReferencesObservationHash: string, supplement: Capsule2AssetScopeSupplementDescriptor3): Capsule2AssetReferenceCoverage3 {
+  return freezeCapsuleValue({ kind: 'base-and-supplemental-asset-observation-capture', version: 1, baseObserverVersion: 3, supplementalObserverVersion: 1,
+    assetReferencesObservationHash, supplementalObservationHash: supplement.observationHash, baseTypedScopesCaptured: true,
+    supplementalCustomMergeScopesCaptured: supplement.unsupportedHolders.count === 0, allAssetScopesCaptured: false, semanticSelectionPermission: false,
+    finalAssetClosureComplete: false, acceptedCoverage: false, effective: false, installPermit: false,
+    wholeContextInputsMemoryBounded: false, completeV3AssetAdapter: false })
+}
 
 function parse(text: string, capsuleId: string, expectedHash: string): Capsule2AssetArchiveManifest {
   const parsed = parseStrictJson(text, { maxBytes: CAPSULE2_RAW_MAX_JSON_BYTES, maxDepth: 12 })
   const version = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>).version : null
-  if (version !== 1 && version !== 2) return bad('未知archive版本，不降级或补造权属')
+  if (version !== 1 && version !== 2 && version !== 3) return bad('未知archive版本，不降级或补造权属')
   const row = capsuleRecord(parsed, ['kind','version','material','referencePolicy','certified','semanticValidationComplete','permit',
     'capsuleId','schemaVersion','sourceInventory','sourceContentHash','workspaceHistoryObservationHash','assetReferencesObservationHash','referenceCount','referenceUris','tree',
-    ...(version === 2 ? ['referenceProvenance','coverage'] : [])])
+    ...(version === 2 ? ['referenceProvenance','coverage'] : version === 3 ? ['referenceProvenance','coverage','contextOriginals','assetScopeSupplement'] : [])])
   if (text !== capsuleJson(parsed) + '\n' || capsuleBytesHash(archiveDomain(version) + '\0' + capsuleJson(parsed)) !== hash(expectedHash)) return bad('规范原字节或预期hash不符')
   if (row.kind !== 'capsule2-complete-asset-archive' || row.material !== 'main-managed-tree-and-original-reference-literals'
-    || row.referencePolicy !== (version === 1 ? 'retain-literals-without-reference-file-access' : 'capture-owned-aliases-retain-unresolved-literals')
+    || row.referencePolicy !== (version === 1 ? 'retain-literals-without-reference-file-access' : version === 2 ? 'capture-owned-aliases-retain-unresolved-literals' : 'capture-owned-base-and-supplemental-aliases-retain-unresolved-literals')
     || row.certified !== false || row.semanticValidationComplete !== false
     || row.permit !== false || row.capsuleId !== capsuleId || row.schemaVersion !== 26 && row.schemaVersion !== 27) return bad('格式、身份或权限标志无效')
   if (typeof row.referenceCount !== 'number' || !Number.isSafeInteger(row.referenceCount) || row.referenceCount < 0
@@ -81,6 +107,18 @@ function parse(text: string, capsuleId: string, expectedHash: string): Capsule2A
     workspaceHistoryObservationHash: hash(row.workspaceHistoryObservationHash), assetReferencesObservationHash: hash(row.assetReferencesObservationHash),
     referenceCount: row.referenceCount, referenceUris: uris, tree: validateCapsule2ManagedTree(row.tree) }
   if (version === 1) return freezeCapsuleValue({ ...base, version: 1, referencePolicy: 'retain-literals-without-reference-file-access' })
+  if (version === 3) {
+    const contextOriginals = validateCapsule2MergeContextInventory3(row.contextOriginals), assetScopeSupplement = validateCapsule2AssetScopeSupplementDescriptor3(row.assetScopeSupplement)
+    if (contextOriginals.sourceContentHash !== base.sourceContentHash || assetScopeSupplement.sourceContentHash !== base.sourceContentHash) return bad('v3 context/supplement不属于原SQL')
+    const coverage = supplementalCoverage(base.assetReferencesObservationHash, assetScopeSupplement)
+    if (capsuleJson(row.coverage) !== capsuleJson(coverage)) return bad('v3覆盖策略不属于完整实际补充观察或被升级')
+    const result: Capsule2AssetArchiveManifest = freezeCapsuleValue({ ...base, version: 3,
+      referencePolicy: 'capture-owned-base-and-supplemental-aliases-retain-unresolved-literals', contextOriginals, assetScopeSupplement, coverage,
+      referenceProvenance: validateCapsule2AssetReferenceProvenance2(row.referenceProvenance, { ...base,
+        assetScopeSupplementHash: assetScopeSupplement.observationHash, referenceUris: capsule2CombinedAssetUris3(base.referenceUris, assetScopeSupplement) }, base.tree) })
+    assertOriginalBudget(result)
+    return result
+  }
   const coverage = baseCoverage(base.assetReferencesObservationHash)
   if (capsuleJson(row.coverage) !== capsuleJson(coverage)) return bad('部分覆盖策略不可被caller DTO升级或改变观察域')
   return freezeCapsuleValue({ ...base, version: 2, referencePolicy: 'capture-owned-aliases-retain-unresolved-literals', coverage,
@@ -100,20 +138,47 @@ async function source(original: OwnedRawCapsuleOriginal) {
       referenceUris: [...new Set(value.scopes.flatMap(scope => scope.destinations.map(item => item.uri)))].sort(compare) }
   } finally { db.close(); await assertOwnedRawCapsuleScratchContent(original) }
 }
-async function verify(value: Saved): Promise<Capsule2AssetArchiveInfo> {
+async function observeContexts(owner: PreparedCapsule2MergeContexts3) {
+  const state: { observer?: ReturnType<typeof createRootRestoreSupplementalAssetObserver3> } = {}
+  const read = await visitCapsule2MergeContextOriginals3(owner, {
+    begin(value) { state.observer = createRootRestoreSupplementalAssetObserver3(value.sourceContent, value.baseAssets) },
+    context(value) { if (!state.observer) return bad('context回调先于同次真实原SQL'); state.observer.accept(value.replay) }
+  })
+  const observer = state.observer ?? bad('genuine context owner未给出完整原SQL观察')
+  // Finish only after every sequential context and the owner's complete byte/
+  // closure tail succeeded; no context header/binary array escapes this read.
+  return { inventory: read.inventory, supplemental: observer.finish() }
+}
+/** Original-byte proof only. Read/archive/source-seal byte tails never query
+ * SQL or replay a planner. Semantic observation has its own complete bracket. */
+async function verifyBytes(value: Saved): Promise<Capsule2AssetArchiveInfo> {
   await assertOwnedRawCapsuleOriginal(value.original)
   const files = join(value.directory, 'files'), expectedNames = value.manifest.tree.files.map(file => file.hash).sort(compare)
   const closure = async () => {
     await directory(value.directory, value.root); await directory(files, value.root)
-    if (capsuleJson((await readdir(value.directory)).sort(compare)) !== capsuleJson(['files','manifest.json'])
+    if (capsuleJson((await readdir(value.directory)).sort(compare)) !== capsuleJson(value.manifest.version === 3 ? ['contexts','files','manifest.json'] : ['files','manifest.json'])
       || capsuleJson((await readdir(files)).sort(compare)) !== capsuleJson(expectedNames)) return bad('完整归档闭集变化')
   }
   await closure()
   await readExact(join(value.directory, 'manifest.json'), value.root, value.bytes.length, capsuleBytesHash(value.bytes), CAPSULE2_RAW_MAX_JSON_BYTES)
   for (const file of value.manifest.tree.files) await readExact(join(files, file.hash), value.root, file.bytes, file.hash, ATTACHMENT_MAX_FILE_BYTES)
+  if (value.manifest.version === 3) await assertCapsule2MergeContextOriginalBytes3(value.contextOwner ?? bad('v3缺genuine context owner'))
   await closure(); await assertOwnedRawCapsuleOriginal(value.original)
   return freezeCapsuleValue({ directory: value.directory, manifest: value.manifest, manifestHash: value.manifestHash })
 }
+async function verifyDetails(value: Saved) {
+  const info = await verifyBytes(value)
+  const contexts = value.manifest.version === 3 ? await observeContexts(value.contextOwner ?? bad('v3缺genuine context owner')) : undefined
+  if (value.manifest.version === 3 && (!contexts || capsuleJson(contexts.inventory) !== capsuleJson(value.manifest.contextOriginals)
+    || capsuleJson(describeCapsule2AssetScopeSupplement3(contexts.supplemental)) !== capsuleJson(value.manifest.assetScopeSupplement)))
+    return bad('同次实际封存context重放/补充scope与持久v3不符')
+  // In v3 the observer can be long-running. Managed copies, manifest, contexts
+  // and SQL originals are all read again after it; the earlier byte pass is
+  // never treated as proof of the post-observation files.
+  if (value.manifest.version === 3) await verifyBytes(value)
+  return { info, supplemental: contexts?.supplemental }
+}
+async function verify(value: Saved): Promise<Capsule2AssetArchiveInfo> { return verifyBytes(value) }
 function start(original: OwnedRawCapsuleOriginal) {
   const info = readOwnedRawCapsuleOriginal(original)
   if (used.has(original)) return bad('同一原件已开始或失败，不能重入')
@@ -125,25 +190,33 @@ function register(value: Saved): PreparedCapsule2AssetArchive {
   archives.set(handle, value)
   return handle
 }
-async function prepareArchive(original: OwnedRawCapsuleOriginal, version: 1 | 2): Promise<PreparedCapsule2AssetArchive> {
+async function prepareArchive(original: OwnedRawCapsuleOriginal, version: 1 | 2 | 3): Promise<PreparedCapsule2AssetArchive> {
   const info = start(original), observed = await source(original), capsuleId = basename(info.capsuleDirectory)
   const base = join(info.recoveryDirectory, 'knowledge-complete-assets-v2'), output = join(base, capsuleId), files = join(output, 'files')
   await restoreDirectory(base, info.profileRoot); await restoreDirectory(output, info.profileRoot, true); await restoreDirectory(files, info.profileRoot, true)
   const tree = await captureCapsule2ManagedTreeData(join(info.profileRoot, 'storage', 'assets'), info.profileRoot, files)
+  const captured = version === 3 ? await prepareCapsule2MergeContextOriginals3(original) : undefined
+  const contexts = captured ? await observeContexts(captured.owner) : undefined
+  const supplement = contexts ? describeCapsule2AssetScopeSupplement3(contexts.supplemental) : undefined
   const common = { kind: 'capsule2-complete-asset-archive' as const, material: 'main-managed-tree-and-original-reference-literals' as const,
     certified: false as const, semanticValidationComplete: false as const, permit: false as const, capsuleId,
     sourceInventory: info.originalInventory, ...observed, tree }
   const manifest: Capsule2AssetArchiveManifest = version === 1
     ? freezeCapsuleValue({ ...common, version: 1, referencePolicy: 'retain-literals-without-reference-file-access' })
-    : freezeCapsuleValue({ ...common, version: 2, referencePolicy: 'capture-owned-aliases-retain-unresolved-literals',
+    : version === 2 ? freezeCapsuleValue({ ...common, version: 2, referencePolicy: 'capture-owned-aliases-retain-unresolved-literals',
       coverage: baseCoverage(observed.assetReferencesObservationHash),
       referenceProvenance: await captureCapsule2AssetReferenceProvenanceOwned3(original, observed, tree) })
+    : freezeCapsuleValue({ ...common, version: 3, referencePolicy: 'capture-owned-base-and-supplemental-aliases-retain-unresolved-literals',
+      coverage: supplementalCoverage(observed.assetReferencesObservationHash, supplement!), contextOriginals: contexts!.inventory, assetScopeSupplement: supplement!,
+      referenceProvenance: await captureCapsule2AssetReferenceProvenance2Owned3(original, { ...observed,
+        assetScopeSupplementHash: supplement!.observationHash, referenceUris: capsule2CombinedAssetUris3(observed.referenceUris, supplement!) }, tree) })
   const bytes = Buffer.from(capsuleJson(manifest) + '\n')
+  if (manifest.version === 3) assertOriginalBudget(manifest)
   if (bytes.length > CAPSULE2_RAW_MAX_JSON_BYTES) return bad('完整manifest超预算，不截断')
   await assertOwnedRawCapsuleOriginal(original)
   await writeNew(join(output, 'manifest.json'), bytes, info.profileRoot)
   await syncRestoreDirectory(output); await syncRestoreDirectory(base); await syncRestoreDirectory(info.recoveryDirectory)
-  const saved: Saved = { original, root: info.profileRoot, directory: output, manifest, bytes, manifestHash: manifestHash(manifest) }
+  const saved: Saved = { original, root: info.profileRoot, directory: output, manifest, bytes, manifestHash: manifestHash(manifest), contextOwner: captured?.owner }
   await verify(saved)
   return register(saved)
 }
@@ -156,6 +229,10 @@ export async function prepareCapsule2AssetArchive(original: OwnedRawCapsuleOrigi
 export async function prepareCapsule2AssetArchiveWithProvenance3(original: OwnedRawCapsuleOriginal): Promise<PreparedCapsule2AssetArchive> {
   return prepareArchive(original, 2)
 }
+/** Separate v3 producer. Never upgrades the released base-only v2 factory. */
+export async function prepareCapsule2AssetArchiveWithContextProvenance3(original: OwnedRawCapsuleOriginal): Promise<PreparedCapsule2AssetArchive> {
+  return prepareArchive(original, 3)
+}
 export async function reopenCapsule2AssetArchive(original: OwnedRawCapsuleOriginal, expectedManifestHash: string): Promise<PreparedCapsule2AssetArchive> {
   const info = start(original), capsuleId = basename(info.capsuleDirectory), output = join(info.recoveryDirectory, 'knowledge-complete-assets-v2', capsuleId)
   await directory(output, info.profileRoot)
@@ -164,14 +241,24 @@ export async function reopenCapsule2AssetArchive(original: OwnedRawCapsuleOrigin
   if (capsuleJson(manifest.sourceInventory) !== capsuleJson(info.originalInventory)) return bad('原SQL清单不符')
   for (const key of ['schemaVersion','sourceContentHash','workspaceHistoryObservationHash','assetReferencesObservationHash','referenceCount','referenceUris'] as const)
     if (capsuleJson(manifest[key]) !== capsuleJson(observed[key])) return bad('完整实际SQL来源或原引用变化')
-  const saved: Saved = { original, root: info.profileRoot, directory: output, manifest, bytes: Buffer.from(text), manifestHash: expectedManifestHash }
-  await verify(saved)
+  const captured = manifest.version === 3 ? await reopenCapsule2MergeContextOriginals3(original, manifest.contextOriginals) : undefined
+  const saved: Saved = { original, root: info.profileRoot, directory: output, manifest, bytes: Buffer.from(text), manifestHash: expectedManifestHash, contextOwner: captured?.owner }
+  // Cold creation must join the persisted supplement to actual sealed context
+  // observations before minting its first owner. Later byte-only tails may
+  // rely on that immutable pinned manifest; they never reauthorize SQL DTOs.
+  if (manifest.version === 3) await verifyDetails(saved)
+  else await verify(saved)
   return register(saved)
 }
 export async function readCapsule2AssetArchive(handle: PreparedCapsule2AssetArchive): Promise<Capsule2AssetArchiveInfo> {
   const value = archives.get(handle)
   if (!value) return bad('不是Main实际准备的私有句柄')
   return verify(value)
+}
+export async function assertCapsule2AssetArchiveOriginalBytes3(handle: PreparedCapsule2AssetArchive): Promise<void> {
+  const value = archives.get(handle)
+  if (!value) return bad('不是Main实际archive原件owner')
+  await verifyBytes(value)
 }
 
 /** Fixed Main source seam. A serialized archive/ref or caller inventory cannot
@@ -192,5 +279,19 @@ export const parseCapsule2CompleteAssetArchiveManifest = parse
 export async function readCapsule2ArchiveSourceInputs(handle: PreparedCapsule2AssetArchive) {
   const value = archives.get(handle)
   if (!value) return bad('不是Main实际准备的私有句柄')
-  return Object.freeze({ original: value.original, value: await verify(value) })
+  const read = await verifyDetails(value)
+  return Object.freeze({ original: value.original, value: read.info, ...(read.supplemental ? { supplemental: read.supplemental } : {}) })
+}
+
+/** Pure counting of unique sealed physical files in their separate namespaces.
+ * SQL originals are added by each existing DAG owner, using its original cap. */
+export function capsule2AssetArchiveOriginalBytes3(archive: Capsule2AssetArchiveManifest): number {
+  const bytes = archive.tree.files.reduce((total, file) => total + file.bytes, 0)
+    + (archive.version === 3 ? archive.contextOriginals.files.reduce((total, file) => total + file.bytes, 0) : 0)
+  if (!Number.isSafeInteger(bytes)) return bad('全部managed/context实际原字节计数越界')
+  return bytes
+}
+function assertOriginalBudget(archive: Capsule2AssetArchiveManifest): void {
+  const bytes = capsule2AssetArchiveOriginalBytes3(archive) + archive.sourceInventory.reduce((total, file) => total + file.bytes, 0)
+  if (!Number.isSafeInteger(bytes) || bytes > DURABLE_SQL_DAG_MAX_ORIGINAL_BYTES) return bad('SQL+managed+context超原DAG总域')
 }

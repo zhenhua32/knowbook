@@ -1,3 +1,4 @@
+import { capsule2AssetArchiveOriginalBytes3 } from './restore-knowledge-capsule2-asset-archive'
 import { randomUUID } from 'node:crypto'
 import { open, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -185,7 +186,7 @@ async function readBoundInput(root: string, entry: NonNullable<ReturnType<typeof
     operationId: value.operationId, capsuleId: value.capsuleId, manifestHash: entry.hash, readerVersion: CAPSULE2_READER },
     interpretationHash: requiredDagInterpretationHash(origin), rawRequirementsHash: origin.rawRequirementsHash, requiredRoots: referenceContextMountedRoots(actual.descriptor) }
   const input: OriginalSourceInput = { binding, origin, originalSqlBytes: value.sourceInventory.reduce((n, file) => n + file.bytes, 0),
-    managedOriginalBytes: value.assetArchive.tree.files.reduce((n, file) => n + file.bytes, 0), knowledge: { readerVersion: CAPSULE2_READER,
+    managedOriginalBytes: capsule2AssetArchiveOriginalBytes3(value.assetArchive), knowledge: { readerVersion: CAPSULE2_READER,
       projection: value.knowledge, projectionHash: value.knowledge.observationHash, sourceMaterialHash: value.materialHash, assetArchiveHash: value.assetArchiveHash } }
   const operation = join(root, 'backups', 'database-restore', value.operationId)
   const side: QualifiedOriginalSide = { kind: 'bound-capsule2', bindingText: before, contextText: actual.contextText,

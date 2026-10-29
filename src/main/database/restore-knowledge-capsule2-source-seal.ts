@@ -7,7 +7,7 @@ import { readOwnedRawCapsuleOriginal, assertOwnedRawCapsuleOriginal, reopenPrepa
   type OwnedRawCapsuleOriginal } from './restore-knowledge-capsule-files'
 import { assertCapsule2AssetDirectory as directory, readCapsule2AssetManifest, readCapsule2AssetCopy as readExact,
   writeCapsule2AssetCopy as writeNew } from './restore-knowledge-capsule2-assets-files'
-import { reopenCapsule2AssetArchive, readCapsule2ArchiveSourceOriginal, prepareCapsule2AssetArchiveWithProvenance3,
+import { reopenCapsule2AssetArchive, readCapsule2ArchiveSourceOriginal, prepareCapsule2AssetArchiveWithProvenance3, prepareCapsule2AssetArchiveWithContextProvenance3,
   type PreparedCapsule2AssetArchive } from './restore-knowledge-capsule2-asset-archive'
 import { captureCapsule2SourceMaterial, readCapsule2SourceMaterial, readCapsule2SourceSealInput,
   assertCapsule2SourceOriginalBytes, type PreparedCapsule2SourceMaterial } from './restore-knowledge-capsule2-source-material'
@@ -166,4 +166,10 @@ export async function captureSealedCapsule2SourceFromArchive(archive: PreparedCa
  * Future supplemental/context capture requires a distinct archive version. */
 export async function captureSealedCapsule2SourceWithAssetProvenance3(original: OwnedRawCapsuleOriginal) {
   return captureSealedCapsule2SourceFromArchive(await prepareCapsule2AssetArchiveWithProvenance3(original))
+}
+
+/** Explicit v3 context/supplement producer. Base-only archive2 remains an
+ * independent released contract, including every partial coverage flag. */
+export async function captureSealedCapsule2SourceWithContextProvenance3(original: OwnedRawCapsuleOriginal) {
+  return captureSealedCapsule2SourceFromArchive(await prepareCapsule2AssetArchiveWithContextProvenance3(original))
 }

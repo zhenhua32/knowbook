@@ -1,3 +1,4 @@
+import { capsule2AssetArchiveOriginalBytes3 } from './restore-knowledge-capsule2-asset-archive'
 import { join, relative, sep } from 'node:path'
 import { capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { captureCertifiedCapsuleNoPriorSourceInputs, reopenCertifiedDurableSqlCapsule,
@@ -36,7 +37,7 @@ function capsule2Input(profile: string, source: Source, second: NonNullable<Awai
       operationId:c.operationId,capsuleId:c.capsuleId,manifestHash:info.certificateHash,readerVersion:c.readerVersion})
     const binding: CoverageInputBinding = {capsule,interpretationHash:requiredDagInterpretationHash(origin),rawRequirementsHash,requiredRoots:[]}
     return { source,binding,origin,originalSqlBytes:value.sourceInventory.reduce((n,f)=>n+f.bytes,0),
-      managedOriginalBytes:value.assetArchive.tree.files.reduce((n,f)=>n+f.bytes,0),knowledge:{readerVersion:c.readerVersion,
+      managedOriginalBytes:capsule2AssetArchiveOriginalBytes3(value.assetArchive),knowledge:{readerVersion:c.readerVersion,
         projection:value.knowledge,projectionHash:value.knowledge.observationHash,sourceMaterialHash:value.materialHash,assetArchiveHash:value.assetArchiveHash} }
 }
 async function readInput(profile: string, source: Source) {

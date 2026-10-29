@@ -1,3 +1,4 @@
+import { capsule2AssetArchiveOriginalBytes3 } from './restore-knowledge-capsule2-asset-archive'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { capsuleBytesHash, capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
@@ -114,7 +115,7 @@ function legacyData(descriptor: MixedOriginBundleDescriptor, value: LegacyMateri
     const binding = index ? node.current : node.source, actual = value.inputs.find(input => requiredDagCapsuleLocator(input.binding) === requiredDagCapsuleLocator(binding))!
     const files = mixedOriginBundleSideFiles(side, binding)
     return { binding: actual.binding, origin: actual.origin, knowledge: actual.knowledge,
-      originalSqlBytes: files.inventory.reduce((n, f) => n + f.bytes, 0), managedOriginalBytes: files.files.filter(f => /\/files\/[0-9a-f]{64}$/.test(f.path)).reduce((n, f) => n + f.bytes, 0) }
+      originalSqlBytes: files.inventory.reduce((n, f) => n + f.bytes, 0), managedOriginalBytes: files.files.filter(f => /\/(?:files|contexts)\/[0-9a-f]{64}$/.test(f.path)).reduce((n, f) => n + f.bytes, 0) }
   })
   if (value.originalSqlBytes !== inputs.reduce((n, i) => n + i.originalSqlBytes, 0) || value.managedOriginalBytes !== inputs.reduce((n, i) => n + i.managedOriginalBytes, 0)) return bad('legacy完整实际字节计数不等于原清单')
   return freezeCapsuleValue({ root: value.root, node: value.node, inputs, parents: [], materialHash: value.materialHash,
@@ -163,7 +164,7 @@ async function reopenedInput(readers: NodeReaders, side: QualifiedOriginalSide, 
     const capsule = validateCoverageCapsuleReference({ kind: 'restore-knowledge-origin-capsule-ref', version: 1, namespace: { kind: 'native' },
       operationId: ref.operationId, capsuleId: ref.capsuleId, manifestHash: captured.info.certificateHash, readerVersion: CAPSULE2_READER })
     return { packet: value, input: { binding: { capsule, interpretationHash: requiredDagInterpretationHash(proof), rawRequirementsHash, requiredRoots: [] }, origin: proof,
-      originalSqlBytes: value.sourceInventory.reduce((n, file) => n + file.bytes, 0), managedOriginalBytes: value.assetArchive.tree.files.reduce((n, file) => n + file.bytes, 0),
+      originalSqlBytes: value.sourceInventory.reduce((n, file) => n + file.bytes, 0), managedOriginalBytes: capsule2AssetArchiveOriginalBytes3(value.assetArchive),
       knowledge: { readerVersion: CAPSULE2_READER, projection: value.knowledge, projectionHash: value.knowledge.observationHash, sourceMaterialHash: value.materialHash, assetArchiveHash: value.assetArchiveHash } } }
   }
   if (!context) return bad('bound来源缺完整context')
@@ -177,7 +178,7 @@ async function reopenedInput(readers: NodeReaders, side: QualifiedOriginalSide, 
     return bad('bound来源实际全量SQL/K/附件/四角色prior-C不等于原context')
   return { packet: value, input: { binding, origin, knowledge: { readerVersion: CAPSULE2_READER, projection: value.knowledge, projectionHash: value.knowledge.observationHash,
     sourceMaterialHash: value.materialHash, assetArchiveHash: value.assetArchiveHash },
-    originalSqlBytes: value.sourceInventory.reduce((n, f) => n + f.bytes, 0), managedOriginalBytes: value.assetArchive.tree.files.reduce((n, f) => n + f.bytes, 0) } }
+    originalSqlBytes: value.sourceInventory.reduce((n, f) => n + f.bytes, 0), managedOriginalBytes: capsule2AssetArchiveOriginalBytes3(value.assetArchive) } }
 }
 async function walk(view: View, prefix: readonly string[], reader: CompleteOriginalPackage['reader'], hash: string, b: Budget, depth: number, rootPackets?: Array<ContentPacket | null>): Promise<CompleteOriginalRootData> {
   const text = await domainText(view, prefix), stateKey = capsuleJson(prefix)

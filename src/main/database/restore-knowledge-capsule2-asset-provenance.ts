@@ -261,3 +261,36 @@ export async function captureCapsule2AssetReferenceProvenanceOwned3(original: Ow
       bytes: Number(value.stat.size), links: value.stat.nlink.toString(), mode: value.stat.mode.toString() })), entries,
     knownReferenceClassificationComplete: true, certified: false, semanticValidationComplete: false, permit: false }, binding, tree)
 }
+
+/** Archive v3 has a distinct combined-observation proof. The published base
+ * archive v2/proof1 format and its three original hash meanings stay intact. */
+export interface Capsule2AssetReferenceBinding2 extends Capsule2AssetReferenceBinding1 {
+  readonly assetScopeSupplementHash: string
+}
+export type Capsule2AssetReferenceProvenance2 = Omit<Capsule2AssetReferenceProvenance1, 'version'> & {
+  readonly version: 2; readonly assetScopeSupplementHash: string
+}
+const nativeBinding2 = (binding: Capsule2AssetReferenceBinding2): Capsule2AssetReferenceBinding1 => ({
+  sourceContentHash: binding.sourceContentHash, workspaceHistoryObservationHash: binding.workspaceHistoryObservationHash,
+  assetReferencesObservationHash: binding.assetReferencesObservationHash, referenceUris: binding.referenceUris })
+export const capsule2AssetReferenceProvenance2Hash = (value: Capsule2AssetReferenceProvenance2) => digest('knowbook.capsule2.captured-reference-provenance.v2', value)
+export function validateCapsule2AssetReferenceProvenance2(value: unknown, binding: Capsule2AssetReferenceBinding2,
+  tree: Capsule2ManagedTreeData): Capsule2AssetReferenceProvenance2 {
+  const row = capsuleRecord(value, ['kind', 'version', 'sourceContentHash', 'workspaceHistoryObservationHash', 'assetReferencesObservationHash',
+    'assetScopeSupplementHash', 'referenceUrisHash', 'managedTreeHash', 'assetRoot', 'rootSpellings', 'identities', 'entries',
+    'knownReferenceClassificationComplete', 'certified', 'semanticValidationComplete', 'permit'])
+  if (row.version !== 2 || hash(row.assetReferencesObservationHash) !== binding.assetReferencesObservationHash
+    || hash(row.assetScopeSupplementHash) !== binding.assetScopeSupplementHash) return fail('v3独立证明的base/supplement域不同')
+  const { version: _version, assetScopeSupplementHash: _supplement, ...native } = row
+  // Reuse the exact native-fact grammar, not a persisted v1 authority. This
+  // temporary value never crosses an archive/material boundary as proof1.
+  const checked = validateCapsule2AssetReferenceProvenance1({ ...native, version: 1 }, nativeBinding2(binding), tree)
+  return freezeCapsuleValue({ ...checked, version: 2, assetReferencesObservationHash: binding.assetReferencesObservationHash,
+    assetScopeSupplementHash: binding.assetScopeSupplementHash })
+}
+export async function captureCapsule2AssetReferenceProvenance2Owned3(original: OwnedRawCapsuleOriginal,
+  binding: Capsule2AssetReferenceBinding2, tree: Capsule2ManagedTreeData): Promise<Capsule2AssetReferenceProvenance2> {
+  const native = await captureCapsule2AssetReferenceProvenanceOwned3(original, nativeBinding2(binding), tree)
+  return validateCapsule2AssetReferenceProvenance2({ ...native, version: 2, assetReferencesObservationHash: binding.assetReferencesObservationHash,
+    assetScopeSupplementHash: binding.assetScopeSupplementHash }, binding, tree)
+}

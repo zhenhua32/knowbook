@@ -62,7 +62,9 @@ function side(value: unknown, binding: CoverageInputBinding) {
   const assets=mixedOriginCapsulePath(binding,'knowledge-complete-assets-v2');add(assets+'/manifest.json',assetManifestText)
   for (const file of manifest.files) if(file.present) files.push({path:base+'/original/'+file.name,bytes:file.bytes,sha256:file.sha256!})
   for (const file of archive.tree.files) files.push({path:assets+'/files/'+file.hash,bytes:file.bytes,sha256:file.hash})
-  return { value:{kind:'complete-capsule2',certificateText,sourceManifestText,assetManifestText} as const, files, inventory:manifest.files, emptyDirectory:assets+'/files' }
+  if (archive.version === 3) for (const file of archive.contextOriginals.files) files.push({path:assets+'/contexts/'+file.sha256,bytes:file.bytes,sha256:file.sha256})
+  return { value:{kind:'complete-capsule2',certificateText,sourceManifestText,assetManifestText} as const, files, inventory:manifest.files,
+    emptyDirectory:assets+'/files', ...(archive.version === 3 ? { emptyDirectories: [assets+'/contexts'] } : {}) }
 }
 function components(value: MixedOriginBundleDescriptor) {
   const node=parseRequiredSqlDagNode(value.nodeText),source=side(value.source,node.source),current=side(value.current,node.current)
@@ -86,7 +88,7 @@ export function validateMixedOriginBundleDescriptor(value: unknown): MixedOrigin
 function expectedFiles(descriptor: MixedOriginBundleDescriptor) {
   const {source,current}=components(descriptor),files=[{path:originBundleNodePath(descriptor.root),bytes:Buffer.byteLength(descriptor.nodeText),sha256:capsuleBytesHash(descriptor.nodeText)},...source.files,...current.files]
     .sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0)
-  const data=files.filter(f=>/\/(?:original|files)\//.test(f.path)).reduce((n,f)=>n+f.bytes,0),total=files.reduce((n,f)=>n+f.bytes,0)
+  const data=files.filter(f=>/\/(?:original|files|contexts)\//.test(f.path)).reduce((n,f)=>n+f.bytes,0),total=files.reduce((n,f)=>n+f.bytes,0)
   if(files.length>MIXED_ORIGIN_BUNDLE_MAX_FILES||files.some((f,i)=>i>0&&files[i-1].path===f.path)
     ||!Number.isSafeInteger(total)||data>DURABLE_SQL_DAG_MAX_ORIGINAL_BYTES||total-data>metadataBudget)return bad('mixed完整文件重复或超原件/metadata预算')
   return freezeCapsuleValue(files)
@@ -96,6 +98,7 @@ export function mixedOriginBundleDirectories(value:MixedOriginBundleDescriptor) 
   const descriptor=validateMixedOriginBundleDescriptor(value),dirs=new Set<string>(['catalog'])
   for(const file of expectedFiles(descriptor)){const parts=file.path.split('/');for(let n=1;n<parts.length;n++)dirs.add(parts.slice(0,n).join('/'))}
   const {source,current}=components(descriptor);dirs.add(source.emptyDirectory);dirs.add(current.emptyDirectory)
+  for (const side of [source, current]) if ('emptyDirectories' in side) for (const directory of side.emptyDirectories ?? []) dirs.add(directory)
   return freezeCapsuleValue([...dirs].sort())
 }
 export const mixedOriginBundleHash=(value:MixedOriginBundleDescriptor)=>capsuleBytesHash('knowbook.prepared-mixed-origin-bundle.v2\0'+capsuleJson(validateMixedOriginBundleDescriptor(value)))
