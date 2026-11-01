@@ -95,16 +95,24 @@ export function requiredRoot3MergeContextLocators3(raw: Capsule2RawContent, opti
  * This path authenticates an already retained W, not a fabricated B/L/R replay.
  * The source's total certifier also validates its actual historical receipts;
  * here the relevant original SQL request/job/phase pair is checked again. */
-export function deriveRoot3SettledWorkingEvidence3(raw: Capsule2RawContent): Map<string, Root3SettledWorkingEvidence3> {
+/** Pure extension point only. It cannot mint a Main owner; only the genuine
+ * sealed-source portable owner constructs this projector internally. */
+export interface Root3SettledCandidateProjectorForMain3 {
+  project(value: unknown, source: readonly string[], rows: readonly ReturnType<typeof graph3Rows>[number][]): {
+    readonly record: SyncedProtocol5Snapshot['records'][number]['record']; readonly binding: unknown
+  } | null
+}
+function deriveSettledWorkingEvidence(raw: Capsule2RawContent, projector?: Root3SettledCandidateProjectorForMain3): Map<string, Root3SettledWorkingEvidence3> {
   const settings = graph3Rows(raw, 'app_settings'), operations = graph3Rows(raw, 'synced_operations')
   const receipts = new Map<string, { row: typeof operations[number]; receipt: M.ExchangeReceipt }>()
   const jobs = new Map<string, { row: typeof settings[number]; job: M.ExchangeJob }>()
   const wanted = new Set<string>()
+  const wantedKeys = new Set<string>()
   for (const row of settings) if (typeof row.value.key === 'string' && row.value.key.startsWith('sync.webdav.protocol5.exchange-job.v1.')) {
     if (typeof row.value.value !== 'string') return fail('original job is not text')
     const job = M.validateExchangeJob(M.parseExchangeStored(row.value.value))
     if ((job.version === 2 || job.version === 5) && root3CustomMergeParts3(job.request).length) {
-      jobs.set(row.value.key, { row, job }); for (const merge of job.merges ?? []) wanted.add(merge.resultHash)
+      jobs.set(row.value.key, { row, job }); for (const merge of job.merges ?? []) { wanted.add(merge.resultHash); wantedKeys.add(merge.key) }
     }
   }
   if (!jobs.size) return new Map()
@@ -123,15 +131,25 @@ export function deriveRoot3SettledWorkingEvidence3(raw: Capsule2RawContent): Map
     if ((receipt.version === 2 || receipt.version === 5) && root3CustomMergeParts3(receipt.request).length && receipt.provenance.attemptId)
       receipts.set(M.exchangeJobKey(receipt.request.operationId, receipt.provenance.attemptId), { row, receipt })
   }
-  const originals = new Map<string, { record: SyncedProtocol5Snapshot['records'][number]['record']; source: readonly string[]; originalRowsHash: string }>()
+  const originals = new Map<string, { record: SyncedProtocol5Snapshot['records'][number]['record']; source: readonly string[]; originalRowsHash: string; portableProjection?: unknown }>()
   const add = (value: unknown, source: readonly string[], rows: readonly ReturnType<typeof graph3Rows>[number][]) => {
     const candidate = object(value), key = candidate.kind === 'document' ? 'doc:' + candidate.id : candidate.kind === 'synced-group' ? 'group:' + candidate.id : null
     if (!key) return
-    const hash = publicationHash(publicationJson(candidate)); if (!wanted.has(hash)) return
-    const record = validateSyncedProtocol5Record(candidate, key)
+    let selected: unknown = candidate, portableProjection: unknown
+    let hash = publicationHash(publicationJson(candidate))
+    if (!wanted.has(hash)) {
+      if (!projector || !wantedKeys.has(key)) return
+      const projected = projector.project(candidate, source, rows)
+      if (!projected) return
+      selected = projected.record; portableProjection = projected.binding
+      hash = publicationHash(publicationJson(selected))
+      if (!wanted.has(hash)) return
+    }
+    const record = validateSyncedProtocol5Record(selected, key)
     if (publicationHash(publicationJson(record)) !== hash) return fail('retained W candidate is not exact canonical typed record')
     const proof = { record, source, originalRowsHash: capsuleBytesHash('knowbook.restore.assets3.settled-original-W-rows.v1\0'
-      + capsuleJson(rows.map(row => ({ table: row.table.name, rowId: row.original.sourceRowId, hash: root3SupplementOriginalRowHash3(raw, row) })))) }
+      + capsuleJson(rows.map(row => ({ table: row.table.name, rowId: row.original.sourceRowId, hash: root3SupplementOriginalRowHash3(raw, row) })))),
+      ...(portableProjection === undefined ? {} : { portableProjection }) }
     const previous = originals.get(hash)
     if (!previous || capsuleJson(source) < capsuleJson(previous.source)) originals.set(hash, proof)
   }
@@ -244,15 +262,25 @@ export function deriveRoot3SettledWorkingEvidence3(raw: Capsule2RawContent): Map
         if (text !== part.text) return fail('settled W custom text/semantic holder mismatch')
         return { id: part.partId, text: part.text }
       })
-      merged.push({ recordKey, record, parts, provenance }); sources.push({ recordKey, resultHash: provenance.resultHash, source: retained.source, originalRowsHash: retained.originalRowsHash })
+      merged.push({ recordKey, record, parts, provenance }); sources.push({ recordKey, resultHash: provenance.resultHash, source: retained.source, originalRowsHash: retained.originalRowsHash,
+        ...(retained.portableProjection === undefined ? {} : { portableProjection: retained.portableProjection }) })
     }
-    const binding = { kind: 'settled-original-working-record' as const, sourceContentHash,
+    const projected = sources.some(source => 'portableProjection' in source)
+    const binding = { kind: projected ? 'settled-original-working-record-portable-projection' as const : 'settled-original-working-record' as const, sourceContentHash,
       jobSettingKey: key, jobHash: M.exchangeJobHash(job), jobOriginalRowHash: root3SupplementOriginalRowHash3(raw, row),
       receiptOriginalRowHash: root3SupplementOriginalRowHash3(raw, receiptRow), phaseRowsHash: capsuleBytesHash('knowbook.restore.assets3.settled-phase-rows.v1\0'
         + capsuleJson(phases.map(value => root3SupplementOriginalRowHash3(raw, value.row)))), sources }
-    evidence.set(key, { job, merged, binding, contextHash: capsuleBytesHash('knowbook.restore.assets3.settled-working-evidence.v1\0' + capsuleJson(binding)) })
+    evidence.set(key, { job, merged, binding, contextHash: capsuleBytesHash((projected ? 'knowbook.restore.assets3.settled-working-evidence.v2\0' : 'knowbook.restore.assets3.settled-working-evidence.v1\0') + capsuleJson(binding)) })
   }
   return evidence
+}
+/** Existing v3 observer keeps its exact original semantics and hash domain. */
+export function deriveRoot3SettledWorkingEvidence3(raw: Capsule2RawContent): Map<string, Root3SettledWorkingEvidence3> {
+  return deriveSettledWorkingEvidence(raw)
+}
+export function deriveRoot3SettledWorkingEvidenceWithProjection3(raw: Capsule2RawContent,
+  projector: Root3SettledCandidateProjectorForMain3): Map<string, Root3SettledWorkingEvidence3> {
+  return deriveSettledWorkingEvidence(raw, projector)
 }
 function snapshot(value: unknown): SyncedProtocol5Snapshot {
   assertSyncedShape(value, ['manifest', 'records'])
