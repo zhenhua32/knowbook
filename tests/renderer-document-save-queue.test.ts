@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { act, createElement, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { JSDOM } from 'jsdom'
 import type { DocumentDetail, UpdateDocumentInput, UpdateDocumentResult } from '../src/shared/contracts'
 import { useDocumentEditorState } from '../src/renderer/src/hooks/useDocumentEditorState'
 import { completeDocumentDraftWrite } from '../src/renderer/src/utils/documentDraftWriter'
 import { getUiText } from '../src/renderer/src/i18n'
+import { beginCanonicalInlineAsyncEdit, hasCanonicalInlineAsyncEdits, installCanonicalInlineTransitions } from '../src/renderer/src/features/synced-blocks/inlineBridge'
 
 type SaveRequest = {
   documentId: string
@@ -78,6 +80,72 @@ async function withEditor(run: (context: {
     dom.window.close()
   }
 }
+
+test('a clean document navigation rechecks the real latest W after its deferred canonical flush and waits for that write acknowledgement', async () => {
+  await withEditor(async ({ getEditor, requests, acknowledge, select }) => {
+    await act(async () => select({ ...documentDetail(), blocks: [{ id: 'a-body', type: 'paragraph', content: 'Original clean W',
+      depth: 0, checked: false, sortOrder: 0, parentBlockId: null }] }))
+    assert.equal(getEditor().hasPendingDraftChanges, false)
+    let release!: () => void, entered!: () => void, calls = 0
+    const deferredFlush = new Promise<void>(done => { release = done })
+    const enteredFlush = new Promise<void>(done => { entered = done })
+    const uninstall = installCanonicalInlineTransitions({}, { locked: () => false, pending: () => false, hostPending: () => false,
+      navigate: async () => true, notifyBlocked: () => {}, flush: async options => {
+        calls++
+        if (calls === 1) { entered(); await deferredFlush }
+        return options?.shouldContinue?.() !== false
+      } })
+    const finish = beginCanonicalInlineAsyncEdit()
+    assert.ok(finish)
+    try {
+      let navigation!: Promise<boolean>, returned = false
+      await act(async () => {
+        navigation = getEditor().flushPendingChanges({ purpose: 'document-navigation' })
+        void navigation.then(() => { returned = true })
+      })
+      await enteredFlush
+      assert.equal(requests.length, 0)
+      await act(async () => flushSync(() => getEditor().updateDraftBlock(0, { content: 'Actual W arrived during the flush' })))
+      assert.equal(getEditor().hasPendingDraftChanges, true)
+      await act(async () => release())
+      assert.equal(requests.length, 1, 'the invocation-time clean boolean must not skip the real body that arrived while awaiting the flush')
+      assert.equal(requests[0].documentId, 'a')
+      assert.equal(requests[0].input.expectedUpdatedAt, 'revision-0')
+      assert.equal(requests[0].input.blocks[0].content, 'Actual W arrived during the flush')
+      assert.equal(returned, false, 'navigation cannot succeed before the actual latest-W write acknowledgement')
+      assert.equal(hasCanonicalInlineAsyncEdits(), true)
+      await act(async () => acknowledge(0, 'revision-latest-w'))
+      assert.equal(await navigation, true)
+      assert.equal(returned, true)
+      assert.equal(hasCanonicalInlineAsyncEdits(), true, 'navigation does not release the original attachment marker')
+      assert.equal(await getEditor().flushPendingChanges(), false, 'default close/save drain still rejects that actual pending import')
+    } finally { release(); finish(); uninstall() }
+  })
+})
+
+test('document navigation saves the actual W while an old attachment view may retire, without releasing its close blocker', async () => {
+  await withEditor(async ({ getEditor, requests, acknowledge }) => {
+    const finish = beginCanonicalInlineAsyncEdit()
+    assert.ok(finish)
+    try {
+      await act(async () => getEditor().setDraftTitle('Saved before navigating away'))
+      assert.equal(await getEditor().flushPendingChanges(), false)
+      assert.equal(requests.length, 0, 'the default close/save drain must not bypass a pending original import')
+      let navigation!: Promise<boolean>
+      await act(async () => { navigation = getEditor().flushPendingChanges({ purpose: 'document-navigation' }) })
+      assert.equal(requests.length, 1, 'navigation still submits the actual ordinary W through the original shared writer')
+      assert.equal(requests[0].input.title, 'Saved before navigating away')
+      assert.equal(requests[0].input.expectedUpdatedAt, 'revision-0')
+      assert.equal(hasCanonicalInlineAsyncEdits(), true)
+      await act(async () => acknowledge(0, 'revision-navigation'))
+      assert.equal(await navigation, true)
+      assert.equal(hasCanonicalInlineAsyncEdits(), true, 'only the original attachment callback may release its marker')
+      assert.equal(await getEditor().flushPendingChanges(), false, 'a later close remains blocked even after navigation saved W')
+    } finally { finish() }
+    assert.equal(hasCanonicalInlineAsyncEdits(), false)
+    assert.equal(await getEditor().flushPendingChanges(), true)
+  })
+})
 
 test('manual saves and navigation share one pending write and acknowledge its revision', async () => {
   await withEditor(async ({ getEditor, getDetail, requests, acknowledge }) => {

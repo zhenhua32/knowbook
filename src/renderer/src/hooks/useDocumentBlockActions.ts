@@ -18,8 +18,8 @@ function canAiEditOpening(opening: Opening): boolean {
   const indices = opening.target.blockIds.map(id => opening.target.blocks.findIndex(block => block.id === id))
   return indices.length > 0 && canAiEditBlockText(opening.target.blocks, { start: Math.min(...indices), end: Math.max(...indices) })
 }
-export function useDocumentBlockActions({ documents, documentTree, isZh, ui, onOpenAiEdit, onInsertDatabaseView }: {
-  documents: DocumentsDomainState; documentTree: DocumentTreeNode[]; isZh: boolean; ui: UiText; onOpenAiEdit?: () => void; onInsertDatabaseView?: (anchorId: string) => void
+export function useDocumentBlockActions({ documents, documentTree, isZh, ui, onOpenAiEdit, onInsertDatabaseView, onCreateSyncedBlock, onInsertSyncedBlock }: {
+  documents: DocumentsDomainState; documentTree: DocumentTreeNode[]; isZh: boolean; ui: UiText; onOpenAiEdit?: () => void; onInsertDatabaseView?: (anchorId: string) => void; onCreateSyncedBlock?: (ids: string[]) => void; onInsertSyncedBlock?: (anchorId: string) => void
 }) {
   const live = useRef(documents), currentMenu = useRef<Opening | null>(null), currentMove = useRef<Opening | null>(null)
   live.current = documents
@@ -188,6 +188,12 @@ export function useDocumentBlockActions({ documents, documentTree, isZh, ui, onO
     onWrapInColumns: () => { void wrapInColumns(menu) },
     onInsertDatabaseView: onInsertDatabaseView && menu.target.blockIds.length === 1 ? () => {
       if (live.current.isBlockActionTargetCurrent(menu.target)) onInsertDatabaseView(menu.target.blockIds[0])
+    } : undefined,
+    onCreateSyncedBlock: onCreateSyncedBlock ? () => {
+      if (live.current.isBlockActionTargetCurrent(menu.target)) onCreateSyncedBlock([...menu.target.blockIds])
+    } : undefined,
+    onInsertSyncedBlock: onInsertSyncedBlock && menu.target.blockIds.length === 1 ? () => {
+      if (live.current.isBlockActionTargetCurrent(menu.target)) onInsertSyncedBlock(menu.target.blockIds[0])
     } : undefined,
     onCopyBlockLinks: () => { void copy(menu) }, onMoveToDocument: () => openMove(menu),
     disabled: copying || documents.isBlockMoveBusy, moveDisabledReason: moveReason(menu),

@@ -1,4 +1,6 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { dirname } from 'node:path'
 import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
 
 async function seedEditors(page: Page) {
@@ -217,28 +219,78 @@ test('outline filtering leaves IME Escape intact and restores the toggle on norm
   })
 })
 
-test('an attachment import finishing after a document switch cannot show its failure in the new document @electron', async () => {
+for (const outcome of ['failure', 'success'] as const) {
+test(`an attachment import finishing after a document switch cannot publish its late ${outcome} in the new document @electron`, async ({}, testInfo) => {
   test.skip(!hasBuiltElectronApp(), 'Run npm run build before Electron tests.')
   await withElectronApp(async ({ page, app }) => {
+    const child = app.process(), events: string[] = []
+    const record = (kind: string, value: unknown = '') => {
+      events.push(JSON.stringify({ at: new Date().toISOString(), kind, value }))
+      if (events.length > 500) events.shift()
+    }
+    const stdout = (chunk: Buffer | string) => record('main-stdout', String(chunk).slice(-16000))
+    const stderr = (chunk: Buffer | string) => record('main-stderr', String(chunk).slice(-16000))
+    const mainConsole = (message: { type: () => string; text: () => string }) => record('main-console', { type: message.type(), text: message.text() })
+    const mainClosed = () => record('electron-app-close')
+    const pageClosed = () => record('renderer-close')
+    const pageCrashed = () => record('renderer-crash')
+    const navigated = () => record('renderer-navigation', page.url())
+    child.stdout?.on('data', stdout); child.stderr?.on('data', stderr)
+    app.on('console', mainConsole); app.on('close', mainClosed)
+    page.on('close', pageClosed); page.on('crash', pageCrashed); page.on('framenavigated', navigated)
+    record('attached', { outcome, launcherPid: child.pid, pageUrl: page.url() })
+    try {
     const ids = await seedEditors(page)
     await app.evaluate(({ ipcMain }) => {
       type Handler = (event: unknown, input: unknown) => unknown
       const original = (ipcMain as unknown as { _invokeHandlers: Map<string, Handler> })._invokeHandlers.get('knowbook:import-attachments')!
-      const pending: Array<{ event: unknown; input: unknown; resolve: (value: unknown) => void; reject: (error: Error) => void }> = []
+      const pending: Array<{ event: unknown; input: unknown; resolve: (value: unknown) => void; reject: (error: unknown) => void }> = []
       process.env.KNOWBOOK_ASSIST_IMPORT_COUNT = '0'
       ipcMain.removeHandler('knowbook:import-attachments')
       ipcMain.handle('knowbook:import-attachments', (event, input) => new Promise((resolve, reject) => {
         pending.push({ event, input, resolve, reject })
         process.env.KNOWBOOK_ASSIST_IMPORT_COUNT = String(pending.length)
       }))
-      ipcMain.on('knowbook:test-assist-import-settle', (_event, result: { index: number; fail: boolean }) => {
+      type Completion = { index: number; status: 'injected-failure' | 'original-resolved' | 'original-rejected'; error?: string }
+      ipcMain.on('knowbook:test-assist-import-settle', (_event, result: { index: number; fail: boolean }, complete: (value: Completion) => void) => {
         const request = pending[result.index]
-        if (result.fail) request.reject(new Error('Failure belonging to document A'))
-        else Promise.resolve(original(request.event, request.input)).then(request.resolve, request.reject)
+        console.error('[attachment-fixture]', JSON.stringify({ phase: 'settle-received', ...result, pending: pending.length }))
+        if (!request) { complete({ index: result.index, status: 'original-rejected', error: 'Missing actual pending import' }); return }
+        if (result.fail) {
+          request.reject(new Error('Failure belonging to document A'))
+          complete({ index: result.index, status: 'injected-failure' })
+          return
+        }
+        const rejected = (error: unknown) => {
+          console.error('[attachment-fixture]', JSON.stringify({ phase: 'original-import-rejected', index: result.index, error: String(error) }))
+          request.reject(error)
+          complete({ index: result.index, status: 'original-rejected', error: String(error) })
+        }
+        let imported: unknown
+        try { imported = original(request.event, request.input) }
+        catch (error) { rejected(error); return }
+        // The real asynchronous import owns this completion callback until it
+        // settles. This is a fixture handshake, never a replacement Main ACK.
+        Promise.resolve(imported).then(value => {
+          console.error('[attachment-fixture]', JSON.stringify({ phase: 'original-import-resolved', index: result.index }))
+          request.resolve(value)
+          complete({ index: result.index, status: 'original-resolved' })
+        }, rejected)
       })
     })
     const count = () => app.evaluate(() => Number(process.env.KNOWBOOK_ASSIST_IMPORT_COUNT))
-    const settle = (index: number, fail: boolean) => app.evaluate(({ ipcMain }, result) => { ipcMain.emit('knowbook:test-assist-import-settle', null, result) }, { index, fail })
+    const settle = async (index: number, fail: boolean) => {
+      record('settle-before', { index, fail, pageUrl: page.url(), pageClosed: page.isClosed(), exitCode: child.exitCode, signalCode: child.signalCode })
+      try {
+        const completion = await app.evaluate(({ ipcMain }, result) => new Promise<{
+          index: number; status: 'injected-failure' | 'original-resolved' | 'original-rejected'; error?: string
+        }>(complete => {
+          ipcMain.emit('knowbook:test-assist-import-settle', null, result, complete)
+        }), { index, fail })
+        record('settle-evaluate-returned', { index, fail, completion })
+        expect(completion).toEqual({ index, status: fail ? 'injected-failure' : 'original-resolved' })
+      } catch (error) { record('settle-evaluate-error', { index, fail, error: String(error) }); throw error }
+    }
     await page.locator('.block-inline-textarea').first().evaluate(element => {
       const transfer = new DataTransfer()
       transfer.items.add(new File(['old document file'], 'old-A.txt', { type: 'text/plain' }))
@@ -248,10 +300,15 @@ test('an attachment import finishing after a document switch cannot show its fai
     await openEditor(page, 'Assist source B')
     await page.getByRole('button', { name: uiText('Images and attachments', '图片与附件'), exact: true }).click()
     const dialog = page.locator('.attachment-dialog')
-    await settle(0, true)
+    await settle(0, outcome === 'failure')
     await expect(dialog.locator('input[type=file]')).toBeEnabled()
     await expect(dialog.getByRole('alert')).toHaveCount(0)
-    await expect(page.locator('.app-notification-error')).toHaveCount(0)
+    try {
+      await expect(page.locator('.app-notification-error')).toHaveCount(0)
+    } catch (error) {
+      record('unexpected-app-errors', await page.locator('.app-notification-error').allTextContents())
+      throw error
+    }
     await expect(page.locator('.block-inline-textarea').first()).toHaveValue('Original B text')
     await dialog.locator('input[type=file]').setInputFiles({ name: 'current-B.txt', mimeType: 'text/plain', buffer: Buffer.from('current document file') })
     await expect.poll(count).toBe(2)
@@ -261,5 +318,15 @@ test('an attachment import finishing after a document switch cannot show its fai
     await page.keyboard.press('Control+s')
     await expect.poll(() => page.evaluate(async id => (await window.knowbook.getDocumentDetail(id))!.blocks.some(block => block.content.includes('current-B.txt')), ids.other)).toBe(true)
     expect((await page.evaluate(id => window.knowbook.getDocumentDetail(id), ids.source))!.blocks[0].content).toBe('Original A text')
+    } finally {
+      record('before-test-teardown', { pageClosed: page.isClosed(), pageUrl: page.url(), exitCode: child.exitCode, signalCode: child.signalCode })
+      child.stdout?.off('data', stdout); child.stderr?.off('data', stderr)
+      app.off('console', mainConsole); app.off('close', mainClosed)
+      page.off('close', pageClosed); page.off('crash', pageCrashed); page.off('framenavigated', navigated)
+      const artifact = testInfo.outputPath('attachment-lifecycle.txt')
+      mkdirSync(dirname(artifact), { recursive: true }); writeFileSync(artifact, events.join('\n') + '\n')
+      await testInfo.attach('attachment-lifecycle', { path: artifact, contentType: 'text/plain' })
+    }
   })
 })
+}

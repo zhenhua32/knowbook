@@ -51,6 +51,8 @@ async function withHost(run: (api: Fixture) => Promise<void>, options: {
   submit?: (prepared: PreparedSyncedHostSource) => Promise<boolean>
   adopt?: boolean
   composition?: (composing: boolean) => void
+  host?: SyncedHostWorkingBefore
+  isZh?: boolean
 } = {}) {
   const dom = new JSDOM('<button id="opener-a">Host source A</button><button id="opener-b">Host source B</button><div id="mount"></div>',
     { url: 'https://fixture.local', pretendToBeVisual: true })
@@ -70,11 +72,11 @@ async function withHost(run: (api: Fixture) => Promise<void>, options: {
   })
   Object.assign(dom.window.Range.prototype, { getClientRects: () => [], getBoundingClientRect: () => new dom.window.DOMRect() })
   const { createRoot } = await import('react-dom/client'), root = createRoot(dom.window.document.getElementById('mount')!)
-  let current: SyncedHostSourceCurrent = { hostSession: {}, editSequence: 7, host: initialHost() }, closed = 0
+  let current: SyncedHostSourceCurrent = { hostSession: {}, editSequence: 7, host: options.host ?? initialHost() }, closed = 0
   const calls: PreparedSyncedHostSource[] = []
   const props: SyncedHostSourceDialogProps = {
     sessionKey: {}, getCurrent: () => current, isCurrent: () => true, opener: dom.window.document.getElementById('opener-a'),
-    isZh: false, onCompositionChange: options.composition,
+    isZh: options.isZh ?? false, onCompositionChange: options.composition,
     onClose: () => { closed++; root.render(null) },
     applyPrepared: async prepared => {
       calls.push(prepared)
@@ -124,6 +126,25 @@ test('host Source submits only exact prepared fields with complete W and closes 
     assert.deepEqual(prepared.finalAfter[0].blocks[1], { ...before.workingBefore.blocks[1], content: 'Tail edited' })
     assert.equal(api.current().editSequence, sequence + 1)
   }, { submit: async () => true })
+})
+
+test('the real Source textbox retains the ordinary accessible name and uses the host name only for actual opening W references in both languages', async () => {
+  for (const isZh of [false, true]) {
+    const ordinary = initialHost()
+    ordinary.workingBefore.blocks = ordinary.workingBefore.blocks.filter(block => block.type !== 'synced-block')
+    await withHost(async api => {
+      assert.equal(api.view().contentDOM.getAttribute('role'), 'textbox')
+      assert.equal(api.view().contentDOM.getAttribute('aria-label'), isZh ? 'Markdown 正文源码' : 'Markdown body source')
+      assert.equal(api.calls.length, 0)
+      assert.equal(api.closes(), 0)
+    }, { host: ordinary, isZh })
+    await withHost(async api => {
+      assert.equal(api.view().contentDOM.getAttribute('role'), 'textbox')
+      assert.equal(api.view().contentDOM.getAttribute('aria-label'), isZh ? '宿主正文 Markdown 源码' : 'Host body Markdown source')
+      assert.equal(api.calls.length, 0)
+      assert.equal(api.closes(), 0)
+    }, { isZh })
+  }
 })
 
 test('changed title, summary, body, persisted baseline, editSequence or host lease rejects the old Apply without losing its CM draft', async () => {

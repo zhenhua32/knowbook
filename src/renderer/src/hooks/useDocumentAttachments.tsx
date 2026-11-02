@@ -1,6 +1,6 @@
 import { beginCanonicalInlineAsyncEdit, waitForCanonicalInlineUnlock } from '../features/synced-blocks/inlineBridge'
 import { isIndependentEditorIsland } from '../utils/editorIsland'
-import { useEffect, useId, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type MouseEvent, type KeyboardEvent } from 'react'
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type MouseEvent, type KeyboardEvent } from 'react'
 import { createPortal, flushSync } from 'react-dom'
 import { serializeBlocksToMarkdown } from '@shared/markdown'
 import { collectMarkdownDestinations } from '@shared/markdownLinks'
@@ -14,9 +14,12 @@ import '../components/attachments.css'
 export function useDocumentAttachments(documents: DocumentsDomainState, zh: boolean) {
   const latest = useRef(documents), active = useRef(true), locked = useRef(false), dialogRef = useRef<HTMLDialogElement>(null), titleId = useId()
   latest.current = documents
+  const visit = useRef(0)
   const [dialogDocumentId, setDialogDocumentId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false), [error, setError] = useState(''), [dragging, setDragging] = useState(false)
   const open = Boolean(dialogDocumentId && dialogDocumentId === documents.selectedDocumentId)
+  // A returning document ID can belong to a new visit with identical body.
+  useLayoutEffect(() => { visit.current++ }, [documents.selectedDocumentId, documents.detailLoading])
   useEffect(() => { active.current = true; return () => { active.current = false } }, [])
   useEffect(() => { setDialogDocumentId(null); setError(''); setDragging(false) }, [documents.selectedDocumentId])
   useEffect(() => {
@@ -31,20 +34,22 @@ export function useDocumentAttachments(documents: DocumentsDomainState, zh: bool
   const insert = async (files: File[], target?: AttachmentInsertion) => {
     const initial = latest.current, documentId = initial.selectedDocumentId
     if (!documentId || initial.detailLoading || !files.length) return
+    const generation = visit.current
+    const isCurrent = () => active.current && visit.current === generation && latest.current.selectedDocumentId === documentId && !latest.current.detailLoading
     if (locked.current) { notify(zh ? '请等待当前附件导入完成。' : 'Wait for the current import to finish.', 'info'); return }
     const finish = beginCanonicalInlineAsyncEdit(); if (!finish) return
     locked.current = true; setBusy(true); setError('')
     try {
       const attachments = await importAttachmentFiles(files)
       await waitForCanonicalInlineUnlock()
-      if (!active.current || latest.current.selectedDocumentId !== documentId || latest.current.detailLoading) return
+      if (!isCurrent()) return
       const editor = latest.current
       const next = insertAttachmentBlocks(editor.getDraftBlocks(), attachments, target)
       flushSync(() => { editor.checkpointDraft(); editor.clearBlockSelection(); editor.setDraftBlocks(next) })
       finish(); editor.setIsReadingMode(false)
       notify(zh ? `已插入 ${attachments.length} 个附件。` : `Inserted ${attachments.length} attachments.`)
     } catch (error) {
-      if (active.current && latest.current.selectedDocumentId === documentId && !latest.current.detailLoading) {
+      if (isCurrent()) {
         const message = normalizeErrorMessage(error instanceof Error ? error.message : String(error),
           zh ? '操作失败，请重试。' : 'Action failed. Please retry.')
         setError(message); notify(message, 'error')

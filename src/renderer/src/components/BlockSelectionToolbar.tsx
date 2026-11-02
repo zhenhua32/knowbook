@@ -6,6 +6,8 @@ type BlockSelectionToolbarProps = {
   conversionDisabled?: boolean
   aiEditDisabled?: boolean
   onWrapInColumns?: () => void
+  onCreateSyncedBlock?: () => void
+  createSyncedBlockLabel?: string
   wrapInColumnsLabel?: string
   onCopyBlockLinks?: () => void
   onMoveToDocument?: () => void
@@ -104,6 +106,7 @@ export function BlockSelectionToolbar(props: BlockSelectionToolbarProps) {
         {moveDisabledReason ? <p className="mini-hint" role="status">{moveDisabledReason}</p> : null}
       </div>
       <div className="block-selection-actions">
+        {props.onCreateSyncedBlock ? <button className="secondary-button" disabled={disabled} type="button" onClick={props.onCreateSyncedBlock}>{props.createSyncedBlockLabel}</button> : null}
         {props.onWrapInColumns ? <button className="secondary-button" disabled={disabled} type="button" onClick={props.onWrapInColumns}>{props.wrapInColumnsLabel}</button> : null}
         <select
           className="editor-select compact-select" disabled={disabled || props.conversionDisabled} aria-label={convertLabel}

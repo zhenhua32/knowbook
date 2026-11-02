@@ -39,6 +39,7 @@ function HostSourceOpening(props: SyncedHostSourceDialogProps & { ownsOpening: (
       || state.editSequence < 0) throw new Error('The host Source opening is unavailable')
     const draft = createSyncedHostSourceDraft(state.host)
     return { sessionKey: {}, draft, hostSession: state.hostSession, editSequence: state.editSequence,
+      hasSyncedReferences: state.host.workingBefore.blocks.some(block => block.type === 'synced-block'),
       opener: props.opener, isCurrent: props.isCurrent, applyPrepared: props.applyPrepared, onCompositionChange: props.onCompositionChange }
   })
   const isCurrent = () => {
@@ -50,7 +51,9 @@ function HostSourceOpening(props: SyncedHostSourceDialogProps & { ownsOpening: (
     createDraft={() => opening.draft} replaceChanges={applySyncedHostSourceChanges}
     isCurrent={isCurrent} getReturnFocus={() => opening.opener} onCompositionChange={opening.onCompositionChange}
     text={{ title: props.isZh ? '编辑宿主正文源码' : 'Edit host body source',
-      editorLabel: props.isZh ? '宿主正文 Markdown 源码' : 'Host body Markdown source',
+      editorLabel: opening.hasSyncedReferences
+        ? props.isZh ? '宿主正文 Markdown 源码' : 'Host body Markdown source'
+        : props.isZh ? 'Markdown 正文源码' : 'Markdown body source',
       hint: props.isZh ? '引用以受保护的源码块显示；应用后保存正文。'
         : 'References appear as protected source blocks. Apply saves your body changes.',
       conflict: props.isZh ? '宿主正文、标题、摘要或编辑会话已变化。当前源码已保留，请复制后重新打开。'

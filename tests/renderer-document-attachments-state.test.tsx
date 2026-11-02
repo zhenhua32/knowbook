@@ -170,6 +170,41 @@ test('a late success from A still cannot insert an attachment or notify while B 
   })
 })
 
+test('an attachment completion cannot cross A-B-A visits with identical body, while a new request in the returned visit still succeeds', async () => {
+  for (const outcome of ['success', 'failure'] as const) {
+    await withAttachments(async ({ document, requests, changes, render, open, upload }) => {
+      await render('A')
+      await open()
+      await upload()
+      assert.equal(requests.length, 1)
+      const originalBody = document.querySelector<HTMLTextAreaElement>('.block-inline-textarea')!.value
+      await render('B')
+      await render('A')
+      assert.equal(document.querySelector<HTMLTextAreaElement>('.block-inline-textarea')!.value, originalBody)
+      await open()
+      assert.equal(uploadInput(document).disabled, true, 'the original request still owns its import lock')
+      await act(async () => {
+        if (outcome === 'success') requests[0].resolve([attachment])
+        else requests[0].reject(new Error('The previous A visit failed'))
+      })
+      assert.equal(changes.length, 0, 'equal document ID and body do not authorize the old visit to insert')
+      assert.equal(alert(document), null)
+      assert.deepEqual(appNotifications.getHistorySnapshot(), [], 'the old visit publishes neither success nor failure')
+      assert.equal(uploadInput(document).disabled, false)
+      assert.equal(document.querySelector('.attachment-import-status'), null)
+      await upload()
+      assert.equal(requests.length, 2, 'settling the old request releases only its original lock')
+      await act(async () => requests[1].resolve([attachment]))
+      assert.equal(changes.length, 1)
+      assert.equal(changes[0].documentId, 'A')
+      assert.equal(changes[0].blocks[0].content, originalBody)
+      assert.match(changes[0].blocks[1].content, /report\.pdf/)
+      assert.equal(appNotifications.getHistorySnapshot().length, 1)
+      assert.equal(appNotifications.getHistorySnapshot()[0].level, 'success')
+    })
+  }
+})
+
 test('a failure during document detail loading is ignored consistently with successful imports', async () => {
   await withAttachments(async ({ document, requests, changes, render, open, upload }) => {
     await render('A')

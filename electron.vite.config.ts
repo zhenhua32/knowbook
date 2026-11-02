@@ -90,6 +90,7 @@ export default defineConfig(async ({ command }): Promise<ElectronViteConfig> => 
     },
     build: {
       minify: 'terser',
+      terserOptions: { compress: { passes: 2 } },
       rollupOptions: {
         output: {
           // Share and cache the parser independently of the app entry and pages.

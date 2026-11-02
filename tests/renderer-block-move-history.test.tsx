@@ -157,7 +157,7 @@ test('moving a source subtree waits for whole-pair IPC and undo/redo never repla
     assert.deepEqual(ids(api.current()), ['stay']); assert.equal(api.current().canUndo, true)
     assert.equal(backend.calls.saves.length, 0)
     const undo = backend.hold('undo')
-    await act(async () => api.current().undoEdit())
+    await act(async () => { void api.current().undoEdit() })
     await waitForRenderer(() => backend.calls.undos.length === 1, 'Undo must call paired IPC')
     assert.deepEqual(ids(api.current()), ['stay']); assert.equal(api.current().isBlockMoveBusy, true)
     assert.deepEqual(backend.calls.undos[0].expectedUpdatedAtByDocument, { source: 'source-v2', target: 'target-v2', refs: 'refs-v2' })
@@ -167,7 +167,7 @@ test('moving a source subtree waits for whole-pair IPC and undo/redo never repla
     assert.equal(api.input('move').selectionDirection, 'backward')
     assert.equal(api.current().draftBlocks[1].parentBlockId, 'move')
     const redo = backend.hold('redo')
-    await act(async () => api.current().redoEdit())
+    await act(async () => { void api.current().redoEdit() })
     await waitForRenderer(() => backend.calls.redos.length === 1, 'Redo must call paired IPC')
     assert.deepEqual(ids(api.current()), ['move', 'child', 'stay'])
     assert.deepEqual(backend.calls.redos[0].expectedUpdatedAtByDocument, { source: 'source-v3', target: 'target-v3', refs: 'refs-v3' })
@@ -184,7 +184,7 @@ test('CAS rejection preserves move history, draft and retry direction for both u
   await withEditor(backend, async api => {
     await waitForRenderer(() => api.current().canUndo, 'Persisted paired undo must hydrate')
     const applied = clone(api.current().draftBlocks), rejectedUndo = backend.hold('undo')
-    await act(async () => api.current().undoEdit())
+    await act(async () => { void api.current().undoEdit() })
     await waitForRenderer(() => backend.calls.undos.length === 1, 'The held undo request must start')
     await act(async () => rejectedUndo.reject(new Error('CAS: target changed')))
     await waitForRenderer(() => !api.current().isBlockMoveBusy, 'Rejected undo must release the busy lock')
@@ -194,7 +194,7 @@ test('CAS rejection preserves move history, draft and retry direction for both u
     await waitForRenderer(() => !api.current().isBlockMoveBusy && api.current().canRedo, 'A second undo must retry the same paired operation')
     assert.equal(backend.calls.undos.length, 2)
     const undone = clone(api.current().draftBlocks), rejectedRedo = backend.hold('redo')
-    await act(async () => api.current().redoEdit())
+    await act(async () => { void api.current().redoEdit() })
     await waitForRenderer(() => backend.calls.redos.length === 1, 'The held redo request must start')
     await act(async () => rejectedRedo.reject(new Error('CAS: reference document changed')))
     await waitForRenderer(() => !api.current().isBlockMoveBusy, 'Rejected redo must release the busy lock')
@@ -306,7 +306,9 @@ for (const transition of ['undo', 'redo'] as const) {
         const active = api.input('stay')
         await act(async () => active.setSelectionRange(1, 4, 'forward'))
         const gate = backend.hold(transition)
-        await act(async () => transition === 'undo' ? api.current().undoEdit() : api.current().redoEdit())
+        // Start the real action like a UI click; this fixture deliberately
+        // releases its held IPC only after checking the in-flight state below.
+        await act(async () => { void (transition === 'undo' ? api.current().undoEdit() : api.current().redoEdit()) })
         const calls = transition === 'undo' ? backend.calls.undos : backend.calls.redos
         await waitForRenderer(() => calls.length === 1, `The paired ${transition} must wait for its held acknowledgement`)
         assert.equal(api.current().isBlockMoveBusy, true)

@@ -20,6 +20,7 @@ type DocumentPreviewHeaderProps = {
   onSaveMarkdown: () => void
   onCheckLinks?: () => void
   onEditMarkdownSource?: () => void
+  onInsertSyncedBlock?: () => void
   onOpenHistory?: () => void
   onOpenAttachments?: () => void
   onAddChild: () => void
@@ -189,6 +190,7 @@ export function DocumentPreviewHeader(props: DocumentPreviewHeaderProps) {
           onSaveMarkdown={onSaveMarkdown}
           onCheckLinks={onCheckLinks}
           onEditMarkdownSource={onEditMarkdownSource}
+          onInsertSyncedBlock={props.onInsertSyncedBlock}
           onOpenHistory={props.onOpenHistory}
           onUndo={onUndo}
           onRedo={onRedo}

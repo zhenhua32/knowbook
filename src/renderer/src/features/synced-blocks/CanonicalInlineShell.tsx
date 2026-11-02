@@ -4,6 +4,7 @@ import type { AppMessageHandler } from '../../notify'
 import { getCanonicalInlineRuntime } from './inlineRuntime'
 import { SyncedCanonicalSourceDialog } from './SyncedCanonicalSourceDialog'
 import { SyncedHostSourceDialog } from './SyncedHostSourceDialog'
+import { SyncedStructureDialog } from './SyncedStructureDialog'
 
 /** Global lifetime: an expired document mount cannot silently discard the
  * exact opening Source buffer. Only its actual Cancel/accepted Apply closes it. */
@@ -16,7 +17,10 @@ export default function CanonicalInlineShell({ documents, isZh, notify, workspac
   runtime.configure({ getPersisted: () => latest.current.documents.selectedDocument, getCurrent: () => latest.current.documents.getSyncedHostEditorState(),
     applyOrdinarySource: (before, after) => latest.current.documents.applyOrdinaryMarkdownSource(before, after),
     adopt: (before, result) => latest.current.documents.adoptSyncedHostStructureResult(before, result),
+    adoptHistory: (before, result) => latest.current.documents.adoptSyncedHostHistoryResult(before, result),
     flushHost: () => latest.current.documents.flushPendingChanges(),
+    isComposing: () => latest.current.documents.isSyncedHostComposing(),
+    canStartStructure: () => !latest.current.documents.isSaving && !latest.current.documents.isBlockMoveBusy && !latest.current.documents.isSyncedHostComposing(),
     navigateHost: (id, instanceId, current) => latest.current.documents.openDocumentBlockInDocumentsPage(id, instanceId, current),
     isReady: () => {
       const current = latest.current, editor = current.documents
@@ -80,6 +84,7 @@ export default function CanonicalInlineShell({ documents, isZh, notify, workspac
       if (!runtime.isLocked()) unlock()
     }
   }, [runtime])
+  if (state.command) return <SyncedStructureDialog commands={runtime.commands} view={state.command} isZh={isZh} />
   const dialog = state.dialog
   if (!dialog) return null
   return dialog.kind === 'canonical'

@@ -65,6 +65,19 @@ export function DocumentsPage({
 }: DocumentsPageProps) {
   const runtime = getCanonicalInlineRuntime(), currentHost = documents.getSyncedHostEditorState()
   const openHostSource = () => { void runtime.openHostSource(document.activeElement instanceof HTMLElement ? document.activeElement : null) }
+  const openCreateSyncedBlock = (ids: string[]) => {
+    const target = documents.getBlockActionTarget(ids)
+    if (!target) { documents.notifyBlockAction(isZh ? '请选择当前完整内容块。' : 'Select complete blocks in the current body.'); return }
+    runtime.commands.openCreate(target.blockIds, () => documents.isBlockActionTargetCurrent(target),
+      document.activeElement instanceof HTMLElement ? document.activeElement : null)
+  }
+  const openInsertSyncedBlock = (anchorId: string | null) => {
+    const original = documents.getRenameTarget()
+    if (!original) return
+    runtime.commands.openInsert(anchorId, () => { const current = documents.getRenameTarget()
+      return current?.documentId === original.documentId && current.session === original.session },
+    document.activeElement instanceof HTMLElement ? document.activeElement : null)
+  }
   const [webClipBusy, setWebClipBusy] = useState(false)
   const webClipInFlight = useRef(false)
   const [webClipUrlDraft, setWebClipUrlDraft] = useState('')
@@ -90,7 +103,7 @@ export function DocumentsPage({
   })
 
   const blockActions = useDocumentBlockActions({ documents, documentTree, isZh, ui, onOpenAiEdit: selectionAi.openSelectionAiEditor,
-    onInsertDatabaseView: id => databaseViews.insert(id) })
+    onInsertDatabaseView: id => databaseViews.insert(id), onCreateSyncedBlock: openCreateSyncedBlock, onInsertSyncedBlock: openInsertSyncedBlock })
 
   const handleClipWebPage = async () => {
     if (!documents.selectedDocument || documents.detailLoading
@@ -437,12 +450,13 @@ export function DocumentsPage({
           onUndo: documents.undoEdit, onRedo: documents.redoEdit, onOpenBlockActions: blockActions.openBlockActions,
           onEditSource: openHostSource }}
         previewHeaderProps={{ ...previewHeaderProps, pluginMenuContent, onOpenHistory, onRename: rename.open, onOpenAttachments: attachments.openAttachments, onCheckLinks: () => setLinkCheckDocumentId(documents.selectedDocumentId),
-          onEditMarkdownSource: openHostSource }}
+          onEditMarkdownSource: openHostSource, onInsertSyncedBlock: () => openInsertSyncedBlock(null) }}
         relationGroups={relationGroups}
         selectedDocument={documents.selectedDocument}
         selectionAiContent={selectionAiContent}
         selectionToolbarProps={selectionToolbarProps ? { ...selectionToolbarProps, onWrapInColumns: blockActions.wrapSelectedInColumns,
-          wrapInColumnsLabel: isZh ? '放入两列分栏' : 'Wrap in two columns' } : null}
+          wrapInColumnsLabel: isZh ? '放入两列分栏' : 'Wrap in two columns',
+          onCreateSyncedBlock: () => openCreateSyncedBlock(blockActions.selectedBlockActionIds()), createSyncedBlockLabel: isZh ? '创建同步块…' : 'Create synced block…' } : null}
         summaryCardProps={summaryCardProps}
         visibleEditorRows={visibleEditorRows}
       />}

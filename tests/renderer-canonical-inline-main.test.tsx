@@ -96,6 +96,7 @@ test('real Main sessions drive React inline and CM Source across three reference
     let current = currentFor(f.hostId), displayed = [f.firstInstanceId, f.secondInstanceId]
     runtime.configure({ getCurrent: () => current.state, getPersisted: () => current.detail,
       adopt: () => { throw new Error('Canonical Source must not adopt a host structure ACK') },
+      adoptHistory: () => { throw new Error('Canonical Source must not adopt a host history ACK') },
       flushHost: () => runtime.flush(), navigateHost: async () => false,
       selectedHostId: () => current.state.host.documentId, notify: message => { notices.push(message) }, isZh: false })
     function SourceOutlet() {

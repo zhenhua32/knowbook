@@ -157,6 +157,11 @@ for (const surface of ['workspace', 'auxiliary'] as const) {
         await prompt.fill('Obsolete question about the first topic')
         await find.click()
         await expect(searching).toBeDisabled()
+        // Busy state precedes the lazy action/IPC. This scenario needs a real
+        // older request whose response can arrive after the next question.
+        await expect.poll(() => app.evaluate(({ ipcMain }) => new Promise(resolve => {
+          ipcMain.emit('knowbook:test-ai-request-ids', null, resolve)
+        }))).toEqual({ answers: [], searches: [ids.a] })
         await prompt.fill('Current question about a different topic')
         await prompt.press('Control+Enter')
         await expect(panel.getByRole('button', { name: uiText('Thinking...', '思考中...'), exact: true })).toBeDisabled()
@@ -181,6 +186,11 @@ for (const surface of ['workspace', 'auxiliary'] as const) {
           await find.click()
           await expect(searching).toBeDisabled()
         }
+        // Even a cached dynamic import yields before the Main handler. Settle
+        // only an actually received request; never manufacture a deferred one.
+        await expect.poll(() => app.evaluate(({ ipcMain }) => new Promise(resolve => {
+          ipcMain.emit('knowbook:test-ai-request-ids', null, resolve)
+        }))).toEqual({ answers: [ids.a], searches: [ids.a, ids.a] })
         await settleRequests(app, 1, 'Current topic', false, 'search')
         await expect(panel.locator('.ai-context-title')).toHaveText('Current topic related note')
         await expect(find).toBeEnabled()

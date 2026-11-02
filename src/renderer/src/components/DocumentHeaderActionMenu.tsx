@@ -27,6 +27,7 @@ type DocumentHeaderActionMenuProps = {
   onSaveMarkdown: () => void
   onCheckLinks?: () => void
   onEditMarkdownSource?: () => void
+  onInsertSyncedBlock?: () => void
   onOpenHistory?: () => void
   onUndo: () => void
   onRedo: () => void
@@ -108,6 +109,7 @@ export function DocumentHeaderActionMenu(props: DocumentHeaderActionMenuProps) {
             {props.onOpenHistory && <button className="context-menu-item" onClick={() => runAndClose(props.onOpenHistory!)} type="button">
               {isZh ? '文档历史' : 'Document history'}
             </button>}
+            {props.onInsertSyncedBlock && <button className="context-menu-item" onClick={() => runAndClose(props.onInsertSyncedBlock!)} type="button">{isZh ? '插入同步块…' : 'Insert synced block…'}</button>}
             {onEditMarkdownSource && <button className="context-menu-item" onClick={() => runAndClose(onEditMarkdownSource)} type="button">
               {isZh ? '编辑 Markdown 源码' : 'Edit Markdown source'}
             </button>}

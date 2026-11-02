@@ -1,5 +1,5 @@
 import type { SyncedHostSourceCurrent } from '../features/synced-blocks/SyncedHostSourceDialog'
-import { hasCanonicalInlinePendingChanges, flushCanonicalInlinePendingChanges, canonicalInlineInputLocked } from '../features/synced-blocks/inlineBridge'
+import { hasCanonicalInlinePendingChanges, flushCanonicalInlinePendingChanges, canonicalInlineInputLocked, type CanonicalInlineFlushOptions } from '../features/synced-blocks/inlineBridge'
 import { isTaskBlockType, canBlockHaveParent } from '@shared/blockTypes'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DocumentBlockDraft } from '@shared/contracts'
@@ -84,7 +84,7 @@ export function useDocumentsDomainState({
   const blockTextareaRefs = useRef<Array<HTMLTextAreaElement | null>>([])
   const historyRevealBlockRef = useRef<((id: string) => void) | null>(null)
   const revealHistoryBlock = useCallback((id: string) => historyRevealBlockRef.current?.(id), [])
-  const flushPendingDocumentChangesRef = useRef<() => Promise<boolean>>(async () => true)
+  const flushPendingDocumentChangesRef = useRef<(options?: Pick<CanonicalInlineFlushOptions, 'purpose'>) => Promise<boolean>>(async () => true)
 
   const {
     clearMoveTarget,
@@ -113,7 +113,7 @@ export function useDocumentsDomainState({
   } = useHighlightedBlockState()
   const handleBeforeOpenDocument = useCallback(async () => {
     setHighlightedBlockId(null)
-    return flushPendingDocumentChangesRef.current()
+    return flushPendingDocumentChangesRef.current({ purpose: 'document-navigation' })
   }, [setHighlightedBlockId])
   const {
     detailLoading,
@@ -165,6 +165,7 @@ export function useDocumentsDomainState({
     getDraftBlocks,
     getSyncedHostEditorState,
     adoptSyncedHostStructureResult,
+    adoptSyncedHostHistoryResult,
     applyOrdinaryMarkdownSource,
     isSyncedHostComposing,
     hasPendingDraftChanges,
@@ -677,6 +678,7 @@ export function useDocumentsDomainState({
     getDraftBlocks,
     getSyncedHostEditorState,
     adoptSyncedHostStructureResult,
+    adoptSyncedHostHistoryResult,
     applyOrdinaryMarkdownSource,
     isSyncedHostComposing,
     draggingBlockIndex,

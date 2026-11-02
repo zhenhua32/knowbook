@@ -64,6 +64,7 @@ test('inline runtime preserves an uncertain original nonce/W, blocks local Sourc
   const runtime = getCanonicalInlineRuntime()
   runtime.configure({ getCurrent: () => current, getPersisted: () => after ?? persisted,
     adopt: () => { throw new Error('No host adoption requested by this unit') },
+    adoptHistory: () => { throw new Error('No host history adoption requested by this unit') },
     flushHost: async () => true, navigateHost: async () => false, notify: message => { notices.push(message) },
     selectedHostId: () => current.host.documentId, isZh: false })
   try {
@@ -85,7 +86,7 @@ test('inline runtime preserves an uncertain original nonce/W, blocks local Sourc
 
     assert.equal(runtime.closeReady(), false, 'an empty controller registry is not an initialized editor flush proof')
     const originalPort = { getCurrent: () => current, getPersisted: () => after ?? persisted,
-      adopt: () => false, flushHost: async () => true, navigateHost: async () => false,
+      adopt: () => false, adoptHistory: () => false, flushHost: async () => true, navigateHost: async () => false,
       selectedHostId: () => current.host.documentId, notify: (message: string) => { notices.push(message) }, isZh: false }
     let initialized = false
     runtime.configure({ ...originalPort, isReady: () => initialized, requiresHostSurface: () => true })
@@ -104,9 +105,13 @@ test('inline runtime preserves an uncertain original nonce/W, blocks local Sourc
     runtime.configure(originalPort)
 
     const finishAttachment = beginCanonicalInlineAsyncEdit(); assert.ok(finishAttachment)
+    assert.equal(await runtime.flush({ purpose: 'document-navigation' }), true,
+      'a real document transition may retire the original attachment view while keeping its marker')
     const attachmentClose = randomUUID(); closeRequests.push(attachmentClose)
     const beforeAttachmentClose = requests.length
     runtime.freeze(attachmentClose)
+    assert.equal(await runtime.flush({ purpose: 'document-navigation' }), false,
+      'navigation is never a bypass of the actual close lock')
     assert.equal(await runtime.flush({ shouldContinue: () => runtime.ownsClose(attachmentClose) }), false)
     let resumed = false
     const originalAttachmentCallback = waitForCanonicalInlineUnlock().then(() => { resumed = true })

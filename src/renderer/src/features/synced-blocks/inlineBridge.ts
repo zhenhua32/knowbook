@@ -1,14 +1,26 @@
+import type { DocumentHostAdoptContext, DocumentHostHistoryContext } from '../../utils/documentHostHistory'
+import type { SyncedStructureApplied } from '@shared/synced-blocks'
+import type { SyncedHostSourceCurrent } from './SyncedHostSourceDialog'
 import type { DocumentBlockDraft } from '@shared/contracts'
+import type { SyncedHostHistoryTransition } from './hostHistoryTypes'
 
 // Thin lazy-chunk bridge only. These callbacks block local transitions; they
 // never create a Main session, a binding, a file claim or mutation permission.
+export interface CanonicalInlineFlushOptions {
+  shouldContinue?: () => boolean
+  purpose?: 'document-navigation'
+}
 interface InlineTransitionPort {
-  flush: (options?: { shouldContinue?: () => boolean }) => Promise<boolean>
+  flush: (options?: CanonicalInlineFlushOptions) => Promise<boolean>
   pending: () => boolean
   hostPending: () => boolean
   navigate: () => Promise<boolean>
   notifyBlocked: () => void
   locked: () => boolean
+  restoreHistory?: (transition: SyncedHostHistoryTransition, direction: 'undo' | 'redo') => Promise<boolean>
+  ownsHistory?: (transition: SyncedHostHistoryTransition) => boolean
+  adoptHostResult?: (context: DocumentHostAdoptContext, before: SyncedHostSourceCurrent, result: SyncedStructureApplied, history: boolean) => boolean
+  runHostHistory?: (context: DocumentHostHistoryContext) => Promise<boolean>
 }
 let port: InlineTransitionPort | null = null, owner: object | null = null
 const asynchronousEdits = new Set<object>(), unlockWaiters = new Set<() => void>()
@@ -37,9 +49,20 @@ export function installCanonicalInlineTransitions(identity: object, next: Inline
 export const flushCanonicalWindowNavigation = async () => !asynchronousEdits.size && (!port || !port.locked() && await port.navigate())
 export const canonicalInlineInputLocked = () => port?.locked() ?? false
 export const hasCanonicalHostSavePending = () => port?.hostPending() ?? false
+export const ownsCanonicalHostHistory = (transition: SyncedHostHistoryTransition) => port?.ownsHistory?.(transition) ?? false
+export const restoreCanonicalHostHistory = (transition: SyncedHostHistoryTransition, direction: 'undo' | 'redo') =>
+  asynchronousEdits.size ? Promise.resolve(false) : port?.restoreHistory?.(transition, direction) ?? Promise.resolve(false)
+/** A local synchronous adoption route only. No provider means no adoption. */
+export const adoptCanonicalHostResult = (context: DocumentHostAdoptContext, before: SyncedHostSourceCurrent,
+  result: SyncedStructureApplied, history: boolean): boolean => port?.adoptHostResult?.(context, before, result, history) ?? false
+export const getCanonicalHostHistoryAction = () => port?.runHostHistory ?? null
 export const hasCanonicalInlinePendingChanges = () => asynchronousEdits.size > 0 || (port?.pending() ?? false)
-export async function flushCanonicalInlinePendingChanges(options?: { shouldContinue?: () => boolean }): Promise<boolean> {
-  if (asynchronousEdits.size) return false
+export async function flushCanonicalInlinePendingChanges(options?: CanonicalInlineFlushOptions): Promise<boolean> {
+  // Document navigation may retire the original attachment view. Its real
+  // callback still owns the marker and must pass the original scope/body guard.
+  // Default Save/close drains remain strict; no pending import is forgotten.
+  if (asynchronousEdits.size && options?.purpose !== 'document-navigation') return false
+  if (options?.purpose === 'document-navigation' && port?.locked()) return false
   return port ? port.flush(options) : options?.shouldContinue?.() !== false
 }
 const refs = (blocks: readonly DocumentBlockDraft[]) => blocks.filter(block => block.type === 'synced-block')

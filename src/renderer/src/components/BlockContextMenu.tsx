@@ -29,11 +29,13 @@ export type BlockContextMenuProps = {
   onHighlightChange?: (color: string | undefined) => void
   onWrapInColumns?: () => void
   onInsertDatabaseView?: () => void
+  onCreateSyncedBlock?: () => void
+  onInsertSyncedBlock?: () => void
 }
 
 export function BlockContextMenu({ x, y, blockType, onTypeChange, onDuplicate, onDelete, onClose,
   typeOptions, isZh, canOpen, canReturnFocus, selectedBlockCount = 1, disabled = false, conversionDisabled = false, aiEditDisabled = false, disabledReason,
-  onCopyBlockLinks, onMoveToDocument, moveDisabledReason, onOpenAiEdit, currentHighlight, onHighlightChange, onWrapInColumns, onInsertDatabaseView }: BlockContextMenuProps) {
+  onCopyBlockLinks, onMoveToDocument, moveDisabledReason, onOpenAiEdit, currentHighlight, onHighlightChange, onWrapInColumns, onInsertDatabaseView, ...props }: BlockContextMenuProps) {
   const { menuRef, menuStyle } = useViewportMenuPosition<HTMLDivElement>(x, y)
   usePopupKeyboard(menuRef, onClose, canOpen, canReturnFocus)
   const run = (action: () => void) => { if (!disabled) { action(); onClose() } }
@@ -68,6 +70,8 @@ export function BlockContextMenu({ x, y, blockType, onTypeChange, onDuplicate, o
         </div>
       </div> : null}
       <div className="context-menu-section context-menu-group">
+        {props.onCreateSyncedBlock ? <button className="context-menu-item" disabled={disabled} onClick={() => run(props.onCreateSyncedBlock!)} type="button">{isZh ? '创建同步块…' : 'Create synced block…'}</button> : null}
+        {props.onInsertSyncedBlock ? <button className="context-menu-item" disabled={disabled} onClick={() => run(props.onInsertSyncedBlock!)} type="button">{isZh ? '在此块之后插入同步块…' : 'Insert synced block after this block…'}</button> : null}
         {onInsertDatabaseView ? <button className="context-menu-item" disabled={disabled} onClick={() => run(onInsertDatabaseView)} type="button">
           {isZh ? '插入数据库视图' : 'Insert database view'}</button> : null}
         {onWrapInColumns ? <button className="context-menu-item" disabled={disabled} onClick={() => run(onWrapInColumns)} type="button">
