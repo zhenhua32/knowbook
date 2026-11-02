@@ -1,4 +1,4 @@
-import { readSealedCapsule2SourceWorkingOriginals5 } from './restore-knowledge-capsule2-source-seal'
+import { readSealedCapsule2SourceWorkingOriginals5, readSealedCapsule2SourceInputsWithWorking5 } from './restore-knowledge-capsule2-source-seal'
 import { capsule2AssetArchiveOriginalBytes3 } from './restore-knowledge-capsule2-asset-archive'
 import { randomUUID } from 'node:crypto'
 import { open, readdir } from 'node:fs/promises'
@@ -173,8 +173,10 @@ export async function tryAssertBoundCapsule2OriginalBytes(profile: string, handl
  * source, every referenced original, its binding and all source metadata. */
 export async function tryReadBoundCapsule2OriginalInputs(profile: string, handle: unknown) {
   const entry = bindings.get(handle as BoundCapsule2OriginalInputs); if (!entry) return null
-  const root = await canonicalRequiredSqlDagRoot(profile), actual = await readOriginalReferenceContext(entry.context)
-  return readBoundInput(root, entry, actual)
+  const root = await canonicalRequiredSqlDagRoot(profile), context = contexts.get(entry.context)
+  if (!context) return bad('bound context不在Main私有registry')
+  const captured = await verifyWithWorking5(context)
+  return readBoundInputWithWorking5(root, entry, captured)
 }
 async function readBoundInput(root: string, entry: NonNullable<ReturnType<typeof bindings.get>>, actual: Awaited<ReturnType<typeof readOriginalReferenceContext>>) {
   const value = actual.source.value
@@ -196,6 +198,49 @@ async function readBoundInput(root: string, entry: NonNullable<ReturnType<typeof
   const ownedContext=contexts.get(entry.context);if(!ownedContext)return bad('bound缺实际sealed source owner')
   const working=value.assetArchive.version===5?await readSealedCapsule2SourceWorkingOriginals5(ownedContext.source):undefined
   const workingText=working?capsuleJson(working.manifest)+'\n':undefined
+  qualifiedOriginalSide(side,binding,origin,workingText)
+  if (before !== await readCapsule2AssetManifest(join(entry.directory, 'binding.json'), root, BOUND_SOURCE_MANIFEST_MAX_BYTES)
+    || !same((await readdir(entry.directory)).sort(), ['binding.json'])) return bad('bound来源读取结束时变化')
+  return { input, side, actual, workingText, parentCopies: actual.descriptor.parents.flatMap(parent => parent.files.map(file => ({ ...file,
+    frame: [actual.descriptor.contextId, parent.mountId, ...file.frame], sourceRoot: actual.directory,
+    sourcePath: join(actual.directory, ...referenceContextObjectPath([parent.mountId, ...file.frame], file.path).split('/')) }))) }
+}
+
+async function verifyWithWorking5(entry: Context) {
+  if (!entry.descriptor.requirements.entries.length || !entry.descriptor.parents.length) return bad('完整引用context必须对应非空原SQL要求')
+  const captured = await readSealedCapsule2SourceInputsWithWorking5(entry.source)
+  const { working, ...source } = captured
+  if (source.profileRoot !== entry.profileRoot || !same(sourcePins(source), entry.descriptor.source)
+    || !same(source.value.priorCoverageRequirements, entry.descriptor.requirements)) return bad('实际来源SQL、完整prior-C或上下文绑定变化')
+  const text = await readCapsule2AssetManifest(join(entry.directory, 'descriptor.json'), entry.profileRoot)
+  if (text !== entry.text) return bad('实际context原字节变化')
+  const descriptor = parseCapsule2ReferenceContext(text, entry.hash)
+  const originals = await readReferenceContextOriginals({ profileRoot: entry.profileRoot, directory: entry.directory, descriptor })
+  await assertSealedCapsule2SourceOriginalBytes(entry.source)
+  return { working, actual: { source, ...originals, descriptor, contextHash: entry.hash, contextText: text, profileRoot: entry.profileRoot, directory: entry.directory } }
+}
+async function readBoundInputWithWorking5(root: string, entry: NonNullable<ReturnType<typeof bindings.get>>, captured: Awaited<ReturnType<typeof verifyWithWorking5>>) {
+  const actual = captured.actual
+  const value = actual.source.value
+  if (root !== actual.profileRoot) return bad('bound source不属于此实际profile')
+  const before = await readCapsule2AssetManifest(join(entry.directory, 'binding.json'), root, BOUND_SOURCE_MANIFEST_MAX_BYTES)
+  if (before !== entry.text || !same((await readdir(entry.directory)).sort(), ['binding.json'])) return bad('实际bound来源原字节/目录变化')
+  const origin: RequiredDagBundleOrigin = { kind: 'bound-original-bundle', version: 1, mountId: actual.descriptor.contextId,
+    bundleDescriptorHash: actual.contextHash, databaseFilesHash: requiredDagDatabaseFilesHash(value.sourceInventory), rawRequirementsHash: actual.descriptor.source.rawRequirementsHash }
+  const binding: CoverageInputBinding = { capsule: { kind: 'restore-knowledge-origin-capsule-ref', version: 1, namespace: { kind: 'native' },
+    operationId: value.operationId, capsuleId: value.capsuleId, manifestHash: entry.hash, readerVersion: CAPSULE2_READER },
+    interpretationHash: requiredDagInterpretationHash(origin), rawRequirementsHash: origin.rawRequirementsHash, requiredRoots: referenceContextMountedRoots(actual.descriptor) }
+  const input: OriginalSourceInput = { binding, origin, originalSqlBytes: value.sourceInventory.reduce((n, file) => n + file.bytes, 0),
+    managedOriginalBytes: capsule2AssetArchiveOriginalBytes3(value.assetArchive), knowledge: { readerVersion: CAPSULE2_READER,
+      projection: value.knowledge, projectionHash: value.knowledge.observationHash, sourceMaterialHash: value.materialHash, assetArchiveHash: value.assetArchiveHash } }
+  const operation = join(root, 'backups', 'database-restore', value.operationId)
+  const side: QualifiedOriginalSide = { kind: 'bound-capsule2', bindingText: before, contextText: actual.contextText,
+    sourceManifestText: await readCapsule2AssetManifest(join(actual.source.info.directory, 'manifest.json'), root),
+    assetManifestText: await readCapsule2AssetManifest(join(operation, 'knowledge-complete-assets-v2', value.capsuleId, 'manifest.json'), root) }
+  const working=value.assetArchive.version===5?captured.working??bad('archive5缺同次完整原件读取的Working原件'):undefined
+  const workingText=working?capsuleJson(working.manifest)+'\n':undefined
+  const ownedContext=contexts.get(entry.context);if(!ownedContext)return bad('bound缺实际sealed source owner')
+  await assertSealedCapsule2SourceOriginalBytes(ownedContext.source)
   qualifiedOriginalSide(side,binding,origin,workingText)
   if (before !== await readCapsule2AssetManifest(join(entry.directory, 'binding.json'), root, BOUND_SOURCE_MANIFEST_MAX_BYTES)
     || !same((await readdir(entry.directory)).sort(), ['binding.json'])) return bad('bound来源读取结束时变化')

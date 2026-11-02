@@ -1,6 +1,6 @@
 import { readTransportWorkingTexts5 } from './restore-knowledge-capsule5-transport-files'
 import type { TransportWorkingTexts5 } from './restore-knowledge-capsule5-transport-model'
-import { readCertifiedCapsule2SourceWorkingOriginals5 } from './restore-knowledge-capsule2-source-certificate'
+import { assertCertifiedCapsule2SourceOriginalBytes5 } from './restore-knowledge-capsule2-source-certificate'
 import { parseCapsule2CompleteAssetArchiveManifest } from './restore-knowledge-capsule2-asset-archive'
 import { capsule2AssetArchiveOriginalBytes3 } from './restore-knowledge-capsule2-asset-archive'
 import { randomUUID } from 'node:crypto'
@@ -11,7 +11,7 @@ import { durableSqlDagHash, durableSqlDagUuid, DURABLE_SQL_DAG_MAX_CAPSULES, DUR
 import { canonicalRequiredSqlDagRoot, writeRequiredSqlDagNodeFile } from './restore-knowledge-required-dag-files'
 import { parseRequiredSqlDagNode, requiredDagCapsuleLocator, requiredDagParentUnion, requiredDagRootLocator,
   requiredDagDatabaseFilesHash, requiredDagInterpretationHash, validateRequiredSqlDagNode, type RequiredSqlDagNode } from './restore-knowledge-required-dag-model'
-import { readActualNoPriorOriginalInput, readActualNoPriorOriginalInputWithContent3, type reopenActualFirstRequiredSqlDagWithInitialMaterial } from './restore-knowledge-mixed-required-dag-read'
+import { readActualNoPriorOriginalInput, readActualNoPriorOriginalInputWithContent3, readActualNoPriorOriginalInputWithWorking5, type reopenActualFirstRequiredSqlDagWithInitialMaterial } from './restore-knowledge-mixed-required-dag-read'
 import { readPreparedMixedOriginBundleOriginalInputs, readPreparedMixedOriginBundleContentPair3, readPreparedMixedOriginalContentLocation3,
   assertPreparedMixedOriginBundleOriginalBytes, type PreparedMixedOriginBundle } from './restore-knowledge-mixed-origin-bundle-read'
 import { parseMixedOriginBundleDescriptor, mixedOriginBundleHash, mixedOriginBundleFiles, mixedOriginBundleDirectories, mixedOriginCapsulePath,
@@ -300,7 +300,7 @@ export async function readCompleteOriginalPackage(handle: CompleteOriginalBundle
 async function nativeInput(profileRoot: string, source: Source) {
   const bound = await tryReadBoundCapsule2OriginalInputs(profileRoot, source)
   if(bound)return {input:bound.input,side:bound.side,workingText:bound.workingText,parentCopies:bound.parentCopies}
-  const actual = await readActualNoPriorOriginalInput(profileRoot, source as CertifiedDurableSqlCapsule | CertifiedCapsule2NoPriorSource), ref = actual.binding.capsule
+  const captured = await readActualNoPriorOriginalInputWithWorking5(profileRoot, source as CertifiedDurableSqlCapsule | CertifiedCapsule2NoPriorSource), actual = captured.input, ref = actual.binding.capsule
   const operation = join(profileRoot, 'backups', 'database-restore', ref.operationId)
   const text = (collection: string, leaf: string, max?: number) => readCapsule2AssetManifest(join(operation, collection, ref.capsuleId, leaf), profileRoot, max)
   const side: QualifiedOriginalSide = ref.readerVersion === 'knowbook-durable-sql-v1'
@@ -308,8 +308,9 @@ async function nativeInput(profileRoot: string, source: Source) {
     : { kind: 'complete-capsule2', certificateText: await text('knowledge-source-certificates-v2', 'certificate.json', CAPSULE2_SOURCE_CERTIFICATE_MAX_BYTES),
       sourceManifestText: await text('knowledge-source-capsules-v2', 'manifest.json'), assetManifestText: await text('knowledge-complete-assets-v2', 'manifest.json') }
   const working=side.kind==='complete-capsule2'&&parseCapsule2CompleteAssetArchiveManifest(side.assetManifestText,actual.binding.capsule.capsuleId,actual.knowledge.assetArchiveHash??bad('完整来源缺archive hash')).version===5
-    ?await readCertifiedCapsule2SourceWorkingOriginals5(source as CertifiedCapsule2NoPriorSource):undefined
+    ?captured.working??bad('archive5缺同次完整原件读取的Working原件'):undefined
   const workingText=working?capsuleJson(working.manifest)+'\n':undefined
+  if(working)await assertCertifiedCapsule2SourceOriginalBytes5(source as CertifiedCapsule2NoPriorSource)
   qualifiedOriginalSide(side,actual.binding,actual.origin,workingText)
   return {input:ownInput(actual),side,workingText,parentCopies: [] as OriginalFrameCopy[] }
 }

@@ -9,7 +9,7 @@ import { assertCapsule2AssetDirectory as directory, readCapsule2AssetManifest, r
   writeCapsule2AssetCopy as writeNew } from './restore-knowledge-capsule2-assets-files'
 import { reopenCapsule2AssetArchive, readCapsule2ArchiveSourceOriginal, prepareCapsule2AssetArchiveWithProvenance3, prepareCapsule2AssetArchiveWithContextProvenance3, prepareCapsule2AssetArchiveWithSettledContextProvenance4, prepareCapsule2AssetArchiveWithWorkingProvenance5,
   type PreparedCapsule2AssetArchive } from './restore-knowledge-capsule2-asset-archive'
-import { captureCapsule2SourceMaterial, readCapsule2SourceMaterial, readCapsule2SourceSealInput,
+import { captureCapsule2SourceMaterial, captureCapsule2SourceMaterialWithWorking5, readCapsule2SourceMaterial, readCapsule2SourceInputsWithWorking5, tryAssertCapsule2SourceWorking5OriginalBytes5, readCapsule2SourceSealInput,
   assertCapsule2SourceOriginalBytes, readCapsule2SourceBaseProjection4, readCapsule2SourceWorkingOriginals5, type PreparedCapsule2SourceMaterial } from './restore-knowledge-capsule2-source-material'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_READER } from './restore-knowledge-capsule2-raw-model'
 import { capsule2SourceManifestHash, parseCapsule2SourceManifest, capsule2SourceSealInvalid as bad,
@@ -204,4 +204,58 @@ export async function readSealedCapsule2SourceWorkingOriginals5(handle:SealedCap
  const working=await readCapsule2SourceWorkingOriginals5(entry.material)
  await assertSealedCapsule2SourceOriginalBytes(handle)
  return working
+}
+
+async function verifyWithWorking5(entry: Saved) {
+  const closure = async () => {
+    await directory(entry.directory, entry.root)
+    if (capsuleJson(await readdir(entry.directory)) !== capsuleJson(['manifest.json'])) return bad('来源清单目录闭集变化')
+  }
+  const manifestPath = join(entry.directory, 'manifest.json')
+  await assertOwnedRawCapsuleOriginal(entry.original); await closure()
+  await readExact(manifestPath, entry.root, entry.bytes.length, capsuleBytesHash(entry.bytes), CAPSULE2_RAW_MAX_JSON_BYTES)
+  const captured = await readCapsule2SourceInputsWithWorking5(entry.material), value = captured.value
+  if (capsuleJson(manifestFor(value)) !== capsuleJson(entry.manifest)) return bad('完整实际SQL/K/政策/附件/原要求与来源清单不一致')
+  await closure(); await readExact(manifestPath, entry.root, entry.bytes.length, capsuleBytesHash(entry.bytes), CAPSULE2_RAW_MAX_JSON_BYTES)
+  await assertOwnedRawCapsuleOriginal(entry.original)
+  return { working: captured.working, value, info: freezeCapsuleValue({ directory: entry.directory, manifest: entry.manifest, manifestHash: entry.manifestHash }) }
+}
+/** Main-only same-invocation source/K/Working originals. Registry dispatch,
+ * both source-manifest reads and both original-byte tails precede the return. */
+export async function readSealedCapsule2SourceInputsWithWorking5(handle: SealedCapsule2Source) {
+  const entry = sealed.get(handle)
+  if (!entry) return bad('不是Main实际封存的私有来源句柄')
+  return { ...await verifyWithWorking5(entry), profileRoot: entry.root }
+}
+
+/** The private archive5 identity and all sealed source/SQL/base/Working bytes
+ * are checked now. False retains the released older-family full-read route. */
+export async function tryAssertSealedCapsule2Working5OriginalBytes5(handle: SealedCapsule2Source): Promise<boolean> {
+  const saved = sealed.get(handle)
+  if (!saved) return bad('不是genuine sealed source owner')
+  if (!await tryAssertCapsule2SourceWorking5OriginalBytes5(saved.material)) return false
+  await assertSealedCapsule2SourceOriginalBytes(handle)
+  return true
+}
+
+export async function captureSealedCapsule2SourceFromArchiveWithWorking5(archive: PreparedCapsule2AssetArchive) {
+  const { material, value, working } = await captureCapsule2SourceMaterialWithWorking5(archive)
+  if (value.assetArchive.version !== 5 || !working) return bad('显式Working5 capture需要genuine archive5完整原件')
+  const original = await readCapsule2ArchiveSourceOriginal(archive), info = readOwnedRawCapsuleOriginal(original)
+  if (used.has(material)) return bad('同一材料已开始或失败')
+  used.add(material)
+  const manifest = manifestFor(value), base = join(info.recoveryDirectory, 'knowledge-source-capsules-v2'), output = join(base, manifest.capsuleId)
+  await restoreDirectory(base, info.profileRoot); await restoreDirectory(output, info.profileRoot, true)
+  const bytes = Buffer.from(capsuleJson(manifest) + '\n')
+  if (bytes.length > CAPSULE2_RAW_MAX_JSON_BYTES) return bad('完整来源manifest超预算，不截断')
+  await writeNew(join(output, 'manifest.json'), bytes, info.profileRoot)
+  await syncRestoreDirectory(output); await syncRestoreDirectory(base); await syncRestoreDirectory(info.recoveryDirectory)
+  const entry: Saved = { original, material, root: info.profileRoot, directory: output, manifest, bytes, manifestHash: capsule2SourceManifestHash(manifest) }
+  const source = register(entry)
+  await assertSealedCapsule2SourceOriginalBytes(source)
+  return Object.freeze({ source, value, working, profileRoot: info.profileRoot,
+    info: freezeCapsuleValue({ directory: output, manifest, manifestHash: entry.manifestHash }) })
+}
+export async function captureSealedCapsule2SourceWithWorkingOriginals5(original: OwnedRawCapsuleOriginal) {
+  return captureSealedCapsule2SourceFromArchiveWithWorking5(await prepareCapsule2AssetArchiveWithWorkingProvenance5(original))
 }

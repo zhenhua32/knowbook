@@ -1,4 +1,4 @@
-import { readCertifiedCapsule2SourceWorkingOriginals5 } from './restore-knowledge-capsule2-source-certificate'
+import { tryReadCertifiedCapsule2SourceInputsWithWorking5, tryAssertCertifiedCapsule2Working5OriginalBytes5 } from './restore-knowledge-capsule2-source-certificate'
 import { parseCapsule2CompleteAssetArchiveManifest } from './restore-knowledge-capsule2-asset-archive'
 import type { TransportWorkingTexts5 } from './restore-knowledge-capsule5-transport-model'
 import { capsule2AssetArchiveOriginalBytes3 } from './restore-knowledge-capsule2-asset-archive'
@@ -159,7 +159,7 @@ import { mixedOriginBundleFiles, mixedOriginBundleHash, validateMixedOriginBundl
   type MixedOriginBundleSide } from './restore-knowledge-mixed-origin-bundle-model'
 export async function readActualFirstMixedOriginSource(handle: ActualFirstRequiredSqlDag) {
   const entry=dags.get(handle);if(!entry)return bad('不是Main真实mixed原根句柄，不能提供catalog')
-  await fresh(entry)
+  const captured = await freshWithWorking5(entry)
   const side=async(binding:CoverageInputBinding):Promise<MixedOriginBundleSide>=>{
     const ref=binding.capsule,operation=join(entry.profileRoot,'backups','database-restore',ref.operationId)
     if(ref.readerVersion==='knowbook-durable-sql-v1')return {kind:'durable-sql-v1',manifestText:
@@ -174,17 +174,19 @@ export async function readActualFirstMixedOriginSource(handle: ActualFirstRequir
   const source=await side(entry.file.node.source),current=await side(entry.file.node.current)
   const workingTexts:{source?:string;current?:string}={}
   for(const name of ['source','current'] as const){
-    const item=entry.inputs.find(input=>requiredDagCapsuleLocator(input.binding)===requiredDagCapsuleLocator(entry.file.node[name]))!
+    const item=captured.find(item=>requiredDagCapsuleLocator(item.input.binding)===requiredDagCapsuleLocator(entry.file.node[name]))!
+    const input=item.input
     const originalSide=name==='source'?source:current
-    if(originalSide.kind!=='complete-capsule2'||parseCapsule2CompleteAssetArchiveManifest(originalSide.assetManifestText,item.binding.capsule.capsuleId,item.knowledge.assetArchiveHash??bad('完整来源缺archive hash')).version!==5)continue
-    const working=await readCertifiedCapsule2SourceWorkingOriginals5(item.source as CertifiedCapsule2NoPriorSource)
+    if(originalSide.kind!=='complete-capsule2'||parseCapsule2CompleteAssetArchiveManifest(originalSide.assetManifestText,input.binding.capsule.capsuleId,input.knowledge.assetArchiveHash??bad('完整来源缺archive hash')).version!==5)continue
+    const working=item.working
+    if(!working)return bad('archive5缺同次完整原件读取的Working原件')
     if(working)workingTexts[name]=capsuleJson(working.manifest)+'\n'
   }
   const descriptor=validateMixedOriginBundleDescriptor({kind:'restore-prepared-mixed-origin-bundle',version:2,
     readerVersion:'knowbook-prepared-mixed-origin-bundle-v2',material:'mixed-original-readers',root:entry.file.ref,
     nodeText:capsuleJson(entry.file.node),source,current},workingTexts)
   const files=mixedOriginBundleFiles(descriptor,workingTexts).map(file=>({...file,sourcePath:join(entry.profileRoot,...file.path.slice('catalog/'.length).split('/'))}))
-  await fresh(entry)
+  await finishMixedOriginalSourceRead5(entry)
   return freezeCapsuleValue({profileRoot:entry.profileRoot,descriptor,descriptorHash:mixedOriginBundleHash(descriptor,workingTexts),workingTexts:workingTexts as TransportWorkingTexts5,files})
 }
 
@@ -217,4 +219,59 @@ export async function readActualNoPriorOriginalInputWithContent3(profileRoot: st
   const captured = await tryReadCertifiedCapsule2SourceInputs(source)
   if (captured) return { input: capsule2Input(profile, source, captured), packet: captured.value }
   return { input: await readInput(profile, source), packet: null }
+}
+
+/** Genuine no-prior input plus same-read Working5 originals. Unknown objects
+ * still reach the original v1 registry without caller property inspection. */
+export async function readActualNoPriorOriginalInputWithWorking5(profileRoot: string, source: Source) {
+  const profile = await canonicalRequiredSqlDagRoot(profileRoot)
+  const captured = await tryReadCertifiedCapsule2SourceInputsWithWorking5(source)
+  if (captured) return { input: capsule2Input(profile, source, captured), working: captured.working }
+  return { input: await readInput(profile, source), working: undefined }
+}
+async function freshWithWorking5(entry: Saved) {
+  const first=await readRequiredSqlDagNodeFile(entry.profileRoot,entry.file.ref)
+  if(capsuleJson(first.node)!==capsuleJson(entry.file.node))return bad('实际node被替换')
+  const captured=await Promise.allSettled(entry.inputs.map(input=>readActualNoPriorOriginalInputWithWorking5(entry.profileRoot,input.source)))
+  if(captured[0].status==='rejected')throw captured[0].reason
+  if(captured[1].status==='rejected')throw captured[1].reason
+  const joined=[captured[0].value,captured[1].value] as const
+  const inputs=[joined[0].input,joined[1].input] as const
+  if(capsuleJson(inputs.map(commitment))!==capsuleJson(entry.inputs.map(commitment))
+    || capsuleJson(nodeFor(inputs))!==capsuleJson(entry.file.node))return bad('完整实际两侧原件/要求/K/附件变化')
+  totals(inputs)
+  const last=await readRequiredSqlDagNodeFile(entry.profileRoot,entry.file.ref)
+  if(capsuleJson(last.node)!==capsuleJson(first.node))return bad('重读原件期间node变化')
+  return joined
+}
+
+/** This helper is reachable only after this same public read's complete
+ * freshWithWorking5 compared both actual SQL/K commitments and the node.
+ * The archive5 source is a deterministic read of its entire immutable input
+ * closure; rechecking every pinned original byte re-establishes the same
+ * conclusion without running that SQL/Working pipeline for a second time.
+ * No returned packet is stored or accepted as authority across public reads. */
+async function finishMixedOriginalSourceRead5(entry: Saved): Promise<void> {
+  const first = await readRequiredSqlDagNodeFile(entry.profileRoot, entry.file.ref)
+  if (capsuleJson(first.node) !== capsuleJson(entry.file.node)) return bad('实际node被替换')
+  const checked = await Promise.allSettled(entry.inputs.map(input => tryAssertCertifiedCapsule2Working5OriginalBytes5(input.source)))
+  for (const result of checked) if (result.status === 'rejected') throw result.reason
+  const working5 = checked.map(result => (result as PromiseFulfilledResult<boolean>).value)
+  // Preserve the exact released final complete read when both inputs belong
+  // to v1/archive1..4. No old source is silently promoted to this new route.
+  if (!working5.some(Boolean)) { await fresh(entry); return }
+  const legacy = await Promise.allSettled(entry.inputs.map(async (expected, index) => {
+    if (working5[index]) return
+    const actual = await readInput(entry.profileRoot, expected.source)
+    if (capsuleJson(commitment(actual)) !== capsuleJson(commitment(expected))) return bad('完整实际旧来源/要求/K/附件变化')
+  }))
+  for (const result of legacy) if (result.status === 'rejected') throw result.reason
+  // A mixed legacy reader can be long-running. Close the new5 byte proof
+  // again after it, so an earlier successful byte pass is not its final tail.
+  const tails = await Promise.allSettled(entry.inputs.map(async (input, index) => {
+    if (working5[index] && !await tryAssertCertifiedCapsule2Working5OriginalBytes5(input.source)) return bad('同次archive5原件身份变化')
+  }))
+  for (const result of tails) if (result.status === 'rejected') throw result.reason
+  const last = await readRequiredSqlDagNodeFile(entry.profileRoot, entry.file.ref)
+  if (capsuleJson(last.node) !== capsuleJson(first.node)) return bad('重读原件期间node变化')
 }

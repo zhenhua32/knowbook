@@ -273,7 +273,7 @@ async function verifyDetails5(value:Saved){
  if(capsuleJson(working.pointer)!==capsuleJson(value.manifest.workingOriginals)||working.manifest.sourceContentHash!==value.manifest.sourceContentHash
    ||capsuleJson(working.manifest.baseProjection)!==capsuleJson(value.manifest.baseProjection)
    ||capsuleJson(describeCapsule5AssetScopeSupplement5(working.observation))!==capsuleJson(value.manifest.assetScopeSupplement))return bad('完整working原件/分区/scope与archive5不符')
- await verifyBytes(value);return{info,workingSupplemental:working.observation}
+ await verifyBytes(value);return{info,workingSupplemental:working.observation,working}
 }
 async function verifyDetails(value: Saved) {
   if(value.manifest.version===5)return verifyDetails5(value)
@@ -481,4 +481,28 @@ export async function readCapsule2ArchiveWorkingOriginals5(handle:PreparedCapsul
  assertBaseProjectionMatches4(working.baseCommitment,value.manifest)
  if(capsuleJson(working.pointer)!==capsuleJson(value.manifest.workingOriginals)||capsuleJson(describeCapsule5AssetScopeSupplement5(working.observation))!==capsuleJson(value.manifest.assetScopeSupplement))return bad('working5实际原件与archive不闭合')
  await verifyBytes(value);return working
+}
+
+/** A fixed genuine archive read supplies its same-invocation Working5 result.
+ * Runtime originals stay outside source packets, archive manifests and hashes.
+ * No DTO, selector, cache or caller verification mode enters this seam. */
+export async function readCapsule2ArchiveSourceInputsWithWorking5(handle: PreparedCapsule2AssetArchive) {
+  const value = archives.get(handle)
+  if (!value) return bad('不是Main实际准备的私有句柄')
+  const read = await verifyDetails(value)
+  return Object.freeze({ original:value.original,value:read.info,
+    ...('supplemental' in read&&read.supplemental?{supplemental:read.supplemental}:{}),
+    ...('workingSupplemental' in read?{workingSupplemental:read.workingSupplemental}:{}),
+    working:'working' in read?read.working:undefined })
+}
+
+/** Fixed genuine-owner dispatch for the tail of a same-call complete read.
+ * Only archive5 has the complete sealed Working input closure needed here.
+ * This returns no SQL projection, cached observation or semantic permission. */
+export async function tryAssertCapsule2ArchiveWorking5OriginalBytes5(handle: PreparedCapsule2AssetArchive): Promise<boolean> {
+  const saved = archives.get(handle)
+  if (!saved) return bad('不是genuine archive owner')
+  if (saved.manifest.version !== 5) return false
+  await verifyBytes(saved)
+  return true
 }

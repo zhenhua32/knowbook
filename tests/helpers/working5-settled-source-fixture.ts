@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { captureSealedCapsule2SourceWithWorkingProvenance5, readSealedCapsule2SourceWorkingOriginals5 } from '../../src/main/database/restore-knowledge-capsule2-source-seal'
+import { captureSealedCapsule2SourceWithWorkingOriginals5 } from '../../src/main/database/restore-knowledge-capsule2-source-seal'
 import { captureAssetOriginal } from './capsule2-assets-fixture'
 import { withSettledPortable3 } from './settled-portable-owner-fixture'
 import { withoutSettledSpoolProbes4 } from './settled-context4-fixture'
@@ -11,8 +11,8 @@ export async function captureSettledWorkingSource5(saved: Settled) {
   const roots=await proveContext4NativeSpoolRoots(saved.f.B.root,original.info.profileRoot)
   const spools=saved.jobs.flatMap(value=>roots.spools(value.job.request.operationId,value.job.attemptId).aliases)
   const captured=await withoutSettledSpoolProbes4(spools,async()=>{
-    const sealed=await captureSealedCapsule2SourceWithWorkingProvenance5(original.original)
-    const working=await readSealedCapsule2SourceWorkingOriginals5(sealed.source);assert.ok(working)
+    const sealed=await captureSealedCapsule2SourceWithWorkingOriginals5(original.original)
+    const working=sealed.working;assert.ok(working)
     return{sealed,working}
   })
   const {sealed,working}=captured.value,value=sealed.value

@@ -1,4 +1,4 @@
-import { readSealedCapsule2SourceInputs, assertSealedCapsule2SourceOriginalBytes, readSealedCapsule2SourceBaseProjection4, readSealedCapsule2SourceWorkingOriginals5,
+import { readSealedCapsule2SourceInputs, assertSealedCapsule2SourceOriginalBytes, readSealedCapsule2SourceBaseProjection4, readSealedCapsule2SourceInputsWithWorking5,
   type SealedCapsule2Source } from './restore-knowledge-capsule2-source-seal'
 import { deriveCapsule2SettledPortableEvidence3 } from './restore-knowledge-assets3-settled-portable-derive'
 
@@ -23,10 +23,10 @@ function derive(input: Input, base?: Pick<Awaited<ReturnType<typeof readSealedCa
 async function capture(source: SealedCapsule2Source): Promise<Body> {
   // Registry lookup occurs inside this genuine source seam before it reads any
   // caller object properties; no returned packet can substitute for the owner.
-  const input = await readSealedCapsule2SourceInputs(source)
+  const { working: capturedWorking, ...input } = await readSealedCapsule2SourceInputsWithWorking5(source)
   const base = input.value.assetArchive.version === 4 ? await readSealedCapsule2SourceBaseProjection4(source)
     : input.value.assetArchive.version === 5 ? await (async () => {
-      const working = await readSealedCapsule2SourceWorkingOriginals5(source)
+      const working = capturedWorking
       if (!working) return fail('archive5缺同genuine source registry导出的working base proof')
       return { baseProof: working.baseCommitment.referenceProvenance }
     })() : undefined

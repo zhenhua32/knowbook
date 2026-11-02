@@ -3,7 +3,7 @@ import { basename } from 'node:path'
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { readOwnedRawCapsuleOriginal, reopenPreparedRawCapsuleOriginal,
   assertOwnedRawCapsuleScratchReady, assertOwnedRawCapsuleScratchContent } from './restore-knowledge-capsule-files'
-import { readCapsule2AssetArchive, readCapsule2ArchiveSourceOriginal, readCapsule2ArchiveSourceInputs, readCapsule2ArchiveBaseProjection4, readCapsule2ArchiveWorkingOriginals5,
+import { readCapsule2AssetArchive, readCapsule2ArchiveSourceOriginal, readCapsule2ArchiveSourceInputsWithWorking5, tryAssertCapsule2ArchiveWorking5OriginalBytes5, readCapsule2ArchiveBaseProjection4, readCapsule2ArchiveWorkingOriginals5,
   type PreparedCapsule2AssetArchive } from './restore-knowledge-capsule2-asset-archive'
 import { readRawCapsule2SourceKnowledgeOwned } from './restore-knowledge-payload-raw-read'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_READER } from './restore-knowledge-capsule2-raw-model'
@@ -21,8 +21,8 @@ const bad = (message: string): never => { throw new Error('capsule2完整来源�
 /** Always reconstruct SQL from the actual archive owner's immutable original.
  * Old scratch is not input. The complete fixed source pipeline runs in one
  * readonly/query-only/FKON transaction; no source DTO/ref/selector is accepted. */
-async function material(archive: PreparedCapsule2AssetArchive) {
-  const { original,value:before,supplemental,workingSupplemental }=await readCapsule2ArchiveSourceInputs(archive),info=readOwnedRawCapsuleOriginal(original)
+async function materialWithWorking5(archive: PreparedCapsule2AssetArchive) {
+  const { original,value:before,supplemental,workingSupplemental,working }=await readCapsule2ArchiveSourceInputsWithWorking5(archive),info=readOwnedRawCapsuleOriginal(original)
   const fresh = await reopenPreparedRawCapsuleOriginal({ profileRoot: info.profileRoot, operationId: basename(info.recoveryDirectory),
     capsuleId: basename(info.capsuleDirectory), expectedInventory: info.originalInventory })
   const actual = readOwnedRawCapsuleOriginal(fresh)
@@ -88,7 +88,11 @@ async function material(archive: PreparedCapsule2AssetArchive) {
     unresolved: ['qualified-prior-root-resolution','streaming-source-adapter','complete-private-capsule2-certifier-and-installer'] as const }
   const encoded = capsuleJson(body)
   if (Buffer.byteLength(encoded) > CAPSULE2_RAW_MAX_JSON_BYTES) return bad('完整来源包超有限材料预算，不截断')
-  return freezeCapsuleValue({ ...body, materialHash: capsuleBytesHash('knowbook.capsule2.complete-source-material.v2\0' + encoded) })
+  const value = freezeCapsuleValue({ ...body, materialHash: capsuleBytesHash('knowbook.capsule2.complete-source-material.v2\0' + encoded) })
+  return Object.freeze({ value, working })
+}
+async function material(archive: PreparedCapsule2AssetArchive) {
+  return (await materialWithWorking5(archive)).value
 }
 export async function extractCapsule2SourceMaterial(archive: PreparedCapsule2AssetArchive): Promise<PreparedCapsule2SourceMaterial> {
   return (await captureCapsule2SourceMaterial(archive)).material
@@ -152,4 +156,28 @@ export async function readCapsule2SourceBaseProjection4(handle: PreparedCapsule2
 export async function readCapsule2SourceWorkingOriginals5(handle:PreparedCapsule2SourceMaterial){
  const entry=materials.get(handle);if(!entry)return bad('不是genuine material owner')
  return readCapsule2ArchiveWorkingOriginals5(entry.archive)
+}
+
+/** Same-read runtime originals from this genuine material's archive. The
+ * complete SQL/K observer and its original byte tails still run on every call. */
+export async function readCapsule2SourceInputsWithWorking5(handle: PreparedCapsule2SourceMaterial) {
+  const entry = materials.get(handle)
+  if (!entry) return bad('不是实际Main完整来源私有句柄')
+  const captured = await materialWithWorking5(entry.archive)
+  if (captured.value.materialHash !== entry.expectedHash) return bad('完整来源包或哈希变化')
+  return captured
+}
+
+/** Registry-only tail routing; a returned packet cannot select archive5. */
+export async function tryAssertCapsule2SourceWorking5OriginalBytes5(handle: PreparedCapsule2SourceMaterial): Promise<boolean> {
+  const saved = materials.get(handle)
+  if (!saved) return bad('不是genuine material owner')
+  return tryAssertCapsule2ArchiveWorking5OriginalBytes5(saved.archive)
+}
+
+export async function captureCapsule2SourceMaterialWithWorking5(archive: PreparedCapsule2AssetArchive) {
+  const captured = await materialWithWorking5(archive)
+  const handle: PreparedCapsule2SourceMaterial = Object.freeze({ kind: 'prepared-capsule2-source-material' })
+  materials.set(handle, { archive, expectedHash: captured.value.materialHash })
+  return Object.freeze({ material: handle, value: captured.value, working: captured.working })
 }

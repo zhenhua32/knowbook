@@ -8,7 +8,7 @@ import { publicationHash, publicationJson, publicationRecordKey } from '../../sr
 import { materializeSyncedExchangeLocal, readSyncedExchangeLocalMaterial } from '../../src/main/sync/synced-publication'
 import { exchangeJobPrefix, parseExchangeStored, validateExchangeJob, validateExchangeJobPhase } from '../../src/main/sync/synced-exchange-model'
 import { prepareCapsule2AssetArchiveWithWorkingProvenance5 } from '../../src/main/database/restore-knowledge-capsule2-asset-archive'
-import { captureSealedCapsule2SourceFromArchive, readSealedCapsule2SourceWorkingOriginals5 } from '../../src/main/database/restore-knowledge-capsule2-source-seal'
+import { captureSealedCapsule2SourceFromArchiveWithWorking5 } from '../../src/main/database/restore-knowledge-capsule2-source-seal'
 import { graph3Rows } from '../../src/main/database/restore-knowledge-graph3-data'
 import { rawRestoreSqlCell } from '../../src/main/database/restore-knowledge-sql-cell'
 import { deriveRoot5SettledWorkingEvidence5 } from '../../src/main/database/restore-knowledge-assets5-working-context'
@@ -70,7 +70,7 @@ export async function capturePendingWorkingFamily5(f: Pick<Base, 'B' | 'folder' 
     gate.release(); const result = await resolving
     assert.ok(result && typeof result === 'object' && 'status' in result && result.status === 'applied', 'The real resolver must install the publication')
     const finish = async (original: Awaited<ReturnType<typeof captureAssetOriginal>>, archive: Awaited<ReturnType<typeof prepareCapsule2AssetArchiveWithWorkingProvenance5>>) => {
-      const sealed = await captureSealedCapsule2SourceFromArchive(archive), working = await readSealedCapsule2SourceWorkingOriginals5(sealed.source); assert.ok(working)
+      const sealed = await captureSealedCapsule2SourceFromArchiveWithWorking5(archive), working = sealed.working; assert.ok(working)
       return { original, sealed, working }
     }
     const captured = pending ? await finish(pending.original, pending.archive) : await (async () => {

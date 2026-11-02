@@ -10,7 +10,7 @@ import { publicationHash, publicationJson, publicationRecordKey } from '../../sr
 import { materializeSyncedExchangeLocal, readSyncedExchangeLocalMaterial } from '../../src/main/sync/synced-publication'
 import { exchangeJobPrefix, validateExchangeJob, parseExchangeStored } from '../../src/main/sync/synced-exchange-model'
 import { prepareCapsule2AssetArchiveWithWorkingProvenance5 } from '../../src/main/database/restore-knowledge-capsule2-asset-archive'
-import { captureSealedCapsule2SourceFromArchive, captureSealedCapsule2SourceWithWorkingProvenance5, readSealedCapsule2SourceWorkingOriginals5 } from '../../src/main/database/restore-knowledge-capsule2-source-seal'
+import { captureSealedCapsule2SourceFromArchiveWithWorking5, captureSealedCapsule2SourceWithWorkingOriginals5 } from '../../src/main/database/restore-knowledge-capsule2-source-seal'
 import { proveContext4NativeSpoolRoots } from './settled-context4-native-spool-evidence'
 import { assertRestorePath } from '../../src/main/database/restore-safety-files'
 import { captureAssetOriginal } from './capsule2-assets-fixture'
@@ -85,10 +85,10 @@ async function oracle(f: Setup) {
   assert.equal(deletion.receipt.version,4)
   return { record, merge }
 }
-async function packaged(original: Awaited<ReturnType<typeof captureAssetOriginal>>, sealed: Awaited<ReturnType<typeof captureSealedCapsule2SourceFromArchive>>) {
+async function packaged(original: Awaited<ReturnType<typeof captureAssetOriginal>>, sealed: Awaited<ReturnType<typeof captureSealedCapsule2SourceFromArchiveWithWorking5>>) {
   assert.equal(sealed.value.assetArchive.version, 5)
   if (sealed.value.assetArchive.version !== 5) throw new Error('The explicit producer must return archive5')
-  const working = await readSealedCapsule2SourceWorkingOriginals5(sealed.source); assert.ok(working)
+  const working = sealed.working; assert.ok(working)
   assert.deepEqual(working.pointer, sealed.value.assetArchive.workingOriginals)
   assert.equal(working.manifest.sourceContentHash, sealed.value.assetArchive.sourceContentHash)
   return { original, sealed, source: sealed.source, value: sealed.value, info: sealed.info, working,
@@ -110,7 +110,7 @@ export function withPendingWorkingSource5(run: (value: Setup & Awaited<ReturnTyp
       assert.deepEqual(allTables(f.f.B.db), before)
       assert.equal(f.f.B.db.prepare('SELECT 1 FROM synced_operations WHERE client_operation_id=?').get(f.operationId), undefined)
       f.gate.release(); completed(await f.resolving, 'applied')
-      const actual = await oracle(f), saved = await packaged(original, await captureSealedCapsule2SourceFromArchive(observed.value))
+      const actual = await oracle(f), saved = await packaged(original, await captureSealedCapsule2SourceFromArchiveWithWorking5(observed.value))
       assert.equal(saved.working.baseCommitment.referenceUris.includes(f.portable), false)
       assert.equal(saved.working.baseCommitment.tree.files.some(file => file.hash === f.digest), false)
       assert.ok(observed.observations.some(item => item.method === 'open'), 'Pending originals must actually open the genuine spool')
@@ -134,7 +134,7 @@ export function withSettledWorkingSource5(run: (value: Setup & Awaited<ReturnTyp
       await assertRestorePath(source, root); assert.equal(dirname(retired), root); await assert.rejects(lstat(retired), { code: 'ENOENT' })
       await rename(source, retired); for (const path of spools) await assert.rejects(lstat(path), { code: 'ENOENT' })
       const captured = await withoutSettledSpoolProbes4(spools, async () => packaged(original,
-        await captureSealedCapsule2SourceWithWorkingProvenance5(original.original)))
+        await captureSealedCapsule2SourceWithWorkingOriginals5(original.original)))
       assert.deepEqual(captured.attempts, [])
       await run({ ...f, ...captured.value, oracle: actual, spools, spoolProbeAttempts: captured.attempts })
     } finally { f.gate.release(); await Promise.allSettled([f.resolving]) }

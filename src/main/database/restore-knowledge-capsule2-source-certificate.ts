@@ -5,7 +5,7 @@ import { restoreDirectory, syncRestoreDirectory } from './restore-safety-files'
 import { capsuleBytesHash, capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { durableSqlDagUuid } from './restore-knowledge-dag-model'
 import { assertCapsule2AssetDirectory, readCapsule2AssetManifest, readCapsule2AssetCopy, writeCapsule2AssetCopy } from './restore-knowledge-capsule2-assets-files'
-import { readSealedCapsule2SourceInputs, readSealedCapsule2SourceWorkingOriginals5, assertSealedCapsule2SourceOriginalBytes, captureReopenedSealedCapsule2Source, type SealedCapsule2Source } from './restore-knowledge-capsule2-source-seal'
+import { readSealedCapsule2SourceInputs, readSealedCapsule2SourceInputsWithWorking5, tryAssertSealedCapsule2Working5OriginalBytes5, readSealedCapsule2SourceWorkingOriginals5, assertSealedCapsule2SourceOriginalBytes, captureReopenedSealedCapsule2Source, type SealedCapsule2Source } from './restore-knowledge-capsule2-source-seal'
 import { CAPSULE2_READER } from './restore-knowledge-capsule2-raw-model'
 import { CAPSULE2_SOURCE_CERTIFICATE_MAX_BYTES, capsule2NoPriorSourceCertificateHash, parseCapsule2NoPriorSourceCertificate,
   sourceCertificateInvalid as bad, type Capsule2NoPriorSourceCertificate } from './restore-knowledge-capsule2-source-certificate-model'
@@ -135,4 +135,64 @@ export async function readCertifiedCapsule2SourceWorkingOriginals5(handle: Certi
   await assertSealedCapsule2SourceOriginalBytes(entry.source)
   await certificateBytes()
   return working ?? null
+}
+
+async function verifyWithWorking5(entry: Saved) {
+  const closure = async () => {
+    await assertCapsule2AssetDirectory(entry.directory, entry.root)
+    if (capsuleJson(await readdir(entry.directory)) !== capsuleJson(['certificate.json'])) return bad('来源证书目录闭集变化')
+  }
+  const path = join(entry.directory, 'certificate.json')
+  await closure(); await readCapsule2AssetCopy(path, entry.root, entry.bytes.length, capsuleBytesHash(entry.bytes), CAPSULE2_SOURCE_CERTIFICATE_MAX_BYTES)
+  const input = await readSealedCapsule2SourceInputsWithWorking5(entry.source)
+  if (capsuleJson(certificateFor(input)) !== capsuleJson(entry.certificate)) return bad('证书与完整实际来源不符')
+  await closure(); await readCapsule2AssetCopy(path, entry.root, entry.bytes.length, capsuleBytesHash(entry.bytes), CAPSULE2_SOURCE_CERTIFICATE_MAX_BYTES)
+  return { info: freezeCapsuleValue({ certificate: entry.certificate, certificateHash: entry.certificateHash, directory: entry.directory }), value: input.value, working: input.working }
+}
+/** Registry-only joint dispatch. A full certificate/source verification
+ * supplies Working originals from that same actual SQL/archive read. */
+export async function tryReadCertifiedCapsule2SourceInputsWithWorking5(handle: unknown) {
+  const entry = certified.get(handle as CertifiedCapsule2NoPriorSource)
+  return entry ? { ...await verifyWithWorking5(entry), profileRoot: entry.root } : undefined
+}
+
+/** Complete certificate/source byte tail only; this does not observe SQL/K,
+ * return Working data, or mint a semantic source/certificate capability. */
+export async function assertCertifiedCapsule2SourceOriginalBytes5(handle: CertifiedCapsule2NoPriorSource) {
+  const entry = certified.get(handle)
+  if (!entry) return bad('不是Main认证的私有来源句柄')
+  // Both mint paths already join certificateFor(full genuine source) to this
+  // exact private source identity. This leaf returns no source/K authority.
+  // Recheck every pinned byte around its fresh Working read instead of running
+  // the complete source/K observer twice more; ordinary readers keep verify().
+  const certificateDirectory = async () => {
+    await assertCapsule2AssetDirectory(entry.directory, entry.root)
+    if (capsuleJson(await readdir(entry.directory)) !== capsuleJson(['certificate.json'])) return bad('来源证书目录闭集变化')
+  }
+  const certificateBytes = async () => {
+    await certificateDirectory()
+    const bytes = await readCapsule2AssetCopy(join(entry.directory, 'certificate.json'), entry.root,
+      entry.bytes.length, capsuleBytesHash(entry.bytes), CAPSULE2_SOURCE_CERTIFICATE_MAX_BYTES)
+    if (!bytes.equals(entry.bytes)) return bad('来源证书原字节变化')
+    const certificate = parseCapsule2NoPriorSourceCertificate(bytes.toString('utf8'), entry.certificate.operationId,
+      entry.certificate.capsuleId, entry.certificateHash)
+    if (capsuleJson(certificate) !== capsuleJson(entry.certificate)) return bad('来源证书原metadata不符')
+    await certificateDirectory()
+  }
+  await certificateBytes()
+  await assertSealedCapsule2SourceOriginalBytes(entry.source)
+  await assertSealedCapsule2SourceOriginalBytes(entry.source)
+  await assertSealedCapsule2SourceOriginalBytes(entry.source)
+  await certificateBytes()
+}
+
+/** Fixed Main same-call transport tail. Only a genuine certified archive5
+ * source can take this complete byte-closure route. It never mints an owner
+ * or accepts a caller version flag, earlier packet, map or skip callback. */
+export async function tryAssertCertifiedCapsule2Working5OriginalBytes5(handle: unknown): Promise<boolean> {
+  const saved = certified.get(handle as CertifiedCapsule2NoPriorSource)
+  if (!saved) return false
+  if (!await tryAssertSealedCapsule2Working5OriginalBytes5(saved.source)) return false
+  await assertCertifiedCapsule2SourceOriginalBytes5(handle as CertifiedCapsule2NoPriorSource)
+  return true
 }
