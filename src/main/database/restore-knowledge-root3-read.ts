@@ -90,3 +90,19 @@ export function readRootKnowledgeOriginalOwnerForCopy3(handle: RootKnowledgeCons
   if (!entry) return root3Invalid('不是实际Main完整知识规划句柄')
   return entry.original
 }
+
+/** Fixed genuine-owner same-read originals. The complete SQL/K, original
+ * package and content pair come from this invocation's one real lower read.
+ * Runtime originals never enter the released content body/hash or a cache. */
+export async function readRootKnowledgeConservationContentAndOriginals5(handle: RootKnowledgeConservationPlan3) {
+  const entry = plans.get(handle)
+  if (!entry) return root3Invalid('不是实际Main完整知识规划句柄')
+  const { readCompleteOriginalContentPair3 } = await import('./restore-knowledge-qualified-originals')
+  const actual = await readCompleteOriginalContentPair3(entry.original)
+  const constraints = deriveRoot3KnowledgeConstraints(actual.originalPackage.original,
+    await readRoot3OriginalReferenceResolutions(actual.originalPackage))
+  await assertCompleteOriginalPackageBytes(entry.original)
+  if (constraints.conservationHash !== entry.expectedHash) return root3Invalid('完整内容读取期间原域知识或规划变化')
+  const value = Object.freeze({ knowledge: owned(constraints), source: actual.source, current: actual.current })
+  return Object.freeze({ value, pair: actual, original: entry.original })
+}

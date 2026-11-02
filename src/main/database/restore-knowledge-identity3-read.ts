@@ -5,7 +5,7 @@ import { durableSqlDagHash, durableSqlDagUuid } from './restore-knowledge-dag-mo
 import { restoreDirectory, syncRestoreDirectory } from './restore-safety-files'
 import { readCapsule2AssetManifest, writeCapsule2AssetCopy } from './restore-knowledge-capsule2-assets-files'
 import { syncOriginCatalogAncestors } from './restore-knowledge-origin-bundle-files'
-import { readRootKnowledgeConservationContent3, readRootKnowledgePlanLocation3, assertRootKnowledgePlanOriginalBytes3,
+import { readRootKnowledgeConservationContent3, readRootKnowledgeConservationContentAndOriginals5, readRootKnowledgePlanLocation3, assertRootKnowledgePlanOriginalBytes3,
   readRootKnowledgeOriginalOwnerForCopy3,
   type RootKnowledgeConservationPlan3 } from './restore-knowledge-root3-read'
 import { deriveRootRestoreIdentityPlan3, identity3Invalid, type Identity3Kernel, type Identity3Inputs } from './restore-knowledge-identity3-model'
@@ -118,4 +118,19 @@ export async function reopenRootRestoreIdentityPlan3(knowledge: RootKnowledgeCon
   const saved: Saved = { knowledge, location, planId, directory: directory(location, planId), manifestHash: expected }
   const value = await reconstruct(saved)
   return Object.freeze({ plan: mint(saved), value, planId, manifestHash: expected, directory: saved.directory })
+}
+
+/** Fixed Main joint read from the private identity registry. Its released
+ * inputs/allocation and runtime originals share the same fresh Root3 read;
+ * no caller packet, mapper, mode or earlier result can replace that owner. */
+export async function readRootRestoreIdentityInputsAndOriginals5(handle: RootRestoreIdentityPlan3) {
+  const saved = plans.get(handle)
+  if (!saved) return identity3Invalid('不是实际Main持久身份规划句柄')
+  const before = await readManifest(saved)
+  const captured = await readRootKnowledgeConservationContentAndOriginals5(saved.knowledge), inputs = captured.value
+  const value = deriveRootRestoreIdentityPlan3(inputs, before.kernel), actual = manifestBody(saved.location, saved.planId, inputs, before.kernel, value)
+  if (capsuleJson(actual) !== capsuleJson(before)) return identity3Invalid('实际完整SQL/K/内容不等于持久预分配输入')
+  await readManifest(saved); await assertRootKnowledgePlanOriginalBytes3(saved.knowledge)
+  const data = Object.freeze({ value, inputs, kernel: before.kernel })
+  return Object.freeze({ actual: data, pair: captured.pair, original: captured.original })
 }

@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   utimesSync,
@@ -168,7 +169,7 @@ test('staging copies an artifact into a fresh request directory and verifies the
     })
 
     assert.equal(staged.artifactSha256, sourceInspection.artifactSha256)
-    assert.equal(staged.stagingDirectory, join(stagingRoot, 'request-123'))
+    assert.equal(staged.stagingDirectory, join(realpathSync.native(stagingRoot), 'request-123'))
     assert.equal(existsSync(join(staged.stagingDirectory, 'plugin.json')), true)
     assert.equal(existsSync(join(staged.stagingDirectory, 'dist', 'service.cjs')), true)
     await assert.rejects(
@@ -208,7 +209,7 @@ test('publishing exclusively claims a verified immutable content-addressed targe
     })
     assert.equal(
       published.artifactDirectory,
-      join(artifactRoot, firstStage.manifest.id, firstStage.artifactSha256)
+      join(realpathSync.native(artifactRoot), firstStage.manifest.id, firstStage.artifactSha256)
     )
     assert.equal(existsSync(firstStage.stagingDirectory), false)
     assert.equal(existsSync(join(published.artifactDirectory, 'plugin.json')), true)

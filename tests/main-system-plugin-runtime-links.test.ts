@@ -21,7 +21,7 @@ test('internal directory links and dependency cycles survive moving the runtime'
     await rename(source, target)
     await verify()
     assert.equal(await readFile(join(target, 'node_modules', 'value', 'index.cjs'), 'utf8'), 'module.exports = 42')
-    assert.equal(await realpath(join(target, 'node_modules', 'value', 'node_modules', 'value')), join(target, 'node_modules', '.pnpm', 'value'))
+    assert.equal(await realpath(join(target, 'node_modules', 'value', 'node_modules', 'value')), join(await realpath(target), 'node_modules', '.pnpm', 'value'))
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 

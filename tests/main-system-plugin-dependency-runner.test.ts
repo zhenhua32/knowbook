@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import type { ChildProcess, SpawnOptions } from 'node:child_process'
 import { EventEmitter } from 'node:events'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -482,7 +482,7 @@ test('native module probe discovers deterministically and requires each addon in
       assert.equal(call.executable, executable)
       assert.equal(call.args[0], '--eval')
       assert.equal(call.args[2], '--')
-      assert.equal(call.args[3], resolve(root, result.nativeModules[index]))
+      assert.equal(call.args[3], resolve(realpathSync.native(root), result.nativeModules[index]))
       assert.match(call.args[4] ?? '', /^[0-9a-f-]{36}$/)
       assert.equal(call.options.cwd, resolve(root))
       assert.equal(call.options.shell, false)

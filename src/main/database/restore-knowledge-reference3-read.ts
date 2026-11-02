@@ -5,7 +5,7 @@ import { durableSqlDagHash, durableSqlDagUuid } from './restore-knowledge-dag-mo
 import { readCapsule2AssetManifest, writeCapsule2AssetCopy } from './restore-knowledge-capsule2-assets-files'
 import { syncOriginCatalogAncestors } from './restore-knowledge-origin-bundle-files'
 import { restoreDirectory, syncRestoreDirectory } from './restore-safety-files'
-import { assertRootRestoreIdentityOriginalBytes3, readRootRestoreIdentityGraphInputs3,
+import { assertRootRestoreIdentityOriginalBytes3, readRootRestoreIdentityGraphInputs3, readRootRestoreIdentityInputsAndOriginals5,
   readRootRestoreIdentityPlanLocation3, readRootRestoreIdentityOriginalOwnerForCopy3,
   type RootRestoreIdentityPlan3 } from './restore-knowledge-identity3-read'
 import { deriveRootRestoreReferenceAllocation3, normalizeReference3Choices, validateReference3Kernel,
@@ -192,4 +192,30 @@ export async function reopenRootRestoreReferencePlan3(identity: RootRestoreIdent
     basePlanId: base.planId, baseManifestHash: base.manifestHash }
   const actual = await reconstruct(saved)
   return Object.freeze({ plan: mint(saved), value: actual.value, planId, manifestHash: expected, directory: saved.directory })
+}
+
+/** Fixed genuine reference read for original-coordinate consumers. The
+ * original complete pair is propagated from the same Root3/identity SQL read,
+ * not independently reread or retained across calls. Existing manifests,
+ * allocation/candidate hashes, choices, kernels and all byte tails stay exact. */
+export async function readRootRestoreReferenceInputsAndOriginals5(plan: RootRestoreReferencePlan3) {
+  const saved = owners.get(plan)
+  if (!saved) return invalid('不是实际Main持久引用规划句柄')
+  const before = await readManifest(saved), base = await readBaseLocation(saved)
+  // Exactly one fresh complete SQL/K read per fixed public call. Metadata and
+  // tail-byte checks do not reread SQL or turn a DTO into an authority.
+  const captured = await readRootRestoreIdentityInputsAndOriginals5(saved.identity), data = captured.actual
+  const allocation = deriveRootRestoreReferenceAllocation3(data, before.kernel, before.choices)
+  if (allocation.purposes.some(purpose => purpose.targetId === saved.planId)) return invalid('引用plan locator与新分配身份碰撞')
+  const candidate = checkedCandidate(data, allocation, before.choices)
+  const actual = manifestBody(base, saved.planId, data, before.kernel, before.choices, allocation, candidate)
+  if (!same(actual, before)) return invalid('完整原件、base allocation或引用派生不等于持久清单')
+  const value: Reference3Value = Object.freeze({ allocation, candidate })
+  assertMerge3JsonBudget(value)
+  await readManifest(saved)
+  await assertRootRestoreIdentityOriginalBytes3(saved.identity)
+  await readManifest(saved)
+  const result = Object.freeze({ data, allocation, candidate, value, kernel: before.kernel, choices: before.choices,
+    referencePlanId: saved.planId, referenceManifestHash: saved.manifestHash })
+  return Object.freeze({ actual: result, pair: captured.pair, original: captured.original })
 }

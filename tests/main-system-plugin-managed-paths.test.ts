@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, rm, symlink } from 'node:fs/promises'
+import { mkdtemp, mkdir, realpath, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -18,7 +18,7 @@ test('managed paths accept canonical children of an aliased userData root and re
     assert.equal(await isSystemPluginManagedPath(candidate, root, 'another-request'), false)
     await rm(candidate, { recursive: true })
     assert.equal(await isSystemPluginManagedPath(candidate, root, 'request'), true)
-    assert.equal(await resolveSystemPluginPhysicalPath(join(alias, 'missing', 'revision')), join(physical, 'missing', 'revision'))
+    assert.equal(await resolveSystemPluginPhysicalPath(join(alias, 'missing', 'revision')), join(await realpath(physical), 'missing', 'revision'))
   } finally {
     await rm(folder, { recursive: true, force: true })
   }
