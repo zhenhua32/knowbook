@@ -115,7 +115,7 @@ function legacyData(descriptor: MixedOriginBundleDescriptor, value: LegacyMateri
     const binding = index ? node.current : node.source, actual = value.inputs.find(input => requiredDagCapsuleLocator(input.binding) === requiredDagCapsuleLocator(binding))!
     const files = mixedOriginBundleSideFiles(side, binding)
     return { binding: actual.binding, origin: actual.origin, knowledge: actual.knowledge,
-      originalSqlBytes: files.inventory.reduce((n, f) => n + f.bytes, 0), managedOriginalBytes: files.files.filter(f => /\/(?:files|contexts)\/[0-9a-f]{64}$/.test(f.path)).reduce((n, f) => n + f.bytes, 0) }
+      originalSqlBytes: files.inventory.reduce((n, f) => n + f.bytes, 0), managedOriginalBytes: files.files.filter(f => /\/(?:files|contexts)\/[0-9a-f]{64}$/.test(f.path) || /\/base-provenance\.json$/.test(f.path)).reduce((n, f) => n + f.bytes, 0) }
   })
   if (value.originalSqlBytes !== inputs.reduce((n, i) => n + i.originalSqlBytes, 0) || value.managedOriginalBytes !== inputs.reduce((n, i) => n + i.managedOriginalBytes, 0)) return bad('legacy完整实际字节计数不等于原清单')
   return freezeCapsuleValue({ root: value.root, node: value.node, inputs, parents: [], materialHash: value.materialHash,

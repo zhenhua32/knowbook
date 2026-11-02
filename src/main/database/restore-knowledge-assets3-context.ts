@@ -102,7 +102,8 @@ export interface Root3SettledCandidateProjectorForMain3 {
     readonly record: SyncedProtocol5Snapshot['records'][number]['record']; readonly binding: unknown
   } | null
 }
-function deriveSettledWorkingEvidence(raw: Capsule2RawContent, projector?: Root3SettledCandidateProjectorForMain3): Map<string, Root3SettledWorkingEvidence3> {
+function deriveSettledWorkingEvidence(raw: Capsule2RawContent, projector?: Root3SettledCandidateProjectorForMain3,
+  options: { readonly preferProjectedCandidate?: boolean } = {}): Map<string, Root3SettledWorkingEvidence3> {
   const settings = graph3Rows(raw, 'app_settings'), operations = graph3Rows(raw, 'synced_operations')
   const receipts = new Map<string, { row: typeof operations[number]; receipt: M.ExchangeReceipt }>()
   const jobs = new Map<string, { row: typeof settings[number]; job: M.ExchangeJob }>()
@@ -151,7 +152,14 @@ function deriveSettledWorkingEvidence(raw: Capsule2RawContent, projector?: Root3
       + capsuleJson(rows.map(row => ({ table: row.table.name, rowId: row.original.sourceRowId, hash: root3SupplementOriginalRowHash3(raw, row) })))),
       ...(portableProjection === undefined ? {} : { portableProjection }) }
     const previous = originals.get(hash)
-    if (!previous || capsuleJson(source) < capsuleJson(previous.source)) originals.set(hash, proof)
+    // Only the explicit Base4 route prefers independently proved native name/
+    // byte support. Published raw/asset2/asset3 paths keep their exact lexical
+    // whole-W witness choice and output/hash semantics. No partial record is
+    // admitted: both ranks have already passed the same whole resultHash check.
+    const preferred = options.preferProjectedCandidate === true && portableProjection !== undefined
+    const previousPreferred = options.preferProjectedCandidate === true && previous?.portableProjection !== undefined
+    if (!previous || preferred && !previousPreferred
+      || preferred === previousPreferred && capsuleJson(source) < capsuleJson(previous.source)) originals.set(hash, proof)
   }
   const wire = (snapshot: Extract<ReturnType<typeof decodeSyncedOperationAck>, { snapshot: unknown }>['snapshot']) => ({ kind: 'synced-group', id: snapshot.groupId,
     creationId: snapshot.creationId, createdAt: snapshot.createdAt, origin: snapshot.origin, bindings: snapshot.bindings, blocks: snapshot.blocks })
@@ -279,8 +287,8 @@ export function deriveRoot3SettledWorkingEvidence3(raw: Capsule2RawContent): Map
   return deriveSettledWorkingEvidence(raw)
 }
 export function deriveRoot3SettledWorkingEvidenceWithProjection3(raw: Capsule2RawContent,
-  projector: Root3SettledCandidateProjectorForMain3): Map<string, Root3SettledWorkingEvidence3> {
-  return deriveSettledWorkingEvidence(raw, projector)
+  projector: Root3SettledCandidateProjectorForMain3, options: { readonly preferProjectedCandidate?: boolean } = {}): Map<string, Root3SettledWorkingEvidence3> {
+  return deriveSettledWorkingEvidence(raw, projector, options)
 }
 function snapshot(value: unknown): SyncedProtocol5Snapshot {
   assertSyncedShape(value, ['manifest', 'records'])

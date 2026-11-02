@@ -65,9 +65,11 @@ export function qualifiedOriginalSide(value: unknown, binding: CoverageInputBind
   add(assets + '/manifest.json', assetManifestText)
   for (const file of source.files) if (file.present) files.push({ path: mixedOriginCapsulePath(binding, 'knowledge-capsules') + '/original/' + file.name, bytes: file.bytes, sha256: file.sha256! })
   for (const file of archive.tree.files) files.push({ path: assets + '/files/' + file.hash, bytes: file.bytes, sha256: file.hash })
-  if (archive.version === 3) for (const file of archive.contextOriginals.files) files.push({ path: assets + '/contexts/' + file.sha256, bytes: file.bytes, sha256: file.sha256 })
+  if ((archive.version === 3 || archive.version === 4)) for (const file of archive.contextOriginals.files) files.push({ path: assets + '/contexts/' + file.sha256, bytes: file.bytes, sha256: file.sha256 })
+  if (archive.version === 4) files.push({ path: assets + '/base-provenance.json',
+    bytes: archive.baseProjection.baseManifestFile.bytes, sha256: archive.baseProjection.baseManifestFile.sha256 })
   return { value: { kind: 'bound-capsule2', bindingText, sourceManifestText, assetManifestText, contextText } as QualifiedOriginalSide,
-    files, emptyDirectory: assets + '/files', ...(archive.version === 3 ? { emptyDirectories: [assets + '/contexts'] } : {}), context }
+    files, emptyDirectory: assets + '/files', ...((archive.version === 3 || archive.version === 4) ? { emptyDirectories: [assets + '/contexts'] } : {}), context }
 }
 export function validateQualifiedOriginalDescriptor(value: unknown): QualifiedOriginalDescriptor {
   const row = capsuleRecord(value, ['kind','version','root','nodeText','source','current','acceptedCoverage','effective','permit'])

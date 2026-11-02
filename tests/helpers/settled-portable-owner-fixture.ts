@@ -141,6 +141,6 @@ async function prepare(f: Fixture, nativeAliases: boolean, group: boolean) {
     bytes, digest, physical, logicalPath, logicalName, shortPath, names, uris, customText, opaque, opaqueUri,
     oracleHandle, oracleRecords, capture: (version: 2 | 3 = 2) => capturePortableOwner3(f, version) }
 }
-export function withSettledPortable3(run: (saved: SettledPortableFixture3) => Promise<void>, options: { nativeAliases?: boolean; group?: boolean } = {}) {
-  return withConflicts(async f => run(await prepare(f, options.nativeAliases ?? false, options.group ?? false)), { assets: true, notes: true, catalog: true })
+export function withSettledPortable3(run: (saved: SettledPortableFixture3) => Promise<void>, options: { nativeAliases?: boolean; group?: boolean; catalog?: boolean } = {}) {
+  return withConflicts(async f => run(await prepare(f, options.nativeAliases ?? false, options.group ?? false)), { assets: true, notes: true, catalog: options.catalog ?? true })
 }

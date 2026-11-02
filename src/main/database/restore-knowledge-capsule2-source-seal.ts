@@ -7,10 +7,10 @@ import { readOwnedRawCapsuleOriginal, assertOwnedRawCapsuleOriginal, reopenPrepa
   type OwnedRawCapsuleOriginal } from './restore-knowledge-capsule-files'
 import { assertCapsule2AssetDirectory as directory, readCapsule2AssetManifest, readCapsule2AssetCopy as readExact,
   writeCapsule2AssetCopy as writeNew } from './restore-knowledge-capsule2-assets-files'
-import { reopenCapsule2AssetArchive, readCapsule2ArchiveSourceOriginal, prepareCapsule2AssetArchiveWithProvenance3, prepareCapsule2AssetArchiveWithContextProvenance3,
+import { reopenCapsule2AssetArchive, readCapsule2ArchiveSourceOriginal, prepareCapsule2AssetArchiveWithProvenance3, prepareCapsule2AssetArchiveWithContextProvenance3, prepareCapsule2AssetArchiveWithSettledContextProvenance4,
   type PreparedCapsule2AssetArchive } from './restore-knowledge-capsule2-asset-archive'
 import { captureCapsule2SourceMaterial, readCapsule2SourceMaterial, readCapsule2SourceSealInput,
-  assertCapsule2SourceOriginalBytes, type PreparedCapsule2SourceMaterial } from './restore-knowledge-capsule2-source-material'
+  assertCapsule2SourceOriginalBytes, readCapsule2SourceBaseProjection4, type PreparedCapsule2SourceMaterial } from './restore-knowledge-capsule2-source-material'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_READER } from './restore-knowledge-capsule2-raw-model'
 import { capsule2SourceManifestHash, parseCapsule2SourceManifest, capsule2SourceSealInvalid as bad,
   type Capsule2SourceManifest } from './restore-knowledge-capsule2-source-seal-model'
@@ -172,4 +172,21 @@ export async function captureSealedCapsule2SourceWithAssetProvenance3(original: 
  * independent released contract, including every partial coverage flag. */
 export async function captureSealedCapsule2SourceWithContextProvenance3(original: OwnedRawCapsuleOriginal) {
   return captureSealedCapsule2SourceFromArchive(await prepareCapsule2AssetArchiveWithContextProvenance3(original))
+}
+
+/** Explicit archive4 producer; published context3 capture keeps its original
+ * selectors, observer and proof meanings. No caller skip/projection DTO. */
+export async function captureSealedCapsule2SourceWithSettledContextProvenance4(original: OwnedRawCapsuleOriginal) {
+  return captureSealedCapsule2SourceFromArchive(await prepareCapsule2AssetArchiveWithSettledContextProvenance4(original))
+}
+
+/** Full private base read follows only this genuine source's registry chain.
+ * Serialized source/archive/pointer DTOs never grant this capability. */
+export async function readSealedCapsule2SourceBaseProjection4(handle: SealedCapsule2Source) {
+  const entry = sealed.get(handle)
+  if (!entry) return bad('不是实际Main sealed source owner')
+  await assertSealedCapsule2SourceOriginalBytes(handle)
+  const base = await readCapsule2SourceBaseProjection4(entry.material)
+  await assertSealedCapsule2SourceOriginalBytes(handle)
+  return base
 }

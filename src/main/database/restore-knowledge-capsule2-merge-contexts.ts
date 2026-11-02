@@ -333,7 +333,7 @@ async function assertSpoolTail(spool: string, root: string, job: ReturnType<type
       || prior.mtimeNs !== stat.mtimeNs || prior.ctimeNs !== stat.ctimeNs) return fail('source context目录身份/闭集在capture期间变化')
   }
 }
-async function assertContextFileInventory(saved: Saved) {
+async function assertContextFileInventory(saved: Pick<Saved, 'directory' | 'root' | 'created'> & { inventory: Pick<Capsule2MergeContextInventory3, 'files'> }) {
   for (const file of saved.inventory.files) {
     const observed = await hashFile(join(saved.directory, file.sha256), saved.root, true)
     if (observed.sha256 !== file.sha256 || observed.bytes !== file.bytes) return fail('sealed context/blob原字节变化')
@@ -449,3 +449,10 @@ export async function visitCapsule2MergeContextOriginals3(owner: PreparedCapsule
   if (!saved) return fail('不是实际Main context owner，不能逐context读取')
   return verify(saved, visitor)
 }
+
+/** Main implementation helpers only. These functions cannot mint a context or
+ * base-projection owner; public factories still take genuine registry handles.
+ * Shared by the explicit archive4 collector without changing v3 capture. */
+export const capsule2MergeContextNativeFilesForMain4 = Object.freeze({ source, locatorBinding, createJobLookup,
+  contextBytes, spoolPreflight, copyByHash, hashFile, assertSpoolTail, assertContextFileInventory,
+  assertOriginCatalogDirectory, syncOriginCatalogAncestors })

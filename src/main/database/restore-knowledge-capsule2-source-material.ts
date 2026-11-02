@@ -3,13 +3,14 @@ import { basename } from 'node:path'
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { readOwnedRawCapsuleOriginal, reopenPreparedRawCapsuleOriginal,
   assertOwnedRawCapsuleScratchReady, assertOwnedRawCapsuleScratchContent } from './restore-knowledge-capsule-files'
-import { readCapsule2AssetArchive, readCapsule2ArchiveSourceOriginal, readCapsule2ArchiveSourceInputs,
+import { readCapsule2AssetArchive, readCapsule2ArchiveSourceOriginal, readCapsule2ArchiveSourceInputs, readCapsule2ArchiveBaseProjection4,
   type PreparedCapsule2AssetArchive } from './restore-knowledge-capsule2-asset-archive'
 import { readRawCapsule2SourceKnowledgeOwned } from './restore-knowledge-payload-raw-read'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_READER } from './restore-knowledge-capsule2-raw-model'
 import { restoreSqliteFilename } from './restore-safety-sqlite-path'
 import { validateCapsule2AssetReferenceProvenance1, validateCapsule2AssetReferenceProvenance2 } from './restore-knowledge-capsule2-asset-provenance'
 import { describeCapsule2AssetScopeSupplement3, capsule2CombinedAssetUris3 } from './restore-knowledge-capsule2-asset-supplement-model'
+import { describeCapsule2AssetScopeSupplement4, capsule2CombinedAssetUris4 } from './restore-knowledge-capsule2-asset-supplement4-model'
 
 export interface PreparedCapsule2SourceMaterial { readonly kind: 'prepared-capsule2-source-material' }
 type SourcePacket = Awaited<ReturnType<typeof material>>
@@ -47,7 +48,7 @@ async function material(archive: PreparedCapsule2AssetArchive) {
   }
   if (manifest.version === 3) {
     const referenceUris = [...new Set(references.scopes.flatMap(scope => scope.destinations.map(item => item.uri)))].sort()
-    if (capsuleJson(referenceUris) !== capsuleJson(manifest.referenceUris) || !supplemental
+    if (capsuleJson(referenceUris) !== capsuleJson(manifest.referenceUris) || !supplemental || supplemental.version !== 1
       || supplemental.sourceContentHash !== references.sourceContentHash || supplemental.baseAssetReferencesObservationHash !== references.observationHash)
       return bad('v3 base/supplement scope不属于同次完整实际SQL及封存context重放')
     if (capsuleJson(describeCapsule2AssetScopeSupplement3(supplemental)) !== capsuleJson(manifest.assetScopeSupplement)) return bad('v3补充摘要不属于genuine原件owner')
@@ -55,6 +56,17 @@ async function material(archive: PreparedCapsule2AssetArchive) {
       sourceContentHash: references.sourceContentHash, workspaceHistoryObservationHash: references.workspaceHistoryObservationHash,
       assetReferencesObservationHash: references.observationHash, assetScopeSupplementHash: supplemental.observationHash,
       referenceUris: capsule2CombinedAssetUris3(referenceUris, manifest.assetScopeSupplement) }, manifest.tree)
+  }
+  if (manifest.version === 4) {
+    const referenceUris = [...new Set(references.scopes.flatMap(scope => scope.destinations.map(item => item.uri)))].sort()
+    if (capsuleJson(referenceUris) !== capsuleJson(manifest.referenceUris) || !supplemental || supplemental.version !== 2
+      || supplemental.sourceContentHash !== references.sourceContentHash || supplemental.baseAssetReferencesObservationHash !== references.observationHash
+      || supplemental.baseManifestHash !== manifest.baseProjection.baseManifestHash || supplemental.settledEvidenceHash !== manifest.contextOriginals.settledEvidenceHash)
+      return bad('v4 base/settled/supplement不是同次完整实际SQL和genuine base capture')
+    if (capsuleJson(describeCapsule2AssetScopeSupplement4(supplemental)) !== capsuleJson(manifest.assetScopeSupplement)) return bad('v4独立补充摘要不属于genuine原件')
+    validateCapsule2AssetReferenceProvenance2(manifest.referenceProvenance, { sourceContentHash: references.sourceContentHash,
+      workspaceHistoryObservationHash: references.workspaceHistoryObservationHash, assetReferencesObservationHash: references.observationHash,
+      assetScopeSupplementHash: supplemental.observationHash, referenceUris: capsule2CombinedAssetUris4(referenceUris, manifest.assetScopeSupplement) }, manifest.tree)
   }
   const after = await readCapsule2AssetArchive(archive)
   if (after.manifestHash !== before.manifestHash) return bad('读取期间归档身份变化')
@@ -116,4 +128,11 @@ export async function assertCapsule2SourceOriginalBytes(handle: PreparedCapsule2
   const entry = materials.get(handle)
   if (!entry) return bad('不是实际Main完整来源私有句柄')
   await readCapsule2AssetArchive(entry.archive)
+}
+
+/** Registry-only base facts for the explicit settled projection consumer. */
+export async function readCapsule2SourceBaseProjection4(handle: PreparedCapsule2SourceMaterial) {
+  const entry = materials.get(handle)
+  if (!entry) return bad('不是实际Main material owner')
+  return readCapsule2ArchiveBaseProjection4(entry.archive)
 }
