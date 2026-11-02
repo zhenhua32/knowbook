@@ -1,3 +1,5 @@
+import { readTransportWorkingTexts5 } from './restore-knowledge-capsule5-transport-files'
+import type { TransportWorkingTexts5 } from './restore-knowledge-capsule5-transport-model'
 import { randomUUID } from 'node:crypto'
 import { lstat, readdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -13,9 +15,9 @@ import { mixedOriginBundleFiles, mixedOriginBundleDirectories, mixedOriginBundle
   MIXED_ORIGIN_BUNDLE_MAX_DESCRIPTOR_BYTES, type MixedOriginBundleDescriptor } from './restore-knowledge-mixed-origin-bundle-model'
 import { readActualFirstMixedOriginSource, type ActualFirstRequiredSqlDag } from './restore-knowledge-mixed-required-dag-read'
 
-export interface MixedOriginBundleOriginal { readonly directory:string; readonly descriptor:MixedOriginBundleDescriptor; readonly descriptorHash:string }
-async function exactTree(root:string,descriptor:MixedOriginBundleDescriptor) {
-  const files=mixedOriginBundleFiles(descriptor),dirs=mixedOriginBundleDirectories(descriptor)
+export interface MixedOriginBundleOriginal { readonly directory:string; readonly descriptor:MixedOriginBundleDescriptor; readonly descriptorHash:string; readonly workingTexts:TransportWorkingTexts5 }
+async function exactTree(root:string,descriptor:MixedOriginBundleDescriptor,workingTexts:TransportWorkingTexts5) {
+  const files=mixedOriginBundleFiles(descriptor,workingTexts),dirs=mixedOriginBundleDirectories(descriptor,workingTexts)
   const plans=['',...dirs].map(key=>({key,path:key?local(root,key):root,depth:key?key.split('/').length:0,children:new Map<string,'file'|'directory'>()}))
   const byKey=new Map(plans.map(p=>[p.key,p])),snapshots=new Map<string,{stat:Awaited<ReturnType<typeof directory>>;names:string[]}>()
   const add=(key:string,kind:'file'|'directory')=>{const slash=key.lastIndexOf('/'),parent=slash<0?'':key.slice(0,slash),name=key.slice(slash+1),plan=byKey.get(parent)
@@ -39,35 +41,36 @@ async function exactTree(root:string,descriptor:MixedOriginBundleDescriptor) {
 }
 export async function readMixedOriginBundleOriginal(input:string,expectedHash?:string):Promise<MixedOriginBundleOriginal> {
   const root=await canonical(input),path=join(root,'descriptor.json'),first=await readCapsule2AssetManifest(path,root,MIXED_ORIGIN_BUNDLE_MAX_DESCRIPTOR_BYTES)
-  const descriptor=parseMixedOriginBundleDescriptor(first),descriptorHash=mixedOriginBundleHash(descriptor)
+  const workingTexts=await readTransportWorkingTexts5(first,'prepared-mixed-v2',index=>readCapsule2AssetManifest(local(root,index.path),root),expectedHash)
+  const descriptor=parseMixedOriginBundleDescriptor(first,workingTexts),descriptorHash=mixedOriginBundleHash(descriptor,workingTexts)
   if(expectedHash!==undefined&&descriptorHash!==expectedHash)return bad('mixed原descriptor准确hash变化')
-  await exactTree(root,descriptor)
+  await exactTree(root,descriptor,workingTexts)
   if(first!==await readCapsule2AssetManifest(path,root,MIXED_ORIGIN_BUNDLE_MAX_DESCRIPTOR_BYTES))return bad('mixed descriptor读取期间变化')
-  return freezeCapsuleValue({directory:root,descriptor,descriptorHash})
+  return freezeCapsuleValue({directory:root,descriptor,descriptorHash,workingTexts})
 }
-async function makeTree(root:string,descriptor:MixedOriginBundleDescriptor){for(const path of mixedOriginBundleDirectories(descriptor))await restoreDirectory(local(root,path),root)}
-async function finish(root:string,descriptor:MixedOriginBundleDescriptor){
+async function makeTree(root:string,descriptor:MixedOriginBundleDescriptor,workingTexts:TransportWorkingTexts5){for(const path of mixedOriginBundleDirectories(descriptor,workingTexts))await restoreDirectory(local(root,path),root)}
+async function finish(root:string,descriptor:MixedOriginBundleDescriptor,workingTexts:TransportWorkingTexts5){
   await writeCapsule2AssetCopy(join(root,'descriptor.json'),Buffer.from(capsuleJson(descriptor)+'\n'),root)
-  for(const path of [...mixedOriginBundleDirectories(descriptor)].reverse())await syncRestoreDirectory(local(root,path))
+  for(const path of [...mixedOriginBundleDirectories(descriptor,workingTexts)].reverse())await syncRestoreDirectory(local(root,path))
   await syncRestoreDirectory(root)
 }
 export async function writeMixedOriginBundle(source:ActualFirstRequiredSqlDag,operationId:string,bundleId:string) {
   const first=await readActualFirstMixedOriginSource(source),root=await canonical(first.profileRoot)
   const operation=join(root,'backups','database-restore',durableSqlDagUuid(operationId)),collection=join(operation,'mixed-origin-bundle-exports'),target=join(collection,durableSqlDagUuid(bundleId))
-  await restoreDirectory(operation,root);await restoreDirectory(collection,root);await restoreDirectory(target,root,true);await makeTree(target,first.descriptor)
+  await restoreDirectory(operation,root);await restoreDirectory(collection,root);await restoreDirectory(target,root,true);await makeTree(target,first.descriptor,first.workingTexts)
   await batch(first.files,file=>copyFile(file.sourcePath,root,local(target,file.path),target,file))
   const last=await readActualFirstMixedOriginSource(source)
   if(first.descriptorHash!==last.descriptorHash||capsuleJson(first.files)!==capsuleJson(last.files))return bad('mixed真实原件全集复制期间变化')
-  await finish(target,first.descriptor);await syncAncestors(collection,root)
+  await finish(target,first.descriptor,first.workingTexts);await syncAncestors(collection,root)
   return readMixedOriginBundleOriginal(target,first.descriptorHash)
 }
 export async function importMixedOriginBundleOriginal(profile:string,operationId:string,sourceDirectory:string) {
   const source=await readMixedOriginBundleOriginal(sourceDirectory),profileRoot=await canonical(profile),op=durableSqlDagUuid(operationId),mountId=randomUUID()
   const operation=join(profileRoot,'backups','database-restore',op),collection=join(operation,'mixed-origin-bundle-mounts'),mount=join(collection,mountId),target=join(mount,'original')
   await restoreDirectory(operation,profileRoot);await restoreDirectory(collection,profileRoot);await restoreDirectory(mount,profileRoot,true);await restoreDirectory(target,profileRoot,true)
-  await makeTree(target,source.descriptor)
-  await batch(mixedOriginBundleFiles(source.descriptor),file=>copyFile(local(source.directory,file.path),source.directory,local(target,file.path),target,file))
-  await readMixedOriginBundleOriginal(source.directory,source.descriptorHash);await finish(target,source.descriptor);await syncAncestors(mount,profileRoot)
+  await makeTree(target,source.descriptor,source.workingTexts)
+  await batch(mixedOriginBundleFiles(source.descriptor,source.workingTexts),file=>copyFile(local(source.directory,file.path),source.directory,local(target,file.path),target,file))
+  await readMixedOriginBundleOriginal(source.directory,source.descriptorHash);await finish(target,source.descriptor,source.workingTexts);await syncAncestors(mount,profileRoot)
   return {profileRoot,operationId:op,mountId,original:await readMixedOriginBundleOriginal(target,source.descriptorHash)}
 }
 export async function readMountedMixedOriginBundle(profile:string,operationId:string,mountId:string,expectedHash:string) {
@@ -79,11 +82,11 @@ export async function readMountedMixedOriginBundle(profile:string,operationId:st
 }
 export async function createMixedOriginVerificationProfile(input:Awaited<ReturnType<typeof readMountedMixedOriginBundle>>) {
   const actual=await readMountedMixedOriginBundle(input.profileRoot,input.operationId,input.mountId,input.original.descriptorHash)
-  const collection=join(dirname(actual.original.directory),'verification-profiles'),profile=join(collection,randomUUID()),descriptor=actual.original.descriptor
+  const collection=join(dirname(actual.original.directory),'verification-profiles'),profile=join(collection,randomUUID()),descriptor=actual.original.descriptor,workingTexts=actual.original.workingTexts
   await restoreDirectory(collection,input.profileRoot);await restoreDirectory(profile,input.profileRoot,true)
-  for(const path of mixedOriginBundleDirectories(descriptor))if(path!=='catalog')await restoreDirectory(local(profile,path.slice('catalog/'.length)),profile)
-  await batch(mixedOriginBundleFiles(descriptor),file=>copyFile(local(actual.original.directory,file.path),actual.original.directory,local(profile,file.path.slice('catalog/'.length)),profile,file))
+  for(const path of mixedOriginBundleDirectories(descriptor,workingTexts))if(path!=='catalog')await restoreDirectory(local(profile,path.slice('catalog/'.length)),profile)
+  await batch(mixedOriginBundleFiles(descriptor,workingTexts),file=>copyFile(local(actual.original.directory,file.path),actual.original.directory,local(profile,file.path.slice('catalog/'.length)),profile,file))
   await readMixedOriginBundleOriginal(actual.original.directory,actual.original.descriptorHash)
-  for(const path of [...mixedOriginBundleDirectories(descriptor)].reverse())if(path!=='catalog')await syncRestoreDirectory(local(profile,path.slice('catalog/'.length)))
+  for(const path of [...mixedOriginBundleDirectories(descriptor,workingTexts)].reverse())if(path!=='catalog')await syncRestoreDirectory(local(profile,path.slice('catalog/'.length)))
   await syncRestoreDirectory(profile);await syncAncestors(collection,input.profileRoot);return canonical(profile)
 }

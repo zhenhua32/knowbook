@@ -1,3 +1,7 @@
+import { readTransportWorkingTexts5 } from './restore-knowledge-capsule5-transport-files'
+import type { TransportWorkingTexts5 } from './restore-knowledge-capsule5-transport-model'
+import { readCertifiedCapsule2SourceWorkingOriginals5 } from './restore-knowledge-capsule2-source-certificate'
+import { parseCapsule2CompleteAssetArchiveManifest } from './restore-knowledge-capsule2-asset-archive'
 import { capsule2AssetArchiveOriginalBytes3 } from './restore-knowledge-capsule2-asset-archive'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
@@ -109,13 +113,13 @@ function ownInput(value: Awaited<ReturnType<typeof readActualNoPriorOriginalInpu
 }
 type LegacyMaterial = Pick<Awaited<ReturnType<typeof reopenActualFirstRequiredSqlDagWithInitialMaterial>>['value'],
   'root' | 'node' | 'inputs' | 'materialHash' | 'originalSqlBytes' | 'managedOriginalBytes'>
-function legacyData(descriptor: MixedOriginBundleDescriptor, value: LegacyMaterial): CompleteOriginalRootData {
+function legacyData(descriptor: MixedOriginBundleDescriptor,value:LegacyMaterial,workingTexts:TransportWorkingTexts5={}): CompleteOriginalRootData {
   const node = parseRequiredSqlDagNode(descriptor.nodeText)
   const inputs = [descriptor.source, descriptor.current].map((side, index) => {
     const binding = index ? node.current : node.source, actual = value.inputs.find(input => requiredDagCapsuleLocator(input.binding) === requiredDagCapsuleLocator(binding))!
-    const files = mixedOriginBundleSideFiles(side, binding)
+    const files = mixedOriginBundleSideFiles(side,binding,index?workingTexts.current:workingTexts.source)
     return { binding: actual.binding, origin: actual.origin, knowledge: actual.knowledge,
-      originalSqlBytes: files.inventory.reduce((n, f) => n + f.bytes, 0), managedOriginalBytes: files.files.filter(f => /\/(?:files|contexts)\/[0-9a-f]{64}$/.test(f.path) || /\/base-provenance\.json$/.test(f.path)).reduce((n, f) => n + f.bytes, 0) }
+      originalSqlBytes: files.inventory.reduce((n, f) => n + f.bytes, 0), managedOriginalBytes: files.files.filter(f => /\/(?:files|contexts)\/[0-9a-f]{64}$/.test(f.path) || /\/(?:base-provenance|contexts\/manifest)\.json$/.test(f.path)).reduce((n, f) => n + f.bytes, 0) }
   })
   if (value.originalSqlBytes !== inputs.reduce((n, i) => n + i.originalSqlBytes, 0) || value.managedOriginalBytes !== inputs.reduce((n, i) => n + i.managedOriginalBytes, 0)) return bad('legacy完整实际字节计数不等于原清单')
   return freezeCapsuleValue({ root: value.root, node: value.node, inputs, parents: [], materialHash: value.materialHash,
@@ -180,12 +184,19 @@ async function reopenedInput(readers: NodeReaders, side: QualifiedOriginalSide, 
     sourceMaterialHash: value.materialHash, assetArchiveHash: value.assetArchiveHash },
     originalSqlBytes: value.sourceInventory.reduce((n, f) => n + f.bytes, 0), managedOriginalBytes: capsule2AssetArchiveOriginalBytes3(value.assetArchive) } }
 }
+async function domainWorkingTexts5(view:View,prefix:readonly string[],text:string,reader:CompleteOriginalPackage['reader'],hash:string){
+  return readTransportWorkingTexts5(text,reader,async index=>{
+    const file=view.files.find(file=>same(file.frame,prefix)&&file.path===index.path)
+    if(!file||file.bytes!==index.pointer.manifestFile.bytes||file.sha256!==index.pointer.manifestFile.sha256)return bad('working5索引不在本exact原件frame中')
+    return view.flatMixed?readCapsule2AssetManifest(viewPath(view,file),view.directory,REFERENCE_CONTEXT_MAX_BYTES):readOriginalFrameText(view.directory,file,REFERENCE_CONTEXT_MAX_BYTES)
+  },hash)
+}
 async function walk(view: View, prefix: readonly string[], reader: CompleteOriginalPackage['reader'], hash: string, b: Budget, depth: number, rootPackets?: Array<ContentPacket | null>): Promise<CompleteOriginalRootData> {
-  const text = await domainText(view, prefix), stateKey = capsuleJson(prefix)
+  const text = await domainText(view,prefix),workingTexts=await domainWorkingTexts5(view,prefix,text,reader,hash),stateKey=capsuleJson(prefix)
   if (reader === 'prepared-mixed-v2') {
-    const descriptor = parseMixedOriginBundleDescriptor(text)
-    if (mixedOriginBundleHash(descriptor) !== hash) return bad('实际legacy父descriptor pin变化')
-    const inventory = { files: mixedOriginBundleFiles(descriptor).map(file => ({ ...file, frame: [] })), directories: mixedOriginBundleDirectories(descriptor).map(path => ({ frame: [], path })) }
+    const descriptor = parseMixedOriginBundleDescriptor(text,workingTexts)
+    if (mixedOriginBundleHash(descriptor,workingTexts) !== hash) return bad('实际legacy父descriptor pin变化')
+    const inventory = { files: mixedOriginBundleFiles(descriptor,workingTexts).map(file => ({ ...file, frame: [] })), directories: mixedOriginBundleDirectories(descriptor,workingTexts).map(path => ({ frame: [], path })) }
     domainInventory(view, prefix, inventory, text); charge(b, parseRequiredSqlDagNode(descriptor.nodeText), depth)
     let state = view.readers.get(stateKey)
     if (!state) { state = { profile: await verificationProfile(view, prefix, inventory.directories), sources: new Map() }; view.readers.set(stateKey, state) }
@@ -207,14 +218,14 @@ async function walk(view: View, prefix: readonly string[], reader: CompleteOrigi
       preparedEvidence: true as const, fullRootInputSetProven: true as const, emptyKnowledgeProven: false as const, acceptedCoverage: false as const, effective: false as const, permit: false as const }
     if (Buffer.byteLength(capsuleJson(body)) > REFERENCE_CONTEXT_MAX_BYTES) return bad('legacy完整原材料超有限预算')
     const value = { ...body, materialHash: knowledgeHash('knowbook.knowledge.actual-required-root-material.v3', body) }
-    const data = legacyData(descriptor, value)
+    const data = legacyData(descriptor,value,workingTexts)
     b.bytes += data.originalSqlBytes + data.managedOriginalBytes
     if (b.bytes > DURABLE_SQL_DAG_MAX_ORIGINAL_BYTES) return bad('实际完整原件全集超预算')
     return data
   }
-  const descriptor = parseQualifiedOriginalDescriptor(text, hash), inventory = qualifiedOriginalInventory(descriptor), node = parseRequiredSqlDagNode(descriptor.nodeText)
+  const descriptor=parseQualifiedOriginalDescriptor(text,hash,workingTexts),inventory=qualifiedOriginalInventory(descriptor,workingTexts),node=parseRequiredSqlDagNode(descriptor.nodeText)
   domainInventory(view, prefix, inventory, text); charge(b, node, depth)
-  const sides = [qualifiedOriginalSide(descriptor.source, node.source, node.origins.source), qualifiedOriginalSide(descriptor.current, node.current, node.origins.current)]
+  const sides=[qualifiedOriginalSide(descriptor.source,node.source,node.origins.source,workingTexts.source),qualifiedOriginalSide(descriptor.current,node.current,node.origins.current,workingTexts.current)]
   const parents: Array<CompleteOriginalRootData['parents'][number]> = []
   for (const side of sides) if (side.context) parents.push(...await contextParents(view, [...prefix, side.context.contextId], side.context, b, depth + 1))
   parents.sort((a, z) => requiredDagRootLocator(a.reference) < requiredDagRootLocator(z.reference) ? -1 : 1)
@@ -243,16 +254,17 @@ function viewFor(directory: string, profileRoot: string, descriptorText: string,
 }
 async function readDirectoryBytes(directory: string, profileRoot: string, hash?: string) {
   const root = await canonicalOriginCatalogRoot(directory), text = await readCapsule2AssetManifest(join(root, 'descriptor.json'), root)
-  const descriptor = parseQualifiedOriginalDescriptor(text, hash), inventory = qualifiedOriginalInventory(descriptor), view = viewFor(root, profileRoot, text, inventory)
+  const workingTexts=await readTransportWorkingTexts5(text,'qualified-originals-v1',index=>readCapsule2AssetManifest(originCatalogLocalPath(root,referenceContextObjectPath([],index.path)),root,REFERENCE_CONTEXT_MAX_BYTES),hash)
+  const descriptor=parseQualifiedOriginalDescriptor(text,hash,workingTexts),inventory=qualifiedOriginalInventory(descriptor,workingTexts),view=viewFor(root,profileRoot,text,inventory)
   await assertOriginalFrameDirectory(root, text, inventory.files)
-  return { root, text, descriptor, inventory, view }
+  return { root,text,descriptor,inventory,view,workingTexts }
 }
 async function readDirectory(directory: string, profileRoot: string, hash?: string, readers: ReaderState = new Map(), rootPackets?: Array<ContentPacket | null>): Promise<CompleteOriginalPackage> {
-  const { root, text, descriptor, inventory, view } = await readDirectoryBytes(directory, profileRoot, hash)
+  const {root,text,descriptor,inventory,view,workingTexts}=await readDirectoryBytes(directory,profileRoot,hash)
   view.readers = readers
-  const actual = await walk(view, [], 'qualified-originals-v1', qualifiedOriginalDescriptorHash(descriptor), budget(), 1, rootPackets)
+  const actual = await walk(view, [], 'qualified-originals-v1', qualifiedOriginalDescriptorHash(descriptor,workingTexts), budget(), 1, rootPackets)
   await assertOriginalFrameDirectory(root, text, inventory.files)
-  const result = packageFrom(view, 'qualified-originals-v1', qualifiedOriginalDescriptorHash(descriptor), actual)
+  const result = packageFrom(view, 'qualified-originals-v1', qualifiedOriginalDescriptorHash(descriptor,workingTexts), actual)
   capturedReaders.set(result, readers); return result
 }
 /** Fixed Main byte bracket only. No SQL data or authority is returned. */
@@ -280,14 +292,14 @@ export async function readCompleteOriginalPackage(handle: CompleteOriginalBundle
   if (entry) return readDirectory(entry.directory, entry.profileRoot, entry.hash, entry.readers)
   const actual = await readPreparedMixedOriginBundleOriginalInputs(handle as PreparedMixedOriginBundle), value = actual.value
   const original = legacyData(actual.descriptor, { root: value.originalRoot, node: value.originalNode, materialHash: value.sourceMaterialHash,
-    inputs: value.inputs, originalSqlBytes: value.originalSqlBytes, managedOriginalBytes: value.managedOriginalBytes })
+    inputs:value.inputs,originalSqlBytes:value.originalSqlBytes,managedOriginalBytes:value.managedOriginalBytes},actual.workingTexts)
   return freezeCapsuleValue({ reader: 'prepared-mixed-v2' as const, directory: actual.directory, descriptorText: capsuleJson(actual.descriptor) + '\n',
     descriptorHash: actual.descriptorHash, original, files: sorted(actual.files.map(file => ({ ...file, frame: [], sourceRoot: actual.profileRoot }))),
     directories: sorted(actual.directories.map(path => ({ frame: [], path }))) })
 }
 async function nativeInput(profileRoot: string, source: Source) {
   const bound = await tryReadBoundCapsule2OriginalInputs(profileRoot, source)
-  if (bound) return { input: bound.input, side: bound.side, parentCopies: bound.parentCopies }
+  if(bound)return {input:bound.input,side:bound.side,workingText:bound.workingText,parentCopies:bound.parentCopies}
   const actual = await readActualNoPriorOriginalInput(profileRoot, source as CertifiedDurableSqlCapsule | CertifiedCapsule2NoPriorSource), ref = actual.binding.capsule
   const operation = join(profileRoot, 'backups', 'database-restore', ref.operationId)
   const text = (collection: string, leaf: string, max?: number) => readCapsule2AssetManifest(join(operation, collection, ref.capsuleId, leaf), profileRoot, max)
@@ -295,8 +307,11 @@ async function nativeInput(profileRoot: string, source: Source) {
     ? { kind: 'durable-sql-v1', manifestText: await text('knowledge-capsules', 'manifest.json') }
     : { kind: 'complete-capsule2', certificateText: await text('knowledge-source-certificates-v2', 'certificate.json', CAPSULE2_SOURCE_CERTIFICATE_MAX_BYTES),
       sourceManifestText: await text('knowledge-source-capsules-v2', 'manifest.json'), assetManifestText: await text('knowledge-complete-assets-v2', 'manifest.json') }
-  qualifiedOriginalSide(side, actual.binding, actual.origin)
-  return { input: ownInput(actual), side, parentCopies: [] as OriginalFrameCopy[] }
+  const working=side.kind==='complete-capsule2'&&parseCapsule2CompleteAssetArchiveManifest(side.assetManifestText,actual.binding.capsule.capsuleId,actual.knowledge.assetArchiveHash??bad('完整来源缺archive hash')).version===5
+    ?await readCertifiedCapsule2SourceWorkingOriginals5(source as CertifiedCapsule2NoPriorSource):undefined
+  const workingText=working?capsuleJson(working.manifest)+'\n':undefined
+  qualifiedOriginalSide(side,actual.binding,actual.origin,workingText)
+  return {input:ownInput(actual),side,workingText,parentCopies: [] as OriginalFrameCopy[] }
 }
 async function pair(profileRoot: string, source: Source, current: Source) {
   const results = await Promise.allSettled([nativeInput(profileRoot, source), nativeInput(profileRoot, current)])
@@ -348,9 +363,10 @@ async function buildOriginalBundle(profileRoot: string, operationId: string, dag
   const node = validateRequiredSqlDagNode({ kind: 'restore-required-sql-knowledge-dag-node', version: 2, readerVersion: 'knowbook-required-sql-knowledge-dag-v2', material: 'durable-sql-only',
     source: source.binding, current: current.binding, origins: { source: source.origin, current: current.origin }, parents: requiredDagParentUnion(source.binding.requiredRoots, current.binding.requiredRoots) })
   const file = await writeRequiredSqlDagNodeFile(profileRoot, operationId, dagId, node)
+  const workingTexts:TransportWorkingTexts5={source:initial[0].workingText,current:initial[1].workingText}
   const descriptor = validateQualifiedOriginalDescriptor({ kind: 'restore-qualified-original-inputs', version: 1, root: file.ref, nodeText: capsuleJson(node),
-    source: initial[0].side, current: initial[1].side, acceptedCoverage: false, effective: false, permit: false })
-  const inventory = qualifiedOriginalInventory(descriptor), own = inventory.files.filter(file => !file.frame.length).map(file => ({ ...file, sourceRoot: profileRoot,
+    source:initial[0].side,current:initial[1].side,acceptedCoverage:false,effective:false,permit:false},workingTexts)
+  const inventory=qualifiedOriginalInventory(descriptor,workingTexts),own= inventory.files.filter(file => !file.frame.length).map(file => ({ ...file, sourceRoot: profileRoot,
     sourcePath: originCatalogLocalPath(profileRoot, file.path.slice('catalog/'.length)) }))
   const files = [...own, ...initial.flatMap(side => side.parentCopies)]
   if (!same(sorted(files.map(({ frame, path, bytes, sha256 }) => ({ frame, path, bytes, sha256 }))), inventory.files)) return bad('实际来源提供的文件不是完整qualified inventory')
@@ -363,7 +379,7 @@ async function buildOriginalBundle(profileRoot: string, operationId: string, dag
     }
   }
   await syncOriginCatalogAncestors(target.base, profileRoot)
-  const hash = qualifiedOriginalDescriptorHash(descriptor), actual = await readDirectory(target.directory, profileRoot, hash)
+  const hash = qualifiedOriginalDescriptorHash(descriptor,workingTexts), actual = await readDirectory(target.directory, profileRoot, hash)
   return Object.freeze({ bundle: mint({ profileRoot, operationId, mountId: target.mountId, directory: target.directory, hash, readers: capturedReaders.get(actual)! }), value: actual.original,
     directory: target.directory, mountId: target.mountId, descriptorHash: hash, originalPackage: actual })
 }
@@ -411,14 +427,14 @@ export async function captureMixedOriginalPackageWithInitialInputs(input: { prof
   const captured = await capturePreparedMixedOriginBundle(input), value = captured.value, namespace = value.root.namespace
   if (namespace.kind !== 'imported-bundle') return bad('完整mixed初始捕获缺实际mount')
   const mounted = await readMountedMixedOriginBundle(input.profileRoot, input.operationId, namespace.mountId, value.descriptorHash)
-  const descriptor = mounted.original.descriptor, directory = mounted.original.directory, descriptorText = capsuleJson(descriptor) + '\n'
+  const descriptor=mounted.original.descriptor,workingTexts=mounted.original.workingTexts,directory=mounted.original.directory,descriptorText=capsuleJson(descriptor)+ '\n'
   const original = legacyData(descriptor, { root: value.originalRoot, node: value.originalNode, inputs: value.inputs,
-    materialHash: value.sourceMaterialHash, originalSqlBytes: value.originalSqlBytes, managedOriginalBytes: value.managedOriginalBytes })
-  const files = [header(descriptorText), ...mixedOriginBundleFiles(descriptor).map(file => ({ ...file, frame: [] as string[] }))]
+    materialHash:value.sourceMaterialHash,originalSqlBytes:value.originalSqlBytes,managedOriginalBytes:value.managedOriginalBytes},workingTexts)
+  const files = [header(descriptorText), ...mixedOriginBundleFiles(descriptor,workingTexts).map(file => ({ ...file, frame: [] as string[] }))]
   const originalPackage: CompleteOriginalPackage = freezeCapsuleValue({ reader: 'prepared-mixed-v2', directory,
     descriptorHash: value.descriptorHash, descriptorText, original,
     files: sorted(files).map(file => ({ ...file, sourcePath: originCatalogLocalPath(directory, file.path), sourceRoot: directory })),
-    directories: mixedOriginBundleDirectories(descriptor).map(path => ({ frame: [], path })) })
+    directories: mixedOriginBundleDirectories(descriptor,workingTexts).map(path => ({ frame: [], path })) })
   await assertCompleteOriginalPackageBytes(captured.bundle)
   return Object.freeze({ ...captured, originalPackage })
 }
@@ -458,9 +474,9 @@ function contentPair(actual: CompleteOriginalPackage, packets: readonly (Content
  * complete freshly reconstructed material is compared by that registry. */
 export async function readMixedOriginalContentPair3(handle: PreparedMixedOriginBundle) {
   const mounted = await readPreparedMixedOriginalContentLocation3(handle)
-  const descriptor = mounted.descriptor, inventory = {
-    files: mixedOriginBundleFiles(descriptor).map(file => ({ ...file, frame: [] as string[] })),
-    directories: mixedOriginBundleDirectories(descriptor).map(path => ({ frame: [] as string[], path })) }
+  const descriptor=mounted.descriptor,workingTexts=mounted.workingTexts,inventory={
+    files: mixedOriginBundleFiles(descriptor,workingTexts).map(file => ({ ...file, frame: [] as string[] })),
+    directories: mixedOriginBundleDirectories(descriptor,workingTexts).map(path => ({ frame: [] as string[], path })) }
   const view = viewFor(mounted.directory, mounted.profileRoot, capsuleJson(descriptor) + '\n', inventory)
   view.flatMixed = true
   const saved = contentReaders.get(handle)
@@ -505,16 +521,16 @@ export async function readCompleteOriginalRootCurrentFiles3(handle: CompleteOrig
   if (entry) {
     const actual = await readDirectoryBytes(entry.directory, entry.profileRoot, entry.hash)
     view = actual.view; root = actual.descriptor.root; node = parseRequiredSqlDagNode(actual.descriptor.nodeText)
-    side = qualifiedOriginalSide(actual.descriptor.current, node.current, node.origins.current).value
+    side=qualifiedOriginalSide(actual.descriptor.current,node.current,node.origins.current,actual.workingTexts.current).value
     operationId = entry.operationId; descriptorHash = entry.hash; reader = 'qualified-originals-v1'
   } else {
     const actual = await readPreparedMixedOriginalContentLocation3(handle as PreparedMixedOriginBundle)
-    const descriptor = actual.descriptor
+    const descriptor=actual.descriptor,workingTexts=actual.workingTexts
     view = viewFor(actual.directory, actual.profileRoot, capsuleJson(descriptor) + '\n', {
-      files: mixedOriginBundleFiles(descriptor).map(file => ({ ...file, frame: [] as string[] })),
-      directories: mixedOriginBundleDirectories(descriptor).map(path => ({ frame: [] as string[], path })) })
+      files: mixedOriginBundleFiles(descriptor,workingTexts).map(file => ({ ...file, frame: [] as string[] })),
+      directories: mixedOriginBundleDirectories(descriptor,workingTexts).map(path => ({ frame: [] as string[], path })) })
     view.flatMixed = true; root = descriptor.root; node = parseRequiredSqlDagNode(descriptor.nodeText)
-    side = mixedOriginBundleSideFiles(descriptor.current, node.current).value
+    side=mixedOriginBundleSideFiles(descriptor.current,node.current,workingTexts.current).value
     const location = await readCompleteOriginalPlanLocation(handle)
     operationId = location.operationId; descriptorHash = actual.descriptorHash; reader = 'prepared-mixed-v2'
   }

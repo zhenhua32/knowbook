@@ -5,7 +5,7 @@ import { restoreDirectory, syncRestoreDirectory } from './restore-safety-files'
 import { capsuleBytesHash, capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { durableSqlDagUuid } from './restore-knowledge-dag-model'
 import { assertCapsule2AssetDirectory, readCapsule2AssetManifest, readCapsule2AssetCopy, writeCapsule2AssetCopy } from './restore-knowledge-capsule2-assets-files'
-import { readSealedCapsule2SourceInputs, captureReopenedSealedCapsule2Source, type SealedCapsule2Source } from './restore-knowledge-capsule2-source-seal'
+import { readSealedCapsule2SourceInputs, readSealedCapsule2SourceWorkingOriginals5, assertSealedCapsule2SourceOriginalBytes, captureReopenedSealedCapsule2Source, type SealedCapsule2Source } from './restore-knowledge-capsule2-source-seal'
 import { CAPSULE2_READER } from './restore-knowledge-capsule2-raw-model'
 import { CAPSULE2_SOURCE_CERTIFICATE_MAX_BYTES, capsule2NoPriorSourceCertificateHash, parseCapsule2NoPriorSourceCertificate,
   sourceCertificateInvalid as bad, type Capsule2NoPriorSourceCertificate } from './restore-knowledge-capsule2-source-certificate-model'
@@ -102,4 +102,37 @@ export async function readCertifiedCapsule2SourceMaterial(handle: CertifiedCapsu
 export async function tryReadCertifiedCapsule2SourceInputs(handle: unknown) {
   const entry = certified.get(handle as CertifiedCapsule2NoPriorSource)
   return entry ? { ...await verify(entry), profileRoot: entry.root } : undefined
+}
+
+/** Main-only source5 runtime seam. A genuine certificate supplies its private
+ * sealed source; no manifest, path, version tag or working-text DTO is accepted.
+ * Certificate bytes and closure bracket the source's own complete byte checks.
+ * Older archive versions return null after the sealed reader's absent result. */
+export async function readCertifiedCapsule2SourceWorkingOriginals5(handle: CertifiedCapsule2NoPriorSource) {
+  const entry = certified.get(handle)
+  if (!entry) return bad('不是Main认证的私有来源句柄')
+  // Both mint paths already join certificateFor(full genuine source) to this
+  // exact private source identity. This leaf returns no source/K authority.
+  // Recheck every pinned byte around its fresh Working read instead of running
+  // the complete source/K observer twice more; ordinary readers keep verify().
+  const certificateDirectory = async () => {
+    await assertCapsule2AssetDirectory(entry.directory, entry.root)
+    if (capsuleJson(await readdir(entry.directory)) !== capsuleJson(['certificate.json'])) return bad('来源证书目录闭集变化')
+  }
+  const certificateBytes = async () => {
+    await certificateDirectory()
+    const bytes = await readCapsule2AssetCopy(join(entry.directory, 'certificate.json'), entry.root,
+      entry.bytes.length, capsuleBytesHash(entry.bytes), CAPSULE2_SOURCE_CERTIFICATE_MAX_BYTES)
+    if (!bytes.equals(entry.bytes)) return bad('来源证书原字节变化')
+    const certificate = parseCapsule2NoPriorSourceCertificate(bytes.toString('utf8'), entry.certificate.operationId,
+      entry.certificate.capsuleId, entry.certificateHash)
+    if (capsuleJson(certificate) !== capsuleJson(entry.certificate)) return bad('来源证书原metadata不符')
+    await certificateDirectory()
+  }
+  await certificateBytes()
+  await assertSealedCapsule2SourceOriginalBytes(entry.source)
+  const working = await readSealedCapsule2SourceWorkingOriginals5(entry.source)
+  await assertSealedCapsule2SourceOriginalBytes(entry.source)
+  await certificateBytes()
+  return working ?? null
 }

@@ -81,10 +81,10 @@ export async function readPreparedMixedOriginBundleOriginalInputs(handle:Prepare
   const descriptorText=await readCapsule2AssetManifest(descriptorPath,entry.profileRoot,MIXED_ORIGIN_BUNDLE_MAX_DESCRIPTOR_BYTES)
   const descriptorBytes=Buffer.from(descriptorText,'utf8')
   const files=[{path:'descriptor.json',bytes:descriptorBytes.length,sha256:capsuleBytesHash(descriptorBytes),sourcePath:descriptorPath},
-    ...mixedOriginBundleFiles(original.descriptor).map(file=>({...file,sourcePath:originCatalogLocalPath(original.directory,file.path)}))]
+    ...mixedOriginBundleFiles(original.descriptor,original.workingTexts).map(file=>({...file,sourcePath:originCatalogLocalPath(original.directory,file.path)}))]
   await readMountedMixedOriginBundle(entry.profileRoot,entry.operationId,entry.mountId,original.descriptorHash)
   return freezeCapsuleValue({profileRoot:entry.profileRoot,directory:original.directory,descriptor:original.descriptor,
-    descriptorHash:original.descriptorHash,files,directories:mixedOriginBundleDirectories(original.descriptor),value,
+    descriptorHash:original.descriptorHash,files,directories:mixedOriginBundleDirectories(original.descriptor,original.workingTexts),workingTexts:original.workingTexts,value,
     rootScope:'prepared-first-mixed-original-inputs' as const,acceptedCoverage:false as const,effective:false as const,permit:false as const})
 }
 
@@ -116,7 +116,7 @@ export async function readPreparedMixedOriginalContentLocation3(handle: Prepared
   const entry = bundles.get(handle); if (!entry) return bad('不是Main真实mixed bundle原件句柄')
   const mounted = await readMountedMixedOriginBundle(entry.profileRoot, entry.operationId, entry.mountId, entry.original.descriptorHash)
   return freezeCapsuleValue({ profileRoot: entry.profileRoot, directory: mounted.original.directory,
-    descriptor: mounted.original.descriptor, descriptorHash: mounted.original.descriptorHash,
+    descriptor: mounted.original.descriptor, workingTexts:mounted.original.workingTexts, descriptorHash: mounted.original.descriptorHash,
     scope: 'verified-original-content-location-bytes-only' as const, acceptedCoverage: false as const, effective: false as const, permit: false as const })
 }
 

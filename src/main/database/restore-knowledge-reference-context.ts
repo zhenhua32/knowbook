@@ -1,3 +1,4 @@
+import { readSealedCapsule2SourceWorkingOriginals5 } from './restore-knowledge-capsule2-source-seal'
 import { capsule2AssetArchiveOriginalBytes3 } from './restore-knowledge-capsule2-asset-archive'
 import { randomUUID } from 'node:crypto'
 import { open, readdir } from 'node:fs/promises'
@@ -192,10 +193,13 @@ async function readBoundInput(root: string, entry: NonNullable<ReturnType<typeof
   const side: QualifiedOriginalSide = { kind: 'bound-capsule2', bindingText: before, contextText: actual.contextText,
     sourceManifestText: await readCapsule2AssetManifest(join(actual.source.info.directory, 'manifest.json'), root),
     assetManifestText: await readCapsule2AssetManifest(join(operation, 'knowledge-complete-assets-v2', value.capsuleId, 'manifest.json'), root) }
-  qualifiedOriginalSide(side, binding, origin)
+  const ownedContext=contexts.get(entry.context);if(!ownedContext)return bad('bound缺实际sealed source owner')
+  const working=value.assetArchive.version===5?await readSealedCapsule2SourceWorkingOriginals5(ownedContext.source):undefined
+  const workingText=working?capsuleJson(working.manifest)+'\n':undefined
+  qualifiedOriginalSide(side,binding,origin,workingText)
   if (before !== await readCapsule2AssetManifest(join(entry.directory, 'binding.json'), root, BOUND_SOURCE_MANIFEST_MAX_BYTES)
     || !same((await readdir(entry.directory)).sort(), ['binding.json'])) return bad('bound来源读取结束时变化')
-  return { input, side, actual, parentCopies: actual.descriptor.parents.flatMap(parent => parent.files.map(file => ({ ...file,
+  return { input, side, actual, workingText, parentCopies: actual.descriptor.parents.flatMap(parent => parent.files.map(file => ({ ...file,
     frame: [actual.descriptor.contextId, parent.mountId, ...file.frame], sourceRoot: actual.directory,
     sourcePath: join(actual.directory, ...referenceContextObjectPath([parent.mountId, ...file.frame], file.path).split('/')) }))) }
 }

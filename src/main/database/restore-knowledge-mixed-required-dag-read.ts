@@ -1,3 +1,6 @@
+import { readCertifiedCapsule2SourceWorkingOriginals5 } from './restore-knowledge-capsule2-source-certificate'
+import { parseCapsule2CompleteAssetArchiveManifest } from './restore-knowledge-capsule2-asset-archive'
+import type { TransportWorkingTexts5 } from './restore-knowledge-capsule5-transport-model'
 import { capsule2AssetArchiveOriginalBytes3 } from './restore-knowledge-capsule2-asset-archive'
 import { join, relative, sep } from 'node:path'
 import { capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
@@ -169,12 +172,20 @@ export async function readActualFirstMixedOriginSource(handle: ActualFirstRequir
       sourceManifestText:(values[1] as PromiseFulfilledResult<string>).value,assetManifestText:(values[2] as PromiseFulfilledResult<string>).value}
   }
   const source=await side(entry.file.node.source),current=await side(entry.file.node.current)
+  const workingTexts:{source?:string;current?:string}={}
+  for(const name of ['source','current'] as const){
+    const item=entry.inputs.find(input=>requiredDagCapsuleLocator(input.binding)===requiredDagCapsuleLocator(entry.file.node[name]))!
+    const originalSide=name==='source'?source:current
+    if(originalSide.kind!=='complete-capsule2'||parseCapsule2CompleteAssetArchiveManifest(originalSide.assetManifestText,item.binding.capsule.capsuleId,item.knowledge.assetArchiveHash??bad('完整来源缺archive hash')).version!==5)continue
+    const working=await readCertifiedCapsule2SourceWorkingOriginals5(item.source as CertifiedCapsule2NoPriorSource)
+    if(working)workingTexts[name]=capsuleJson(working.manifest)+'\n'
+  }
   const descriptor=validateMixedOriginBundleDescriptor({kind:'restore-prepared-mixed-origin-bundle',version:2,
     readerVersion:'knowbook-prepared-mixed-origin-bundle-v2',material:'mixed-original-readers',root:entry.file.ref,
-    nodeText:capsuleJson(entry.file.node),source,current})
-  const files=mixedOriginBundleFiles(descriptor).map(file=>({...file,sourcePath:join(entry.profileRoot,...file.path.slice('catalog/'.length).split('/'))}))
+    nodeText:capsuleJson(entry.file.node),source,current},workingTexts)
+  const files=mixedOriginBundleFiles(descriptor,workingTexts).map(file=>({...file,sourcePath:join(entry.profileRoot,...file.path.slice('catalog/'.length).split('/'))}))
   await fresh(entry)
-  return freezeCapsuleValue({profileRoot:entry.profileRoot,descriptor,descriptorHash:mixedOriginBundleHash(descriptor),files})
+  return freezeCapsuleValue({profileRoot:entry.profileRoot,descriptor,descriptorHash:mixedOriginBundleHash(descriptor,workingTexts),workingTexts:workingTexts as TransportWorkingTexts5,files})
 }
 
 /** The initial snapshot at a genuine reopen's mint point. The original

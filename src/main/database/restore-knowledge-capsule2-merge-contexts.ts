@@ -296,7 +296,7 @@ function spoolEntries(job: ReturnType<typeof validateExchangeJob>) {
 type DirectorySnapshot3 = Map<string, BigIntStats>
 /** Missing is an observed source fact, never permission to consult a live DB,
  * another profile, managed tree, remote endpoint or same-hash unrelated spool. */
-async function spoolPreflight(spool: string, root: string, job: ReturnType<typeof validateExchangeJob>, locator: Root3MergeContextLocator3) {
+async function spoolPreflight(spool: string, root: string, job: ReturnType<typeof validateExchangeJob>, locator: Pick<Root3MergeContextLocator3, 'requiredFiles'>) {
   const directories: DirectorySnapshot3 = new Map(), missing = new Set<string>()
   for (const [relativePath, expected] of spoolEntries(job)) {
     const path = relativePath ? join(spool, relativePath) : spool
@@ -324,7 +324,7 @@ async function spoolPreflight(spool: string, root: string, job: ReturnType<typeo
   }
   return { directories, missingFiles: [...missing].sort() }
 }
-async function assertSpoolTail(spool: string, root: string, job: ReturnType<typeof validateExchangeJob>, locator: Root3MergeContextLocator3, before: DirectorySnapshot3) {
+async function assertSpoolTail(spool: string, root: string, job: ReturnType<typeof validateExchangeJob>, locator: Pick<Root3MergeContextLocator3, 'requiredFiles'>, before: DirectorySnapshot3) {
   const after = await spoolPreflight(spool, root, job, locator)
   if (after.missingFiles.length || after.directories.size !== before.size) return fail('source context目录/文件在capture尾消失')
   for (const [name, prior] of before) {

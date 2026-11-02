@@ -37,6 +37,12 @@ import { prepareCapsule2MergeContextOriginals4, reopenCapsule2MergeContextOrigin
 import { createRootRestoreSupplementalAssetObserver4 } from './restore-knowledge-assets4-supplement'
 import { describeCapsule2AssetScopeSupplement4, validateCapsule2AssetScopeSupplementDescriptor4, capsule2CombinedAssetUris4,
   type Capsule2AssetScopeSupplementDescriptor4 } from './restore-knowledge-capsule2-asset-supplement4-model'
+import {prepareCapsule2BaseProjectionForWorking5,reopenCapsule2BaseProjectionForWorking5} from './restore-knowledge-capsule2-base-projection4'
+import {prepareWorkingOriginals5,reopenWorkingOriginals5,readWorkingOriginalsInventory5,assertWorkingOriginalBytes5,
+ type PreparedWorkingOriginals5} from './restore-knowledge-capsule5-working-originals'
+import {describeWorkingOriginals5,validateWorkingOriginalsPointer5,type WorkingOriginalsPointer5} from './restore-knowledge-capsule5-working-model'
+import {describeCapsule5AssetScopeSupplement5,validateCapsule5AssetScopeSupplement5,capsule5CombinedAssetUris5,
+ type Capsule5AssetScopeSupplementDescriptor5} from './restore-knowledge-capsule5-asset-supplement-model'
 interface Capsule2AssetArchiveBase {
   readonly kind: 'capsule2-complete-asset-archive'
   readonly material: 'main-managed-tree-and-original-reference-literals'
@@ -64,6 +70,13 @@ export interface Capsule2AssetReferenceCoverage3 {
 export type Capsule2AssetReferenceCoverage4 = Omit<Capsule2AssetReferenceCoverage3, 'version' | 'supplementalObserverVersion'> & {
   readonly version: 2; readonly supplementalObserverVersion: 2
 }
+export interface Capsule5AssetReferenceCoverage5 {
+ readonly kind:'base-and-complete-merge-working-observation';readonly version:1;readonly baseObserverVersion:3;readonly supplementalObserverVersion:3
+ readonly assetReferencesObservationHash:string;readonly supplementalObservationHash:string;readonly supportedMergeFamilies:readonly [2,3,4,5,6,7]
+ readonly baseTypedScopesCaptured:true;readonly mergedWorkingScopesCaptured:boolean;readonly allAssetScopesCaptured:false
+ readonly semanticSelectionPermission:false;readonly finalAssetClosureComplete:false;readonly acceptedCoverage:false;readonly effective:false;readonly installPermit:false
+ readonly wholeContextInputsMemoryBounded:false;readonly completeV3AssetAdapter:false
+}
 export type Capsule2AssetArchiveManifest = Capsule2AssetArchiveBase & (
   { readonly version: 1; readonly referencePolicy: 'retain-literals-without-reference-file-access' }
   | { readonly version: 2; readonly referencePolicy: 'capture-owned-aliases-retain-unresolved-literals';
@@ -74,16 +87,19 @@ export type Capsule2AssetArchiveManifest = Capsule2AssetArchiveBase & (
   | { readonly version: 4; readonly referencePolicy: 'capture-owned-base-and-settled-context-aliases-retain-unresolved-literals';
     readonly referenceProvenance: Capsule2AssetReferenceProvenance2; readonly contextOriginals: Capsule2MergeContextInventory4;
     readonly baseProjection: Capsule2BaseProjectionPointer4;
-    readonly assetScopeSupplement: Capsule2AssetScopeSupplementDescriptor4; readonly coverage: Capsule2AssetReferenceCoverage4 })
+    readonly assetScopeSupplement: Capsule2AssetScopeSupplementDescriptor4; readonly coverage: Capsule2AssetReferenceCoverage4 }
+ | {readonly version:5;readonly referencePolicy:'capture-owned-base-and-all-merge-working-aliases-retain-unresolved-literals';
+ readonly referenceProvenance:Capsule2AssetReferenceProvenance2;readonly baseProjection:Capsule2BaseProjectionPointer4;readonly workingOriginals:WorkingOriginalsPointer5;
+ readonly assetScopeSupplement:Capsule5AssetScopeSupplementDescriptor5;readonly coverage:Capsule5AssetReferenceCoverage5})
 export interface PreparedCapsule2AssetArchive { readonly kind: 'prepared-capsule2-complete-asset-archive' }
 export interface Capsule2AssetArchiveInfo { readonly directory: string; readonly manifest: Capsule2AssetArchiveManifest; readonly manifestHash: string }
-type Saved = Capsule2AssetArchiveInfo & { original: OwnedRawCapsuleOriginal; root: string; bytes: Buffer; contextOwner?: PreparedCapsule2MergeContexts3; contextOwner4?: PreparedCapsule2MergeContexts4; baseOwner4?: PreparedCapsule2BaseProjection4 }
+type Saved = Capsule2AssetArchiveInfo & { original: OwnedRawCapsuleOriginal; root: string; bytes: Buffer; contextOwner?: PreparedCapsule2MergeContexts3; contextOwner4?: PreparedCapsule2MergeContexts4; baseOwner4?: PreparedCapsule2BaseProjection4; workingOwner5?:PreparedWorkingOriginals5 }
 const archives = new WeakMap<PreparedCapsule2AssetArchive, Saved>(), used = new WeakSet<OwnedRawCapsuleOriginal>()
 const domain = 'knowbook.capsule2.complete-asset-archive.v1'
 const bad = (message: string): never => { throw new Error('capsule2完整附件归档无效：' + message + '；原引用保留，不授外部文件读取、认证或安装权。') }
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0
 const hash = (value: unknown): string => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value) ? value : bad('原hash无效')
-const archiveDomain = (version: 1 | 2 | 3 | 4) => version === 1 ? domain : version === 2 ? 'knowbook.capsule2.complete-asset-archive.v2' : version === 3 ? 'knowbook.capsule2.complete-asset-archive.v3' : 'knowbook.capsule2.complete-asset-archive.v4'
+const archiveDomain = (version: 1 | 2 | 3 | 4 | 5) => version === 1 ? domain : version === 2 ? 'knowbook.capsule2.complete-asset-archive.v2' : version === 3 ? 'knowbook.capsule2.complete-asset-archive.v3' : version===4?'knowbook.capsule2.complete-asset-archive.v4':'knowbook.capsule2.complete-asset-archive.v5'
 const manifestHash = (value: Capsule2AssetArchiveManifest) => capsuleBytesHash(archiveDomain(value.version) + '\0' + capsuleJson(value))
 function baseCoverage(assetReferencesObservationHash: string): Capsule2AssetReferenceCoverage2 {
   return freezeCapsuleValue({ kind: 'base-asset-observation-capture-only', version: 1, baseObserverVersion: 3,
@@ -106,16 +122,22 @@ function settledCoverage4(assetReferencesObservationHash: string, supplement: Ca
     allAssetScopesCaptured: false, semanticSelectionPermission: false, finalAssetClosureComplete: false, acceptedCoverage: false, effective: false, installPermit: false,
     wholeContextInputsMemoryBounded: false, completeV3AssetAdapter: false })
 }
+function workingCoverage5(baseHash:string,supplement:Capsule5AssetScopeSupplementDescriptor5):Capsule5AssetReferenceCoverage5 {
+ return freezeCapsuleValue({kind:'base-and-complete-merge-working-observation',version:1,baseObserverVersion:3,supplementalObserverVersion:3,
+ assetReferencesObservationHash:baseHash,supplementalObservationHash:supplement.observationHash,supportedMergeFamilies:[2,3,4,5,6,7] as const,
+ baseTypedScopesCaptured:true,mergedWorkingScopesCaptured:supplement.unsupportedHolders.count===0,allAssetScopesCaptured:false,semanticSelectionPermission:false,
+ finalAssetClosureComplete:false,acceptedCoverage:false,effective:false,installPermit:false,wholeContextInputsMemoryBounded:false,completeV3AssetAdapter:false})
+}
 function parse(text: string, capsuleId: string, expectedHash: string): Capsule2AssetArchiveManifest {
   const parsed = parseStrictJson(text, { maxBytes: CAPSULE2_RAW_MAX_JSON_BYTES, maxDepth: 12 })
   const version = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>).version : null
-  if (version !== 1 && version !== 2 && version !== 3 && version !== 4) return bad('未知archive版本，不降级或补造权属')
+  if (version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !==5) return bad('未知archive版本，不降级或补造权属')
   const row = capsuleRecord(parsed, ['kind','version','material','referencePolicy','certified','semanticValidationComplete','permit',
     'capsuleId','schemaVersion','sourceInventory','sourceContentHash','workspaceHistoryObservationHash','assetReferencesObservationHash','referenceCount','referenceUris','tree',
-    ...(version === 2 ? ['referenceProvenance','coverage'] : version === 3 ? ['referenceProvenance','coverage','contextOriginals','assetScopeSupplement'] : version === 4 ? ['referenceProvenance','coverage','contextOriginals','assetScopeSupplement','baseProjection'] : [])])
+    ...(version === 2 ? ['referenceProvenance','coverage'] : version === 3 ? ['referenceProvenance','coverage','contextOriginals','assetScopeSupplement'] : version === 4 ? ['referenceProvenance','coverage','contextOriginals','assetScopeSupplement','baseProjection'] : version===5?['referenceProvenance','coverage','workingOriginals','assetScopeSupplement','baseProjection']:[])])
   if (text !== capsuleJson(parsed) + '\n' || capsuleBytesHash(archiveDomain(version) + '\0' + capsuleJson(parsed)) !== hash(expectedHash)) return bad('规范原字节或预期hash不符')
   if (row.kind !== 'capsule2-complete-asset-archive' || row.material !== 'main-managed-tree-and-original-reference-literals'
-    || row.referencePolicy !== (version === 1 ? 'retain-literals-without-reference-file-access' : version === 2 ? 'capture-owned-aliases-retain-unresolved-literals' : version === 3 ? 'capture-owned-base-and-supplemental-aliases-retain-unresolved-literals' : 'capture-owned-base-and-settled-context-aliases-retain-unresolved-literals')
+    || row.referencePolicy !== (version === 1 ? 'retain-literals-without-reference-file-access' : version === 2 ? 'capture-owned-aliases-retain-unresolved-literals' : version === 3 ? 'capture-owned-base-and-supplemental-aliases-retain-unresolved-literals' : version===4?'capture-owned-base-and-settled-context-aliases-retain-unresolved-literals':'capture-owned-base-and-all-merge-working-aliases-retain-unresolved-literals')
     || row.certified !== false || row.semanticValidationComplete !== false
     || row.permit !== false || row.capsuleId !== capsuleId || row.schemaVersion !== 26 && row.schemaVersion !== 27) return bad('格式、身份或权限标志无效')
   if (typeof row.referenceCount !== 'number' || !Number.isSafeInteger(row.referenceCount) || row.referenceCount < 0
@@ -130,6 +152,15 @@ function parse(text: string, capsuleId: string, expectedHash: string): Capsule2A
     workspaceHistoryObservationHash: hash(row.workspaceHistoryObservationHash), assetReferencesObservationHash: hash(row.assetReferencesObservationHash),
     referenceCount: row.referenceCount, referenceUris: uris, tree: validateCapsule2ManagedTree(row.tree) }
   if (version === 1) return freezeCapsuleValue({ ...base, version: 1, referencePolicy: 'retain-literals-without-reference-file-access' })
+  if(version===5){
+   const baseProjection=validateCapsule2BaseProjectionPointer4(row.baseProjection),workingOriginals=validateWorkingOriginalsPointer5(row.workingOriginals),assetScopeSupplement=validateCapsule5AssetScopeSupplement5(row.assetScopeSupplement)
+   const coverage=workingCoverage5(base.assetReferencesObservationHash,assetScopeSupplement)
+   if(assetScopeSupplement.sourceContentHash!==base.sourceContentHash||assetScopeSupplement.baseManifestHash!==baseProjection.baseManifestHash||capsuleJson(row.coverage)!==capsuleJson(coverage))return bad('working5来源/覆盖绑定不符')
+   const result:Capsule2AssetArchiveManifest=freezeCapsuleValue({...base,version:5,referencePolicy:'capture-owned-base-and-all-merge-working-aliases-retain-unresolved-literals',
+    baseProjection,workingOriginals,assetScopeSupplement,coverage,referenceProvenance:validateCapsule2AssetReferenceProvenance2(row.referenceProvenance,{...base,
+     assetScopeSupplementHash:assetScopeSupplement.observationHash,referenceUris:capsule5CombinedAssetUris5(base.referenceUris,assetScopeSupplement)},base.tree)})
+   assertOriginalBudget(result);return result
+  }
   if (version === 4) {
     const baseProjection = validateCapsule2BaseProjectionPointer4(row.baseProjection), contextOriginals = validateCapsule2MergeContextInventory4(row.contextOriginals)
     const assetScopeSupplement = validateCapsule2AssetScopeSupplementDescriptor4(row.assetScopeSupplement), coverage = settledCoverage4(base.assetReferencesObservationHash, assetScopeSupplement)
@@ -200,12 +231,16 @@ async function verifyBytes(value: Saved): Promise<Capsule2AssetArchiveInfo> {
   const files = join(value.directory, 'files'), expectedNames = value.manifest.tree.files.map(file => file.hash).sort(compare)
   const closure = async () => {
     await directory(value.directory, value.root); await directory(files, value.root)
-    if (capsuleJson((await readdir(value.directory)).sort(compare)) !== capsuleJson(value.manifest.version === 4 ? ['base-provenance.json','contexts','files','manifest.json'] : value.manifest.version === 3 ? ['contexts','files','manifest.json'] : ['files','manifest.json'])
+    if (capsuleJson((await readdir(value.directory)).sort(compare)) !== capsuleJson(value.manifest.version === 4 || value.manifest.version===5 ? ['base-provenance.json','contexts','files','manifest.json'] : value.manifest.version === 3 ? ['contexts','files','manifest.json'] : ['files','manifest.json'])
       || capsuleJson((await readdir(files)).sort(compare)) !== capsuleJson(expectedNames)) return bad('完整归档闭集变化')
   }
   await closure()
   await readExact(join(value.directory, 'manifest.json'), value.root, value.bytes.length, capsuleBytesHash(value.bytes), CAPSULE2_RAW_MAX_JSON_BYTES)
   for (const file of value.manifest.tree.files) await readExact(join(files, file.hash), value.root, file.bytes, file.hash, ATTACHMENT_MAX_FILE_BYTES)
+  if(value.manifest.version===5){
+   await assertCapsule2BaseProjectionOriginalBytes4(value.baseOwner4??bad('v5缺genuine base owner'))
+   await assertWorkingOriginalBytes5(value.workingOwner5??bad('v5缺genuine working owner'))
+  }
   if (value.manifest.version === 4) {
     await assertCapsule2BaseProjectionOriginalBytes4(value.baseOwner4 ?? bad('v4缺genuine base owner'))
     await assertCapsule2MergeContextOriginalBytes4(value.contextOwner4 ?? bad('v4缺genuine context owner'))
@@ -214,7 +249,7 @@ async function verifyBytes(value: Saved): Promise<Capsule2AssetArchiveInfo> {
   await closure(); await assertOwnedRawCapsuleOriginal(value.original)
   return freezeCapsuleValue({ directory: value.directory, manifest: value.manifest, manifestHash: value.manifestHash })
 }
-function assertBaseProjectionMatches4(base: Capsule2BaseProjectionCommitment4, archive: Extract<Capsule2AssetArchiveManifest, { version: 4 }>): void {
+function assertBaseProjectionMatches4(base: Capsule2BaseProjectionCommitment4, archive: Extract<Capsule2AssetArchiveManifest, { version: 4 | 5 }>): void {
   if (capsuleJson(describeCapsule2BaseProjectionPointer4(base)) !== capsuleJson(archive.baseProjection)
     || base.capsuleId !== archive.capsuleId || base.schemaVersion !== archive.schemaVersion
     || base.sourceContentHash !== archive.sourceContentHash || base.workspaceHistoryObservationHash !== archive.workspaceHistoryObservationHash
@@ -231,7 +266,17 @@ async function verifyDetails4(value: Saved) {
   await verifyBytes(value)
   return { info, supplemental: contexts.supplemental }
 }
+async function verifyDetails5(value:Saved){
+ if(value.manifest.version!==5)return bad('不是archive5')
+ const info=await verifyBytes(value),working=await readWorkingOriginalsInventory5(value.workingOwner5??bad('v5缺genuine working owner'))
+ assertBaseProjectionMatches4(working.baseCommitment,value.manifest)
+ if(capsuleJson(working.pointer)!==capsuleJson(value.manifest.workingOriginals)||working.manifest.sourceContentHash!==value.manifest.sourceContentHash
+   ||capsuleJson(working.manifest.baseProjection)!==capsuleJson(value.manifest.baseProjection)
+   ||capsuleJson(describeCapsule5AssetScopeSupplement5(working.observation))!==capsuleJson(value.manifest.assetScopeSupplement))return bad('完整working原件/分区/scope与archive5不符')
+ await verifyBytes(value);return{info,workingSupplemental:working.observation}
+}
 async function verifyDetails(value: Saved) {
+  if(value.manifest.version===5)return verifyDetails5(value)
   if (value.manifest.version === 4) return verifyDetails4(value)
   const info = await verifyBytes(value)
   const contexts = value.manifest.version === 3 ? await observeContexts(value.contextOwner ?? bad('v3缺genuine context owner')) : undefined
@@ -324,6 +369,24 @@ export async function prepareCapsule2AssetArchiveWithSettledContextProvenance4(o
     baseOwner4: capturedBase.owner, contextOwner4: captured.owner }
   await verifyDetails4(saved); return register(saved)
 }
+/** One explicit Working5 capture; custom and automatic records of the same
+ * original job share one header/object/asset namespace and one actual index. */
+export async function prepareCapsule2AssetArchiveWithWorkingProvenance5(original:OwnedRawCapsuleOriginal):Promise<PreparedCapsule2AssetArchive>{
+ const info=start(original),base=await prepareCapsule2BaseProjectionForWorking5(original),observed=base.commitment,tree=observed.tree
+ const working=await prepareWorkingOriginals5(original,base.owner),supplement=describeCapsule5AssetScopeSupplement5(working.observation),workingOriginals=describeWorkingOriginals5(working.manifest)
+ const capsuleId=basename(info.capsuleDirectory),manifest:Capsule2AssetArchiveManifest=freezeCapsuleValue({kind:'capsule2-complete-asset-archive',version:5,material:'main-managed-tree-and-original-reference-literals',
+ referencePolicy:'capture-owned-base-and-all-merge-working-aliases-retain-unresolved-literals',certified:false,semanticValidationComplete:false,permit:false,capsuleId,
+ schemaVersion:observed.schemaVersion,sourceInventory:observed.sourceInventory,sourceContentHash:observed.sourceContentHash,workspaceHistoryObservationHash:observed.workspaceHistoryObservationHash,
+ assetReferencesObservationHash:observed.assetReferencesObservationHash,referenceCount:observed.referenceCount,referenceUris:observed.referenceUris,tree,baseProjection:describeCapsule2BaseProjectionPointer4(observed),
+ workingOriginals,assetScopeSupplement:supplement,coverage:workingCoverage5(observed.assetReferencesObservationHash,supplement),
+ referenceProvenance:await captureCapsule2AssetReferenceProvenance2Owned3(original,{sourceContentHash:observed.sourceContentHash,workspaceHistoryObservationHash:observed.workspaceHistoryObservationHash,
+ assetReferencesObservationHash:observed.assetReferencesObservationHash,assetScopeSupplementHash:supplement.observationHash,referenceUris:capsule5CombinedAssetUris5(observed.referenceUris,supplement)},tree)})
+ assertOriginalBudget(manifest);const bytes=Buffer.from(capsuleJson(manifest)+'\n'),parent=join(info.recoveryDirectory,'knowledge-complete-assets-v2'),directory=join(parent,capsuleId)
+ if(bytes.length>CAPSULE2_RAW_MAX_JSON_BYTES)return bad('archive5完整manifest超原预算，不截断')
+ await assertOwnedRawCapsuleOriginal(original);await writeNew(join(directory,'manifest.json'),bytes,info.profileRoot);await syncRestoreDirectory(directory);await syncRestoreDirectory(parent);await syncRestoreDirectory(info.recoveryDirectory)
+ const saved:Saved={original,root:info.profileRoot,directory,manifest,bytes,manifestHash:manifestHash(manifest),baseOwner4:base.owner,workingOwner5:working.owner}
+ await verifyBytes(saved);return register(saved)
+}
 export async function reopenCapsule2AssetArchive(original: OwnedRawCapsuleOriginal, expectedManifestHash: string): Promise<PreparedCapsule2AssetArchive> {
   const info = start(original), capsuleId = basename(info.capsuleDirectory), output = join(info.recoveryDirectory, 'knowledge-complete-assets-v2', capsuleId)
   await directory(output, info.profileRoot)
@@ -332,14 +395,16 @@ export async function reopenCapsule2AssetArchive(original: OwnedRawCapsuleOrigin
   if (capsuleJson(manifest.sourceInventory) !== capsuleJson(info.originalInventory)) return bad('原SQL清单不符')
   for (const key of ['schemaVersion','sourceContentHash','workspaceHistoryObservationHash','assetReferencesObservationHash','referenceCount','referenceUris'] as const)
     if (capsuleJson(manifest[key]) !== capsuleJson(observed[key])) return bad('完整实际SQL来源或原引用变化')
+  const base5=manifest.version===5?await reopenCapsule2BaseProjectionForWorking5(original,manifest.baseProjection.baseManifestHash,manifest.baseProjection):undefined
+  const working5=manifest.version===5?await reopenWorkingOriginals5(original,base5??bad('v5缺base owner'),manifest.workingOriginals.manifestHash,manifest.workingOriginals):undefined
   const base4 = manifest.version === 4 ? await reopenCapsule2BaseProjection4(original, manifest.baseProjection.baseManifestHash, manifest.baseProjection) : undefined
   const captured4 = manifest.version === 4 ? await reopenCapsule2MergeContextOriginals4(original, base4 ?? bad('v4缺base owner'), manifest.contextOriginals) : undefined
   const captured = manifest.version === 3 ? await reopenCapsule2MergeContextOriginals3(original, manifest.contextOriginals) : undefined
-  const saved: Saved = { original, root: info.profileRoot, directory: output, manifest, bytes: Buffer.from(text), manifestHash: expectedManifestHash, contextOwner: captured?.owner, baseOwner4: base4, contextOwner4: captured4?.owner }
+  const saved: Saved = { original, root: info.profileRoot, directory: output, manifest, bytes: Buffer.from(text), manifestHash: expectedManifestHash, contextOwner: captured?.owner, baseOwner4: base5??base4, contextOwner4: captured4?.owner,workingOwner5:working5 }
   // Cold creation must join the persisted supplement to actual sealed context
   // observations before minting its first owner. Later byte-only tails may
   // rely on that immutable pinned manifest; they never reauthorize SQL DTOs.
-  if (manifest.version === 3 || manifest.version === 4) await verifyDetails(saved)
+  if (manifest.version === 3 || manifest.version === 4 ||manifest.version===5) await verifyDetails(saved)
   else await verify(saved)
   return register(saved)
 }
@@ -373,7 +438,9 @@ export async function readCapsule2ArchiveSourceInputs(handle: PreparedCapsule2As
   const value = archives.get(handle)
   if (!value) return bad('不是Main实际准备的私有句柄')
   const read = await verifyDetails(value)
-  return Object.freeze({ original: value.original, value: read.info, ...(read.supplemental ? { supplemental: read.supplemental } : {}) })
+  return Object.freeze({ original:value.original,value:read.info,
+    ...('supplemental' in read&&read.supplemental?{supplemental:read.supplemental}:{}),
+    ...('workingSupplemental' in read?{workingSupplemental:read.workingSupplemental}:{}) })
 }
 
 /** Pure counting of unique sealed physical files in their separate namespaces.
@@ -381,7 +448,8 @@ export async function readCapsule2ArchiveSourceInputs(handle: PreparedCapsule2As
 export function capsule2AssetArchiveOriginalBytes3(archive: Capsule2AssetArchiveManifest): number {
   const bytes = archive.tree.files.reduce((total, file) => total + file.bytes, 0)
     + (archive.version === 3 || archive.version === 4 ? archive.contextOriginals.files.reduce((total, file) => total + file.bytes, 0) : 0)
-    + (archive.version === 4 ? archive.baseProjection.baseManifestFile.bytes : 0)
+    + (archive.version === 4 ||archive.version===5 ? archive.baseProjection.baseManifestFile.bytes : 0)
+    + (archive.version===5?archive.workingOriginals.originalFileBytes+archive.workingOriginals.manifestFile.bytes:0)
   if (!Number.isSafeInteger(bytes)) return bad('全部managed/context实际原字节计数越界')
   return bytes
 }
@@ -393,12 +461,24 @@ function assertOriginalBudget(archive: Capsule2AssetArchiveManifest): void {
 /** Exact registered archive -> registered base owner. No caller path, proof
  * pair or matching hash DTO can select this full private read. The base proof
  * is not duplicated into the ordinary source material/manifest payload. */
-export async function readCapsule2ArchiveBaseProjection4(handle: PreparedCapsule2AssetArchive) {
+export async function readCapsule2ArchiveBaseProjection4(handle: PreparedCapsule2AssetArchive): Promise<Awaited<ReturnType<typeof readCapsule2BaseProjection4>>> {
   const value = archives.get(handle)
   if (!value || value.manifest.version !== 4) return bad('不是genuine archive4 owner')
   await verifyBytes(value)
-  const base = await readCapsule2BaseProjection4(value.baseOwner4 ?? bad('v4缺genuine base owner'))
+  const owner=value.baseOwner4??bad('缺genuine base owner')
+  const base = await readCapsule2BaseProjection4(owner)
   assertBaseProjectionMatches4(base.commitment, value.manifest)
   await verifyBytes(value)
   return base
+}
+
+/** Registry-only full Working5 inventory/text source for actual native
+ * transport builders. Non5 sources have no such original and return undefined. */
+export async function readCapsule2ArchiveWorkingOriginals5(handle:PreparedCapsule2AssetArchive){
+ const value=archives.get(handle);if(!value)return bad('不是genuine archive owner')
+ await verifyBytes(value);if(value.manifest.version!==5)return undefined
+ const working=await readWorkingOriginalsInventory5(value.workingOwner5??bad('v5缺working owner'))
+ assertBaseProjectionMatches4(working.baseCommitment,value.manifest)
+ if(capsuleJson(working.pointer)!==capsuleJson(value.manifest.workingOriginals)||capsuleJson(describeCapsule5AssetScopeSupplement5(working.observation))!==capsuleJson(value.manifest.assetScopeSupplement))return bad('working5实际原件与archive不闭合')
+ await verifyBytes(value);return working
 }

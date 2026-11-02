@@ -7,6 +7,7 @@ import { reopenPreparedRawCapsuleOriginal } from '../../src/main/database/restor
 import { reopenCapsule2BaseProjection4, readCapsule2BaseProjection4 } from '../../src/main/database/restore-knowledge-capsule2-base-projection4'
 import { captureAssetOriginal } from './capsule2-assets-fixture'
 import { withSettledPortable3 } from './settled-portable-owner-fixture'
+import { proveContext4NativeSpoolRoots } from './settled-context4-native-spool-evidence'
 
 type Settled = Parameters<Parameters<typeof withSettledPortable3>[0]>[0]
 const require = createRequire(import.meta.url)
@@ -48,7 +49,8 @@ export async function withoutSettledSpoolProbes4<T>(spools: readonly string[], r
 }
 export async function captureSettledContext4(saved: Settled) {
   const original = await captureAssetOriginal({ userDataRoot: saved.f.B.root, db: saved.f.B.db })
-  const spools = saved.jobs.map(value => resolve(saved.f.B.root, 'storage', 'synced-exchanges-v1', value.job.request.operationId, value.job.attemptId))
+  const roots = await proveContext4NativeSpoolRoots(saved.f.B.root, original.info.profileRoot)
+  const spools = saved.jobs.flatMap(value => roots.spools(value.job.request.operationId, value.job.attemptId).aliases)
   const captured = await withoutSettledSpoolProbes4(spools, () => captureSealedCapsule2SourceWithSettledContextProvenance4(original.original))
   const sealed = captured.value, value = sealed.value, sourceInput = { profileRoot: original.info.profileRoot,
     operationId: sealed.info.manifest.operationId, capsuleId: sealed.info.manifest.capsuleId, expectedManifestHash: sealed.info.manifestHash }

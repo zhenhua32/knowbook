@@ -220,3 +220,60 @@ export async function assertCapsule2BaseProjectionOriginalBytes4(owner: Prepared
   if (!saved) return bad('不是genuine Original派生的base owner')
   await verifyBytes(saved)
 }
+
+/** Working5 consumes only same-read original base facts. Published Base4
+ * reads keep their exact custom observer output, policy and hash semantics. */
+async function rebuildOriginalInput5(saved: Saved) {
+  await verifyBytes(saved)
+  const source = await readSource(saved.original), manifest = saved.commitment, info = readOwnedRawCapsuleOriginal(saved.original), assets = source.assets
+  const referenceUris = [...new Set(assets.scopes.flatMap(scope => scope.destinations.map(item => item.uri)))].sort(compare)
+  if (source.sourceContent.schemaVersion !== manifest.schemaVersion || assets.sourceContentHash !== manifest.sourceContentHash
+    || assets.workspaceHistoryObservationHash !== manifest.workspaceHistoryObservationHash || assets.observationHash !== manifest.assetReferencesObservationHash
+    || capsuleJson(info.originalInventory) !== capsuleJson(manifest.sourceInventory) || capsuleJson(referenceUris) !== capsuleJson(manifest.referenceUris)
+    || assets.scopes.reduce((count, scope) => count + scope.destinations.length, 0) !== manifest.referenceCount) return bad('base proof不属于同次完整真实SQL/typed scope')
+  validateCapsule2AssetReferenceProvenance1(manifest.referenceProvenance, { sourceContentHash: assets.sourceContentHash,
+    workspaceHistoryObservationHash: assets.workspaceHistoryObservationHash, assetReferencesObservationHash: assets.observationHash, referenceUris }, manifest.tree)
+  await verifyBytes(saved)
+  return Object.freeze({commitment:manifest,source,sourceContent:source.sourceContent,baseAssets:assets,tree:manifest.tree,baseProof:manifest.referenceProvenance,referenceUris})
+}
+export async function prepareCapsule2BaseProjectionForWorking5(original: OwnedRawCapsuleOriginal) {
+  const info = readOwnedRawCapsuleOriginal(original)
+  if (used.has(original)) return bad('同一原件已开始或失败，不覆盖重试')
+  used.add(original)
+  const source = await readSource(original), assets = source.assets, capsuleId = basename(info.capsuleDirectory)
+  const base = join(info.recoveryDirectory, 'knowledge-complete-assets-v2'), output = join(base, capsuleId), files = join(output, 'files')
+  await restoreDirectory(base, info.profileRoot); await restoreDirectory(output, info.profileRoot, true); await restoreDirectory(files, info.profileRoot, true)
+  const tree = await captureCapsule2ManagedTreeData(join(info.profileRoot, 'storage', 'assets'), info.profileRoot, files)
+  const referenceUris = [...new Set(assets.scopes.flatMap(scope => scope.destinations.map(item => item.uri)))].sort(compare)
+  const binding = { sourceContentHash: assets.sourceContentHash, workspaceHistoryObservationHash: assets.workspaceHistoryObservationHash,
+    assetReferencesObservationHash: assets.observationHash, referenceUris }
+  const referenceProvenance = await captureCapsule2AssetReferenceProvenanceOwned3(original, binding, tree)
+  const material = { ...binding, tree, referenceProvenance }
+  const manifest: Capsule2BaseProjectionManifest4 = freezeCapsuleValue({ kind: 'capsule2-captured-base-projection', version: 1, capsuleId,
+    schemaVersion: source.sourceContent.schemaVersion, sourceInventory: info.originalInventory, ...material,
+    referenceCount: assets.scopes.reduce((count, scope) => count + scope.destinations.length, 0), baseMaterialHash: materialHash(material),
+    rawOriginalRewritten: false, semanticSelectionPermission: false, installPermit: false })
+  const commitment = commit(manifest), bytes = Buffer.from(capsuleJson(manifest) + '\n')
+  await writeNew(join(output, 'base-provenance.json'), bytes, info.profileRoot)
+  await syncRestoreDirectory(output); await syncRestoreDirectory(base); await syncRestoreDirectory(info.recoveryDirectory)
+  const saved: Saved = { original, root: info.profileRoot, directory: output, commitment, bytes }
+  await rebuildOriginalInput5(saved)
+  return Object.freeze({ owner: mint(saved), commitment })
+}
+export async function reopenCapsule2BaseProjectionForWorking5(original: OwnedRawCapsuleOriginal, expectedBaseManifestHash: string,
+  expectedPointer?: Capsule2BaseProjectionPointer4): Promise<PreparedCapsule2BaseProjection4> {
+  const info = readOwnedRawCapsuleOriginal(original)
+  if (used.has(original)) return bad('同一原件已开始或失败，不重复重开')
+  used.add(original)
+  const output = join(info.recoveryDirectory, 'knowledge-complete-assets-v2', basename(info.capsuleDirectory))
+  await directory(output, info.profileRoot)
+  const text = await readCapsule2AssetManifest(join(output, 'base-provenance.json'), info.profileRoot)
+  const commitment = parseManifest(text, basename(info.capsuleDirectory), expectedBaseManifestHash)
+  if (expectedPointer && capsuleJson(describeCapsule2BaseProjectionPointer4(commitment)) !== capsuleJson(validateCapsule2BaseProjectionPointer4(expectedPointer)))
+    return bad('实际base文件raw SHA/bytes、domain hash或material hash不属于固定archive pointer')
+  const saved: Saved = { original, root: info.profileRoot, directory: output, commitment, bytes: Buffer.from(text) }
+  await rebuildOriginalInput5(saved); return mint(saved)
+}
+export async function readCapsule2BaseProjectionOriginalInput5(owner:PreparedCapsule2BaseProjection4){
+ const saved=owners.get(owner);if(!saved)return bad('不是genuine Original/base owner');return rebuildOriginalInput5(saved)
+}

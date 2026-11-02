@@ -3,7 +3,7 @@ import { basename } from 'node:path'
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { readOwnedRawCapsuleOriginal, reopenPreparedRawCapsuleOriginal,
   assertOwnedRawCapsuleScratchReady, assertOwnedRawCapsuleScratchContent } from './restore-knowledge-capsule-files'
-import { readCapsule2AssetArchive, readCapsule2ArchiveSourceOriginal, readCapsule2ArchiveSourceInputs, readCapsule2ArchiveBaseProjection4,
+import { readCapsule2AssetArchive, readCapsule2ArchiveSourceOriginal, readCapsule2ArchiveSourceInputs, readCapsule2ArchiveBaseProjection4, readCapsule2ArchiveWorkingOriginals5,
   type PreparedCapsule2AssetArchive } from './restore-knowledge-capsule2-asset-archive'
 import { readRawCapsule2SourceKnowledgeOwned } from './restore-knowledge-payload-raw-read'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_READER } from './restore-knowledge-capsule2-raw-model'
@@ -12,6 +12,7 @@ import { validateCapsule2AssetReferenceProvenance1, validateCapsule2AssetReferen
 import { describeCapsule2AssetScopeSupplement3, capsule2CombinedAssetUris3 } from './restore-knowledge-capsule2-asset-supplement-model'
 import { describeCapsule2AssetScopeSupplement4, capsule2CombinedAssetUris4 } from './restore-knowledge-capsule2-asset-supplement4-model'
 
+import {describeCapsule5AssetScopeSupplement5,capsule5CombinedAssetUris5} from './restore-knowledge-capsule5-asset-supplement-model'
 export interface PreparedCapsule2SourceMaterial { readonly kind: 'prepared-capsule2-source-material' }
 type SourcePacket = Awaited<ReturnType<typeof material>>
 const materials = new WeakMap<PreparedCapsule2SourceMaterial, { archive: PreparedCapsule2AssetArchive; expectedHash: string }>()
@@ -21,7 +22,7 @@ const bad = (message: string): never => { throw new Error('capsule2完整来源�
  * Old scratch is not input. The complete fixed source pipeline runs in one
  * readonly/query-only/FKON transaction; no source DTO/ref/selector is accepted. */
 async function material(archive: PreparedCapsule2AssetArchive) {
-  const { original, value: before, supplemental } = await readCapsule2ArchiveSourceInputs(archive), info = readOwnedRawCapsuleOriginal(original)
+  const { original,value:before,supplemental,workingSupplemental }=await readCapsule2ArchiveSourceInputs(archive),info=readOwnedRawCapsuleOriginal(original)
   const fresh = await reopenPreparedRawCapsuleOriginal({ profileRoot: info.profileRoot, operationId: basename(info.recoveryDirectory),
     capsuleId: basename(info.capsuleDirectory), expectedInventory: info.originalInventory })
   const actual = readOwnedRawCapsuleOriginal(fresh)
@@ -48,7 +49,7 @@ async function material(archive: PreparedCapsule2AssetArchive) {
   }
   if (manifest.version === 3) {
     const referenceUris = [...new Set(references.scopes.flatMap(scope => scope.destinations.map(item => item.uri)))].sort()
-    if (capsuleJson(referenceUris) !== capsuleJson(manifest.referenceUris) || !supplemental || supplemental.version !== 1
+    if (capsuleJson(referenceUris) !== capsuleJson(manifest.referenceUris) || !supplemental || supplemental.version !== 1 || !('baseAssetReferencesObservationHash'in supplemental)
       || supplemental.sourceContentHash !== references.sourceContentHash || supplemental.baseAssetReferencesObservationHash !== references.observationHash)
       return bad('v3 base/supplement scope不属于同次完整实际SQL及封存context重放')
     if (capsuleJson(describeCapsule2AssetScopeSupplement3(supplemental)) !== capsuleJson(manifest.assetScopeSupplement)) return bad('v3补充摘要不属于genuine原件owner')
@@ -59,7 +60,7 @@ async function material(archive: PreparedCapsule2AssetArchive) {
   }
   if (manifest.version === 4) {
     const referenceUris = [...new Set(references.scopes.flatMap(scope => scope.destinations.map(item => item.uri)))].sort()
-    if (capsuleJson(referenceUris) !== capsuleJson(manifest.referenceUris) || !supplemental || supplemental.version !== 2
+    if (capsuleJson(referenceUris) !== capsuleJson(manifest.referenceUris) || !supplemental || supplemental.version !== 2 || !('baseAssetReferencesObservationHash'in supplemental)
       || supplemental.sourceContentHash !== references.sourceContentHash || supplemental.baseAssetReferencesObservationHash !== references.observationHash
       || supplemental.baseManifestHash !== manifest.baseProjection.baseManifestHash || supplemental.settledEvidenceHash !== manifest.contextOriginals.settledEvidenceHash)
       return bad('v4 base/settled/supplement不是同次完整实际SQL和genuine base capture')
@@ -67,6 +68,15 @@ async function material(archive: PreparedCapsule2AssetArchive) {
     validateCapsule2AssetReferenceProvenance2(manifest.referenceProvenance, { sourceContentHash: references.sourceContentHash,
       workspaceHistoryObservationHash: references.workspaceHistoryObservationHash, assetReferencesObservationHash: references.observationHash,
       assetScopeSupplementHash: supplemental.observationHash, referenceUris: capsule2CombinedAssetUris4(referenceUris, manifest.assetScopeSupplement) }, manifest.tree)
+  }
+  if(manifest.version===5){
+   const supplemental=workingSupplemental
+   const referenceUris=[...new Set(references.scopes.flatMap(scope=>scope.destinations.map(item=>item.uri)))].sort()
+   if(!supplemental||supplemental.version!==3||supplemental.kind!=='root5-merge-working-scopes'||capsuleJson(referenceUris)!==capsuleJson(manifest.referenceUris)
+     ||supplemental.sourceContentHash!==references.sourceContentHash||supplemental.baseManifestHash!==manifest.baseProjection.baseManifestHash
+     ||capsuleJson(describeCapsule5AssetScopeSupplement5(supplemental))!==capsuleJson(manifest.assetScopeSupplement))return bad('完整Working5 scope不属于同次实际SQL/base原件')
+   validateCapsule2AssetReferenceProvenance2(manifest.referenceProvenance,{sourceContentHash:references.sourceContentHash,workspaceHistoryObservationHash:references.workspaceHistoryObservationHash,
+    assetReferencesObservationHash:references.observationHash,assetScopeSupplementHash:supplemental.observationHash,referenceUris:capsule5CombinedAssetUris5(referenceUris,manifest.assetScopeSupplement)},manifest.tree)
   }
   const after = await readCapsule2AssetArchive(archive)
   if (after.manifestHash !== before.manifestHash) return bad('读取期间归档身份变化')
@@ -135,4 +145,11 @@ export async function readCapsule2SourceBaseProjection4(handle: PreparedCapsule2
   const entry = materials.get(handle)
   if (!entry) return bad('不是实际Main material owner')
   return readCapsule2ArchiveBaseProjection4(entry.archive)
+}
+
+/** Exact registered material -> registered archive -> actual Working5 bytes.
+ * The full index is out-of-band and never part of encoded source material. */
+export async function readCapsule2SourceWorkingOriginals5(handle:PreparedCapsule2SourceMaterial){
+ const entry=materials.get(handle);if(!entry)return bad('不是genuine material owner')
+ return readCapsule2ArchiveWorkingOriginals5(entry.archive)
 }

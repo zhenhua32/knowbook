@@ -7,10 +7,10 @@ import { readOwnedRawCapsuleOriginal, assertOwnedRawCapsuleOriginal, reopenPrepa
   type OwnedRawCapsuleOriginal } from './restore-knowledge-capsule-files'
 import { assertCapsule2AssetDirectory as directory, readCapsule2AssetManifest, readCapsule2AssetCopy as readExact,
   writeCapsule2AssetCopy as writeNew } from './restore-knowledge-capsule2-assets-files'
-import { reopenCapsule2AssetArchive, readCapsule2ArchiveSourceOriginal, prepareCapsule2AssetArchiveWithProvenance3, prepareCapsule2AssetArchiveWithContextProvenance3, prepareCapsule2AssetArchiveWithSettledContextProvenance4,
+import { reopenCapsule2AssetArchive, readCapsule2ArchiveSourceOriginal, prepareCapsule2AssetArchiveWithProvenance3, prepareCapsule2AssetArchiveWithContextProvenance3, prepareCapsule2AssetArchiveWithSettledContextProvenance4, prepareCapsule2AssetArchiveWithWorkingProvenance5,
   type PreparedCapsule2AssetArchive } from './restore-knowledge-capsule2-asset-archive'
 import { captureCapsule2SourceMaterial, readCapsule2SourceMaterial, readCapsule2SourceSealInput,
-  assertCapsule2SourceOriginalBytes, readCapsule2SourceBaseProjection4, type PreparedCapsule2SourceMaterial } from './restore-knowledge-capsule2-source-material'
+  assertCapsule2SourceOriginalBytes, readCapsule2SourceBaseProjection4, readCapsule2SourceWorkingOriginals5, type PreparedCapsule2SourceMaterial } from './restore-knowledge-capsule2-source-material'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_READER } from './restore-knowledge-capsule2-raw-model'
 import { capsule2SourceManifestHash, parseCapsule2SourceManifest, capsule2SourceSealInvalid as bad,
   type Capsule2SourceManifest } from './restore-knowledge-capsule2-source-seal-model'
@@ -189,4 +189,19 @@ export async function readSealedCapsule2SourceBaseProjection4(handle: SealedCaps
   const base = await readCapsule2SourceBaseProjection4(entry.material)
   await assertSealedCapsule2SourceOriginalBytes(handle)
   return base
+}
+
+/** Explicit all-merge Working5 source. Released custom-only v3/v4 factories
+ * keep their selectors, observer/hash domains and persisted bytes. */
+export async function captureSealedCapsule2SourceWithWorkingProvenance5(original:OwnedRawCapsuleOriginal){
+ return captureSealedCapsule2SourceFromArchive(await prepareCapsule2AssetArchiveWithWorkingProvenance5(original))
+}
+/** Native transport sees the real registered Working5 text/members only.
+ * Non5 returns undefined after the same original/manifest byte bracket. */
+export async function readSealedCapsule2SourceWorkingOriginals5(handle:SealedCapsule2Source){
+ const entry=sealed.get(handle);if(!entry)return bad('不是genuine sealed source owner')
+ await assertSealedCapsule2SourceOriginalBytes(handle)
+ const working=await readCapsule2SourceWorkingOriginals5(entry.material)
+ await assertSealedCapsule2SourceOriginalBytes(handle)
+ return working
 }

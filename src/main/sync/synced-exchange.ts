@@ -1898,3 +1898,70 @@ export async function resolveSyncedExchangeDeletions(db:Database.Database,input:
   }catch(cause){if(cause instanceof SyncedPublicationError)throw cause;throw new SyncedPublicationError(cause instanceof Error&&/SQLITE|sqlite|database|constraint|trigger|exchange exact late receipt/i.test(cause.message)?'database':'invalid','真实删除选择失败；原job/possible保持。',cause)}
   finally{if(key&&owns)running.delete(key);if(c)connections.delete(c)}
 }
+
+/** Full immutable-input replay for the private Working5 source owner. The
+ * dispatcher and validators below come from loadSpool and call the same
+ * production planner for every actual family. Pure DTOs grant no IO rights;
+ * only a genuine source owner may bind this result to captured bytes. */
+export function replaySyncedExchangeWorkingInputs5(inputBytes:Uint8Array,job:M.ExchangeJob){
+  const input = M.parseExchangeStored(Buffer.from(inputBytes).toString('utf8'))
+  assertSyncedShape(input, ['kind', 'version', 'request', 'target', 'local', 'remote', 'state', 'baseRecords', 'authority', 'keyGuards', 'stateRaw', 'plan',
+    ...(job.version===2?['plannerVersion','resolution','conflictSelections']:job.version===3?['plannerVersion','resolution','bothSelections','bothLinks']:job.version===4?['plannerVersion','localPhysical','remoteClosureHash']:job.version===5?['plannerVersion','localPhysical','knowledgeSource','knowledgeHash','resolution','conflictSelections']:job.version===6?['plannerVersion','localPhysical','knowledgeSource','knowledgeHash','resolution','bothSelections','bothLinks']:job.version===7?['plannerVersion','localPhysical','remoteClosureHash','decisionSource','decisionSourceHash','resolution','deletionSelections']:[])])
+  if (input.kind !== 'synced-exchange-private-inputs' || input.version !== job.version || !same(input.request, job.request) || M.exchangeTargetFingerprint(input.target as unknown as WebDavSyncConfig) !== job.request.targetFingerprint
+    || publicationHash(publicationJson({ inputHash: publicationHash(inputBytes), descriptor: job.descriptor })) !== job.spoolHash) return publicationInvalid('exchange原spoolinput认证失败。')
+  const decodeSnapshot = (value: unknown): SyncedProtocol5Snapshot => {
+    assertSyncedShape(value, ['manifest', 'records']); if (!Array.isArray(value.records)) return publicationInvalid('exchange原snapshot records无效。')
+    return validateSyncedProtocol5Snapshot(value.manifest, value.records.map(raw => { assertSyncedShape(raw, ['key', 'hash', 'record'])
+      if (typeof raw.key !== 'string' || typeof raw.hash !== 'string' || publicationHash(publicationJson(raw.record)) !== raw.hash) return publicationInvalid('exchange原snapshot hash不符。')
+      return { key: raw.key, record: raw.record } }))
+  }
+  const local = decodeSnapshot(input.local), remote = decodeSnapshot(input.remote), state = M.validateAnyExchangeState(input.state)
+  if (!Array.isArray(input.baseRecords)) return publicationInvalid('exchange原B records无效。')
+  if(local.manifest.workspaceId!==job.workspaceScope||remote.manifest.workspaceId!==job.remoteWorkspaceId||state.workspaceScope!==job.workspaceScope
+    ||state.recoveryEpoch!==job.recoveryEpoch||state.databasePath!==job.request.databasePath||state.targetFingerprint!==job.request.targetFingerprint)return publicationInvalid('working5 original snapshot/state identity mismatch。')
+  const baseRecords = input.baseRecords.map(raw => { assertSyncedShape(raw, ['key', 'hash', 'record'])
+    if (typeof raw.key !== 'string' || typeof raw.hash !== 'string') return publicationInvalid('exchange原B key/hash无效。')
+    return { key: raw.key, hash: raw.hash, record: validateSyncedProtocol5Record(raw.record, raw.key) } })
+  assertSyncedShape(input.authority, ['catalogId', 'identities', 'occupiedDocumentIds', 'historyComponents', 'pinnedGroupIds', 'knownGroupIds', 'missingBaseKeys', 'deferredKeys', ...(job.version===4?['deletedFacts','pins']:job.version===5||job.version===6||job.version===7?['deletedFacts','pins','deletionProofReferences']:[])], ['keyGuards'])
+  // The authority was minted only by this module's original real capture and is authenticated by both immutable DB job and private spool hash.
+  const originalAuthority = input.authority as unknown as ReturnType<typeof authority>
+  const conflictSelections=job.version===2||job.version===5?readSelections(input.conflictSelections,job.request):[]
+  const bothSelections=job.version===3||job.version===6?readBothSelections(input.bothSelections,job.request):[],bothLinks=job.version===3||job.version===6?B.validateBothSourceLinks(input.bothLinks):[]
+  if(job.version===3&&(input.plannerVersion!=='forks-v1'||!same(B.validateBothResolution(input.resolution),job.resolution)))return publicationInvalid('both原job来源/算法损坏。')
+  if(job.version===2&&(input.plannerVersion!=='conflicts-v1'||!same(C.validateExchangeResolutionBinding(input.resolution),job.resolution))) return publicationInvalid('原job决定来源/算法损坏。')
+  const localPhysical = job.version === 4 || job.version === 5 || job.version === 6 || job.version === 7 ? decodeSnapshot(input.localPhysical) : undefined
+  if (job.version === 4 && (input.plannerVersion !== 'tombstones-v1' || typeof input.remoteClosureHash !== 'string' || !/^[a-f0-9]{64}$/.test(input.remoteClosureHash))) return publicationInvalid('原删除job4私有来源版本/闭包hash损坏。')
+  let plan: RuntimePlan
+  const deletionSelections=job.version===7?readDeletionSelections(input.deletionSelections,job.request):[]
+  if (job.version === 7) {
+    if(!localPhysical||input.plannerVersion!==job.plannerVersion||!same(input.resolution,job.resolution)||!same(DC.validateDeletionDecisionSource(input.decisionSource),job.decisionSource)
+      ||input.decisionSourceHash!==job.decisionSourceHash||input.remoteClosureHash!==job.decisionSource.remoteSource.closureHash)return publicationInvalid('删除选择原spool preimage/preview来源损坏。')
+    plan=makeDeletionChoicePlan({operationId:job.request.operationId,localPhysical,localKnowledge:local,remote,baseRecords,state:M.validateTombstoneExchangeState(state),localFingerprint:job.descriptor.localFingerprint,
+      authority:input.authority as unknown as K.KnowledgeAuthority,remoteSource:job.decisionSource.remoteSource,resolution:job.resolution,selections:deletionSelections})
+    if(!same(plan.decisionSource,job.decisionSource)||plan.decisionSourceHash!==job.decisionSourceHash)return publicationInvalid('删除选择原job/inputs/来源不闭合。')
+  } else if (job.version === 4) {
+    if (!localPhysical) return publicationInvalid('删除原job4缺真实physical snapshot。')
+    plan = makeTombstonePlan({ operationId: job.request.operationId, localKnowledge: local, localPhysical, remote, baseRecords,
+      state: M.validateTombstoneExchangeState(state), localFingerprint: job.descriptor.localFingerprint,
+      authority: input.authority as unknown as TombstonePlanInput['authority'] })
+  } else if (job.version===5 || job.version===6) {
+    if (!localPhysical || input.plannerVersion!==job.plannerVersion || !same(K.validateKnowledgeSource(input.knowledgeSource),job.knowledgeSource)
+      || input.knowledgeHash!==job.knowledgeHash || !same(input.resolution,job.resolution)) return publicationInvalid('knowledge原job preimage/决定/两图缺失或损坏。')
+    plan=makeKnowledgePlan({operationId:job.request.operationId,localPhysical,localKnowledge:local,remote,baseRecords,state:M.validateTombstoneExchangeState(state),
+      localFingerprint:job.descriptor.localFingerprint,authority:input.authority as unknown as K.KnowledgeAuthority,conflictSelections},job.version,bothSelections,bothLinks)
+    if (!same(plan.knowledgeSource,job.knowledgeSource) || plan.knowledgeHash!==job.knowledgeHash) return publicationInvalid('knowledge job原来源与私有inputs/plan不符。')
+  } else plan = makePlan({ operationId: job.request.operationId, local, remote, baseRecords, state: legacyState(state),
+    localFingerprint: job.descriptor.localFingerprint, authority: originalAuthority,
+    ...(job.version===2?{conflictSelections}: {}) },job.version,bothSelections,bothLinks)
+  const guards=input.authority.keyGuards??[]
+  if(!Array.isArray(guards))return publicationInvalid('working5 original guards invalid。')
+  assertSyncedShape(input.keyGuards,guards.map(row=>String(row.key)))
+  if(!same(input.keyGuards,Object.fromEntries(guards.map(row=>[row.key,row.fingerprint])))||input.stateRaw!==null&&typeof input.stateRaw!=='string')return publicationInvalid('working5 original guards/state raw mismatch。')
+  if(!same(plan.components,job.components))return publicationInvalid('working5 original components mismatch。')
+  const normalized = storedRuntimePlan(plan)
+  if (!same(input.plan, normalized) || plan.planHash !== job.descriptor.planHash) return publicationInvalid('exchange原planner结果与不可变job不符。')
+  if((job.version===3||job.version===6)&&(!('forks'in plan)||!same(plan.forks,job.forks)))return publicationInvalid('both原job fork/projection与原inputs不闭合。')
+  if((job.version===4||job.version===7)&&(!('deletions'in plan)||!same(plan.deletions,job.deletions)))return publicationInvalid('删除job intent与真实原inputs/plan不闭合。')
+  if(job.version>=2&&!same(plan.merges??[],job.merges))return publicationInvalid('原job merge来源与原inputs/plan不闭合。')
+  return {job,plan,local,remote,localPhysical,state,baseRecords,conflictSelections,bothSelections,bothLinks,deletionSelections}
+}

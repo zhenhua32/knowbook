@@ -1,3 +1,4 @@
+import { capsule5WorkingIndex, capsule5TransportFiles, type TransportWorkingTexts5, type TransportWorkingIndex5 } from './restore-knowledge-capsule5-transport-model'
 import { parseStrictJson } from '../../shared/strictJson'
 import { capsuleBytesHash, capsuleJson, capsuleRecord, freezeCapsuleValue, parseDurableSqlCapsuleManifest,
   durableSqlCapsuleManifestHash, CAPSULE_MAX_MANIFEST_BYTES, CAPSULE_MAX_INDEX_BYTES } from './restore-knowledge-capsule-model'
@@ -29,7 +30,7 @@ function text(value: unknown, max = CAPSULE2_RAW_MAX_JSON_BYTES): string {
 export function mixedOriginCapsulePath(binding: CoverageInputBinding, collection: string) {
   return `catalog/backups/database-restore/${binding.capsule.operationId}/${collection}/${binding.capsule.capsuleId}`
 }
-function side(value: unknown, binding: CoverageInputBinding) {
+function side(value: unknown, binding: CoverageInputBinding, workingText?: string, copyOnly = false) {
   if (!value || typeof value !== 'object') return bad('mixed缺原side')
   const kind = Object.getOwnPropertyDescriptor(value, 'kind')
   if (!kind || !('value' in kind)) return bad('mixed side kind含accessor')
@@ -41,6 +42,7 @@ function side(value: unknown, binding: CoverageInputBinding) {
     const manifest = parseDurableSqlCapsuleManifest(manifestText)
     if (ref.readerVersion !== 'knowbook-durable-sql-v1'
       || durableSqlCapsuleManifestHash(manifest) !== ref.manifestHash) return bad('mixed v1原reader/hash不闭合')
+    if (workingText !== undefined) return bad('v1不能借用working5索引')
     add(base + '/manifest.json', manifestText)
     for (const file of manifest.files) if (file.present) files.push({ path: base+'/original/'+file.name, bytes:file.bytes, sha256:file.sha256! })
     for (const shard of manifest.evidenceIndex.shards) files.push({ path:base+'/index/'+shard.name, bytes:shard.bytes, sha256:shard.sha256 })
@@ -63,16 +65,18 @@ function side(value: unknown, binding: CoverageInputBinding) {
   for (const file of manifest.files) if(file.present) files.push({path:base+'/original/'+file.name,bytes:file.bytes,sha256:file.sha256!})
   for (const file of archive.tree.files) files.push({path:assets+'/files/'+file.hash,bytes:file.bytes,sha256:file.hash})
   if ((archive.version === 3 || archive.version === 4)) for (const file of archive.contextOriginals.files) files.push({path:assets+'/contexts/'+file.sha256,bytes:file.bytes,sha256:file.sha256})
-  if (archive.version === 4) files.push({ path: assets + '/base-provenance.json',
+  if (archive.version === 4 || archive.version === 5) files.push({ path: assets + '/base-provenance.json',
     bytes: archive.baseProjection.baseManifestFile.bytes, sha256: archive.baseProjection.baseManifestFile.sha256 })
-  return { value:{kind:'complete-capsule2',certificateText,sourceManifestText,assetManifestText} as const, files, inventory:manifest.files,
-    emptyDirectory:assets+'/files', ...((archive.version === 3 || archive.version === 4) ? { emptyDirectories: [assets+'/contexts'] } : {}) }
+  if (!copyOnly) files.push(...capsule5TransportFiles(archive, assets, workingText))
+  const workingIndex = capsule5WorkingIndex(archive, assets)
+  return { value:{kind:'complete-capsule2',certificateText,sourceManifestText,assetManifestText} as const, files, inventory:manifest.files, workingIndex,
+    emptyDirectory:assets+'/files', ...((archive.version === 3 || archive.version === 4 || archive.version === 5) ? { emptyDirectories: [assets+'/contexts', ...(archive.version === 5 ? [assets+'/contexts/files'] : [])] } : {}) }
 }
-function components(value: MixedOriginBundleDescriptor) {
-  const node=parseRequiredSqlDagNode(value.nodeText),source=side(value.source,node.source),current=side(value.current,node.current)
+function components(value: MixedOriginBundleDescriptor, workingTexts: TransportWorkingTexts5 = {}, copyOnly = false) {
+  const node=parseRequiredSqlDagNode(value.nodeText),source=side(value.source,node.source,workingTexts.source,copyOnly),current=side(value.current,node.current,workingTexts.current,copyOnly)
   return {node,source,current}
 }
-export function validateMixedOriginBundleDescriptor(value: unknown): MixedOriginBundleDescriptor {
+function validateMixedDescriptor(value: unknown, workingTexts: TransportWorkingTexts5 = {}, copyOnly = false): MixedOriginBundleDescriptor {
   const row=capsuleRecord(value,['kind','version','readerVersion','material','root','nodeText','source','current'])
   if(row.kind!=='restore-prepared-mixed-origin-bundle'||row.version!==2||row.readerVersion!=='knowbook-prepared-mixed-origin-bundle-v2'
     ||row.material!=='mixed-original-readers')return bad('未知mixed catalog格式')
@@ -80,38 +84,51 @@ export function validateMixedOriginBundleDescriptor(value: unknown): MixedOrigin
   if(root.namespace.kind!=='native'||root.rootHash!==requiredSqlDagRootHash(node)||node.parents.length
     ||node.origins.source.kind!=='no-prior-coverage-references'||node.origins.current.kind!=='no-prior-coverage-references'
     ||node.source.capsule.namespace.kind!=='native'||node.current.capsule.namespace.kind!=='native')return bad('mixed首代完整原域/无prior-C图不闭合')
-  const source=side(row.source,node.source),current=side(row.current,node.current)
+  const source=side(row.source,node.source,workingTexts.source,copyOnly),current=side(row.current,node.current,workingTexts.current,copyOnly)
   if(requiredDagDatabaseFilesHash(source.inventory)!==node.origins.source.databaseFilesHash
     ||requiredDagDatabaseFilesHash(current.inventory)!==node.origins.current.databaseFilesHash)return bad('mixed原SQL清单与node不一致')
   const descriptor:MixedOriginBundleDescriptor={kind:row.kind,version:2,readerVersion:row.readerVersion,material:row.material,root,nodeText,source:source.value,current:current.value}
   if(Buffer.byteLength(capsuleJson(descriptor))+1>MIXED_ORIGIN_BUNDLE_MAX_DESCRIPTOR_BYTES)return bad('mixed完整descriptor超预算，不截断')
-  expectedFiles(descriptor);return freezeCapsuleValue(descriptor)
+  if (!copyOnly) expectedFiles(descriptor,workingTexts);return freezeCapsuleValue(descriptor)
 }
-function expectedFiles(descriptor: MixedOriginBundleDescriptor) {
-  const {source,current}=components(descriptor),files=[{path:originBundleNodePath(descriptor.root),bytes:Buffer.byteLength(descriptor.nodeText),sha256:capsuleBytesHash(descriptor.nodeText)},...source.files,...current.files]
+function expectedFiles(descriptor: MixedOriginBundleDescriptor, workingTexts: TransportWorkingTexts5 = {}) {
+  const {source,current}=components(descriptor,workingTexts),files=[{path:originBundleNodePath(descriptor.root),bytes:Buffer.byteLength(descriptor.nodeText),sha256:capsuleBytesHash(descriptor.nodeText)},...source.files,...current.files]
     .sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0)
   const data=files.filter(f=>/\/(?:original|files|contexts)\//.test(f.path)||/\/base-provenance\.json$/.test(f.path)).reduce((n,f)=>n+f.bytes,0),total=files.reduce((n,f)=>n+f.bytes,0)
   if(files.length>MIXED_ORIGIN_BUNDLE_MAX_FILES||files.some((f,i)=>i>0&&files[i-1].path===f.path)
     ||!Number.isSafeInteger(total)||data>DURABLE_SQL_DAG_MAX_ORIGINAL_BYTES||total-data>metadataBudget)return bad('mixed完整文件重复或超原件/metadata预算')
   return freezeCapsuleValue(files)
 }
-export const mixedOriginBundleFiles=(value:MixedOriginBundleDescriptor)=>expectedFiles(validateMixedOriginBundleDescriptor(value))
-export function mixedOriginBundleDirectories(value:MixedOriginBundleDescriptor) {
-  const descriptor=validateMixedOriginBundleDescriptor(value),dirs=new Set<string>(['catalog'])
-  for(const file of expectedFiles(descriptor)){const parts=file.path.split('/');for(let n=1;n<parts.length;n++)dirs.add(parts.slice(0,n).join('/'))}
-  const {source,current}=components(descriptor);dirs.add(source.emptyDirectory);dirs.add(current.emptyDirectory)
+export const validateMixedOriginBundleDescriptor=(value:unknown,workingTexts:TransportWorkingTexts5={})=>validateMixedDescriptor(value,workingTexts)
+export const mixedOriginBundleFiles=(value:MixedOriginBundleDescriptor,workingTexts:TransportWorkingTexts5={})=>expectedFiles(validateMixedOriginBundleDescriptor(value,workingTexts),workingTexts)
+export function mixedOriginBundleDirectories(value:MixedOriginBundleDescriptor,workingTexts:TransportWorkingTexts5={}) {
+  const descriptor=validateMixedOriginBundleDescriptor(value,workingTexts),dirs=new Set<string>(['catalog'])
+  for(const file of expectedFiles(descriptor,workingTexts)){const parts=file.path.split('/');for(let n=1;n<parts.length;n++)dirs.add(parts.slice(0,n).join('/'))}
+  const {source,current}=components(descriptor,workingTexts);dirs.add(source.emptyDirectory);dirs.add(current.emptyDirectory)
   for (const side of [source, current]) if ('emptyDirectories' in side) for (const directory of side.emptyDirectories ?? []) dirs.add(directory)
   return freezeCapsuleValue([...dirs].sort())
 }
-export const mixedOriginBundleHash=(value:MixedOriginBundleDescriptor)=>capsuleBytesHash('knowbook.prepared-mixed-origin-bundle.v2\0'+capsuleJson(validateMixedOriginBundleDescriptor(value)))
-export function parseMixedOriginBundleDescriptor(text:string) {
-  const value=validateMixedOriginBundleDescriptor(parseStrictJson(text,{maxBytes:MIXED_ORIGIN_BUNDLE_MAX_DESCRIPTOR_BYTES,maxDepth:24}))
+export const mixedOriginBundleHash=(value:MixedOriginBundleDescriptor,workingTexts:TransportWorkingTexts5={})=>capsuleBytesHash('knowbook.prepared-mixed-origin-bundle.v2\0'+capsuleJson(validateMixedOriginBundleDescriptor(value,workingTexts)))
+export function parseMixedOriginBundleDescriptor(text:string,workingTexts:TransportWorkingTexts5={}) {
+  const value=validateMixedOriginBundleDescriptor(parseStrictJson(text,{maxBytes:MIXED_ORIGIN_BUNDLE_MAX_DESCRIPTOR_BYTES,maxDepth:24}),workingTexts)
   if(text!==capsuleJson(value)+'\n')return bad('mixed descriptor不是准确canonical原字节')
   return value
 }
 
 /** Fixed legacy side codec shared by the complete qualified-input transport.
  * This is data validation only; private SQL owners still authenticate sources. */
-export function mixedOriginBundleSideFiles(value: MixedOriginBundleSide, binding: CoverageInputBinding) {
-  return freezeCapsuleValue(side(value, binding))
+export function mixedOriginBundleSideFiles(value: MixedOriginBundleSide, binding: CoverageInputBinding, workingText?:string) {
+  return freezeCapsuleValue(side(value, binding, workingText))
 }
+
+/** Header validation grants only fixed copy locations. It does not return a
+ * complete inventory, SQL material, or semantic/installation authority. */
+export function parseMixedWorkingLocators5(rawText: string) {
+  const descriptor=validateMixedDescriptor(parseStrictJson(rawText,{maxBytes:MIXED_ORIGIN_BUNDLE_MAX_DESCRIPTOR_BYTES,maxDepth:24}),{},true)
+  if(rawText!==capsuleJson(descriptor)+'\n')return bad('mixed复制header不是准确规范字节')
+  const parts=components(descriptor,{},true),indexes:TransportWorkingIndex5[]=[]
+  for(const name of ['source','current'] as const){const part=parts[name];if('workingIndex' in part&&part.workingIndex)indexes.push({side:name,...part.workingIndex})}
+  return freezeCapsuleValue({descriptorHash:capsuleBytesHash('knowbook.prepared-mixed-origin-bundle.v2\0'+capsuleJson(descriptor)),indexes,scope:'copy-index-locations-only' as const,semanticValidationComplete:false as const})
+}
+
+export const mixedOriginBundleSideCopyHeader5=(value:MixedOriginBundleSide,binding:CoverageInputBinding)=>freezeCapsuleValue(side(value,binding,undefined,true))

@@ -45,7 +45,7 @@ function recordWasProjected4(evidence: Root3SettledWorkingEvidence3, recordKey: 
   return Array.isArray(binding.sources) && binding.sources.some(value => value && typeof value === 'object'
     && 'recordKey' in value && value.recordKey === recordKey && 'portableProjection' in value && value.portableProjection !== undefined)
 }
-function projectedMappings(base: BaseRead4, evidence: Root3SettledWorkingEvidence3, recordKey: string): PortableMapping4[] {
+function projectedMappings(base: Pick<BaseRead4,'commitment'|'baseAssets'|'baseProof'|'referenceUris'|'tree'>, evidence: Root3SettledWorkingEvidence3, recordKey: string): PortableMapping4[] {
   const binding = evidence.binding as { kind?: unknown; sourceContentHash?: unknown; sources?: unknown[] }
   if (binding.kind !== 'settled-original-working-record-portable-projection') return []
   if (binding.sourceContentHash !== base.commitment.sourceContentHash || !Array.isArray(binding.sources)) return fail('portable W evidence来源不符')
@@ -277,3 +277,6 @@ export function createRootRestoreSupplementalAssetObserver4(base: BaseRead4) {
 }
 
 export type Root3SupplementalAssetObservation4 = ReturnType<ReturnType<typeof createRootRestoreSupplementalAssetObserver4>['finish']>
+
+/** Pure same-source mapping validator only; no owner or IO rights. */
+export const root4SettledPortableMappingsForMain5 = projectedMappings
