@@ -28,11 +28,20 @@ export interface MarkdownSourceLocalState {
   applying: boolean
   importing: boolean
 }
+/** Optional cold producer handoff. It updates local source ownership only;
+ * the producer must already own its actual accepted persistence receipt. */
+export interface MarkdownSourceAppliedCheckpoint<Draft extends { source: string }> {
+  acceptedSource: string
+  baseDraft: Draft
+  rebase: (draft: Draft) => Draft | null
+  committed: () => void
+}
 export type MarkdownSourceDialogProps<Draft extends { source: string }> = {
   sessionKey: object
   createDraft: () => Draft
   replaceChanges: (draft: Draft, changes: readonly MarkdownSourceChange[]) => Draft
   onApply: (draft: Draft) => boolean | Promise<boolean>
+  readApplyCheckpoint?: () => MarkdownSourceAppliedCheckpoint<Draft> | null
   isCurrent: () => boolean
   getReturnFocus: () => HTMLElement | null
   onCompositionChange?: (composing: boolean) => void
@@ -171,13 +180,47 @@ function MarkdownSourceDialogOpening<Draft extends { source: string }>(props: Ma
       if (!canUse() || live.current.sessionKey !== opening.sessionKey) return
       const accepted = await opening.onApply(submitted)
       if (!canUse() || live.current.sessionKey !== opening.sessionKey) return
+      const submittedStillCurrent = current.current.draft === submitted
+      const checkpoint = opening.readApplyCheckpoint?.()
+      if (checkpoint) {
+        const view = editor.current, retained = current.current, rebased = checkpoint.rebase(retained.draft)
+        if (!view || !rebased || rebased.source !== retained.draft.source || checkpoint.baseDraft.source !== checkpoint.acceptedSource) {
+          throw new Error(isZh ? '已提交版本已确认，但当前源码不能安全换基。原输入已保留，请复制后重新打开。'
+            : 'The submitted version is confirmed, but this source cannot safely checkpoint. Input is retained; copy it and reopen.')
+        }
+        const length = markdownSourceEditorText(checkpoint.acceptedSource).length
+        const entries: Snapshot<Draft>[] = [{ draft: checkpoint.baseDraft, start: Math.min(retained.start, length), end: Math.min(retained.end, length) }]
+        let index = -1, compositionIndex = 0
+        const previous = history.current
+        for (let at = 0; at < previous.entries.length; at++) {
+          const item = previous.entries[at], mapped = checkpoint.rebase(item.draft)
+          if (!mapped) continue // The confirmed A is the new local Source Undo floor.
+          const next = { ...item, draft: mapped }
+          let destination: number
+          if (mapped === checkpoint.baseDraft && entries.length === 1) { entries[0] = next; destination = 0 }
+          else { entries.push(next); destination = entries.length - 1 }
+          if (at === previous.index) index = destination
+          if (at === compositionHistoryIndex.current) compositionIndex = destination
+        }
+        if (index < 0 || entries[index].draft !== rebased) { entries.push({ ...retained, draft: rebased }); index = entries.length - 1 }
+        while (entries.length > 80) { const remove = index > 1 ? 1 : entries.length - 1; entries.splice(remove, 1); if (remove < index) index--; if (remove <= compositionIndex) compositionIndex = Math.max(0, compositionIndex - 1) }
+        // No text/selection replacement, no filter:false, and no compositionend.
+        // The real session field must accept this exact same-byte checkpoint.
+        view.dispatch({ annotations: session.replay.of(rebased) })
+        if (session.read(view.state) !== rebased) throw new Error('The original Source view did not accept its checkpoint')
+        history.current = { entries, index, lastInput: 0 }
+        compositionHistoryIndex.current = composing.current ? Math.min(index, compositionIndex) : -1
+        acceptedSource.current = checkpoint.acceptedSource
+        checkpoint.committed()
+        reportLocalState()
+      }
       if (accepted === true) {
         acceptedSource.current = submitted.source
         reportLocalState()
         if (!canUse() || live.current.sessionKey !== opening.sessionKey) return
-        if (current.current.draft === submitted && !composing.current && !importLock.current) opening.onClose()
+        if (submittedStillCurrent && !composing.current && !importLock.current) opening.onClose()
         else setError(text.laterEdits)
-      } else if (accepted === false) setError(text.conflict)
+      } else if (accepted === false) setError(checkpoint ? text.laterEdits : text.conflict)
       else throw new Error('Markdown source Apply must return a boolean result')
     } catch (cause) {
       if (canUse() && live.current.sessionKey === opening.sessionKey) setError(cause instanceof Error ? cause.message : String(cause))

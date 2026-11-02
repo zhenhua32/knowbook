@@ -3,7 +3,8 @@ import type { SyncedHostWorkingBefore } from '@shared/synced-blocks'
 import { MarkdownSourceDialog, type MarkdownSourceLocalState } from '../../components/DocumentMarkdownSourceDialog'
 import { areDocumentDraftBlocksEqual } from '../../utils/documentDraftComparison'
 import { applySyncedHostSourceChanges, createSyncedHostSourceDraft, prepareSyncedHostSourceApply,
-  type PreparedSyncedHostSource } from './hostSource'
+  captureSyncedHostSourceSubmission, readSyncedHostSourceCheckpoint,
+  type PreparedSyncedHostSource, type SyncedHostSourceSubmission, type SyncedHostSourceApplyOutcome, type SyncedHostSourceCheckpoint } from './hostSource'
 
 export type SyncedHostSourceCurrent = {
   hostSession: object
@@ -16,6 +17,7 @@ export type SyncedHostSourceDialogProps = {
   isCurrent: () => boolean
   opener: HTMLElement | null
   applyPrepared: (prepared: PreparedSyncedHostSource) => Promise<boolean>
+  applySubmission?: (submission: SyncedHostSourceSubmission) => Promise<SyncedHostSourceApplyOutcome>
   onCompositionChange?: (composing: boolean) => void
   isZh: boolean
   onLocalStateChange?: (state: Readonly<MarkdownSourceLocalState>) => void
@@ -40,7 +42,9 @@ function HostSourceOpening(props: SyncedHostSourceDialogProps & { ownsOpening: (
     const draft = createSyncedHostSourceDraft(state.host)
     return { sessionKey: {}, draft, hostSession: state.hostSession, editSequence: state.editSequence,
       hasSyncedReferences: state.host.workingBefore.blocks.some(block => block.type === 'synced-block'),
-      opener: props.opener, isCurrent: props.isCurrent, applyPrepared: props.applyPrepared, onCompositionChange: props.onCompositionChange }
+      checkpoint: null as SyncedHostSourceCheckpoint | null,
+      opener: props.opener, isCurrent: props.isCurrent, applyPrepared: props.applyPrepared,
+      applySubmission: props.applySubmission, onCompositionChange: props.onCompositionChange }
   })
   const isCurrent = () => {
     if (!latest.current.ownsOpening() || !opening.isCurrent() || !latest.current.isCurrent()) return false
@@ -50,6 +54,26 @@ function HostSourceOpening(props: SyncedHostSourceDialogProps & { ownsOpening: (
   return <MarkdownSourceDialog sessionKey={opening.sessionKey} isZh={props.isZh} onClose={props.onClose} onLocalStateChange={props.onLocalStateChange}
     createDraft={() => opening.draft} replaceChanges={applySyncedHostSourceChanges}
     isCurrent={isCurrent} getReturnFocus={() => opening.opener} onCompositionChange={opening.onCompositionChange}
+    readApplyCheckpoint={() => {
+      const handle = opening.checkpoint
+      if (!handle) return null
+      const checkpoint = readSyncedHostSourceCheckpoint(handle)
+      const originalCurrent = () => {
+        const current = latest.current.getCurrent(), expected = checkpoint.next
+        return isCurrent() && current?.hostSession === opening.hostSession && current.hostSession === expected.hostSession
+          && current.editSequence === expected.editSequence && current.host.documentId === expected.host.documentId
+          && current.host.expectedPersistedUpdatedAt === expected.host.expectedPersistedUpdatedAt
+          && current.host.workingBefore.title === expected.host.workingBefore.title
+          && current.host.workingBefore.summary === expected.host.workingBefore.summary
+          && areDocumentDraftBlocksEqual(current.host.workingBefore.blocks, expected.host.workingBefore.blocks)
+      }
+      if (!originalCurrent()) throw new Error('The actual accepted Source opening changed; retained input cannot borrow a latest opening')
+      return { baseDraft: checkpoint.baseDraft, acceptedSource: checkpoint.baseDraft.source, rebase: checkpoint.rebase,
+        committed: () => {
+          if (opening.checkpoint !== handle || !originalCurrent()) throw new Error('The original Source checkpoint is no longer current')
+          opening.draft = checkpoint.baseDraft; opening.editSequence = checkpoint.next.editSequence; opening.checkpoint = null
+        } }
+    }}
     text={{ title: props.isZh ? '编辑宿主正文源码' : 'Edit host body source',
       editorLabel: opening.hasSyncedReferences
         ? props.isZh ? '宿主正文 Markdown 源码' : 'Host body Markdown source'
@@ -69,6 +93,11 @@ function HostSourceOpening(props: SyncedHostSourceDialogProps & { ownsOpening: (
       // the existing prepared fields, never a fabricated successful Main result.
       // Its successful adoption may advance host editSequence, so W equality is
       // a submission preflight rather than a condition for closing after ACK.
-      return opening.applyPrepared(prepareSyncedHostSourceApply(draft))
+      if (!opening.applySubmission) return opening.applyPrepared(prepareSyncedHostSourceApply(draft))
+      return opening.applySubmission(captureSyncedHostSourceSubmission(draft)).then(outcome => {
+        if (!isCurrent()) return false
+        if (outcome.checkpoint) opening.checkpoint = outcome.checkpoint
+        return outcome.accepted
+      })
     }} />
 }

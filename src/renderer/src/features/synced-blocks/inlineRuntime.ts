@@ -12,6 +12,8 @@ import { getSyncedWorkspaceController, flushSyncedWorkspacePendingChanges } from
 import type { SyncedReadSourcesPort } from './sourceReadOwner'
 import type { SyncedHostSourceCurrent } from './SyncedHostSourceDialog'
 import type { PreparedSyncedHostSource } from './hostSource'
+import { readSyncedHostSourceSubmission, acceptSyncedHostSourceCheckpoint,
+  type SyncedHostSourceSubmission, type SyncedHostSourceApplyOutcome } from './hostSource'
 import type { MarkdownSourceLocalState } from '../../components/DocumentMarkdownSourceDialog'
 import { areDocumentDraftBlocksEqual } from '../../utils/documentDraftComparison'
 import { installCanonicalInlineTransitions, hasCanonicalInlineAsyncEdits, signalCanonicalInlineUnlock, type CanonicalInlineFlushOptions } from './inlineBridge'
@@ -67,7 +69,8 @@ class InlineRuntime {
   private openingBindings = new Set<object>()
   private hostWrites = new Map<object, { submitted: SyncedHostSourceCurrent; input: SyncedStructureInput }>()
   private attention = 0
-  private sourceWrites = new Map<object, SyncedStructureInput>()
+  private sourceWrites = new Map<object, { input: SyncedStructureInput; opening: SyncedHostSourceCurrent; submission: SyncedHostSourceSubmission | null }>()
+  private checkpointedSources = new WeakSet<object>()
   private listeners = new Set<() => void>()
   private idle = new Set<() => void>()
   private revision = 0
@@ -382,39 +385,63 @@ class InlineRuntime {
     return { result, submitted: write.submitted }
   }
   async applyHostSource(dialog: Extract<InlineDialog, { kind: 'host' }>, prepared: PreparedSyncedHostSource) {
+    return (await this.applyHostSourceOwned(dialog, prepared, null)).accepted
+  }
+  async applyHostSourceSubmission(dialog: Extract<InlineDialog, { kind: 'host' }>, submission: SyncedHostSourceSubmission): Promise<SyncedHostSourceApplyOutcome> {
+    return this.applyHostSourceOwned(dialog, readSyncedHostSourceSubmission(submission), submission)
+  }
+  private async applyHostSourceOwned(dialog: Extract<InlineDialog, { kind: 'host' }>, prepared: PreparedSyncedHostSource,
+    submission: SyncedHostSourceSubmission | null): Promise<SyncedHostSourceApplyOutcome> {
     const before = prepared.hostsWorkingBefore[0], original = dialog.opening.host
     if (this.isLocked() || !this.sourceIsCurrent(dialog) || prepared.hostsWorkingBefore.length !== 1 || !before
       || before.documentId !== original.documentId || before.expectedPersistedUpdatedAt !== original.expectedPersistedUpdatedAt
       || before.workingBefore.title !== original.workingBefore.title || before.workingBefore.summary !== original.workingBefore.summary
-      || !areDocumentDraftBlocksEqual(before.workingBefore.blocks, original.workingBefore.blocks)) return false
+      || !areDocumentDraftBlocksEqual(before.workingBefore.blocks, original.workingBefore.blocks)) return { accepted: false }
     // Do not ask the Source blocker to flush itself. This is its registered
     // Apply callback, and Main still proves every actual structure guard.
-    if (!await flushSyncedWorkspacePendingChanges(this.workspace)) return false
-    const ordinary = !this.sourceWrites.has(dialog.id) && !prepared.newRefSources.length && prepared.finalAfter.length === 1
+    if (!await flushSyncedWorkspacePendingChanges(this.workspace)) return { accepted: false }
+    const ordinary = !this.checkpointedSources.has(dialog.id) && !this.sourceWrites.has(dialog.id) && !prepared.newRefSources.length && prepared.finalAfter.length === 1
       && !this.host?.getPersisted()?.blocks.some(block => block.type === 'synced-block')
       && ![...prepared.hostsWorkingBefore.flatMap(host => host.workingBefore.blocks), ...prepared.finalAfter.flatMap(host => host.blocks)]
         .some(block => block.type === 'synced-block')
-    if (ordinary) return this.host?.applyOrdinarySource?.(dialog.opening, prepared.finalAfter[0]) ?? false
+    if (ordinary) return { accepted: this.host?.applyOrdinarySource?.(dialog.opening, prepared.finalAfter[0]) ?? false }
     const groupIds = new Set<string>()
     for (const body of [...prepared.hostsWorkingBefore.map(host => host.workingBefore), ...prepared.finalAfter])
       for (const block of body.blocks) if (block.type === 'synced-block') groupIds.add(parseSyncedBlockPayload(block.content).groupId)
-    let input = this.sourceWrites.get(dialog.id)
-    const recoveringOriginal = Boolean(input)
-    if (!input) {
+    let write = this.sourceWrites.get(dialog.id)
+    const recoveringOriginal = Boolean(write)
+    if (!write) {
       const guards = await this.structureGuards(dialog.opening.host.documentId, [...groupIds])
-      if (!guards || !this.sourceIsCurrent(dialog)) return false
-      input = { clientOperationId: dialog.operationId, ...guards, mode: 'host-final', reason: 'source-apply', ...structuredClone(prepared) }
-      this.sourceWrites.set(dialog.id, input)
+      if (!guards || !this.sourceIsCurrent(dialog)) return { accepted: false }
+      const input: SyncedStructureInput = { clientOperationId: dialog.operationId, ...guards, mode: 'host-final', reason: 'source-apply', ...structuredClone(prepared) }
+      write = { input, opening: { ...dialog.opening, host: structuredClone(dialog.opening.host) }, submission }
+      this.sourceWrites.set(dialog.id, write)
     }
+    const input = write.input
     const result = await this.settleOriginalHostWrite(input, recoveringOriginal)
-    if (result.status !== 'applied' && result.status !== 'noop') { this.sourceWrites.delete(dialog.id); return false }
-    if (result.operationId !== dialog.operationId || !this.sourceIsCurrent(dialog)) return false
+    if (result.status !== 'applied' && result.status !== 'noop') { this.sourceWrites.delete(dialog.id); return { accepted: false } }
+    if (result.operationId !== input.clientOperationId || !this.sourceIsCurrent(dialog)) return { accepted: false }
     const acceptedCandidate = input.mode === 'host-final' && same(input.finalAfter, prepared.finalAfter) && same(input.newRefSources, prepared.newRefSources)
+    const adopted = this.adoptStructure(write.opening, result)
+    if (!adopted) return { accepted: false } // Keep the original nonce while its committed receipt cannot yet be adopted.
+    // The actual receipt is now known AND adopted. A local checkpoint failure
+    // must retain CM text and allow explicit Cancel/copy-reopen, rather than
+    // pinning this settled nonce as an unknown operation forever.
     this.sourceWrites.delete(dialog.id)
-    const adopted = this.adoptStructure(dialog.opening, result)
-    // A retry may carry later CM input. Settle the old real ACK without marking
-    // those later bytes as accepted or closing that retained Source buffer.
-    return acceptedCandidate && adopted
+    try {
+      let checkpoint
+      if (write.submission) {
+        const next = this.sourceCurrent()
+        if (!next) throw new Error('The actual accepted host opening is unavailable; the complete Source remains retained')
+        checkpoint = acceptSyncedHostSourceCheckpoint(write.submission, input, result, write.opening, next)
+        this.checkpointedSources.add(dialog.id)
+        // Advance only from this actual accepted receipt, never get-latest after
+        // an await. The unchanged dialog identity keeps the real CM view alive.
+        dialog.opening = { ...next, host: structuredClone(next.host) }
+        dialog.operationId = crypto.randomUUID()
+      }
+      return { accepted: acceptedCandidate, ...(checkpoint ? { checkpoint } : {}) }
+    } finally { this.emit() }
   }
   async openSearch(occurrence: WorkspaceSearchOccurrence, shouldContinue: () => boolean) {
     if (this.isLocked() || !shouldContinue() || !await this.host?.flushHost()) return false

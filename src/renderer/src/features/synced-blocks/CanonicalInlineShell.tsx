@@ -93,5 +93,6 @@ export default function CanonicalInlineShell({ documents, isZh, notify, workspac
     : <SyncedHostSourceDialog sessionKey={dialog.id} getCurrent={runtime.sourceCurrent}
       isCurrent={() => runtime.sourceIsCurrent(dialog)} opener={dialog.opener} isZh={isZh}
       applyPrepared={prepared => runtime.applyHostSource(dialog, prepared)}
+      applySubmission={submission => runtime.applyHostSourceSubmission(dialog, submission)}
       onLocalStateChange={dialog.report} onClose={dialog.close} />
 }
