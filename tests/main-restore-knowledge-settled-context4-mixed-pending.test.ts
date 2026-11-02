@@ -11,11 +11,12 @@ import { materializeSyncedExchangeLocal, readSyncedExchangeLocalMaterial } from 
 import { publicationHash, publicationJson, publicationRecordKey } from '../src/main/sync/synced-publication-model'
 import { withSettledPortable3 } from './helpers/settled-portable-owner-fixture'
 import { withoutSettledSpoolProbes4 } from './helpers/settled-context4-fixture'
+import { proveContext4NativeSpoolRoots, proveContext4ObservedSpoolFile } from './helpers/settled-context4-native-spool-evidence'
 import { captureAssetOriginal } from './helpers/capsule2-assets-fixture'
 import { completed, hostEdit, ready, component, mergeDecision, randomUUID } from './helpers/synced-exchange-conflict-fixture'
 
 test('archive4 partitions one real settled no-spool W and a separately captured pending original job without borrowing its later live receipt',
-  () => withSettledPortable3(async saved => {
+  context => withSettledPortable3(async saved => {
     const f = saved.f, documentId = f.islands[2], recordKey = 'doc:' + documentId
     // Bring the real sender to the already resolved publication, then create
     // an independent conflict. The first completed job/receipt remains intact.
@@ -47,12 +48,17 @@ test('archive4 partitions one real settled no-spool W and a separately captured 
       gate.release(); completed(await resolving, 'applied')
       assert.ok(f.B.db.prepare('SELECT 1 FROM synced_operations WHERE client_operation_id=?').get(operationId))
       assert.ok((await lstat(spool)).isDirectory())
-      const forbidden = saved.jobs.map(value => join(f.B.root, 'storage', 'synced-exchanges-v1', value.job.request.operationId, value.job.attemptId))
+      const roots = await proveContext4NativeSpoolRoots(f.B.root, original.info.profileRoot)
+      const forbidden = saved.jobs.flatMap(value => roots.spools(value.job.request.operationId, value.job.attemptId).aliases)
       const captured = await withoutSettledSpoolProbes4(forbidden,
-        () => prepareCapsule2AssetArchiveWithSettledContextProvenance4(original.original), [spool])
+        () => prepareCapsule2AssetArchiveWithSettledContextProvenance4(original.original), roots.spools(operationId, job.attemptId).aliases)
       assert.deepEqual(captured.attempts, [])
       assert.ok(captured.observations.some(value => value.method === 'open' && value.path.endsWith('inputs.json')),
         'The pending original is read from its exact real spool rather than skipped or replaced by the later receipt')
+      const expectedInput = expected.find(value => value.name === 'inputs.json'); assert.ok(expectedInput)
+      const nativeSpool = await proveContext4ObservedSpoolFile(roots, operationId, job.attemptId, captured.observations, expectedInput)
+      context.diagnostic(JSON.stringify({ nativeSpoolRootIdentity: roots.anchor, literalProfileRoot: roots.literalProfileRoot,
+        canonicalProfileRoot: roots.canonicalProfileRoot, pendingOriginal: nativeSpool }))
       const inputs = await readCapsule2ArchiveSourceInputs(captured.value), archive = inputs.value.manifest
       assert.equal(archive.version, 4)
       if (archive.version !== 4 || !inputs.supplemental || inputs.supplemental.version !== 2) throw new Error('Actual archive4 observer2 required')

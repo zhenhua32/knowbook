@@ -90,7 +90,12 @@ test('actual NTFS lower-case and short-tail logical names plus a genuine short r
     }
     // Force a real same-file root spelling that differs from canonical realpath.
     // The immutable Main whole-record oracle predates every native-only edit.
-    const caseRoot = root.replace(/[a-z]/g, letter => letter.toUpperCase()), caseRootUri = pathToFileURL(caseRoot).href
+    // Keep the actual publication profile's root spelling. On a CI runner
+    // tmpdir can already contain a genuine RUNNER~1 alias; changing that to
+    // realpath's long name also crosses the unchanged upstream lexical root
+    // boundary, before this test can check the intended case-only edit.
+    const profileAssetRoot = join(saved.f.B.root, 'storage', 'assets')
+    const caseRoot = profileAssetRoot.replace(/[a-z]/g, letter => letter.toUpperCase()), caseRootUri = pathToFileURL(caseRoot).href
     assert.notEqual(caseRootUri, originalRootUri)
     assert.equal((await realpath(caseRoot)).toLowerCase(), root.toLowerCase())
     const caseMappings = exactNativeMappings(array(firstProjection.mappings).map(object), caseRoot)

@@ -5,6 +5,7 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { captureAssetOriginal } from './helpers/capsule2-assets-fixture'
 import { withSettledPortable3 } from './helpers/settled-portable-owner-fixture'
 import { withoutSettledSpoolProbes4 } from './helpers/settled-context4-fixture'
+import { proveContext4NativeSpoolRoots, proveContext4ObservedMissingSpool } from './helpers/settled-context4-native-spool-evidence'
 import { request, applySyncedHostFinal } from './helpers/synced-exchange-conflict-fixture'
 import { materializeSyncedExchangeLocal, readSyncedExchangeLocalMaterial } from '../src/main/sync/synced-publication'
 import { publicationHash, publicationJson, publicationRecordKey } from '../src/main/sync/synced-publication-model'
@@ -14,7 +15,7 @@ import { prepareCapsule2AssetArchiveWithSettledContextProvenance4, readCapsule2A
   readCapsule2ArchiveBaseProjection4, parseCapsule2CompleteAssetArchiveManifest, reopenCapsule2AssetArchive } from '../src/main/database/restore-knowledge-capsule2-asset-archive'
 
 test('a legitimate noncustom host edit leaves the old settled job unproved so archive4 observes its missing spool and keeps both original holders unsupported',
-  { concurrency: false }, () => withSettledPortable3(async saved => {
+  { concurrency: false }, context => withSettledPortable3(async saved => {
     const key = 'doc:' + saved.documentId, original = saved.oracleRecords.get(key); assert.ok(original?.kind === 'document')
     const merge = saved.documentJob.job.merges!.find(value => value.key === key); assert.ok(merge)
     assert.equal(publicationHash(publicationJson(original)), merge.resultHash)
@@ -31,10 +32,16 @@ test('a legitimate noncustom host edit leaves the old settled job unproved so ar
     assert.equal(jobRow.value, saved.documentJob.row.value); assert.equal(receiptRow.result_json, saved.documentJob.receiptRow.result_json)
     const originalCapsule = await captureAssetOriginal({ userDataRoot: saved.f.B.root, db: saved.f.B.db })
     const spool = join(saved.f.B.root, 'storage', 'synced-exchanges-v1', saved.documentJob.job.request.operationId, saved.documentJob.job.attemptId)
+    const roots = await proveContext4NativeSpoolRoots(saved.f.B.root, originalCapsule.info.profileRoot)
+    const spoolNames = roots.spools(saved.documentJob.job.request.operationId, saved.documentJob.job.attemptId)
+    assert.equal(spoolNames.literal, spool)
     // Observe the real missing lookup. No hook supplies fake ENOENT, bytes,
     // job choices or a completed receipt to the new producer.
-    const observed = await withoutSettledSpoolProbes4([], () => prepareCapsule2AssetArchiveWithSettledContextProvenance4(originalCapsule.original), [spool])
+    const observed = await withoutSettledSpoolProbes4([], () => prepareCapsule2AssetArchiveWithSettledContextProvenance4(originalCapsule.original), spoolNames.aliases)
     assert.ok(observed.observations.length > 0, 'Unproved whole W must remain in the exact retired spool locator set observed by the native FS hook')
+    const nativeSpool = await proveContext4ObservedMissingSpool(roots, saved.documentJob.job.request.operationId, saved.documentJob.job.attemptId, observed.observations)
+    context.diagnostic(JSON.stringify({ nativeSpoolRootIdentity: roots.anchor, literalProfileRoot: roots.literalProfileRoot,
+      canonicalProfileRoot: roots.canonicalProfileRoot, missingOriginal: nativeSpool }))
     const inputs = await readCapsule2ArchiveSourceInputs(observed.value), archive = inputs.value.manifest, supplement = inputs.supplemental
     assert.equal(archive.version, 4)
     if (archive.version !== 4 || !supplement || supplement.version !== 2) throw new Error('Actual archive4 observer2 required')
