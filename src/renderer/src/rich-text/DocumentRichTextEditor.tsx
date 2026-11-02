@@ -2,7 +2,7 @@ import { lazy, Suspense, useContext, useLayoutEffect, useMemo, useRef, useState,
 import { Slice, type Node as RichNode } from 'prosemirror-model'
 import { AllSelection, EditorState, NodeSelection, Plugin, Selection, TextSelection, type Command, type Transaction } from 'prosemirror-state'
 import { Decoration, DecorationSet, EditorView } from 'prosemirror-view'
-import { createPortal } from 'react-dom'
+import { createPortal, flushSync } from 'react-dom'
 import { MarkdownBlockNodesContext, MarkdownDocumentContext } from '../components/MarkdownDocumentContext'
 import { baseKeymap, chainCommands, createParagraphNear, splitBlockAs, toggleMark } from 'prosemirror-commands'
 import { keymap } from 'prosemirror-keymap'
@@ -45,6 +45,8 @@ import { planRichDatabaseViewInsertion } from './databaseViewInsertion'
 import DatabaseViewPortal from './DatabaseViewPortal'
 import type { SyncedForestScope } from '../features/synced-blocks/types'
 import { syncedScopeDomKey } from '../features/synced-blocks/types'
+import { canApplyCanonicalHostDraftChange, beginCanonicalInlineAsyncEdit, waitForCanonicalInlineUnlock } from '../features/synced-blocks/inlineBridge'
+import { isIndependentEditorIsland } from '../utils/editorIsland'
 import './rich-text.css'
 import '../styles/inline-text-presentation.css'
 
@@ -53,6 +55,12 @@ const NativeContainerStyle = lazy(() => import('../components/NativeContainerSty
 const MarkdownTableEditor = lazy(() => import('../components/MarkdownTableEditor').then(module => ({ default: module.MarkdownTableEditor })))
 const ColumnsControls = lazy(() => import('../components/ColumnsControls'))
 const ColumnContentControls = lazy(() => import('./ColumnContentControls'))
+const InlineSyncedBlock = lazy(() => import('../features/synced-blocks/InlineSyncedBlock'))
+
+type SyncedHost = {
+  id: string; dom: HTMLElement; node: () => RichNode; position: () => number | undefined
+  editor: EditorView; documentId: string; scope: SyncedForestScope; alive: boolean
+}
 
 type DatabaseHost = {
   id: string; dom: HTMLElement; node: () => RichNode; position: () => number | undefined
@@ -134,7 +142,10 @@ export function DocumentRichTextEditor({ documentId, onChange, checkpoint, onUnd
   }), [documentId, lease])
   useLayoutEffect(() => { lease.alive = true; return () => { lease.alive = false } }, [lease])
   return <ForestRichTextEditor {...props} rootRef={root} binding={{ scope,
-    apply: blocks => { onChange(blocks); return true }, checkpoint, undo: onUndo, redo: onRedo }} />
+    apply: blocks => {
+      if (!canApplyCanonicalHostDraftChange(props.blocks, blocks)) return false
+      onChange(blocks); return true
+    }, checkpoint, undo: onUndo, redo: onRedo }} />
 }
 
 export function ForestRichTextEditor(input: ForestProps) {
@@ -152,6 +163,7 @@ export function ForestRichTextEditor(input: ForestProps) {
   const [columnHosts, setColumnHosts] = useState<Array<{ id: string; dom: HTMLElement; grid: HTMLElement; position: () => number | undefined }>>([])
   const [databaseHosts, setDatabaseHosts] = useState<DatabaseHost[]>([])
   const [mediaHosts, setMediaHosts] = useState<MediaHost[]>([])
+  const [syncedHosts, setSyncedHosts] = useState<SyncedHost[]>([])
   const databaseContext = useDatabaseEmbedContext(), databaseContextRef = useRef(databaseContext)
   databaseContextRef.current = databaseContext
   const pendingDatabaseFocus = useRef<{ editor: EditorView; doc: RichNode; id: string; documentId: string; session: object; permission: ColdBlockPopup } | null>(null)
@@ -365,7 +377,7 @@ export function ForestRichTextEditor(input: ForestProps) {
     let blocks = richDocToDraftBlocks(tr.doc)
     const selected = richTextSelectionBlockIds(EditorState.create({ doc: tr.doc, selection: tr.selection }))
       .filter(id => latest.current.visibleIndices.some(index => blocks[index]?.id === id))
-    if (selected.some(id => blocks.some(block => block.id === id && block.type === 'database-view'))) return
+    if (selected.some(id => blocks.some(block => block.id === id && (block.type === 'database-view' || block.type === 'synced-block')))) return
     if (selected.some(id => blocks.some(block => block.id === id && ['columns', 'column'].includes(block.type)))) {
       setMessage(latest.current.isZh ? '请通过分栏控件调整列结构。' : 'Use the column controls to change the column structure.')
       return
@@ -429,7 +441,7 @@ export function ForestRichTextEditor(input: ForestProps) {
 
   useLayoutEffect(() => {
     if (!mount.current) return
-    setMediaHosts([]); setTableHosts([]); setColumnHosts([]); setDatabaseHosts([])
+    setMediaHosts([]); setTableHosts([]); setColumnHosts([]); setDatabaseHosts([]); setSyncedHosts([])
     setMessage(''); setLinkUrl(null); setPalette(null); linkSelection.current = null
     setSlashIndex(0); setSlashDismissed(null)
     const identities = new Plugin({
@@ -625,11 +637,13 @@ export function ForestRichTextEditor(input: ForestProps) {
     })
     const insertFiles = async (files: File[], position?: number) => {
       if (importing.current) return
+      const finish = beginCanonicalInlineAsyncEdit(); if (!finish) return
       importing.current = true
       const doc = editor.state.doc, selected = editor.state.selection
       setMessage(latest.current.isZh ? '正在导入附件…' : 'Importing attachments…')
       try {
         const attachments = await importAttachmentFiles(files)
+        await waitForCanonicalInlineUnlock()
         if (viewRef.current !== editor || !latest.current.binding.scope.isCurrent()) return
         if (!editor.state.doc.eq(doc)) { setMessage(latest.current.isZh ? '正文已变化，请重新插入附件。' : 'The text changed. Insert the attachments again.'); return }
         const blocks = normalizeDraftBlocks(attachments.map(attachment => ({ id: createDraftBlockId(), type: 'paragraph', content: attachmentMarkdown(attachment), checked: false, depth: 0 })))
@@ -648,10 +662,10 @@ export function ForestRichTextEditor(input: ForestProps) {
           tr.replaceWith(0, tr.doc.content.size, treePaste.doc.content)
           tr.setSelection(Selection.fromJSON(tr.doc, treePaste.selection.toJSON()))
         } else tr.replaceSelection(new Slice(draftBlocksToRichDoc(blocks).content, 0, 0))
-        editor.dispatch(tr.scrollIntoView())
+        flushSync(() => editor.dispatch(tr.scrollIntoView()))
         setMessage('')
       } catch (error) { if (viewRef.current === editor) setMessage(error instanceof Error ? error.message : String(error)) }
-      finally { importing.current = false }
+      finally { finish(); importing.current = false }
     }
     const inlineRules = inputRules({ rules: ([
       [/\*\*([^*]+)\*\*$/, 'strong'], [/(?<![\\*])\*([^*]+)\*$/, 'em'], [/~~([^~]+)~~$/, 'strike'],
@@ -925,6 +939,46 @@ export function ForestRichTextEditor(input: ForestProps) {
           const dom = document.createElement('div')
           dom.className = 'rich-text-source-block block-editor-row'
           dom.contentEditable = 'false'
+          if (node.attrs.block?.type === 'synced-block') {
+            let current = node
+            const id = node.attrs.block.id as string, scope = latest.current.binding.scope
+            if (scope.owner.kind !== 'document' || typeof id !== 'string') {
+              dom.textContent = latest.current.isZh ? '同步块不能嵌套在同步正文中。' : 'Synced blocks cannot be nested inside synced content.'
+              return { dom, stopEvent: () => true, ignoreMutation: () => true,
+                update: next => next.type === current.type && next.attrs.block?.id === id
+                  && next.attrs.block?.type === 'synced-block' && next.attrs.block.content === current.attrs.block.content }
+            }
+            const host = document.createElement('div')
+            host.className = 'block-content-area'
+            host.dataset.editorIsland = 'synced-group'
+            host.contentEditable = 'false'
+            const descriptor: SyncedHost = { id, dom: host, node: () => current, position: getPos,
+              editor, documentId: latest.current.documentId, scope, alive: true }
+            const refresh = () => {
+              dom.dataset.blockId = id; dom.dataset.blockType = 'synced-block'
+              dom.dataset.blockDepth = String(current.attrs.block.depth)
+            }
+            refresh(); dom.append(host)
+            if (latest.current.onOpenBlockActions) dom.prepend(blockActionButton(id))
+            dom.addEventListener('contextmenu', event => {
+              if (event.target instanceof Node && host.contains(event.target) || !latest.current.onOpenBlockActions || editor.composing) return
+              event.preventDefault(); event.stopPropagation(); openContextBlockActions(id, event.clientX, event.clientY)
+            })
+            setSyncedHosts(previous => [...previous.filter(item => item.id !== id), descriptor])
+            return { dom,
+              stopEvent: event => event.target instanceof Node && host.contains(event.target)
+                || event.target instanceof Element && Boolean(event.target.closest('.rich-text-block-actions')) && blockActionStopsEvent(event),
+              ignoreMutation: record => host.contains(record.target) || record.type === 'attributes' && record.target === dom,
+              update(next) {
+                if (next.type !== current.type || next.attrs.block?.id !== id || next.attrs.block?.type !== 'synced-block'
+                  || next.attrs.block.content !== current.attrs.block.content) return false
+                current = next; refresh(); return true
+              }, destroy() {
+                descriptor.alive = false
+                if (viewRef.current) setSyncedHosts(previous => previous.filter(item => item !== descriptor))
+              }
+            }
+          }
           if (node.attrs.block?.type === 'table') {
             let current = node
             const host = document.createElement('div'), id = node.attrs.block.id as string
@@ -1123,13 +1177,15 @@ export function ForestRichTextEditor(input: ForestProps) {
     data-forest-owner={props.binding.scope.owner.kind}
     data-synced-instance-id={props.binding.scope.instanceId}
     onKeyDown={event => {
+    if (isIndependentEditorIsland(event.target) && event.target instanceof Element
+      && event.target.closest('[data-editor-island]') !== event.currentTarget) return
     if (palette && event.key === 'Escape' && !isImeKeyboardEvent(event) && !viewRef.current?.composing) {
       event.preventDefault(); event.stopPropagation(); setPalette(null); viewRef.current?.focus()
     }
   }}>
     {props.blocks.some(block => isContainerBlockType(block.type)) ? <Suspense fallback={null}><NativeContainerStyle /></Suspense> : null}
     <div className="rich-text-toolbar" role="toolbar" aria-label={props.isZh ? '正文格式' : 'Body formatting'}>
-      <label><span className="sr-only">{props.isZh ? '块类型' : 'Block type'}</span><select aria-label={props.isZh ? '块类型' : 'Block type'} disabled={Boolean(view && richTextSelectionBlockIds(view.state).some(id => props.blocks.some(block => block.id === id && block.type === 'database-view')))} value={types.includes(currentType) ? currentType : 'paragraph'}
+      <label><span className="sr-only">{props.isZh ? '块类型' : 'Block type'}</span><select aria-label={props.isZh ? '块类型' : 'Block type'} disabled={Boolean(view && richTextSelectionBlockIds(view.state).some(id => props.blocks.some(block => block.id === id && (block.type === 'database-view' || block.type === 'synced-block'))))} value={types.includes(currentType) ? currentType : 'paragraph'}
         onChange={event => convert(event.target.value)}>{types.map((type, index) => <option key={type} value={type}>{(props.isZh ? labelsZh : labelsEn)[index]}</option>)}</select></label>
       {([['strong', 'B', '加粗', 'Bold'], ['em', 'I', '斜体', 'Italic'], ['strike', 'S', '删除线', 'Strikethrough'],
         ['underline', 'U', '下划线', 'Underline'], ['highlight', '▧', '高亮', 'Highlight'], ['code', '</>', '行内代码', 'Inline code']] as const).map(([name, symbol, zh, en]) =>
@@ -1214,6 +1270,19 @@ export function ForestRichTextEditor(input: ForestProps) {
             return accepted?.attrs.block?.id === host.id && accepted.attrs.block.content === replaced
           }} />
       </MarkdownBlockNodesContext.Provider>, host.dom, syncedScopeDomKey(props.binding.scope, host.id, 'media'))
+    })}
+    {syncedHosts.map(host => {
+      const scope = props.binding.scope
+      if (!host.alive || host.editor !== viewRef.current || host.documentId !== props.documentId
+        || host.scope !== scope || scope.owner.kind !== 'document' || !scope.isCurrent()) return null
+      const position = host.position()
+      const node = position === undefined ? null : host.editor.state.doc.nodeAt(position)
+      const block = props.blocks.find(value => value.id === host.id && value.type === 'synced-block')
+      if (!node || node.type !== host.node().type || node.attrs.block?.id !== host.id || node.attrs.block?.type !== 'synced-block'
+        || !block || node.attrs.block.content !== block.content) return null
+      return createPortal(<Suspense fallback={<p role="status">{props.isZh ? '正在加载同步块…' : 'Loading synced block…'}</p>}>
+        <InlineSyncedBlock block={block} mode="edit" isZh={props.isZh} />
+      </Suspense>, host.dom, syncedScopeDomKey(scope, host.id, 'synced'))
     })}
     {databaseHosts.map(host => {
       if (!host.alive || host.editor !== viewRef.current || host.documentId !== props.documentId

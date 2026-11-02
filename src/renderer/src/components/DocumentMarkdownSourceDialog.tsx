@@ -20,6 +20,14 @@ export type MarkdownSourceDialogText = {
   title: string; hint: string; editorLabel: string; cancel: string; undo: string; redo: string; apply: string
   applying: string; importing: string; attachments: string; conflict: string; laterEdits: string; attachmentChanged: string
 }
+/** Local CM state only. A clean canonical queue cannot stand in for an
+ * unapplied Source draft. The owning shell unregisters a closed opening. */
+export interface MarkdownSourceLocalState {
+  dirty: boolean
+  composing: boolean
+  applying: boolean
+  importing: boolean
+}
 export type MarkdownSourceDialogProps<Draft extends { source: string }> = {
   sessionKey: object
   createDraft: () => Draft
@@ -28,6 +36,7 @@ export type MarkdownSourceDialogProps<Draft extends { source: string }> = {
   isCurrent: () => boolean
   getReturnFocus: () => HTMLElement | null
   onCompositionChange?: (composing: boolean) => void
+  onLocalStateChange?: (state: Readonly<MarkdownSourceLocalState>) => void
   isZh: boolean
   onClose: () => void
   text?: Partial<MarkdownSourceDialogText>
@@ -76,6 +85,18 @@ function MarkdownSourceDialogOpening<Draft extends { source: string }>(props: Ma
   const [error, setError] = useState('')
   const [isApplying, setIsApplying] = useState(false)
   const [importing, setImporting] = useState(false), importLock = useRef(false)
+  const acceptedSource = useRef(snapshot.draft.source)
+  const reportedLocalState = useRef<Readonly<MarkdownSourceLocalState> | null>(null)
+  const reportLocalState = () => {
+    if (!mounted.current) return
+    const state: Readonly<MarkdownSourceLocalState> = Object.freeze({ dirty: current.current.draft.source !== acceptedSource.current,
+      composing: composing.current, applying: applying.current !== null, importing: importLock.current })
+    const before = reportedLocalState.current
+    if (before && before.dirty === state.dirty && before.composing === state.composing
+      && before.applying === state.applying && before.importing === state.importing) return
+    reportedLocalState.current = state
+    live.current.onLocalStateChange?.(state)
+  }
   const labelId = useId(), hintId = useId()
   const text: MarkdownSourceDialogText = {
     title: isZh ? '编辑 Markdown 源码' : 'Edit Markdown source',
@@ -136,15 +157,24 @@ function MarkdownSourceDialogOpening<Draft extends { source: string }>(props: Ma
       if (canUse() && !view.hasFocus) view.focus()
     } catch (cause) { if (canUse()) setError(cause instanceof Error ? cause.message : String(cause)) }
   }
-  const close = () => { if (canUse() && !composing.current) live.current.onClose() }
+  // Explicit Cancel can discard a stale opening; staleness removes its write
+  // authority, never the user's ability to close it after preserving text.
+  const close = () => {
+    if (mounted.current && live.current.ownsOpening() && !composing.current && !applying.current && !importLock.current) live.current.onClose()
+  }
   const apply = async () => {
     if (composing.current || importLock.current || applying.current || !canUse()) return
     const submitted = current.current.draft, receipt = {}, opening = live.current
     applying.current = receipt; setIsApplying(true); setError('')
     try {
+      reportLocalState()
+      if (!canUse() || live.current.sessionKey !== opening.sessionKey) return
       const accepted = await opening.onApply(submitted)
       if (!canUse() || live.current.sessionKey !== opening.sessionKey) return
       if (accepted === true) {
+        acceptedSource.current = submitted.source
+        reportLocalState()
+        if (!canUse() || live.current.sessionKey !== opening.sessionKey) return
         if (current.current.draft === submitted && !composing.current && !importLock.current) opening.onClose()
         else setError(text.laterEdits)
       } else if (accepted === false) setError(text.conflict)
@@ -154,7 +184,7 @@ function MarkdownSourceDialogOpening<Draft extends { source: string }>(props: Ma
     } finally {
       if (applying.current === receipt) {
         applying.current = null
-        if (canUse()) setIsApplying(false)
+        if (mounted.current) { setIsApplying(false); reportLocalState() }
       }
     }
   }
@@ -165,6 +195,8 @@ function MarkdownSourceDialogOpening<Draft extends { source: string }>(props: Ma
     const draft = current.current.draft, selection = view.state.selection.main
     const from = position ?? selection.from, to = position ?? selection.to
     try {
+      reportLocalState()
+      if (editor.current !== view || !canUse()) return
       const attachments = await importAttachmentFiles(files)
       if (editor.current !== view || !canUse()) return
       if (current.current.draft !== draft) throw new Error(text.attachmentChanged)
@@ -172,7 +204,7 @@ function MarkdownSourceDialogOpening<Draft extends { source: string }>(props: Ma
       const changes = [{ from, to, insert }]
       view.dispatch({ changes, selection: { anchor: from + insert.length }, scrollIntoView: true, annotations: sourceCommand.of(true) })
     } catch (error) { if (editor.current === view && canUse()) setError(String(error)) }
-    finally { importLock.current = false; if (editor.current === view && canUse()) setImporting(false) }
+    finally { importLock.current = false; if (mounted.current) { setImporting(false); reportLocalState() } }
   }
   // The view lives for the dialog's lifetime; event handlers use current props
   // and callbacks without rebuilding its document or interrupting composition.
@@ -194,7 +226,7 @@ function MarkdownSourceDialogOpening<Draft extends { source: string }>(props: Ma
         changed ||= draft !== previous
         current.current = next
       }
-      if (changed) setSnapshot(current.current)
+      if (changed) { setSnapshot(current.current); reportLocalState() }
     },
     keydown: event => {
       if (isImeKeyboardEvent(event, composing.current)) { event.stopPropagation(); return false }
@@ -227,6 +259,7 @@ function MarkdownSourceDialogOpening<Draft extends { source: string }>(props: Ma
             compositionCallback.current = live.current.onCompositionChange
             composing.current = true; setIsComposing(true)
             history.current.lastInput = 0; compositionHistoryIndex.current = history.current.index
+            reportLocalState()
             compositionCallback.current?.(true)
             return false
           },
@@ -238,11 +271,13 @@ function MarkdownSourceDialogOpening<Draft extends { source: string }>(props: Ma
             // A real end belongs to the callback captured by that exact start,
             // even if parent callbacks changed while native IME was active.
             callback?.(false)
+            reportLocalState()
             return false
           }
         }))]
     }) })
     editor.current = view
+    reportLocalState()
     if (canUse()) view.focus()
     return () => {
       const active = document.activeElement
@@ -271,7 +306,7 @@ function MarkdownSourceDialogOpening<Draft extends { source: string }>(props: Ma
       if (!event.defaultPrevented && handlers.current.keydown(event.nativeEvent)) event.preventDefault()
     }} onCancel={event => { event.preventDefault(); close() }}>
     <header><h3 id={labelId}>{text.title}</h3>
-      <button type="button" className="secondary-button" disabled={isComposing} onClick={close}>{text.cancel}</button></header>
+      <button type="button" className="secondary-button" disabled={isComposing || importing || isApplying} onClick={close}>{text.cancel}</button></header>
     <p id={hintId}>{text.hint}</p>
     <MarkdownFormatToolbar isZh={isZh} onFormat={format} onReturnToEditor={() => { if (canUse()) editor.current?.focus() }} />
     <label className="markdown-source-attachments">{importing ? text.importing : text.attachments}

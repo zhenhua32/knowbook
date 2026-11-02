@@ -1,5 +1,7 @@
 import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
+import { assertCanonicalSearchSnapshotOwned, canonicalSearchOccurrencesSql, occurrenceFromCanonicalSearchRow,
+  registerCanonicalSearchFunctions, validateCanonicalSearchPageOwned, type CanonicalSearchOccurrenceRow } from './workspace-search-occurrences'
 import type {
   SaveWorkspaceSearchInput,
   SavedWorkspaceSearch,
@@ -24,17 +26,16 @@ interface NormalizedSearch extends WorkspaceSearchInput {
   pageSize: number
 }
 
-interface SearchRow {
-  document_id: string
-  document_title: string
-  document_path: string
-  updated_at: string
+type SearchRow = Omit<CanonicalSearchOccurrenceRow,'block_id'|'block_type'|'instance_id'> & {
   match_type: 'title' | 'block'
   block_id: string | null
   block_type: string | null
-  content: string
-  tags_json: string
+  instance_id: string | null
 }
+const occurrenceColumns=['workspace_scope','recovery_epoch','host_created_at','instance_id','instance_created_at','binding_version',
+  'parent_block_id','instance_depth','group_id','creation_id','group_created_at','revision','topology_revision','canonical_created_at'] as const
+const noOccurrence=occurrenceColumns.map(column=>'NULL AS '+column).join(',')
+const isCanonicalRow=(row:SearchRow):row is SearchRow&CanonicalSearchOccurrenceRow=>row.instance_id!==null
 
 type SqlParameters = Record<string, string | number>
 
@@ -146,12 +147,18 @@ export class WorkspaceSearchRepository {
   constructor(private readonly db: Database.Database) {}
 
   search(rawInput: WorkspaceSearchInput): WorkspaceSearchPage {
+    registerCanonicalSearchFunctions(this.db)
+    return this.db.transaction(()=>this.searchOwned(rawInput))()
+  }
+
+  private searchOwned(rawInput: WorkspaceSearchInput): WorkspaceSearchPage {
     const input = normalizeWorkspaceSearchInput(rawInput)
+    assertCanonicalSearchSnapshotOwned(this.db)
     const terms = queryTerms(input)
     const longTerms = terms.filter((term) => [...term].length >= 3)
     const shortTerms = terms.filter((term) => [...term].length < 3)
     const parameters: SqlParameters = { query: input.query, prefix: `${escapeLike(input.query)}%` }
-    const ctes: string[] = []
+    const ctes: string[] = [`canonical_occurrences AS NOT MATERIALIZED (${canonicalSearchOccurrencesSql})`]
     const documentFilters: string[] = []
     if (input.folderId) {
       parameters.folderId = input.folderId
@@ -171,11 +178,11 @@ export class WorkspaceSearchRepository {
       documentFilters.push('d.updated_at < :updatedTo')
     }
 
-    const blockFilters = (alias: string): string[] => {
+    const blockFilters = (alias: string, typeColumn='type'): string[] => {
       const filters: string[] = []
       if (input.blockType) {
         parameters.blockType = input.blockType
-        filters.push(`${alias}.type = :blockType`)
+        filters.push(`${alias}.${typeColumn} = :blockType`)
       }
       if (input.tag) {
         parameters.tag = input.tag
@@ -238,7 +245,9 @@ export class WorkspaceSearchRepository {
       if (filteredBlocks.length) {
         // A document must have ONE block satisfying both tag and type, rather
         // than satisfying the two conditions on unrelated blocks.
-        filters.push(`EXISTS (SELECT 1 FROM blocks fb WHERE fb.document_id = d.id AND ${filteredBlocks.join(' AND ')})`)
+        const canonicalFilters=blockFilters('fb','block_type')
+        filters.push(`(EXISTS (SELECT 1 FROM blocks fb WHERE fb.document_id = d.id AND fb.type<>'synced-block' AND ${filteredBlocks.join(' AND ')})
+          OR EXISTS(SELECT 1 FROM canonical_occurrences fb WHERE fb.document_id=d.id AND ${canonicalFilters.join(' AND ')}))`)
       }
       if (match.where) filters.push(`(${match.where})`)
       selects.push(`SELECT d.id AS document_id, d.title AS document_title, d.path AS document_path,
@@ -247,22 +256,38 @@ export class WorkspaceSearchRepository {
         (SELECT json_group_array(value) FROM (
           SELECT DISTINCT tag.value AS value FROM blocks tb, json_each(tb.tags_json) tag
           WHERE tb.document_id = d.id AND tag.type = 'text'
+          UNION SELECT DISTINCT tag.value AS value FROM canonical_occurrences tb,json_each(tb.tags_json) tag
+          WHERE tb.document_id=d.id AND tag.type='text'
           ORDER BY value COLLATE NOCASE, value
         )) AS tags_json,
         ${hasBlockFilter ? '1' : `CASE WHEN d.title = :query COLLATE NOCASE THEN 0 WHEN d.title LIKE :prefix ESCAPE '\\' THEN 1 ELSE 2 END`} AS priority,
-        ${match.score} AS score, -1 AS block_order
+        ${match.score} AS score, -1 AS block_order,-1 AS instance_order,${noOccurrence}
         FROM documents d ${match.join} ${filters.length ? `WHERE ${filters.join(' AND ')}` : ''}`)
     }
     if (input.scope !== 'documents') {
       const match = matches('block')
-      const filters = [...documentFilters, ...blockFilters('b')]
+      const filters = [...documentFilters, ...blockFilters('b'), "b.type<>'synced-block'"]
       if (match.where) filters.push(`(${match.where})`)
       selects.push(`SELECT d.id AS document_id, d.title AS document_title, d.path AS document_path,
         d.updated_at, 'block' AS match_type, b.id AS block_id, b.type AS block_type,
         b.content, b.tags_json, ${hasBlockFilter ? '0' : '3'} AS priority,
-        ${match.score} AS score, b.sort_order AS block_order
+        ${match.score} AS score, b.sort_order AS block_order,-1 AS instance_order,${noOccurrence}
         FROM blocks b JOIN documents d ON d.id = b.document_id ${match.join}
         ${filters.length ? `WHERE ${filters.join(' AND ')}` : ''}`)
+      const canonicalFilters=[...documentFilters,...blockFilters('o','block_type')]
+      const literal=shortTerms.map((term,index)=>{const key='canonicalShort'+index;parameters[key]='%'+escapeLike(term)+'%';return `c.content LIKE :${key} ESCAPE '\\'`})
+      if(longTerms.length){parameters.canonicalLongs=JSON.stringify(longTerms);literal.unshift(`knowbook_canonical_terms_v1(c.content,:canonicalLongs,${input.matchMode==='any'?1:0})=1`)}
+      parameters.canonicalTerms=JSON.stringify(terms)
+      // Keep only one id+small display snippet per canonical child before
+      // occurrence fan-out. No full body is materialized per host/instance.
+      ctes.push(`canonical_hits AS MATERIALIZED (SELECT c.id,knowbook_canonical_snippet_v1(c.content,:canonicalTerms) AS snippet
+        FROM synced_group_blocks c WHERE EXISTS(SELECT 1 FROM canonical_occurrences actual WHERE actual.block_id=c.id)
+        ${literal.length?'AND ('+literal.join(input.matchMode==='any'?' OR ':' AND ')+')':''})`)
+      selects.push(`SELECT o.document_id,o.document_title,o.document_path,o.updated_at,'block' AS match_type,o.block_id,o.block_type,
+        hit.snippet AS content,o.tags_json,${hasBlockFilter?'0':'3'} AS priority,0 AS score,o.block_order,o.instance_order,
+        ${occurrenceColumns.map(column=>'o.'+column).join(',')}
+        FROM canonical_occurrences o JOIN canonical_hits hit ON hit.id=o.block_id JOIN documents d ON d.id=o.document_id
+        ${canonicalFilters.length?'WHERE '+canonicalFilters.join(' AND '):''}`)
     }
     ctes.push(`results AS (${selects.join(' UNION ALL ')})`)
     const sql = `WITH RECURSIVE ${ctes.join(',\n')}`
@@ -273,28 +298,36 @@ export class WorkspaceSearchRepository {
     // Return the final remaining page so the UI never mistakes it for no hits.
     const page = Math.min(input.page, Math.max(1, Math.ceil(total / input.pageSize)))
     const rows = this.db.prepare(`${sql} SELECT * FROM results
-      ORDER BY ${order}, document_path COLLATE NOCASE, document_path, document_id, block_order, block_id
+      ORDER BY ${order}, document_path COLLATE NOCASE, document_path, document_id, instance_order,instance_id,block_order,block_id
       LIMIT :limit OFFSET :offset`).all({ ...parameters, limit: input.pageSize, offset: (page - 1) * input.pageSize }) as SearchRow[]
+    validateCanonicalSearchPageOwned(this.db,rows.filter(isCanonicalRow),{kind:'snippet',terms})
     const items: WorkspaceSearchResult[] = rows.map((row) => ({
       documentId: row.document_id,
       documentTitle: row.document_title,
       documentPath: row.document_path,
       matchType: row.match_type,
-      snippet: snippet(row.content, terms),
+      snippet: isCanonicalRow(row)?row.content:snippet(row.content, terms),
       updatedAt: row.updated_at,
       tags: safeTags(row.tags_json),
-      ...(row.block_id ? { blockId: row.block_id, blockType: row.block_type! } : {})
+      ...(row.block_id ? { blockId: row.block_id, blockType: row.block_type! } : {}),
+      ...(isCanonicalRow(row)?{canonicalOccurrence:occurrenceFromCanonicalSearchRow(row)}:{})
     }))
     return { items, total, page, pageSize: input.pageSize, queryTerms: terms }
   }
 
   facets(): WorkspaceSearchFacets {
+    return this.db.transaction(()=>{
+    assertCanonicalSearchSnapshotOwned(this.db)
     const tags = this.db.prepare(`SELECT DISTINCT tag.value AS value
       FROM blocks b JOIN documents d ON d.id = b.document_id, json_each(b.tags_json) tag
-      WHERE tag.type = 'text' ORDER BY value COLLATE NOCASE, value`).all() as Array<{ value: string }>
+      WHERE tag.type = 'text' AND b.type<>'synced-block'
+      UNION SELECT DISTINCT tag.value AS value FROM (${canonicalSearchOccurrencesSql}) c,json_each(c.tags_json) tag
+      WHERE tag.type='text' ORDER BY value COLLATE NOCASE, value`).all() as Array<{ value: string }>
     const types = this.db.prepare(`SELECT DISTINCT b.type AS value FROM blocks b
-      JOIN documents d ON d.id = b.document_id ORDER BY value COLLATE NOCASE, value`).all() as Array<{ value: string }>
+      JOIN documents d ON d.id = b.document_id WHERE b.type<>'synced-block'
+      UNION SELECT DISTINCT block_type AS value FROM (${canonicalSearchOccurrencesSql}) ORDER BY value COLLATE NOCASE, value`).all() as Array<{ value: string }>
     return { tags: tags.map((row) => row.value), blockTypes: types.map((row) => row.value) }
+    })()
   }
 
   listSaved(): SavedWorkspaceSearch[] {

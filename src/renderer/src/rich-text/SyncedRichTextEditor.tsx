@@ -1,3 +1,4 @@
+import { canonicalInlineInputLocked } from '../features/synced-blocks/inlineBridge'
 import { useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { ForestRichTextEditor, type ForestRichTextBinding, type ForestRichTextViewProps } from './ForestRichTextEditor'
 import type { SyncedGroupBinding, SyncedScopeBookmark } from '../features/synced-blocks/types'
@@ -49,7 +50,7 @@ export function SyncedRichTextEditor({ binding, visibleIndices, ...props }: Prop
     setRestore(null)
   }, [restore, state, binding])
   const history = async (direction: 'undo' | 'redo') => {
-    if (!binding.isCurrent()) return
+    if (canonicalInlineInputLocked() || !binding.isCurrent()) return
     pendingRestore.current?.permission.dispose()
     const permission = captureAsyncHistoryFocusPermission()
     try {
@@ -66,7 +67,7 @@ export function SyncedRichTextEditor({ binding, visibleIndices, ...props }: Prop
   const forestBinding: ForestRichTextBinding = {
     scope: binding.scope,
     apply: (blocks, selection) => {
-      if (!binding.isCurrent() || latest.current.binding !== binding) return false
+      if (canonicalInlineInputLocked() || !binding.isCurrent() || latest.current.binding !== binding) return false
       const current = binding.getCurrent()
       // A subscription can arrive before React mirrors it into this PM view.
       // Never replace that newer shared working forest with this view's old base.

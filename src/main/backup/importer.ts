@@ -1,5 +1,5 @@
 import { copyFile, lstat, mkdir, mkdtemp, readdir, realpath, rename, rm, stat } from 'node:fs/promises'
-import { readFileSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { basename, dirname, extname, join, relative, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -367,6 +367,19 @@ export class MarkdownRestoreService {
   }
 
   private async prepareRestoreSources(root: string, collectAssets: boolean): Promise<PreparedRestoreSources> {
+    // Before collecting/copying any attachment, reject both a V3 source and a
+    // current canonical workspace. The legacy restorer cannot install groups,
+    // their identities, or typed bindings, even when the archive has no refs.
+    this.store.assertLegacyWorkspaceTransferAllowed()
+    if (existsSync(join(root, '__knowbook', 'synced'))) throw new Error('这是完整 V3 同步块备份。当前旧 Markdown 恢复入口不能无损安装 V3；备份和当前工作区均未修改。')
+    const reservedIndex = join(root, '__knowbook', 'databases', 'index.md')
+    if (existsSync(reservedIndex)) {
+      const indexInfo = lstatSync(reservedIndex)
+      if (!indexInfo.isFile() || indexInfo.isSymbolicLink() || indexInfo.size > 5 * 1024 * 1024) throw new Error('备份保留索引不是有效普通文件；未开始恢复。')
+      const index = this.readMarkdownFileStrictUtf8(reservedIndex)
+      if (/^backupFormatVersion:\s*(?:"3"|'3'|3)\s*$/m.test(index) || /^(?:syncedGroups|syncedInstances|syncedMissingReferences):/m.test(index))
+        throw new Error('这是完整 V3 备份。V3 恢复入口尚待实现，不能降级为旧 Markdown 恢复；原数据未修改。')
+    }
     const wikiAssets = new Map<string, string[]>()
     const markdownFiles = await this.collectMarkdownFiles(root, wikiAssets)
     const budget: RestoreReadBudget = {

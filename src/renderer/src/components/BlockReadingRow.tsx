@@ -13,6 +13,7 @@ import { nativeContainerPresentation } from '../utils/nativeContainerPresentatio
 
 const NativeContainerStyle = lazy(() => import('./NativeContainerStyle'))
 const InlineDatabaseView = lazy(() => import('../features/database/InlineDatabaseView'))
+const InlineSyncedBlock = lazy(() => import('../features/synced-blocks/InlineSyncedBlock'))
 
 const CodePreview = lazy(async () => {
   const [module] = await Promise.all([import('./CodeBlockPreview'), import('highlight.js/styles/github-dark.css')])
@@ -44,10 +45,13 @@ export const BlockReadingRow = memo(function BlockReadingRow({
   const nodes = useContext(MarkdownBlockNodesContext)
   const nativeContainer = isContainerBlockType(block.type) ? nativeContainerPresentation(block.type, block.markdownFormat) : null
   const advanced = Boolean(nodes && hasAdvancedMarkdown(nodes))
-  const structured = ['code', 'math', 'table', 'divider', 'frontmatter', 'database-view'].includes(block.type)
+  const structured = ['code', 'math', 'table', 'divider', 'frontmatter', 'database-view', 'synced-block'].includes(block.type)
   const isMermaid = block.type === 'code' && /^mermaid(?:\s|$)/i.test((block.markdownFormat?.codeInfo ?? block.language ?? '').trim())
   let content: ReactNode
-  if (block.type === 'database-view' && block.id) content = <Suspense fallback={<p role="status">{isZh ? '正在加载数据库视图…' : 'Loading database view…'}</p>}>
+  if (block.type === 'synced-block') content = <Suspense fallback={<p role="status">{isZh ? '正在加载同步块…' : 'Loading synced block…'}</p>}>
+    <InlineSyncedBlock block={block} mode="reading" isZh={isZh} ui={ui} />
+  </Suspense>
+  else if (block.type === 'database-view' && block.id) content = <Suspense fallback={<p role="status">{isZh ? '正在加载数据库视图…' : 'Loading database view…'}</p>}>
     <InlineDatabaseView blockId={block.id} content={block.content} mode="reading" />
   </Suspense>
   else if (block.type === 'divider') content = <hr />

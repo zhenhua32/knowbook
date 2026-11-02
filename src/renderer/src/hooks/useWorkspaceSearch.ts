@@ -72,11 +72,16 @@ export function useWorkspaceSearch({ isActive, isZh, request }: {
   const refreshFacets = () => setFacetRefresh((value) => value + 1)
   const refreshSaved = () => setSavedRefresh((value) => value + 1)
 
-  useEffect(() => window.knowbook.onWorkspaceMutated(() => {
-    searchSequence.current++; facetSequence.current++
-    requestToken.current++
-    setRefresh((value) => value + 1); setFacetRefresh((value) => value + 1)
-  }), [])
+  useEffect(() => {
+    const invalidate=()=>{
+      searchSequence.current++; facetSequence.current++
+      requestToken.current++
+      setRefresh((value) => value + 1); setFacetRefresh((value) => value + 1)
+    }
+    const stopWorkspace=window.knowbook.onWorkspaceMutated(invalidate)
+    const stopSynced=window.knowbook.onSyncedBlocksChanged?.(invalidate)
+    return()=>{stopWorkspace();stopSynced?.()}
+  }, [])
 
   useEffect(() => {
     const sequence = ++searchSequence.current

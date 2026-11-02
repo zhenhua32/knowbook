@@ -10,6 +10,7 @@ import { lazyWithRetry } from './utils/lazyWithRetry'
 import { PluginUiPreparationHost } from './components/PluginUiPreparationHost'
 import { useDocumentCapture } from './hooks/useDocumentCapture'
 
+const CanonicalInlineShell = lazyWithRetry(() => import('./features/synced-blocks/CanonicalInlineShell'))
 const AppPageContent = lazyWithRetry(async () => ({ default: (await import('./components/AppPageContent')).AppPageContent }))
 const GlobalSearchPalette = lazyWithRetry(() => import('./components/GlobalSearchPalette'))
 const DocumentCaptureHost = lazyWithRetry(() => import('./components/DocumentCaptureHost'))
@@ -54,6 +55,8 @@ export function App() {
   return (
     <>
       <PluginUiPreparationHost />
+      <Suspense fallback={null}><CanonicalInlineShell documents={documentsDomain} isZh={shell.isZh} notify={shell.notify}
+        workspaceReady={shell.workspaceReady} initialDocumentId={shell.homeData.initialDocumentId} isDocumentsPage={shell.activePage === 'documents'} /></Suspense>
       {documentCapture.capture && <ErrorBoundary onNavigate={documentCapture.closeCapture} navigateLabel={shell.isZh ? '关闭' : 'Close'}>
         <Suspense fallback={null}>
           <DocumentCaptureHost state={documentCapture} documents={documentsDomain} shell={shell} />

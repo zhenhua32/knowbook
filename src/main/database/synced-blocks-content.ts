@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { assertSyncedEditingFenceOwned } from './synced-editing-fence'
 import type Database from 'better-sqlite3'
 import { decodeSyncedOperationAck, type SyncedMainOperationResult } from './synced-host-operation-receipt'
 import type { SyncedCanonicalEdit, SyncedCanonicalWire, SyncedFailure, SyncedGroupMutationResult, SyncedGroupSaved,
@@ -33,7 +34,7 @@ function ownedTransaction<T>(db: Database.Database, run: () => T, write: boolean
   // call this outside its own transaction and publish events only after return.
   if (db.inTransaction) throw new Error('同步块内容仓库必须独占事务，不能在外层事务中提交。')
   if (write && db.pragma('foreign_keys', { simple: true }) !== 1) throw new Error('同步块内容写入必须启用 SQLite 外键。')
-  const transaction = db.transaction(run)
+  const transaction = db.transaction(()=>{assertSyncedEditingFenceOwned(db);return run()})
   return write ? transaction.immediate() : transaction()
 }
 function mutation(db: Database.Database, run: () => SyncedGroupSaved): SyncedGroupMutationResult {

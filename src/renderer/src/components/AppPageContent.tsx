@@ -104,7 +104,13 @@ export function AppPageContent({
         <Suspense fallback={<p className="muted">{shell.ui.common.loading}</p>}>
           <SearchPage isActive={shell.activePage === 'search'} isZh={shell.isZh} documentTree={shell.homeData.documentTree}
             request={shell.searchRequest} onOpenDocument={documents.openDocumentInDocumentsPage}
-            onOpenBlock={documents.openDocumentBlockInDocumentsPage} />
+            onOpenBlock={documents.openDocumentBlockInDocumentsPage}
+            onOpenCanonical={async (occurrence, current) => {
+              const { getCanonicalInlineRuntime } = await import('../features/synced-blocks/inlineRuntime')
+              const continuation = current ?? (() => true)
+              if (!continuation()) return false
+              return getCanonicalInlineRuntime().openSearch(occurrence, continuation)
+            }} />
         </Suspense>
         </ErrorBoundary>
       </div>}

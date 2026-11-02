@@ -1,9 +1,46 @@
 import type { AppMessageHandler } from '../notify'
-import { confirmAction } from '../confirmAction'
+import type { AiStateActionContext, AiStateActionRequest } from './aiStateActions'
 import { useCallback, useLayoutEffect, useRef, useState, type SetStateAction } from 'react'
 import type { AiConfig, DocumentDetail, HomeData, SemanticSearchResult } from '@shared/contracts'
 import type { UiText } from '../i18n'
 import { getErrorMessage } from '../utils/errorMessage'
+
+
+type DeferredAiActions = typeof import('./aiStateActions')
+const loadAiActions = () => import('./aiStateActions')
+async function runDeferredAiAction(
+  context: AiStateActionContext, request: AiStateActionRequest,
+  loadActions: () => Promise<DeferredAiActions>
+): Promise<void> {
+  let began = false
+  try {
+    const actions = await loadActions()
+    if (!request.isCurrentRequest()) return
+    began = true
+    await actions.completeAiAction(context, request)
+  } catch (error) {
+    if (began) throw error
+    if (!request.isCurrentRequest()) return
+    const fallback = request.kind === 'save' ? context.settingsUiRef.current.aiSettingsSaveFailed
+      : request.kind === 'related' ? context.ui.semanticSearchFailed
+      : request.kind === 'automation' ? context.ui.aiAutomationFailed : context.ui.aiRequestFailed
+    const message = getErrorMessage(error, fallback)
+    if (request.kind === 'save') context.setAiSaveError(message)
+    if (request.kind === 'related') { context.setAiContextResults([]); context.setAiContextError(message); context.setAiContextHasSearched(true) }
+    if (request.kind === 'ask') { context.setAiAnswerError(message); context.setAiFailedPrompt(request.requestedPrompt) }
+    if (request.kind === 'save' || request.kind === 'clear' || request.kind === 'automation') context.onMessage(message, 'error')
+  } finally {
+    if (!began) {
+      if (request.isCurrentRequest()) {
+        if (request.kind === 'save' || request.kind === 'clear') context.settingsLockedRef.current = false
+        if (request.kind === 'save') context.setAiSaving(false)
+        if (request.kind === 'related') context.setAiContextSearching(false)
+        if (request.kind === 'ask') context.setAiAsking(false)
+      }
+      if (request.kind === 'automation') context.setAiAutomationsRunning(false)
+    }
+  }
+}
 
 type UseAiStateParams = {
   aiConfig: AiConfig
@@ -42,7 +79,7 @@ export function useAiState({
   onSelectedDocumentChange,
   onDraftSummaryChange,
   onMessage
-}: UseAiStateParams) {
+}: UseAiStateParams, loadActions: () => Promise<DeferredAiActions> = loadAiActions) {
   const [settingsDraft, setSettingsDraft] = useState(() => createAiSettingsDraft(aiConfig))
   const [savedSettings, setSavedSettings] = useState(() => createAiSettingsDraft(aiConfig))
   const settingsDraftRef = useRef(settingsDraft)
@@ -73,6 +110,7 @@ export function useAiState({
   const [aiContextError, setAiContextError] = useState('')
   const [aiContextHasSearched, setAiContextHasSearched] = useState(false)
   const selectedDocumentIdRef = useRef(selectedDocumentId)
+  const aiDocumentSessionRef = useRef(0)
   const aiAnswerRequestIdRef = useRef(0)
   const aiContextRequestIdRef = useRef(0)
 
@@ -152,6 +190,7 @@ export function useAiState({
 
   useLayoutEffect(() => {
     selectedDocumentIdRef.current = selectedDocumentId
+    aiDocumentSessionRef.current += 1
     resetAiSession()
 
     return () => {
@@ -159,6 +198,10 @@ export function useAiState({
       aiContextRequestIdRef.current += 1
     }
   }, [resetAiSession, selectedDocumentId])
+
+  // Each original callback captures this same render closure and its original
+  // request/session refs; no latest render can replace a queued operation.
+  const createActionContext = (): AiStateActionContext => ({ settingsDraftRef, savedConfigRef, settingsUiRef, settingsLockedRef, selectedDocumentIdRef, applyAiConfig, onAiConfigChange, onMessage, onHomeDataChange, onSelectedDocumentChange, onDraftSummaryChange, setAiSaveError, setAiSaving, setAiClearingApiKey, setAiContextResults, setAiContextHasSearched, setAiContextError, setAiContextSearching, setAiAnswer, setAiAnsweredPrompt, setAiAnswerError, setAiFailedPrompt, setAiAsking, setAiAutomationsRunning, ui })
 
   const saveAiConfig = useCallback(async () => {
     if (!settingsMountedRef.current || settingsLockedRef.current) return
@@ -169,64 +212,17 @@ export function useAiState({
     setAiSaving(true)
     setAiSaveError('')
 
-    try {
-      const savedConfig = await window.knowbook.updateAiConfig({ ...settingsDraftRef.current })
-      if (isCurrentRequest()) {
-        applyAiConfig(savedConfig, 'save')
-        onAiConfigChange(savedConfig)
-        onMessage(ui.aiSettingsSaved)
-      }
-    } catch (error) {
-      if (isCurrentRequest()) {
-        const message = getErrorMessage(error, settingsUiRef.current.aiSettingsSaveFailed)
-        setAiSaveError(message)
-        onMessage(message, 'error')
-      }
-    } finally {
-      if (isCurrentRequest()) {
-        settingsLockedRef.current = false
-        setAiSaving(false)
-      }
-    }
-  }, [applyAiConfig, onAiConfigChange, onMessage, ui])
+    const submittedDraft = { ...settingsDraftRef.current }
+    await runDeferredAiAction(createActionContext(), { kind: 'save', isCurrentRequest, submittedDraft }, loadActions)
+  }, [applyAiConfig, onAiConfigChange, onMessage, ui, loadActions])
 
   const clearAiApiKey = useCallback(async () => {
     if (!settingsMountedRef.current || settingsLockedRef.current) return
     settingsLockedRef.current = true
     const requestId = ++settingsRequestIdRef.current
     const isCurrentRequest = () => settingsMountedRef.current && settingsRequestIdRef.current === requestId
-    try {
-      await confirmAction({ title: ui.clearAiApiKey, description: ui.confirmClearAiApiKey,
-        note: ui.language === 'zh-CN' ? '仅清除已保存的 API Key，其他未保存的修改会保留。清除后，AI 请求需要重新配置 API Key。' : 'Only the saved API key will be cleared. Other unsaved changes will be kept. AI requests will require a new API key.',
-        onConfirm: async () => {
-          if (!isCurrentRequest()) return
-          setAiSaveError('')
-          setAiSaving(true)
-          setAiClearingApiKey(true)
-          try {
-            const { hasApiKey: _hasApiKey, ...savedSettings } = savedConfigRef.current
-            const savedConfig = await window.knowbook.updateAiConfig({ ...savedSettings, clearApiKey: true })
-            if (isCurrentRequest()) {
-              applyAiConfig(savedConfig, 'clear')
-              onAiConfigChange(savedConfig)
-              onMessage(ui.aiApiKeyCleared)
-            }
-          } catch (error) {
-            if (isCurrentRequest()) throw error
-          } finally {
-            if (isCurrentRequest()) {
-              setAiSaving(false)
-              setAiClearingApiKey(false)
-            }
-          }
-        }
-      })
-    } catch (error) {
-      if (isCurrentRequest()) onMessage(getErrorMessage(error, ui.aiRequestFailed), 'error')
-    } finally {
-      if (isCurrentRequest()) settingsLockedRef.current = false
-    }
-  }, [applyAiConfig, onAiConfigChange, onMessage, ui])
+    await runDeferredAiAction(createActionContext(), { kind: 'clear', isCurrentRequest }, loadActions)
+  }, [applyAiConfig, onAiConfigChange, onMessage, ui, loadActions])
 
   const findRelatedNotesForPrompt = useCallback(async () => {
     const requestedDocumentId = selectedDocumentId
@@ -241,29 +237,9 @@ export function useAiState({
     setAiContextSearching(true)
     setAiContextError('')
 
-    try {
-      const results = await window.knowbook.searchSemanticNotes({
-        query: aiPromptDraft.trim(),
-        excludeDocumentId: requestedDocumentId,
-        limit: 4
-      })
-      if (isCurrentRequest()) {
-        setAiContextResults(results)
-        setAiContextHasSearched(true)
-      }
-    } catch (error) {
-      if (isCurrentRequest()) {
-        const message = getErrorMessage(error, ui.semanticSearchFailed)
-        setAiContextResults([])
-        setAiContextError(message)
-        setAiContextHasSearched(true)
-      }
-    } finally {
-      if (isCurrentRequest()) {
-        setAiContextSearching(false)
-      }
-    }
-  }, [aiPromptDraft, selectedDocumentId, ui])
+    const requestedPrompt = aiPromptDraft.trim()
+    await runDeferredAiAction(createActionContext(), { kind: 'related', isCurrentRequest, requestedDocumentId, requestedPrompt }, loadActions)
+  }, [aiPromptDraft, selectedDocumentId, ui, loadActions])
 
   const askAiWithPrompt = useCallback(async (prompt: string) => {
     const requestedDocumentId = selectedDocumentId
@@ -289,27 +265,8 @@ export function useAiState({
     setAiContextSearching(false)
     setAiContextHasSearched(false)
 
-    try {
-      const result = await window.knowbook.askAiAboutDocument({
-        documentId: requestedDocumentId,
-        prompt: requestedPrompt
-      })
-      if (isCurrentRequest()) {
-        setAiAnswer(result.answer)
-        setAiAnsweredPrompt(requestedPrompt)
-      }
-    } catch (error) {
-      if (isCurrentRequest()) {
-        const message = getErrorMessage(error, ui.aiRequestFailed)
-        setAiAnswerError(message)
-        setAiFailedPrompt(requestedPrompt)
-      }
-    } finally {
-      if (isCurrentRequest()) {
-        setAiAsking(false)
-      }
-    }
-  }, [aiConfig.enabled, aiConfig.hasApiKey, selectedDocumentId, ui])
+    await runDeferredAiAction(createActionContext(), { kind: 'ask', isCurrentRequest, requestedDocumentId, requestedPrompt }, loadActions)
+  }, [aiConfig.enabled, aiConfig.hasApiKey, selectedDocumentId, ui, loadActions])
 
   const askAiOnSelectedDocument = useCallback(() => askAiWithPrompt(aiPromptDraft), [aiPromptDraft, askAiWithPrompt])
   const retryFailedAiRequest = useCallback(() => askAiWithPrompt(aiFailedPrompt), [aiFailedPrompt, askAiWithPrompt])
@@ -322,27 +279,10 @@ export function useAiState({
 
     setAiAutomationsRunning(true)
 
-    try {
-      const result = await window.knowbook.runDocumentAiAutomations(requestedDocumentId)
-      const [refreshedHome, refreshedDetail] = await Promise.all([
-        window.knowbook.getHomeData(),
-        window.knowbook.getDocumentDetail(requestedDocumentId)
-      ])
-
-      onHomeDataChange(refreshedHome)
-
-      if (selectedDocumentIdRef.current === requestedDocumentId) {
-        onSelectedDocumentChange(refreshedDetail)
-        onDraftSummaryChange(refreshedDetail?.summary ?? '')
-      }
-      onMessage(ui.aiAutomationResult(result))
-    } catch (error) {
-      const message = getErrorMessage(error, ui.aiAutomationFailed)
-      onMessage(message, 'error')
-    } finally {
-      setAiAutomationsRunning(false)
-    }
-  }, [onDraftSummaryChange, onHomeDataChange, onMessage, onSelectedDocumentChange, selectedDocumentId, ui])
+    const requestedSession = aiDocumentSessionRef.current
+    const isCurrentRequest = () => settingsMountedRef.current && aiDocumentSessionRef.current === requestedSession && selectedDocumentIdRef.current === requestedDocumentId
+    await runDeferredAiAction(createActionContext(), { kind: 'automation', isCurrentRequest, requestedDocumentId }, loadActions)
+  }, [onDraftSummaryChange, onHomeDataChange, onMessage, onSelectedDocumentChange, selectedDocumentId, ui, loadActions])
 
   return {
     aiEnabledDraft,

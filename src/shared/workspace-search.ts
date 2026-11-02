@@ -1,4 +1,5 @@
 import type { GlobalSearchResult } from './contracts'
+import type { WorkspaceSearchOccurrence } from './workspace-search-occurrence'
 
 export type WorkspaceSearchScope = 'all' | 'documents' | 'blocks'
 export type WorkspaceSearchMatchMode = 'all' | 'any' | 'phrase'
@@ -21,6 +22,7 @@ export interface WorkspaceSearchInput {
 export interface WorkspaceSearchResult extends GlobalSearchResult {
   updatedAt: string
   tags: string[]
+  canonicalOccurrence?: WorkspaceSearchOccurrence
 }
 
 export interface WorkspaceSearchPage {

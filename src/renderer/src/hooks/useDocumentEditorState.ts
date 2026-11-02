@@ -9,15 +9,19 @@ import { buildDraftMarkdownExport } from '../utils/documentMarkdown'
 import { normalizeDraftBlocks, validateBlockTreeStructure } from '../utils/draftTreeNormalization'
 import { prepareDraftBlockTypeChange } from '../utils/draftTreeTextEditing'
 import { getErrorMessage } from '../utils/errorMessage'
-import { applyIncrementalDocumentUpdate } from '../utils/homeDataDocumentUpdate'
 import { captureAsyncHistoryFocusPermission, captureEditorHistoryBookmark, restoreEditorHistoryBookmark, type EditorHistoryBookmark } from '../utils/editorHistoryFocus'
 import { isIndependentEditorIsland } from '../utils/editorIsland'
+import type { SyncedStructureApplied } from '@shared/synced-blocks'
+import type { SyncedHostSourceCurrent } from '../features/synced-blocks/SyncedHostSourceDialog'
+import { canonicalInlineInputLocked, canApplyCanonicalHostDraftChange, flushCanonicalInlinePendingChanges, hasCanonicalHostSavePending } from '../features/synced-blocks/inlineBridge'
 import {
   areDocumentDraftBlocksEqual,
   normalizeComparableDocumentTitle
 } from '../utils/documentDraftComparison'
 
 type DraftBlockUpdater = DocumentBlockDraft[] | ((previous: DocumentBlockDraft[]) => DocumentBlockDraft[])
+type DraftWriterModule = Pick<typeof import('../utils/documentDraftWriter'), 'completeDocumentDraftWrite'>
+const loadDocumentDraftWriter = (): Promise<DraftWriterModule> => import('../utils/documentDraftWriter')
 type MoveTransition = { operationId: string; versions: Record<string, string> }
 type EditSnapshot = { blocks: DocumentBlockDraft[]; bookmark: EditorHistoryBookmark | null; move?: MoveTransition }
 export type DocumentBlockActionTarget = Readonly<{
@@ -67,7 +71,7 @@ export function useDocumentEditorState({
   onSelectedDocumentChange,
   onRevealHistoryBlock,
   onMessage
-}: UseDocumentEditorStateParams) {
+}: UseDocumentEditorStateParams, loadWriter: () => Promise<DraftWriterModule> = loadDocumentDraftWriter) {
   const [isEditing, setIsEditing] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
   const [isBlockMoveBusy, setIsBlockMoveBusy] = useState(false)
@@ -98,6 +102,8 @@ export function useDocumentEditorState({
   const selectedDocumentRef = useRef(selectedDocument)
   const renderedDocumentRef = useRef(selectedDocument)
   const editorSessionRef = useRef(0)
+  const syncedHostSessionRef = useRef<object>({})
+  const syncedHostSequenceRef = useRef({ raw: '', sequence: 0 })
   const composingDraftRef = useRef(false)
   const pendingSaveRef = useRef<{ documentId: string; session: number; promise: Promise<boolean> } | null>(null)
   const pendingRenameRef = useRef<{ target: DocumentRenameTarget; title: string; promise: Promise<RenameTitleResult> } | null>(null)
@@ -211,6 +217,7 @@ export function useDocumentEditorState({
     setDraftBlocksState((previous) => {
       if (blockMoveBusyRef.current) return previous
       const resolved = typeof next === 'function' ? next(previous) : next
+      if (!canApplyCanonicalHostDraftChange(previous, resolved)) return previous
       return normalizeDraftBlocks(resolved)
     })
   }, [])
@@ -238,6 +245,7 @@ export function useDocumentEditorState({
         || ('parentBlockId' in patch && patch.parentBlockId !== currentBlock.parentBlockId)
       )
 
+      if (!canApplyCanonicalHostDraftChange(previous, nextBlocks)) return previous
       return changesTreeShape ? normalizeDraftBlocks(nextBlocks) : nextBlocks
     })
   }, [])
@@ -253,6 +261,8 @@ export function useDocumentEditorState({
   const resetEditorFromDocument = useCallback((detail: DocumentDetail | null, editing = Boolean(detail)) => {
     const initialBlocks = normalizeDraftBlocks(detail?.blocks.map(toDraftBlock) ?? [])
     editorSessionRef.current += 1
+    syncedHostSessionRef.current = Object.freeze({})
+    syncedHostSequenceRef.current = { raw: '', sequence: 0 }
     selectedDocumentRef.current = detail
     composingDraftRef.current = false
 
@@ -418,6 +428,9 @@ export function useDocumentEditorState({
 
   const undoEdit = useCallback(async () => {
     if (blockMoveBusyRef.current) return
+    const session = editorSessionRef.current, raw = JSON.stringify(draftBlocksRef.current)
+    if (canonicalInlineInputLocked() || !await flushCanonicalInlinePendingChanges()
+      || session !== editorSessionRef.current || raw !== JSON.stringify(draftBlocksRef.current)) return
     if (historyDebounceTimerRef.current) {
       clearTimeout(historyDebounceTimerRef.current)
       historyDebounceTimerRef.current = null
@@ -447,6 +460,9 @@ export function useDocumentEditorState({
 
   const redoEdit = useCallback(async () => {
     if (blockMoveBusyRef.current) return
+    const session = editorSessionRef.current, raw = JSON.stringify(draftBlocksRef.current)
+    if (canonicalInlineInputLocked() || !await flushCanonicalInlinePendingChanges()
+      || session !== editorSessionRef.current || raw !== JSON.stringify(draftBlocksRef.current)) return
     // A new edit must retire the old redo branch even before the debounce ends.
     if (historyDebounceTimerRef.current) {
       clearTimeout(historyDebounceTimerRef.current)
@@ -480,6 +496,15 @@ export function useDocumentEditorState({
     }, 0)
   }, [commitHistorySnapshot, setDraftBlocks])
 
+  const getSyncedHostEditorState = useCallback((): SyncedHostSourceCurrent | null => {
+    const documentId = selectedDocumentIdRef.current, detail = selectedDocumentRef.current, blocks = draftBlocksRef.current
+    if (!mountedRef.current || !documentId || detail?.id !== documentId || blocks.some(block => typeof block.id !== 'string' || !block.id)) return null
+    const raw = JSON.stringify([draftTitleRef.current, draftSummaryRef.current, blocks]), sequence = syncedHostSequenceRef.current
+    if (sequence.raw !== raw) { sequence.raw = raw; sequence.sequence++ }
+    return { hostSession: syncedHostSessionRef.current, editSequence: sequence.sequence, host: { documentId,
+      expectedPersistedUpdatedAt: detail.updatedAt, workingBefore: { title: draftTitleRef.current, summary: draftSummaryRef.current,
+        blocks: blocks.map(block => ({ ...block, id: block.id!, parentBlockId: block.parentBlockId ?? null })) } } }
+  }, [])
   const persistDraft = useCallback(async (silentValidationFailure = false, flushLatest = false, intent?: TitleIntent): Promise<boolean> => {
     const documentId = selectedDocumentIdRef.current
     const session = editorSessionRef.current
@@ -487,6 +512,7 @@ export function useDocumentEditorState({
       && editorSessionRef.current === session
     if (!documentId || !isCurrentSession()
       || (intent && (intent.target.documentId !== documentId || intent.target.session !== session))) return false
+    if (!await flushCanonicalInlinePendingChanges({ shouldContinue: isCurrentSession }) || !isCurrentSession()) return false
 
     do {
       // Autosave, Save, and navigation share one writer. A waiter checks the
@@ -510,7 +536,7 @@ export function useDocumentEditorState({
       const hasChanges = normalizeComparableDocumentTitle(title) !== normalizeComparableDocumentTitle(detail.title)
         || summary.trim() !== detail.summary.trim()
         || !areDocumentDraftBlocksEqual(normalizedBlocks, normalizeDraftBlocks(detail.blocks.map(toDraftBlock)))
-      if (!hasChanges) {
+      if (!hasChanges && !hasCanonicalHostSavePending()) {
         if (intent && draftTitleRef.current === baseTitle) {
           draftTitleRef.current = detail.title
           setDraftTitle(detail.title)
@@ -536,50 +562,13 @@ export function useDocumentEditorState({
       setFailedSave(null)
       const promise = (async (): Promise<boolean> => {
         try {
-          const updateResult = await window.knowbook.updateDocument(documentId, {
-            expectedUpdatedAt: detail.updatedAt, title, summary, blocks: normalizedBlocks
-          })
-          const refreshedDetail = updateResult.document
-          if (intent && (!refreshedDetail || refreshedDetail.id !== documentId)) {
-            throw new Error(ui.documentSaveFailed)
-          }
-          if (isCurrentSession()) {
-            selectedDocumentRef.current = refreshedDetail
-            if (refreshedDetail) for (const snapshot of editHistoryRef.current) {
-              if (snapshot.move && Object.hasOwn(snapshot.move.versions, documentId)) snapshot.move.versions[documentId] = refreshedDetail.updatedAt
-            }
-            onSelectedDocumentChange(refreshedDetail)
-            if (refreshedDetail) {
-              if (draftTitleRef.current === baseTitle) {
-                draftTitleRef.current = refreshedDetail.title
-                setDraftTitle(refreshedDetail.title)
-              }
-              if (draftSummaryRef.current === summary) {
-                draftSummaryRef.current = refreshedDetail.summary
-                setDraftSummary(refreshedDetail.summary)
-              }
-              if (areDocumentDraftBlocksEqual(normalizeDraftBlocks(draftBlocksRef.current), normalizedBlocks)) {
-                const refreshedBlocks = normalizeDraftBlocks(refreshedDetail.blocks.map(toDraftBlock))
-                draftBlocksRef.current = refreshedBlocks
-                setDraftBlocksState(refreshedBlocks)
-              }
-            }
-          }
-          if (mountedRef.current) {
-            if (updateResult.requiresFullRefresh) {
-              // The document has already committed. A failed workspace refresh
-              // must not discard its new revision or cause a conflicting retry.
-              try {
-                const home = await window.knowbook.getHomeData()
-                if (mountedRef.current) onHomeDataChange(home)
-              } catch (error) {
-                console.warn('Failed to refresh workspace after saving the document.', error)
-              }
-            } else {
-              onHomeDataChange((current) => applyIncrementalDocumentUpdate(current, updateResult))
-            }
-          }
-          return isCurrentSession()
+          const requiresSyncedWriter = hasCanonicalHostSavePending() || [...normalizedBlocks, ...detail.blocks].some(block => block.type === 'synced-block')
+          const syncedHost = requiresSyncedWriter ? getSyncedHostEditorState() : null
+          const { completeDocumentDraftWrite } = await loadWriter()
+          return await completeDocumentDraftWrite({ documentId, title, summary, normalizedBlocks, detail, baseTitle,
+            renaming: Boolean(intent), saveFailed: ui.documentSaveFailed, requiresSyncedWriter, syncedHost,
+            isCurrentSession, mountedRef, selectedDocumentRef, draftTitleRef, draftSummaryRef, draftBlocksRef,
+            editHistoryRef, onSelectedDocumentChange, setDraftTitle, setDraftSummary, setDraftBlocksState, onHomeDataChange })
         } catch (error) {
           if (isCurrentSession()) {
             setFailedSave(failedSnapshot)
@@ -601,7 +590,7 @@ export function useDocumentEditorState({
       if (!succeeded) return false
     } while (flushLatest)
     return true
-  }, [onHomeDataChange, onMessage, onSelectedDocumentChange, ui])
+  }, [getSyncedHostEditorState, loadWriter, onHomeDataChange, onMessage, onSelectedDocumentChange, ui])
 
   const getRenameTarget = useCallback((): DocumentRenameTarget | null => {
     const documentId = selectedDocumentIdRef.current
@@ -649,10 +638,45 @@ export function useDocumentEditorState({
 
   const flushPendingChanges = useCallback(async (): Promise<boolean> => {
     if (blockMoveBusyRef.current) return false
+    const session = editorSessionRef.current
+    if (!await flushCanonicalInlinePendingChanges({ shouldContinue: () => mountedRef.current && editorSessionRef.current === session })) return false
     clearAutoSaveTimer()
-    if (!hasPendingDraftChanges && !pendingSaveRef.current) return true
+    if (!hasPendingDraftChanges && !pendingSaveRef.current && !hasCanonicalHostSavePending()) return true
     return persistDraft(false, true)
   }, [clearAutoSaveTimer, hasPendingDraftChanges, persistDraft])
+
+  const adoptSyncedHostStructureResult = useCallback((before: SyncedHostSourceCurrent, result: SyncedStructureApplied): boolean => {
+    const current = getSyncedHostEditorState(), row = result.hosts.find(row => row.documentId === before.host.documentId)
+    if (!current || current.hostSession !== before.hostSession || current.editSequence !== before.editSequence
+      || JSON.stringify(current.host) !== JSON.stringify(before.host) || !row || row.after.id !== before.host.documentId
+      || result.hosts.length !== 1 || row.logicalBefore.title !== before.host.workingBefore.title
+      || row.logicalBefore.summary !== before.host.workingBefore.summary
+      || !areDocumentDraftBlocksEqual(row.logicalBefore.blocks, before.host.workingBefore.blocks)) return false
+    clearAutoSaveTimer()
+    const detail = row.after, blocks = normalizeDraftBlocks(detail.blocks.map(toDraftBlock))
+    selectedDocumentRef.current = detail; draftTitleRef.current = detail.title; draftSummaryRef.current = detail.summary; draftBlocksRef.current = blocks
+    onSelectedDocumentChange(detail); setDraftTitle(detail.title); setDraftSummary(detail.summary); setDraftBlocksState(blocks)
+    // Main owns this structural history. Do not replay its reference changes
+    // through an ordinary local snapshot save on a later Undo.
+    initializeHistoryState(blocks); setFailedSave(null); setHistoryRevision(value => value + 1)
+    void window.knowbook.getHomeData().then(home => { if (mountedRef.current) onHomeDataChange(home) }).catch(error => console.warn('Failed to refresh after shared host source acknowledgement', error))
+    return true
+  }, [clearAutoSaveTimer, getSyncedHostEditorState, initializeHistoryState, onHomeDataChange, onSelectedDocumentChange])
+
+  const applyOrdinaryMarkdownSource = useCallback((before: SyncedHostSourceCurrent, after: {
+    documentId: string; title: string; summary: string; blocks: DocumentBlockDraft[]
+  }): boolean => {
+    const current = getSyncedHostEditorState(), persisted = selectedDocumentRef.current
+    if (canonicalInlineInputLocked() || !current || current.hostSession !== before.hostSession || current.editSequence !== before.editSequence
+      || current.host.documentId !== after.documentId || after.documentId !== before.host.documentId
+      || after.title !== before.host.workingBefore.title || after.summary !== before.host.workingBefore.summary
+      || [...current.host.workingBefore.blocks, ...after.blocks, ...(persisted?.blocks ?? [])].some(block => block.type === 'synced-block')
+      || !areDocumentDraftBlocksEqual(current.host.workingBefore.blocks, before.host.workingBefore.blocks)) return false
+    const blocks = normalizeDraftBlocks(after.blocks)
+    if (!validateBlockTreeStructure(blocks).valid) return false
+    checkpointDraft(); draftBlocksRef.current = blocks; setDraftBlocksState(blocks)
+    return true
+  }, [checkpointDraft, getSyncedHostEditorState])
 
   const getBlockActionTarget = useCallback((blockIds: readonly string[]): DocumentBlockActionTarget | null => {
     const documentId = selectedDocumentIdRef.current, blocks = draftBlocksRef.current
@@ -778,10 +802,10 @@ export function useDocumentEditorState({
   }, [clearAutoSaveTimer])
 
   const guardedSetDraftTitle: Dispatch<SetStateAction<string>> = useCallback(value => {
-    if (!blockMoveBusyRef.current) setDraftTitle(value)
+    if (!canonicalInlineInputLocked() && !blockMoveBusyRef.current) setDraftTitle(value)
   }, [])
   const guardedSetDraftSummary: Dispatch<SetStateAction<string>> = useCallback(value => {
-    if (!blockMoveBusyRef.current) setDraftSummary(value)
+    if (!canonicalInlineInputLocked() && !blockMoveBusyRef.current) setDraftSummary(value)
   }, [])
 
   const getDraftMarkdownExport = useCallback((documentId: string) => {
@@ -790,9 +814,9 @@ export function useDocumentEditorState({
   }, [selectedDocument?.id])
 
   const copyDocumentAsMarkdown = useCallback(async () => {
-    const snapshot = selectedDocumentId && getDraftMarkdownExport(selectedDocumentId)
-    if (!snapshot) return
     try {
+      const snapshot = selectedDocumentId && getDraftMarkdownExport(selectedDocumentId)
+      if (!snapshot) return
       await window.knowbook.writeClipboardText(snapshot.markdown)
       triggerTransientFlash(setMdCopyFlash)
     } catch (error) {
@@ -801,9 +825,9 @@ export function useDocumentEditorState({
   }, [getDraftMarkdownExport, onMessage, selectedDocumentId, triggerTransientFlash, ui.markdownCopyFailed])
 
   const saveDocumentAsMarkdown = useCallback(async () => {
-    const snapshot = selectedDocumentId && getDraftMarkdownExport(selectedDocumentId)
-    if (!snapshot) return
     try {
+      const snapshot = selectedDocumentId && getDraftMarkdownExport(selectedDocumentId)
+      if (!snapshot) return
       const savedPath = await window.knowbook.saveMarkdownFile(snapshot.fileName, snapshot.markdown)
       if (savedPath) onMessage(ui.markdownExportedPath(savedPath))
     } catch (error) {
@@ -825,6 +849,10 @@ export function useDocumentEditorState({
     draftTitle,
     flushPendingChanges,
     getDraftBlocks,
+    getSyncedHostEditorState,
+    adoptSyncedHostStructureResult,
+    applyOrdinaryMarkdownSource,
+    isSyncedHostComposing: () => composingDraftRef.current,
     getDraftMarkdownExport,
     getRenameTarget,
     hasPendingDraftChanges,

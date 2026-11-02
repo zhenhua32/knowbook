@@ -89,7 +89,7 @@ export default defineConfig(async ({ command }): Promise<ElectronViteConfig> => 
       strictPort: true
     },
     build: {
-      minify: 'esbuild',
+      minify: 'terser',
       rollupOptions: {
         output: {
           // Share and cache the parser independently of the app entry and pages.

@@ -4,6 +4,7 @@ import { act, createElement, useState } from 'react'
 import { JSDOM } from 'jsdom'
 import type { DocumentDetail, UpdateDocumentInput, UpdateDocumentResult } from '../src/shared/contracts'
 import { useDocumentEditorState } from '../src/renderer/src/hooks/useDocumentEditorState'
+import { completeDocumentDraftWrite } from '../src/renderer/src/utils/documentDraftWriter'
 import { getUiText } from '../src/renderer/src/i18n'
 
 type SaveRequest = {
@@ -26,7 +27,7 @@ async function withEditor(run: (context: {
   select: (detail: DocumentDetail | null) => void
   document: Document
   window: Window
-}) => Promise<void>) {
+}) => Promise<void>, options: { loadWriter?: () => Promise<{ completeDocumentDraftWrite: typeof completeDocumentDraftWrite }> } = {}) {
   const dom = new JSDOM('<div id="root"></div><div class="document-summary-card"><input id="title"></div>')
   const requests: SaveRequest[] = [], messages: string[] = []
   Object.defineProperty(dom.window, 'knowbook', { value: {
@@ -46,12 +47,13 @@ async function withEditor(run: (context: {
   let editor!: ReturnType<typeof useDocumentEditorState>, detail!: DocumentDetail | null
   let select!: (next: DocumentDetail | null) => void
   const original = documentDetail()
+  const loadWriter = options.loadWriter ?? (async () => ({ completeDocumentDraftWrite }))
   function Harness() {
     const [selected, setSelected] = useState<DocumentDetail | null>(original)
     detail = selected
     editor = useDocumentEditorState({ selectedDocumentId: selected?.id ?? null, selectedDocument: selected,
       ui: getUiText('en-US'), onHomeDataChange: () => {}, onSelectedDocumentChange: setSelected,
-      onMessage: message => { if (message) messages.push(message) } })
+      onMessage: message => { if (message) messages.push(message) } }, loadWriter)
     select = next => { setSelected(next); editor.loadDocumentIntoEditor(next) }
     return null
   }
@@ -518,4 +520,64 @@ test('rename confirmation cannot persist unfinished metadata composition or leav
     await act(async () => { acknowledge(0, 'revision-1'); await rename })
     assert.deepEqual(await rename, { status: 'saved', title: 'Completed name' })
   })
+})
+
+test('a cold writer reserves the one pending save and retains its submitted body until the actual module is ready', async () => {
+  let deliver!: (value: { completeDocumentDraftWrite: typeof completeDocumentDraftWrite }) => void
+  const loading = new Promise<{ completeDocumentDraftWrite: typeof completeDocumentDraftWrite }>(resolve => { deliver = resolve })
+  await withEditor(async ({ getEditor, requests, acknowledge }) => {
+    await act(async () => getEditor().setDraftTitle('Original cold submission'))
+    let save!: Promise<void>, repeated!: Promise<void>
+    await act(async () => { save = getEditor().saveDocument(); repeated = getEditor().saveDocument() })
+    assert.equal(getEditor().isSaving, true)
+    assert.equal(requests.length, 0)
+    await act(async () => getEditor().setDraftTitle('Later local input'))
+    await act(async () => deliver({ completeDocumentDraftWrite }))
+    assert.equal(requests.length, 1)
+    assert.equal(requests[0].input.title, 'Original cold submission')
+    await act(async () => acknowledge(0, 'revision-1'))
+    assert.equal(requests.length, 2)
+    assert.equal(requests[1].input.title, 'Later local input')
+    assert.equal(requests[1].input.expectedUpdatedAt, 'revision-1')
+    assert.equal(getEditor().draftTitle, 'Later local input')
+    await act(async () => { acknowledge(1, 'revision-2'); await Promise.all([save, repeated]) })
+    assert.equal(getEditor().isSaving, false)
+  }, { loadWriter: () => loading })
+})
+
+test('a cold writer cannot submit into a later visit to the same document', async () => {
+  let deliver!: (value: { completeDocumentDraftWrite: typeof completeDocumentDraftWrite }) => void
+  const loading = new Promise<{ completeDocumentDraftWrite: typeof completeDocumentDraftWrite }>(resolve => { deliver = resolve })
+  await withEditor(async ({ getEditor, getDetail, requests, select }) => {
+    await act(async () => getEditor().setDraftTitle('Expired cold submission'))
+    let save!: Promise<void>
+    await act(async () => { save = getEditor().saveDocument() })
+    await act(async () => select(documentDetail('b', 'Other document')))
+    await act(async () => select(documentDetail('a', 'Later visit', 'revision-10')))
+    await act(async () => { deliver({ completeDocumentDraftWrite }); await save })
+    assert.equal(requests.length, 0)
+    assert.equal(getDetail().title, 'Later visit')
+    assert.equal(getDetail().updatedAt, 'revision-10')
+    assert.equal(getEditor().draftTitle, 'Later visit')
+  }, { loadWriter: () => loading })
+})
+
+test('a failed cold writer load releases its save reservation and preserves the exact retry draft', async () => {
+  let loads = 0
+  await withEditor(async ({ getEditor, requests, messages, acknowledge }) => {
+    await act(async () => getEditor().setDraftSummary('Retained during failed loading'))
+    await act(async () => getEditor().saveDocument())
+    assert.equal(requests.length, 0)
+    assert.equal(getEditor().isSaving, false)
+    assert.equal(getEditor().saveStatus, 'error')
+    assert.equal(getEditor().draftSummary, 'Retained during failed loading')
+    assert.deepEqual(messages, ['Chunk unavailable'])
+    let retry!: Promise<void>
+    await act(async () => { retry = getEditor().saveDocument() })
+    assert.equal(requests.length, 1)
+    assert.equal(requests[0].input.summary, 'Retained during failed loading')
+    await act(async () => { acknowledge(0, 'revision-1'); await retry })
+    assert.equal(getEditor().saveStatus, 'saved')
+    assert.equal(loads, 2)
+  }, { loadWriter: async () => { if (++loads === 1) throw new Error('Chunk unavailable'); return { completeDocumentDraftWrite } } })
 })

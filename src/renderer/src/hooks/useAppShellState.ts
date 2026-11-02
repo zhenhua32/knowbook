@@ -1,3 +1,4 @@
+import { flushCanonicalWindowNavigation, canonicalInlineInputLocked } from '../features/synced-blocks/inlineBridge'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { DocumentCatalogEntry, DocumentDatabaseColumn, HomeData } from '@shared/contracts'
 import {
@@ -71,7 +72,17 @@ export function useAppShellState() {
   const [workspaceReady, setWorkspaceReady] = useState(false)
   const reloadRef = useRef<() => void>(() => undefined)
   const retryWorkspace = useCallback(() => reloadRef.current(), [])
-  const [activePage, setActivePage] = useState<PageId>('documents')
+  const [activePage, setActivePageState] = useState<PageId>('documents')
+  const activePageRef = useRef(activePage), pageTransition = useRef(0)
+  activePageRef.current = activePage
+  const setActivePage = useCallback((next: PageId | ((previous: PageId) => PageId)) => {
+    const desired = typeof next === 'function' ? next(activePageRef.current) : next
+    const sequence = ++pageTransition.current
+    if (canonicalInlineInputLocked() || desired === activePageRef.current) return
+    void flushCanonicalWindowNavigation().then(ready => {
+      if (ready && !canonicalInlineInputLocked() && sequence === pageTransition.current) setActivePageState(desired)
+    }).catch(error => notify(String(error), 'error'))
+  }, [])
   const [settingsCategoryRequest, setSettingsCategoryRequest] = useState<'ai' | null>(null)
   const openAiSettings = useCallback(() => {
     setSettingsCategoryRequest('ai')

@@ -98,7 +98,7 @@ export async function cleanupSystemPluginsForApplicationUninstall(input: {
     try {
       await recoverInterruptedDatabaseRestore(profile)
       if (!existsSync(database)) continue
-      store = new KnowbookStore(database)
+      store = KnowbookStore.openCanonicalRuntime(database)
       const pluginRoot = join(profile, 'system-plugins')
       manager = new SystemPluginManager({
         repository: store.pluginPlatform,

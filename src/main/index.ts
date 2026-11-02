@@ -1,9 +1,15 @@
+import { createEditorCloseBarrier } from './editor-close-barrier'
+import { EDITOR_CLOSE_ACKNOWLEDGE_CHANNEL, EDITOR_CLOSE_READY_CHANNEL } from '../shared/editor-close'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, createReadStream } from 'node:fs'
 import { rm as removePath } from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import { dirname, extname, join, resolve, sep } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { isWebClipBridgePort } from '@shared/web-clip-bridge-settings'
+import type { WorkspaceSearchOccurrence, WorkspaceSearchOccurrenceResult } from '../shared/workspace-search-occurrence'
+import type { ResolveSyncedInlineInstanceInput, SyncedInlineInstanceResult } from '../shared/workspace-search-occurrence'
+import type { OpenSyncedEditingSessionInput, OpenSyncedEditingSessionResult, SyncedEditingRequest } from '../shared/synced-editing-session'
+import type { SyncedBlocksChangedEvent, SyncedGroupSnapshot } from '../shared/synced-blocks'
 import { canAiEditBlockText } from '@shared/blockAiEligibility'
 import electron from 'electron'
 import { AttachmentStore } from './attachments'
@@ -259,6 +265,7 @@ protocol.registerSchemesAsPrivileged([
 app.on('render-process-gone', (_event, webContents, details) => {
   console.error('Renderer process exited unexpectedly.', details)
   if (servicesInitialized && mainWindow?.webContents === webContents) {
+    store.releaseAllSyncedEditingSessions()
     systemPluginManager.rendererUnavailable(new Error(`Renderer process exited: ${details.reason}`))
   }
 })
@@ -282,6 +289,42 @@ const backupHealth = new BackupHealthTracker((state) => {
 })
 let shutdownComplete = false
 let shutdownPromise: Promise<void> | null = null
+const editorCloseBarrier = createEditorCloseBarrier({
+  beginShutdown: () => {
+    if (!shutdownPromise) {
+      shutdownPromise = shutdownServices()
+        .catch((error) => {
+          console.error('Unexpected shutdown failure.', error)
+        })
+        .finally(() => {
+          shutdownComplete = true
+          app.quit()
+        })
+    }
+    return shutdownPromise!
+  },
+  onShutdownError: (error) => console.error('Unexpected editor close shutdown failure.', error)
+})
+// Only actual editor mutation channels use this port. Reads and the close ACK
+// remain available while saving; ACKed frames cannot start a new editor write.
+const editorMutationChannels = new Set([
+  'knowbook:import-attachments', 'knowbook:restore-backup-version', 'knowbook:restore-backup-from-folder',
+  'knowbook:save-document-template', 'knowbook:delete-document-template',
+  'knowbook:create-document', 'knowbook:create-document-from-template', 'knowbook:create-quick-note',
+  'knowbook:update-document', 'knowbook:delete-document', 'knowbook:restore-trashed-document',
+  'knowbook:purge-trashed-document', 'knowbook:restore-document-history', 'knowbook:move-document',
+  'knowbook:move-document-blocks', 'knowbook:undo-document-block-move', 'knowbook:redo-document-block-move',
+  'knowbook:create-document-database-column', 'knowbook:rename-document-database-column',
+  'knowbook:move-document-database-column', 'knowbook:update-document-database-column-options',
+  'knowbook:delete-document-database-column', 'knowbook:update-document-database-value',
+  'knowbook:create-document-database', 'knowbook:update-database-metadata', 'knowbook:delete-database',
+  'knowbook:create-database-saved-view', 'knowbook:update-database-saved-view',
+  'knowbook:create-database-saved-view-form', 'knowbook:update-database-saved-view-form',
+  'knowbook:reorder-database-saved-views', 'knowbook:delete-database-saved-view',
+  'knowbook:create-database-entity', 'knowbook:update-database-entity', 'knowbook:update-database-entities',
+  'knowbook:delete-database-entity', 'knowbook:delete-database-entities', 'knowbook:clip-web-page',
+  'knowbook:run-document-ai-automations', 'knowbook:run-plugin-document-action', 'knowbook:run-plugin-ui-action'
+])
 const summaryGenerationRequests = new Map<string, {
   apiKey: string
   baseUrl: string
@@ -297,7 +340,9 @@ const ipcMain: Pick<typeof electronIpcMain, 'handle'> = {
       if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame) {
         throw new Error('IPC request rejected: untrusted renderer sender.')
       }
-      return listener(event, ...args)
+      return editorMutationChannels.has(channel)
+        ? editorCloseBarrier.runEditorMutation(event, () => listener(event, ...args))
+        : listener(event, ...args)
     })
   }
 }
@@ -590,7 +635,7 @@ function getPluginUiDocumentRegistration(url: string): PluginUiDocumentRegistrat
 }
 
 function initializeServices(): void {
-  store = new KnowbookStore(databasePath)
+  store = KnowbookStore.openCanonicalRuntime(databasePath)
   webdavSync = new WebDavSyncService(store, attachmentStore, aiCredentialStorage, notifyWorkspaceMutation, () => restoreWorkflowInProgress)
   try {
     getDecryptedAiApiKey()
@@ -1017,6 +1062,8 @@ function createWindow(): ElectronBrowserWindow {
     }
   })
 
+  editorCloseBarrier.registerWindow(mainWindow)
+
   mainWindow.webContents.setWindowOpenHandler((details) => {
     const policyEntry = [...fullTrustFramePolicies.entries()].find(([, candidate]) => (
       candidate.popupName === details.frameName
@@ -1144,6 +1191,7 @@ function createWindow(): ElectronBrowserWindow {
   })
 
   mainWindow.on('closed', () => {
+    if(servicesInitialized)store.releaseAllSyncedEditingSessions()
     rejectPendingPluginUiPreparations('Plugin iframe UI preparation was cancelled because the renderer closed.')
     mainWindow = null
     for (const popup of fullTrustPopupWindows.values()) {
@@ -1159,7 +1207,10 @@ function createWindow(): ElectronBrowserWindow {
     })
   })
   mainWindow.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
-    if (servicesInitialized && isMainFrame && !isInPlace) systemPluginManager.rendererUnavailable()
+    if (servicesInitialized && isMainFrame && !isInPlace) {
+      store.releaseAllSyncedEditingSessions()
+      systemPluginManager.rendererUnavailable()
+    }
   })
 
   if (process.env['ELECTRON_RENDERER_URL']) {
@@ -2324,6 +2375,39 @@ function registerIpcHandlers(): void {
   ipcMain.handle('knowbook:search-workspace', (_event, input: WorkspaceSearchInput): WorkspaceSearchPage => {
     return store.searchWorkspace(input)
   })
+  ipcMain.handle('knowbook:resolve-workspace-search-occurrence', (_event, input: WorkspaceSearchOccurrence): WorkspaceSearchOccurrenceResult => {
+    return store.resolveWorkspaceSearchOccurrence(input)
+  })
+  ipcMain.handle('knowbook:resolve-synced-inline-instance', (_event, input: ResolveSyncedInlineInstanceInput): SyncedInlineInstanceResult => {
+    return store.resolveSyncedInlineInstance(input)
+  })
+  ipcMain.handle(EDITOR_CLOSE_READY_CHANNEL, event => editorCloseBarrier.replayPending(event))
+  ipcMain.handle(EDITOR_CLOSE_ACKNOWLEDGE_CHANNEL, (event, input: unknown) => editorCloseBarrier.acknowledge(event, input))
+  ipcMain.handle('knowbook:open-synced-editing-session', (event, input: OpenSyncedEditingSessionInput): OpenSyncedEditingSessionResult => {
+    return store.openSyncedEditingSession(event.senderFrame!,input)
+  })
+  ipcMain.handle('knowbook:invoke-synced-editing-session', (event, input: SyncedEditingRequest) => {
+    const invoke = () => {
+    const result=store.invokeSyncedEditingSession(event.senderFrame!,input)
+    if(result&&typeof result==='object'&&'status'in result&&(result.status==='saved'||result.status==='applied')){
+      const snapshots:SyncedGroupSnapshot[]='snapshot'in result?[result.snapshot]:('groups'in result?result.groups:[])
+      const kind:'content'|'topology'=input.method==='updateSyncedBlockGroup'||input.method==='restoreSyncedGroupOperation'?'content':'topology'
+      const changed:SyncedBlocksChangedEvent={operationId:result.operationId,
+        changes:snapshots.map(snapshot=>({groupId:snapshot.groupId,revision:snapshot.revision,topologyRevision:snapshot.topologyRevision,
+          kind})),
+        affectedInstanceIds:'affectedInstanceIds'in result?result.affectedInstanceIds:snapshots.flatMap(snapshot=>snapshot.instances.map(instance=>instance.instanceId))}
+      event.sender.send('knowbook:synced-blocks-changed',changed)
+      notifyWorkspaceMutation()
+    }
+    return result
+    }
+    return input.method === 'updateSyncedBlockGroup' || input.method === 'restoreSyncedGroupOperation'
+      || input.method === 'applySyncedHostStructure' || input.method === 'restoreSyncedHostOperation'
+      ? editorCloseBarrier.runEditorMutation(event, invoke) : invoke()
+  })
+  ipcMain.handle('knowbook:release-synced-editing-session', (event, sessionId: string) => {
+    store.releaseSyncedEditingSession(event.senderFrame!,sessionId)
+  })
   ipcMain.handle('knowbook:get-search-facets', (): WorkspaceSearchFacets => store.getSearchFacets())
   ipcMain.handle('knowbook:list-saved-searches', (): SavedWorkspaceSearch[] => store.listSavedSearches())
   ipcMain.handle('knowbook:save-search', (_event, input: SaveWorkspaceSearchInput): SavedWorkspaceSearch => {
@@ -3106,7 +3190,7 @@ if (hasSingleInstanceLock && (databaseRestoreRequested || maintenanceArgumentErr
     })
 
     app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) {
+      if (!editorCloseBarrier.isShuttingDown() && BrowserWindow.getAllWindows().length === 0) {
         createWindow()
       }
     })
@@ -3128,15 +3212,6 @@ if (hasSingleInstanceLock && (databaseRestoreRequested || maintenanceArgumentErr
     }
 
     event.preventDefault()
-    if (!shutdownPromise) {
-      shutdownPromise = shutdownServices()
-        .catch((error) => {
-          console.error('Unexpected shutdown failure.', error)
-        })
-        .finally(() => {
-          shutdownComplete = true
-          app.quit()
-        })
-    }
+    editorCloseBarrier.requestQuit()
   })
 }

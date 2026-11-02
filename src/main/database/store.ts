@@ -1,3 +1,6 @@
+import { assertCanonicalRuntimeReadableOwned, hasCanonicalRuntimeDataOwned } from './canonical-runtime-read'
+import { readCanonicalBackupRevision } from './canonical-backup-revision'
+import { readConfirmedSyncedBackupV3PublicationOwned } from './synced-backup-v3-publication-read'
 import { isTaskBlockType, isOrderedListBlockType, canBlockHaveParent, canBlockNestUnder } from '@shared/blockTypes'
 import { assertColumnStructure } from '@shared/columns'
 import { assertDatabaseViewStructure } from '@shared/databaseViewBlock'
@@ -6,9 +9,9 @@ import { normalizeListStart, parseMarkdownBlocks } from '@shared/markdown'
 import { createHash, randomUUID } from 'node:crypto'
 import { SyncRepository } from '../sync/repository'
 import type { SyncRecord } from '../sync/model'
-import { constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type {
   AiConfig,
@@ -88,6 +91,11 @@ import { DocumentRecoveryRepository } from './document-recovery'
 import { DocumentBlockTransfers } from './document-block-transfers'
 import type { MoveDocumentBlocksInput, RestoreDocumentBlockMoveInput, DocumentBlockMoveResult, DocumentBlockMoveHistoryEntry } from '../../shared/document-block-moves'
 import { WorkspaceSearchRepository } from './workspace-search'
+import { SyncedEditingSessionRepository } from './synced-editing-session'
+import type { OpenSyncedEditingSessionInput, OpenSyncedEditingSessionResult, SyncedEditingMethod, SyncedEditingRequest, SyncedEditingResult } from '../../shared/synced-editing-session'
+import { resolveWorkspaceSearchOccurrence, resolveSyncedInlineInstance } from './workspace-search-occurrences'
+import type { WorkspaceSearchOccurrence, WorkspaceSearchOccurrenceResult } from '../../shared/workspace-search-occurrence'
+import type { ResolveSyncedInlineInstanceInput, SyncedInlineInstanceResult } from '../../shared/workspace-search-occurrence'
 import { decodeMarkdownFormat, normalizeMarkdownFormat, type MarkdownBlockFormat } from '../../shared/markdownFormat'
 import { SqlitePluginPlatformRepository } from '../plugin-platform/repository'
 import { SqliteAssistantSessionRepository } from '../assistant/session-repository'
@@ -364,7 +372,9 @@ export interface ExportWorkspaceSnapshot {
   standaloneDatabases: ExportStandaloneDatabase[]
 }
 
-function assertSupportedDatabase(db: SqliteDatabase): number {
+const canonicalRuntimeStartup = Symbol('KnowBook complete canonical runtime startup')
+
+function assertSupportedDatabase(db: SqliteDatabase, capability?: typeof canonicalRuntimeStartup): number {
   return db.transaction(() => {
     const schemaVersion = db.pragma('user_version', { simple: true }) as number
     if (schemaVersion > CURRENT_DATABASE_SCHEMA_VERSION) {
@@ -376,13 +386,14 @@ function assertSupportedDatabase(db: SqliteDatabase): number {
     if (schemaVersion >= 26) {
       assertSyncedBlockSchema(db)
       if (schemaVersion >= 27) assertSyncedLifecycleSchema(db)
-      assertNoUnsupportedSyncedContent(db)
+      if (capability === canonicalRuntimeStartup) assertCanonicalRuntimeReadableOwned(db)
+      else assertNoUnsupportedSyncedContent(db)
     }
     return schemaVersion
   })()
 }
 
-function preflightJournaledDatabase(databasePath: string): void {
+function preflightJournaledDatabase(databasePath: string, capability?: typeof canonicalRuntimeStartup): void {
   const sidecars = ['-wal', '-journal'].filter(suffix => existsSync(databasePath + suffix))
   if (!sidecars.length) return
   // An unsupported reader must not recover/checkpoint the original just by
@@ -397,7 +408,7 @@ function preflightJournaledDatabase(databasePath: string): void {
     copyFileSync(databasePath, copy, constants.COPYFILE_EXCL)
     for (const suffix of sidecars) copyFileSync(databasePath + suffix, copy + suffix, constants.COPYFILE_EXCL)
     inspection = new Database(copy, { fileMustExist: true })
-    assertSupportedDatabase(inspection)
+    assertSupportedDatabase(inspection, capability)
   } finally {
     inspection?.close()
     rmSync(directory, { recursive: true, force: true })
@@ -405,8 +416,14 @@ function preflightJournaledDatabase(databasePath: string): void {
 }
 
 export class KnowbookStore {
+  /** Explicit complete-reader startup. The legacy constructor remains fail-closed. */
+  static openCanonicalRuntime(databasePath: string): KnowbookStore {
+    return new KnowbookStore(databasePath, canonicalRuntimeStartup)
+  }
+  private readonly canonicalRuntime: boolean
   private readonly db: SqliteDatabase
   private readonly markdownLinks: MarkdownLinkIndex
+  private syncedEditingSessions: SyncedEditingSessionRepository | null = null
   private readonly blockIdentities: BlockIdentityRepository
   readonly pluginPlatform: SqlitePluginPlatformRepository
   readonly assistantSessions: SqliteAssistantSessionRepository
@@ -420,16 +437,18 @@ export class KnowbookStore {
     replaced: Set<string>
   } | null = null
 
-  constructor(private readonly databasePath: string) {
+  constructor(private readonly databasePath: string, capability?: typeof canonicalRuntimeStartup) {
+    if (capability !== undefined && capability !== canonicalRuntimeStartup) throw new Error('Invalid Store startup capability.')
+    this.canonicalRuntime = capability === canonicalRuntimeStartup
     mkdirSync(dirname(databasePath), { recursive: true })
     const databaseAlreadyExists = existsSync(databasePath)
-    if (databaseAlreadyExists) preflightJournaledDatabase(databasePath)
+    if (databaseAlreadyExists) preflightJournaledDatabase(databasePath, capability)
     this.db = new Database(databasePath)
     this.markdownLinks = new MarkdownLinkIndex(this.db, (id) => {
       if (!this.restoringTrashedDocument) this.documentRecovery?.checkpoint(id)
     })
     try {
-      const schemaVersion = assertSupportedDatabase(this.db)
+      const schemaVersion = assertSupportedDatabase(this.db, capability)
       this.db.pragma('journal_mode = WAL')
       this.db.pragma('foreign_keys = ON')
       this.db.pragma('busy_timeout = 5000')
@@ -2441,6 +2460,29 @@ export class KnowbookStore {
     return new WorkspaceSearchRepository(this.db).search(input)
   }
 
+  resolveWorkspaceSearchOccurrence(input: WorkspaceSearchOccurrence): WorkspaceSearchOccurrenceResult {
+    return resolveWorkspaceSearchOccurrence(this.db,input)
+  }
+
+  resolveSyncedInlineInstance(input: ResolveSyncedInlineInstanceInput): SyncedInlineInstanceResult {
+    return resolveSyncedInlineInstance(this.db,input)
+  }
+
+  private editingSessions(): SyncedEditingSessionRepository {
+    return this.syncedEditingSessions??=new SyncedEditingSessionRepository(this.db)
+  }
+  openSyncedEditingSession(sender:object,input:OpenSyncedEditingSessionInput):OpenSyncedEditingSessionResult {
+    return this.editingSessions().open(sender,input)
+  }
+  invokeSyncedEditingSession<M extends SyncedEditingMethod>(sender:object,input:SyncedEditingRequest<M>):SyncedEditingResult<M> {
+    return this.editingSessions().invoke(sender,input)
+  }
+  releaseSyncedEditingSession(sender:object,sessionId:string):void {
+    this.editingSessions().release(sender,sessionId)
+  }
+  releaseSyncedEditingSessionsForSender(sender:object):void {this.syncedEditingSessions?.releaseSender(sender)}
+  releaseAllSyncedEditingSessions():void {this.syncedEditingSessions?.releaseAll()}
+
   getSearchFacets(): WorkspaceSearchFacets {
     return new WorkspaceSearchRepository(this.db).facets()
   }
@@ -2657,6 +2699,7 @@ export class KnowbookStore {
    * damaged nonempty JSON into a broader, apparently valid filter. */
   getExportWorkspaceSnapshot(): ExportWorkspaceSnapshot {
     return this.runInTransaction(() => {
+      this.assertLegacyWorkspaceTransferAllowed()
       const documents = this.getExportDocuments()
       const defaultId = this.getDefaultDocumentDatabaseId()
       const paths = new Map(documents.map(document => [document.id, document.path]))
@@ -2685,7 +2728,30 @@ export class KnowbookStore {
         { filterQuery: row.filter_query, filterScope: row.filter_scope, sortMode: row.sort_mode, viewMode: row.view_mode }) }))
   }
 
+  getCanonicalBackupSource(): { databasePath: string; userDataRoot: string } | null {
+    if (!this.canonicalRuntime || !this.runInTransaction(() => hasCanonicalRuntimeDataOwned(this.db))) return null
+    const databasePath = realpathSync(this.databasePath), storage = dirname(databasePath)
+    if (basename(databasePath) !== 'knowbook.db' || basename(storage) !== 'storage') throw new Error('Canonical backup requires the real Main storage/knowbook.db source.')
+    return { databasePath, userDataRoot: dirname(storage) }
+  }
+
+  readConfirmedCanonicalBackup(snapshotId: string, destination: string): string {
+    if (!this.canonicalRuntime) throw new Error('Canonical publication read requires the complete Main Store.')
+    return this.runInTransaction(() => readConfirmedSyncedBackupV3PublicationOwned(this.db, snapshotId, destination))
+  }
+
+  assertLegacyWorkspaceTransferAllowed(): void {
+    if (this.canonicalRuntime && this.runInTransaction(() => hasCanonicalRuntimeDataOwned(this.db)))
+      throw new Error('工作区包含同步块或其保留记录，旧 Markdown 恢复/导出不能无损处理。请使用完整 V3 备份；V3 恢复入口尚待实现，原数据未修改。')
+  }
+
+  assertOrdinarySyncAllowed(): void {
+    if (this.canonicalRuntime && this.runInTransaction(() => hasCanonicalRuntimeDataOwned(this.db)))
+      throw new Error('当前工作区包含同步块或其保留记录，旧 WebDAV 协议不能完整同步。本次旧协议同步已停止，本地配置和待处理队列保留；完整个人同步协议仍待接入。')
+  }
+
   getBackupRevision(): string {
+    if (this.canonicalRuntime) return readCanonicalBackupRevision(this.db)
     const revision = this.db.prepare(`
       SELECT
         (SELECT COUNT(*) FROM documents) AS document_count,
@@ -2804,6 +2870,7 @@ export class KnowbookStore {
   }
 
   destroy(): void {
+    this.releaseAllSyncedEditingSessions()
     this.db.close()
   }
 
@@ -3173,11 +3240,13 @@ export class KnowbookStore {
   }
 
   getSyncRecords(): Map<string, SyncRecord> {
+    this.assertOrdinarySyncAllowed()
     return new SyncRepository(this.db, this, () => this.getDefaultDocumentDatabaseId()).snapshot()
   }
 
   applySyncRecords(records: SyncRecord[], releaseProofs: SyncRecord[] = []): void {
     this.runInBulkDocumentMutation(() => {
+      this.assertOrdinarySyncAllowed()
       new SyncRepository(this.db, this, () => this.getDefaultDocumentDatabaseId()).apply(records, releaseProofs)
       this.deferredFullLinkResyncRequested = true
     })

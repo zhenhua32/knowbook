@@ -220,6 +220,7 @@ for (const language of ['en-US', 'zh-CN'] as const) for (const kind of ['filter'
     await withElectronFailureTrace(info, async ({ page, app }) => {
       const errors: string[] = []
       page.on('pageerror', error => errors.push(error.message))
+      expect(await page.evaluate(() => navigator.language)).toBe(language)
       await prepare(page, language)
       await page.setViewportSize({ width: language === 'en-US' ? 1100 : 980, height: 760 })
       await installProbe(app)

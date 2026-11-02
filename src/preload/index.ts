@@ -1,4 +1,11 @@
+import { createEditorCloseDelivery } from './editor-close-delivery'
+import { EDITOR_CLOSE_REQUEST_CHANNEL, EDITOR_CLOSE_CANCELLED_CHANNEL, EDITOR_CLOSE_ACKNOWLEDGE_CHANNEL, EDITOR_CLOSE_READY_CHANNEL,
+  type EditorCloseRequest, type EditorCloseCancelled } from '../shared/editor-close'
 import electron from 'electron'
+import type { WorkspaceSearchOccurrence, WorkspaceSearchOccurrenceResult } from '../shared/workspace-search-occurrence'
+import type { SyncedBlocksChangedEvent } from '../shared/synced-blocks'
+import type { OpenSyncedEditingSessionInput, OpenSyncedEditingSessionResult, SyncedEditingMethod, SyncedEditingRequest, SyncedEditingResult } from '../shared/synced-editing-session'
+import type { ResolveSyncedInlineInstanceInput, SyncedInlineInstanceResult } from '../shared/workspace-search-occurrence'
 import { BACKUP_HEALTH_CHANNEL, GET_BACKUP_HEALTH_CHANNEL, type BackupHealth } from '../shared/backup-health'
 import type {
   AiConfig,
@@ -124,7 +131,17 @@ ipcRenderer.on(PLUGIN_UI_PREPARE_CHANNEL, (_event, request: PluginUiPreparationR
   for (const listener of pluginUiPreparationListeners) listener(request)
 })
 
+// Install before the App imports its first lazy chunk. The ready signal also
+// asks Main to event-replay a nonce sent before preload could listen at all.
+const editorCloseDelivery = createEditorCloseDelivery()
+ipcRenderer.on(EDITOR_CLOSE_REQUEST_CHANNEL, (_event, request: EditorCloseRequest) => editorCloseDelivery.request(request))
+ipcRenderer.on(EDITOR_CLOSE_CANCELLED_CHANNEL, (_event, request: EditorCloseCancelled) => editorCloseDelivery.cancel(request))
+void ipcRenderer.invoke(EDITOR_CLOSE_READY_CHANNEL).catch(error => console.error('Editor close listener readiness failed.', error))
+
 const api: ElectronApi = {
+  onEditorCloseRequest: listener => editorCloseDelivery.onRequest(listener),
+  onEditorCloseCancelled: listener => editorCloseDelivery.onCancelled(listener),
+  acknowledgeEditorClose: (input) => ipcRenderer.invoke(EDITOR_CLOSE_ACKNOWLEDGE_CHANNEL, input) as Promise<boolean>,
   getWebDavSyncStatus: () => ipcRenderer.invoke('knowbook:get-webdav-sync-status'),
   saveWebDavSyncConfig: (input) => ipcRenderer.invoke('knowbook:save-webdav-sync-config', input),
   testWebDavConnection: () => ipcRenderer.invoke('knowbook:test-webdav-connection'),
@@ -148,6 +165,11 @@ const api: ElectronApi = {
     return () => {
       ipcRenderer.removeListener(WORKSPACE_MUTATED_CHANNEL, wrapped)
     }
+  },
+  onSyncedBlocksChanged: (listener) => {
+    const wrapped=(_event:Electron.IpcRendererEvent,value:SyncedBlocksChangedEvent)=>listener(value)
+    ipcRenderer.on('knowbook:synced-blocks-changed',wrapped)
+    return()=>ipcRenderer.removeListener('knowbook:synced-blocks-changed',wrapped)
   },
   onPluginsMutated: (listener) => {
     const wrapped = () => listener()
@@ -286,6 +308,11 @@ const api: ElectronApi = {
   saveSetting: (key: string, value: string) => ipcRenderer.invoke('knowbook:save-setting', key, value) as Promise<void>,
   searchDocuments: (query: string) => ipcRenderer.invoke('knowbook:search-documents', query) as Promise<GlobalSearchResult[]>,
   searchWorkspace: (input: WorkspaceSearchInput) => ipcRenderer.invoke('knowbook:search-workspace', input) as Promise<WorkspaceSearchPage>,
+  resolveWorkspaceSearchOccurrence: (input: WorkspaceSearchOccurrence) => ipcRenderer.invoke('knowbook:resolve-workspace-search-occurrence', input) as Promise<WorkspaceSearchOccurrenceResult>,
+  resolveSyncedInlineInstance: (input: ResolveSyncedInlineInstanceInput) => ipcRenderer.invoke('knowbook:resolve-synced-inline-instance', input) as Promise<SyncedInlineInstanceResult>,
+  openSyncedEditingSession: (input: OpenSyncedEditingSessionInput) => ipcRenderer.invoke('knowbook:open-synced-editing-session', input) as Promise<OpenSyncedEditingSessionResult>,
+  invokeSyncedEditingSession: <M extends SyncedEditingMethod>(input: SyncedEditingRequest<M>) => ipcRenderer.invoke('knowbook:invoke-synced-editing-session', input) as Promise<SyncedEditingResult<M>>,
+  releaseSyncedEditingSession: (sessionId: string) => ipcRenderer.invoke('knowbook:release-synced-editing-session', sessionId) as Promise<void>,
   getSearchFacets: () => ipcRenderer.invoke('knowbook:get-search-facets') as Promise<WorkspaceSearchFacets>,
   listSavedSearches: () => ipcRenderer.invoke('knowbook:list-saved-searches') as Promise<SavedWorkspaceSearch[]>,
   saveSearch: (input: SaveWorkspaceSearchInput) => ipcRenderer.invoke('knowbook:save-search', input) as Promise<SavedWorkspaceSearch>,

@@ -11,7 +11,12 @@ export function setRichTextDomSelection(root: Element, { from, to = from, backwa
     const block = [...root.querySelectorAll<HTMLElement>('[data-block-id]')].find(node => node.dataset.blockId === point.blockId)
     if (!block) throw new Error(`Missing selection block: ${point.blockId}`)
     const walker = owner.createTreeWalker(block, view.NodeFilter.SHOW_TEXT, {
-      acceptNode: node => node.parentElement?.closest('[contenteditable="false"]') ? view.NodeFilter.FILTER_REJECT : view.NodeFilter.FILTER_ACCEPT
+      acceptNode: node => {
+        const boundary = node.parentElement?.closest('[contenteditable="false"]')
+        // An independent editable island overrides the outer node view's
+        // contenteditable=false. Only widgets inside this selection root count.
+        return boundary && root.contains(boundary) ? view.NodeFilter.FILTER_REJECT : view.NodeFilter.FILTER_ACCEPT
+      }
     })
     let remaining = point.offset, last: Node | null = null
     for (let node = walker.nextNode(); node; node = walker.nextNode()) {

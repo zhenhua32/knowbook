@@ -18,6 +18,9 @@ export interface BackupVersion {
   createdAt: string
   documentCount: number | null
   current: boolean
+  /** V3 discovery is separate from the not-yet-installed restore consumer. */
+  format?: 'synced-v3'
+  restorable?: false
 }
 
 export const DOCUMENT_HISTORY_LIMIT = 100

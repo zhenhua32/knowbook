@@ -205,6 +205,7 @@ export class WebDavSyncService {
 
   sync(): Promise<WebDavSyncStatus> {
     return this.operation('syncing', async () => {
+      this.store.assertOrdinarySyncAllowed()
       const client = this.client()
       if (this.verifiedTarget !== targetKey(this.config)) {
         this.capabilities = await client.test()

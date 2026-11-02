@@ -1,3 +1,5 @@
+import type { EditorCloseRequest, EditorCloseCancelled, EditorCloseAcknowledgement } from './editor-close'
+export type { EditorCloseRequest, EditorCloseCancelled, EditorCloseAcknowledgement, EditorCloseReason } from './editor-close'
 import type {
   AssistantEvent,
   AssistantSessionChangedEvent,
@@ -37,6 +39,13 @@ import type {
   SystemPluginFramePolicyInput
 } from './system-plugin'
 import type { SystemPluginServiceRpcJson } from '../main/system-plugin/service-rpc'
+import type { WorkspaceSearchOccurrence, WorkspaceSearchOccurrenceResult } from './workspace-search-occurrence'
+import type { SyncedBlocksChangedEvent } from './synced-blocks'
+import type { OpenSyncedEditingSessionInput, OpenSyncedEditingSessionResult, SyncedEditingMethod, SyncedEditingRequest, SyncedEditingResult } from './synced-editing-session'
+export type { SyncedEditingSession, OpenSyncedEditingSessionInput, OpenSyncedEditingSessionResult, SyncedEditingMethod, SyncedEditingRequest, SyncedEditingResult } from './synced-editing-session'
+export type { WorkspaceSearchOccurrence, WorkspaceSearchOccurrenceResult } from './workspace-search-occurrence'
+import type { ResolveSyncedInlineInstanceInput, SyncedInlineInstanceResult } from './workspace-search-occurrence'
+export type { ResolveSyncedInlineInstanceInput, SyncedInlineInstanceResult, SyncedInlineInstanceAddress } from './workspace-search-occurrence'
 import type {
   SaveWorkspaceSearchInput,
   SavedWorkspaceSearch,
@@ -954,9 +963,13 @@ export interface DocumentLinkCheck {
 }
 
 export interface ElectronApi {
+  onEditorCloseRequest: (listener: (request: EditorCloseRequest) => void) => () => void
+  onEditorCloseCancelled: (listener: (request: EditorCloseCancelled) => void) => () => void
+  acknowledgeEditorClose: (input: EditorCloseAcknowledgement) => Promise<boolean>
   getHomeData: () => Promise<HomeData>
   getPluginHomeData: () => Promise<PluginHomeData>
   onWorkspaceMutated: (listener: () => void) => () => void
+  onSyncedBlocksChanged: (listener: (event: SyncedBlocksChangedEvent) => void) => () => void
   onPluginsMutated: (listener: () => void) => () => void
   onPluginNotification: (listener: (notification: import('./app-notification').PluginNotification) => void) => () => void
   onPluginUiPreparation: (listener: (request: PluginUiPreparationRequest) => void) => () => void
@@ -1086,6 +1099,11 @@ export interface ElectronApi {
   getDatabaseEntities: (databaseId: string) => Promise<DatabaseEntity[]>
   searchDocuments: (query: string) => Promise<GlobalSearchResult[]>
   searchWorkspace: (input: WorkspaceSearchInput) => Promise<WorkspaceSearchPage>
+  resolveWorkspaceSearchOccurrence: (input: WorkspaceSearchOccurrence) => Promise<WorkspaceSearchOccurrenceResult>
+  resolveSyncedInlineInstance: (input: ResolveSyncedInlineInstanceInput) => Promise<SyncedInlineInstanceResult>
+  openSyncedEditingSession: (input: OpenSyncedEditingSessionInput) => Promise<OpenSyncedEditingSessionResult>
+  invokeSyncedEditingSession: <M extends SyncedEditingMethod>(input: SyncedEditingRequest<M>) => Promise<SyncedEditingResult<M>>
+  releaseSyncedEditingSession: (sessionId: string) => Promise<void>
   getSearchFacets: () => Promise<WorkspaceSearchFacets>
   listSavedSearches: () => Promise<SavedWorkspaceSearch[]>
   saveSearch: (input: SaveWorkspaceSearchInput) => Promise<SavedWorkspaceSearch>

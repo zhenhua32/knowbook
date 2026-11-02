@@ -1,6 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import type { DocumentTreeNode } from '@shared/contracts'
 import type { WorkspaceSearchInput, WorkspaceSearchResult } from '@shared/workspace-search'
+import { isSameWorkspaceSearchOccurrence, type WorkspaceSearchOccurrence } from '@shared/workspace-search-occurrence'
 import { defaultWorkspaceSearchInput, useWorkspaceSearch, type WorkspaceSearchRequest } from '../hooks/useWorkspaceSearch'
 import { getUiText } from '../i18n'
 import { getErrorMessage } from '../utils/errorMessage'
@@ -15,6 +16,7 @@ export type SearchPageProps = {
   request: WorkspaceSearchRequest | null
   onOpenDocument: (id: string, shouldContinue?: () => boolean) => boolean | void | Promise<boolean | void>
   onOpenBlock: (documentId: string, blockId: string, shouldContinue?: () => boolean) => boolean | void | Promise<boolean | void>
+  onOpenCanonical?: (occurrence: WorkspaceSearchOccurrence, shouldContinue?: () => boolean) => boolean | void | Promise<boolean | void>
 }
 
 type SearchAction = 'open' | 'document' | 'copy'
@@ -28,6 +30,8 @@ type SearchActionContext = {
 
 function matchesActionResult(context: SearchActionContext, item: WorkspaceSearchResult): boolean {
   return context.item.documentId === item.documentId && (context.item.blockId ?? null) === (item.blockId ?? null)
+    && (context.item.canonicalOccurrence&&item.canonicalOccurrence?isSameWorkspaceSearchOccurrence(context.item.canonicalOccurrence,item.canonicalOccurrence)
+      : !context.item.canonicalOccurrence&&!item.canonicalOccurrence)
     && (context.action !== 'copy' || (context.item.documentTitle === item.documentTitle && context.item.documentPath === item.documentPath))
 }
 
@@ -43,7 +47,7 @@ function MatchText({ text, terms }: { text: string; terms: string[] }) {
   return <>{text.split(pattern).map((part, index) => index % 2 ? <mark key={index}>{part}</mark> : part)}</>
 }
 
-export default function SearchPage({ isActive, isZh, documentTree, request, onOpenDocument, onOpenBlock }: SearchPageProps) {
+export default function SearchPage({ isActive, isZh, documentTree, request, onOpenDocument, onOpenBlock, onOpenCanonical }: SearchPageProps) {
   const search = useWorkspaceSearch({ isActive, isZh, request })
   const { input, result, loading } = search
   const id = useId(), queryInput = useRef<HTMLInputElement>(null)
@@ -162,7 +166,11 @@ export default function SearchPage({ isActive, isZh, documentTree, request, onOp
         report(choose('文档链接已复制，可粘贴到其他文档。', 'Document link copied. Paste it into another document.'))
       } else {
         const shouldContinue = () => mounted.current && isCurrentAction(context)
-        const opened = action === 'open' && item.blockId ? await onOpenBlock(item.documentId, item.blockId, shouldContinue) : await onOpenDocument(item.documentId, shouldContinue)
+        let opened:boolean|void
+        if(action==='open'&&item.canonicalOccurrence){
+          if(!onOpenCanonical)throw new Error(choose('同步块定位暂不可用，请重新打开工作区。','Synced occurrence navigation is unavailable. Reopen the workspace.'))
+          opened=await onOpenCanonical(item.canonicalOccurrence,()=>shouldContinue()&&hasActionOwner(context))
+        }else opened=action === 'open' && item.blockId ? await onOpenBlock(item.documentId, item.blockId, shouldContinue) : await onOpenDocument(item.documentId, shouldContinue)
         if (opened === false) report(choose('未能切换文档，搜索已保留。请处理保存错误后重试。', 'Could not switch documents. Your search is preserved. Resolve the save error and retry.'), true)
       }
     } catch (cause) {
@@ -329,8 +337,8 @@ export default function SearchPage({ isActive, isZh, documentTree, request, onOp
                   'aria-describedby': ownsFeedback ? feedbackId : undefined
                 }
               }
-              return <article className="workspace-search-result" key={JSON.stringify([item.documentId, item.blockId ?? null])}
-              data-testid="workspace-search-result" data-document-id={item.documentId} data-block-id={item.blockId || ''}>
+              return <article className="workspace-search-result" key={JSON.stringify([item.documentId, item.blockId ?? null,item.canonicalOccurrence?.instanceId??null])}
+              data-testid="workspace-search-result" data-document-id={item.documentId} data-block-id={item.blockId || ''} data-instance-id={item.canonicalOccurrence?.instanceId}>
               <div className="workspace-search-result-head"><div className="workspace-search-result-heading">
                 <h4><MatchText text={item.documentTitle} terms={terms} /></h4>
                 <p className="workspace-search-path" title={item.documentPath}><MatchText text={item.documentPath} terms={terms} /></p></div>

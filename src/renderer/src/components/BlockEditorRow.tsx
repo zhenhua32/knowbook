@@ -20,11 +20,12 @@ import { formatMarkdownSelection, markdownFormatShortcut, type MarkdownFormat } 
 import { editCodeIndentation } from '../utils/codeIndentation'
 import type { SourceInlinePresentationAction } from './SourceInlinePresentationToolbar'
 import { nativeContainerPresentation } from '../utils/nativeContainerPresentation'
-import { isDatabaseEditorIsland } from '../utils/editorIsland'
+import { isIndependentEditorIsland } from '../utils/editorIsland'
 import { canAiEditBlockText } from '@shared/blockAiEligibility'
 
 const BlockContextMenu = lazy(() => import('./BlockContextMenu').then(module => ({ default: module.BlockContextMenu })))
 const InlineDatabaseView = lazy(() => import('../features/database/InlineDatabaseView'))
+const InlineSyncedBlock = lazy(() => import('../features/synced-blocks/InlineSyncedBlock'))
 const MarkdownTableEditor = lazy(() => import('./MarkdownTableEditor').then((module) => ({ default: module.MarkdownTableEditor })))
 const SourceInlinePresentationToolbar = lazy(() => import('./SourceInlinePresentationToolbar').then(module => ({ default: module.SourceInlinePresentationToolbar })))
 const MarkdownFormatToolbar = lazy(() => import('./BlockFormatToolbar').then((module) => ({ default: module.BlockFormatToolbar })))
@@ -235,8 +236,8 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
   const effectiveCodeLanguage = block.type === 'code' ? detectCodeLanguage(block.content, block.language) : null
   const nodes = useContext(MarkdownBlockNodesContext)
   const isMermaid = block.type === 'code' && /^mermaid(?:\s|$)/i.test((block.markdownFormat?.codeInfo ?? block.language ?? '').trim())
-  const showAdvancedPreview = !['code', 'math', 'divider', 'table', 'frontmatter', 'database-view'].includes(block.type) && nodes && hasAdvancedMarkdown(nodes)
-  const mediaEligible = !['code', 'math', 'divider', 'table', 'frontmatter', 'database-view'].includes(block.type)
+  const showAdvancedPreview = !['code', 'math', 'divider', 'table', 'frontmatter', 'database-view', 'synced-block'].includes(block.type) && nodes && hasAdvancedMarkdown(nodes)
+  const mediaEligible = !['code', 'math', 'divider', 'table', 'frontmatter', 'database-view', 'synced-block'].includes(block.type)
   const richMedia = mediaEligible ? extractBlockRichMedia(block.content, props.markdownReferences) : { images: [], links: [] }
   const shouldShowRichMediaPreview = mediaEligible && (!showAdvancedPreview || richMedia.images.length > 0)
   const hasRichMedia = shouldShowRichMediaPreview && (richMedia.images.length > 0 || richMedia.links.length > 0)
@@ -250,7 +251,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
   const [isMediaSourceExpanded, setIsMediaSourceExpanded] = useState(false)
   const [isTableSourceExpanded, setIsTableSourceExpanded] = useState(false)
   const InputColumn = block.type === 'table' ? 'details' : 'div'
-  const canFormat = !['code', 'math', 'divider', 'table', 'frontmatter', 'html', 'database-view'].includes(block.type)
+  const canFormat = !['code', 'math', 'divider', 'table', 'frontmatter', 'html', 'database-view', 'synced-block'].includes(block.type)
   const blockToolbarRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const composingRef = useRef(false)
@@ -365,7 +366,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
   }, [block.content, block.type])
 
   const handleBlockTypeChange = (newType: string) => {
-    if (block.type === 'database-view') return
+    if (block.type === 'database-view' || block.type === 'synced-block') return
     if (newType === block.type) return
     props.checkpointDraft?.()
     if (newType === 'divider') {
@@ -392,7 +393,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
     setShowContextMenu(true)
   }
   const handleContextMenu = (event: React.MouseEvent<HTMLDivElement>) => {
-    if (isDatabaseEditorIsland(event.target)) return
+    if (isIndependentEditorIsland(event.target)) return
     event.preventDefault()
     event.stopPropagation()
     openBlockActions(event.clientX, event.clientY)
@@ -422,7 +423,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
       }}
       onContextMenu={handleContextMenu}
       onKeyDown={(event) => {
-        if (isDatabaseEditorIsland(event.target)) return
+        if (isIndependentEditorIsland(event.target)) return
         if (isImeKeyboardEvent(event.nativeEvent, composingRef.current)) return
         if ((event.shiftKey && event.key === 'F10') || event.key === 'ContextMenu') {
           event.preventDefault(); event.stopPropagation()
@@ -431,7 +432,7 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
         }
       }}
       onMouseDown={(event) => {
-        if (isDatabaseEditorIsland(event.target)) return
+        if (isIndependentEditorIsland(event.target)) return
         if (event.button !== 0) {
           return
         }
@@ -447,22 +448,23 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
         notifyBlockMouseDown(index)
       }}
       onMouseEnter={(event) => {
-        if (isDatabaseEditorIsland(event.target)) return
+        if (isIndependentEditorIsland(event.target)) return
         handleBlockMouseEnter(index, (event.buttons & 1) === 1)
       }}
       onMouseUp={(event) => {
+        if (isIndependentEditorIsland(event.target)) return
         if (event.button === 0) {
           endBlockRangeSelection()
         }
       }}
       onDragOver={(event) => {
-        if (isDatabaseEditorIsland(event.target)) return
+        if (isIndependentEditorIsland(event.target)) return
         event.preventDefault()
         setDragOverBlockIndex(index)
         setDragOverBlockDepth(getDraggedBlockDepthPreview(index, event.clientX, event.currentTarget))
       }}
       onDrop={(event) => {
-        if (isDatabaseEditorIsland(event.target)) return
+        if (isIndependentEditorIsland(event.target)) return
         event.preventDefault()
         dropBlockAt(index, getDraggedBlockDepthPreview(index, event.clientX, event.currentTarget))
       }}
@@ -558,7 +560,9 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
 
       {/* ── Content area ── */}
       <div className="block-content-area">
-        {block.type === 'database-view' && block.id ? <Suspense fallback={<p role="status">{isZh ? '正在加载数据库视图…' : 'Loading database view…'}</p>}>
+        {block.type === 'synced-block' ? <Suspense fallback={<p role="status">{isZh ? '正在加载同步块…' : 'Loading synced block…'}</p>}>
+          <InlineSyncedBlock block={block} mode="edit" isZh={isZh} ui={ui} />
+        </Suspense> : block.type === 'database-view' && block.id ? <Suspense fallback={<p role="status">{isZh ? '正在加载数据库视图…' : 'Loading database view…'}</p>}>
           <InlineDatabaseView blockId={block.id} content={block.content} mode="edit" />
         </Suspense> : block.type === 'divider' ? (
           <div className="block-divider-line" />

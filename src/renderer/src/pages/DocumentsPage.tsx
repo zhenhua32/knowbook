@@ -1,13 +1,15 @@
-import { Suspense, useRef, useState, type ReactNode } from 'react'
+import { InlineSyncedProvider } from '../features/synced-blocks/InlineSyncedContext'
+import { getCanonicalInlineRuntime } from '../features/synced-blocks/inlineRuntime'
+import { flushCanonicalInlinePendingChanges, canonicalInlineInputLocked } from '../features/synced-blocks/inlineBridge'
+import { Suspense, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { lazyWithRetry as lazy } from '../utils/lazyWithRetry'
 import { RecoveryState } from '../components/RecoveryState'
-import { areDocumentDraftBlocksEqual } from '../utils/documentDraftComparison'
 import '../document-experience.css'
 import '../components/AiAnswerContent.css'
 import '../components/AiRequestError.css'
 import '../components/documents-aux-ai.css'
 import '../components/link-suggestions.css'
-import type { ClipWebPageInput, DocumentBlockDraft, HomeData } from '@shared/contracts'
+import type { ClipWebPageInput, HomeData } from '@shared/contracts'
 import type { UiText } from '../i18n'
 import { DocumentSelectionAiPanel } from '../components/DocumentSelectionAiPanel'
 import { useDocumentSelectionAiState } from '../hooks/useDocumentSelectionAiState'
@@ -26,7 +28,6 @@ import { useDocumentDatabaseViewInsertion } from '../hooks/useDocumentDatabaseVi
 
 const BLOCK_INDENT_SIZE = 24
 const DocumentLinkCheckDialog = lazy(() => import('../components/DocumentLinkCheckDialog'))
-const DocumentMarkdownSourceDialog = lazy(() => import('../components/DocumentMarkdownSourceDialog'))
 const DocumentRenameDialog = lazy(() => import('../components/DocumentRenameDialog'))
 const BlockContextMenu = lazy<BlockContextMenuProps>(() => import('../components/BlockContextMenu').then(module => ({ default: module.BlockContextMenu })))
 const DocumentBlockMoveDialog = lazy(() => import('../components/DocumentBlockMoveDialog'))
@@ -62,11 +63,12 @@ export function DocumentsPage({
   pluginMenuContent,
   ui
 }: DocumentsPageProps) {
+  const runtime = getCanonicalInlineRuntime(), currentHost = documents.getSyncedHostEditorState()
+  const openHostSource = () => { void runtime.openHostSource(document.activeElement instanceof HTMLElement ? document.activeElement : null) }
   const [webClipBusy, setWebClipBusy] = useState(false)
   const webClipInFlight = useRef(false)
   const [webClipUrlDraft, setWebClipUrlDraft] = useState('')
   const [linkCheckDocumentId, setLinkCheckDocumentId] = useState<string | null>(null)
-  const [sourceEditor, setSourceEditor] = useState<{ documentId: string; blocks: DocumentBlockDraft[] } | null>(null)
   const attachments = useDocumentAttachments(documents, isZh)
   const rename = useDocumentRenameOpening(documents.getRenameTarget)
   const databaseViews = useDocumentDatabaseViewInsertion(documents, ui, isZh)
@@ -360,7 +362,17 @@ export function DocumentsPage({
       )
     : null
 
+  const expectedInlineInstances = visibleEditorRows.flatMap(row => row.block.type === 'synced-block' && row.block.id ? [row.block.id] : [])
+  const expectedInlineKey = JSON.stringify(expectedInlineInstances)
+  useLayoutEffect(() => {
+    if (!currentHost) return
+    return runtime.registerHostSurface(currentHost.hostSession, Object.freeze({}), expectedInlineInstances)
+  }, [runtime, currentHost?.hostSession, expectedInlineKey])
   return (
+    <InlineSyncedProvider value={currentHost ? { documentId: currentHost.host.documentId, hostSession: currentHost.hostSession,
+      getCurrent: documents.getSyncedHostEditorState, runtime, ui, isZh,
+      onOpenDocument: documents.openDocumentInDocumentsPage, onOpenBlock: documents.openDocumentBlockInDocumentsPage,
+      onOpenAnchor: documents.openDocumentAnchorInDocumentsPage } : null}>
     <DatabaseEmbedProvider value={databaseViews.context}>
     <div {...attachments.surfaceProps}>
       <MarkdownNavigationContext.Provider value={documents.navigateMarkdownLink}>
@@ -374,10 +386,13 @@ export function DocumentsPage({
         onRevealBlock={documents.revealBlockAncestors}
         highlightedBlockId={documents.highlightedBlockId}
         onToggleReadingMode={() => {
-          documents.clearBlockSelection()
-          documents.dismissSlashCommand()
-          documents.setPendingFocusBlockIndex(null)
-          documents.setIsReadingMode(!documents.isReadingMode)
+          if (canonicalInlineInputLocked()) return
+          const opening = currentHost?.hostSession
+          void flushCanonicalInlinePendingChanges().then(ready => {
+            if (!ready || documents.getSyncedHostEditorState()?.hostSession !== opening) return
+            documents.clearBlockSelection(); documents.dismissSlashCommand(); documents.setPendingFocusBlockIndex(null)
+            documents.setIsReadingMode(!documents.isReadingMode)
+          })
         }}
         onOpenBlockSearch={documents.openBlockSearch}
         addBlockLabel={ui.addBlock}
@@ -420,11 +435,9 @@ export function DocumentsPage({
             return documents.insertChildDraftBlock(index, undefined, type)
           },
           onUndo: documents.undoEdit, onRedo: documents.redoEdit, onOpenBlockActions: blockActions.openBlockActions,
-          onEditSource: () => { if (documents.selectedDocumentId) setSourceEditor({ documentId: documents.selectedDocumentId, blocks: documents.getDraftBlocks() }) } }}
+          onEditSource: openHostSource }}
         previewHeaderProps={{ ...previewHeaderProps, pluginMenuContent, onOpenHistory, onRename: rename.open, onOpenAttachments: attachments.openAttachments, onCheckLinks: () => setLinkCheckDocumentId(documents.selectedDocumentId),
-          onEditMarkdownSource: () => {
-            if (documents.selectedDocumentId) setSourceEditor({ documentId: documents.selectedDocumentId, blocks: documents.getDraftBlocks() })
-          } }}
+          onEditMarkdownSource: openHostSource }}
         relationGroups={relationGroups}
         selectedDocument={documents.selectedDocument}
         selectionAiContent={selectionAiContent}
@@ -439,18 +452,6 @@ export function DocumentsPage({
         <Suspense fallback={null}><DocumentRenameDialog key={rename.opening.key}
           opening={rename.opening} isZh={isZh} onRename={name => documents.renameTitle(rename.opening!.target, name)} /></Suspense>
       </ErrorBoundary>}
-
-      {sourceEditor && sourceEditor.documentId === documents.selectedDocumentId && <Suspense fallback={null}>
-        <DocumentMarkdownSourceDialog key={sourceEditor.documentId} blocks={sourceEditor.blocks} isZh={isZh}
-          onClose={() => setSourceEditor(null)} onApply={(blocks) => {
-            if (!areDocumentDraftBlocksEqual(documents.getDraftBlocks(), sourceEditor.blocks)) return false
-            documents.checkpointDraft()
-            documents.clearBlockSelection()
-            documents.setIsReadingMode(false)
-            documents.setDraftBlocks(blocks)
-            return true
-          }} />
-      </Suspense>}
 
       {linkCheckDocumentId && linkCheckDocumentId === documents.selectedDocumentId && <Suspense fallback={null}>
         <DocumentLinkCheckDialog documentId={linkCheckDocumentId} isZh={isZh} onFlush={documents.flushPendingChanges}
@@ -470,5 +471,6 @@ export function DocumentsPage({
       {databaseViews.picker}
     </div>
     </DatabaseEmbedProvider>
+    </InlineSyncedProvider>
   )
 }

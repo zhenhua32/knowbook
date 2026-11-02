@@ -1,5 +1,8 @@
 import Database from 'better-sqlite3'
 import { writeSyncedBackupV3 } from './v3-export'
+import { readBackupV3Files } from './v3-reader'
+import { parseBackupV3Files, type BackupV3File } from './v3-format'
+import { publicationHash, publicationJson, publicationCompare } from '../sync/synced-publication-model'
 import { assertSyncedShape, isSyncedUuid } from '../../shared/syncedBlockValidation'
 import {
   copyFileSync,
@@ -8,12 +11,13 @@ import {
   mkdtempSync,
   readdirSync,
   realpathSync,
+  rmdirSync,
   rmSync,
   statSync,
   writeFileSync
 } from 'node:fs'
 import { createHash, randomUUID } from 'node:crypto'
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { BackupResult } from '@shared/contracts'
 import { renderMarkdownFrontmatter, serializeBlocksToMarkdown } from '@shared/markdown'
@@ -124,6 +128,11 @@ export class MarkdownBackupService {
       return Promise.resolve(this.lastCompletedResult)
     }
 
+    const canonicalSource = typeof this.store.getCanonicalBackupSource === 'function' ? this.store.getCanonicalBackupSource() : null
+    let exportPromise: Promise<BackupResult>
+    if (canonicalSource) {
+      exportPromise = this.performCanonicalExport(canonicalSource)
+    } else {
     const getDatabasePath = (this.store as KnowbookStore & { getDatabasePath?: () => string }).getDatabasePath
     const databasePath = getDatabasePath?.call(this.store)
     let job: BackupExportJob
@@ -147,7 +156,9 @@ export class MarkdownBackupService {
       }
       fallbackExported = documents.length
     }
-    const exportPromise = this.performExport(job, fallbackExported).then((result) => {
+    exportPromise = this.performExport(job, fallbackExported)
+    }
+    exportPromise = exportPromise.then((result) => {
       this.lastCompletedRevision = revision
       this.lastCompletedResult = result
       return result
@@ -175,6 +186,42 @@ export class MarkdownBackupService {
   listVersions() { return listBackupVersions(this.backupRoot) }
   resolveVersion(id: string) { return resolveBackupVersion(this.backupRoot, id) }
 
+  private async performCanonicalExport(source: { databasePath: string; userDataRoot: string }): Promise<BackupResult> {
+    const requested = resolve(this.backupRoot)
+    mkdirSync(dirname(requested), { recursive: true })
+    const parent = realpathSync(dirname(requested)), backupRoot = join(parent, basename(requested))
+    // The producer requires a NONEXISTENT destination. A separate new parent
+    // owns this attempt; it never shares the V2 abandoned-staging cleanup prefix.
+    const attemptRoot = mkdtempSync(join(parent, '.knowbook-synced-v3-')), destination = join(attemptRoot, 'snapshot'), snapshotId = randomUUID()
+    const job: BackupV3DatabaseExportJob = { kind: 'synced-v3', databasePath: source.databasePath, userDataRoot: source.userDataRoot, destination, snapshotId }
+    let published = false
+    const digest = (files: BackupV3File[]) => publicationHash(publicationJson(files.map(file => ({ relativePath: file.relativePath,
+      hash: publicationHash(file.bytes), bytes: file.bytes.byteLength })).sort((a, b) => publicationCompare(a.relativePath, b.relativePath))))
+    try {
+      await this.runExport(job)
+      // Worker reply counts/packets are not proof. Capture the actual bounded
+      // files afresh and parse their complete graph, including strict extras.
+      const files = readBackupV3Files(destination), archive = parseBackupV3Files(files), actualHash = digest(files)
+      if (archive.manifest.snapshotId !== snapshotId) throw new Error('The actual V3 archive has another snapshot identity')
+      const confirmed = this.store.readConfirmedCanonicalBackup(snapshotId, destination)
+      if (confirmed !== actualHash) throw new Error('The cold V3 bytes differ from the real confirmed Main publication')
+      // Recheck the complete file/directory tails after the private SQL claim
+      // read. No caller archive DTO or source-path guess can authorize publish.
+      if (digest(readBackupV3Files(destination)) !== confirmed) throw new Error('The V3 archive changed after its confirmed publication read')
+      publishBackupSnapshot(backupRoot, destination)
+      published = true
+      // Only an empty, successful attempt parent is removed. A partial or a
+      // confirmed-but-unpublished attempt is always preserved with its claim.
+      try { rmdirSync(attemptRoot) } catch (error) { console.warn('V3 backup published, but its empty attempt parent could not be removed.', error) }
+      const at = new Date().toISOString()
+      this.store.saveSetting('backup.lastRunAt', at)
+      return { exported: archive.documents.length, root: this.backupRoot, at }
+    } catch (cause) {
+      throw new Error(published ? 'V3 backup was published, but completion metadata failed; the complete version and durable publication are retained.'
+        : 'V3 backup was not replaced by a fallback; previous version and attempt evidence are retained at ' + attemptRoot, { cause })
+    }
+  }
+
   private async performExport(job: BackupExportJob, fallbackExported: number): Promise<BackupResult> {
     const exported = await this.runExport(job)
     const at = new Date().toISOString()
@@ -200,6 +247,9 @@ class MarkdownBackupWriter {
   ) {}
 
   writeAll(documents: ExportDocument[], standaloneDatabases: ExportStandaloneDatabase[], catalog?: ExportStandaloneDatabase): void {
+    if (documents.some(document => document.blocks.some(block => block.type === 'synced-block'))) {
+      throw new Error('Legacy Markdown backup cannot serialize a synced reference as ordinary JSON; use the complete raw-database V3 producer.')
+    }
     if (catalog) {
       validateExportSnapshot({ documents, standaloneDatabases, catalog })
       this.version = { snapshotId: randomUUID(), catalog }

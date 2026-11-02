@@ -1,5 +1,7 @@
+import { beginCanonicalInlineAsyncEdit, waitForCanonicalInlineUnlock } from '../features/synced-blocks/inlineBridge'
+import { isIndependentEditorIsland } from '../utils/editorIsland'
 import { useEffect, useId, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type MouseEvent, type KeyboardEvent } from 'react'
-import { createPortal } from 'react-dom'
+import { createPortal, flushSync } from 'react-dom'
 import { serializeBlocksToMarkdown } from '@shared/markdown'
 import { collectMarkdownDestinations } from '@shared/markdownLinks'
 import type { DocumentsDomainState } from '../types/appDomains'
@@ -30,13 +32,16 @@ export function useDocumentAttachments(documents: DocumentsDomainState, zh: bool
     const initial = latest.current, documentId = initial.selectedDocumentId
     if (!documentId || initial.detailLoading || !files.length) return
     if (locked.current) { notify(zh ? '请等待当前附件导入完成。' : 'Wait for the current import to finish.', 'info'); return }
+    const finish = beginCanonicalInlineAsyncEdit(); if (!finish) return
     locked.current = true; setBusy(true); setError('')
     try {
       const attachments = await importAttachmentFiles(files)
+      await waitForCanonicalInlineUnlock()
       if (!active.current || latest.current.selectedDocumentId !== documentId || latest.current.detailLoading) return
       const editor = latest.current
       const next = insertAttachmentBlocks(editor.getDraftBlocks(), attachments, target)
-      editor.checkpointDraft(); editor.clearBlockSelection(); editor.setIsReadingMode(false); editor.setDraftBlocks(next)
+      flushSync(() => { editor.checkpointDraft(); editor.clearBlockSelection(); editor.setDraftBlocks(next) })
+      finish(); editor.setIsReadingMode(false)
       notify(zh ? `已插入 ${attachments.length} 个附件。` : `Inserted ${attachments.length} attachments.`)
     } catch (error) {
       if (active.current && latest.current.selectedDocumentId === documentId && !latest.current.detailLoading) {
@@ -45,7 +50,7 @@ export function useDocumentAttachments(documents: DocumentsDomainState, zh: bool
         setError(message); notify(message, 'error')
       }
     } finally {
-      locked.current = false
+      finish(); locked.current = false
       if (active.current) setBusy(false)
     }
   }
@@ -57,7 +62,7 @@ export function useDocumentAttachments(documents: DocumentsDomainState, zh: bool
     const textarea = element instanceof HTMLTextAreaElement ? element : row?.querySelector('textarea')
     return { blockId: block.id, content: block.content, start: textarea?.selectionStart ?? block.content.length, end: textarea?.selectionEnd ?? block.content.length }
   }
-  const fileDrag = (event: DragEvent<HTMLDivElement>) => event.dataTransfer.types.includes('Files') && (event.target as Element).closest('.preview-panel')
+  const fileDrag = (event: DragEvent<HTMLDivElement>) => !isIndependentEditorIsland(event.target) && event.dataTransfer.types.includes('Files') && (event.target as Element).closest('.preview-panel')
   const previewInlineImage = (event: MouseEvent<HTMLDivElement> | KeyboardEvent<HTMLDivElement>) => {
     const target = event.target
     if (!(target instanceof HTMLImageElement) || !target.matches('.markdown-inline-image')) return
@@ -71,6 +76,7 @@ export function useDocumentAttachments(documents: DocumentsDomainState, zh: bool
     onClickCapture: previewInlineImage,
     onKeyDownCapture: previewInlineImage,
     onPasteCapture: (event: ClipboardEvent<HTMLDivElement>) => {
+      if (isIndependentEditorIsland(event.target)) return
       if (!(event.target as Element).matches('.block-inline-textarea') || !event.clipboardData.files.length) return
       event.preventDefault(); event.stopPropagation()
       void insert(Array.from(event.clipboardData.files), insertionAt(event.target as Element))

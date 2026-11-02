@@ -1,4 +1,5 @@
 import { hasSyncedRemoteObservationForCreate } from './synced-remote-observation-read'
+import { assertSyncedEditingFenceOwned } from './synced-editing-fence'
 import { readSyncedExchangeHostCut } from './synced-exchange-host-cut'
 import { readSyncedRecoveryHostCut } from './synced-recovery-boundary-read'
 import { randomUUID } from 'node:crypto'
@@ -45,7 +46,7 @@ function conflict(kind: 'host' | 'group' | 'topology' | 'history', groups: Group
 function mutation(db: Database.Database, run: () => SyncedMainHostSuccess): SyncedHostFinalResult {
   if (db.inTransaction) throw new Error('宿主结构仓库必须拥有真实外层 IMMEDIATE 事务。')
   if (db.pragma('foreign_keys', { simple: true }) !== 1) throw new Error('宿主结构写入必须启用 SQLite 外键。')
-  try { return db.transaction(run).immediate() }
+  try { return db.transaction(()=>{assertSyncedEditingFenceOwned(db);return run()}).immediate() }
   catch (error) {
     if (error instanceof Refused) return error.result
     if (error instanceof UnsupportedSyncedHostMove) return { status: 'unsupported', reason: error.reason }

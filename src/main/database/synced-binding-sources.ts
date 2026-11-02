@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { assertSyncedEditingFenceOwned, assertSyncedEditingFenceRead } from './synced-editing-fence'
 import type Database from 'better-sqlite3'
 import type { SyncedBindingSource, SyncedGroupSnapshot, SyncedGroupSnapshotsWithLinkSourcesResult,
   SyncedOperationWithLinkSourceResult } from '../../shared/synced-blocks'
@@ -171,6 +172,7 @@ function publishCapturedSources(db: Database.Database, workspace: Workspace,
 export function getSyncedGroupSnapshotsWithLinkSources(db: Database.Database, input: unknown): SyncedGroupSnapshotsWithLinkSourcesResult {
   ownRead(db)
   const captured = db.transaction(() => {
+    assertSyncedEditingFenceOwned(db)
     const workspace = identity(db), result = getSyncedGroupSnapshots(db, input)
     if (result.workspaceScope !== workspace.scope) return fail('同步块读取与来源票不属于同一工作区。')
     const sources = result.items.map(item => item.status === 'missing' ? null : captureSource(db, item.snapshot))
@@ -187,6 +189,7 @@ export function getSyncedOperationWithLinkSource(db: Database.Database, input: u
   ownRead(db)
   const id = validateSyncedOperationLookupInput(input)
   const captured = db.transaction(() => {
+    assertSyncedEditingFenceOwned(db)
     const workspace = identity(db), row = readSyncedGroupOperationRow(db, id)
     if (!row) return null
     const result = { ...decodeSyncedGroupOperationAck(row), replayed: true }
@@ -203,6 +206,7 @@ export function captureSyncedBaselineOwner(db: Database.Database, input: unknown
   ownRead(db)
   const { groupId } = ownerInput(input, ['groupId'])
   const captured = db.transaction(() => {
+    assertSyncedEditingFenceOwned(db)
     const workspace = identity(db), result = getSyncedGroupSnapshots(db, { groupIds: [groupId] })
     if (result.workspaceScope !== workspace.scope) return fail('同步块读取与来源 owner 不属于同一工作区。')
     const item = result.items[0]
@@ -225,8 +229,9 @@ export function validateSyncedReadOwner(db: Database.Database, input: unknown): 
   ownRead(db)
   const { readOwnerId } = ownerInput(input, ['readOwnerId'])
   const registry = registries.get(db), owner = registry?.owners.get(readOwnerId)
-  if (!registry || !owner) return { status: 'owner-unavailable' }
+  if (!registry || !owner) { assertSyncedEditingFenceRead(db); return { status: 'owner-unavailable' } }
   return db.transaction((): SyncedReadOwnerValidationResult => {
+    assertSyncedEditingFenceOwned(db)
     const workspace = identity(db)
     if (registry.epoch !== workspace.epoch || currentIncarnation(db, owner.groupId) !== owner.incarnation) {
       return { status: 'owner-unavailable' }
@@ -241,8 +246,9 @@ export function getSyncedOperationWithOwnedLinkSource(db: Database.Database, inp
   ownRead(db)
   const { readOwnerId, clientOperationId } = ownerInput(input, ['readOwnerId', 'clientOperationId'])
   const registry = registries.get(db), owner = registry?.owners.get(readOwnerId)
-  if (!registry || !owner) return { status: 'owner-unavailable' }
+  if (!registry || !owner) { assertSyncedEditingFenceRead(db); return { status: 'owner-unavailable' } }
   const captured = db.transaction(() => {
+    assertSyncedEditingFenceOwned(db)
     const workspace = identity(db)
     if (registry.epoch !== workspace.epoch || currentIncarnation(db, owner.groupId) !== owner.incarnation) return null
     const row = readSyncedGroupOperationRow(db, clientOperationId)

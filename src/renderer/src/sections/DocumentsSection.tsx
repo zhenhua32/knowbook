@@ -1,3 +1,4 @@
+import { flushCanonicalInlinePendingChanges, canonicalInlineInputLocked } from '../features/synced-blocks/inlineBridge'
 import { MarkdownNodes, MarkdownReferencesContext } from '../components/MarkdownContent'
 import { MarkdownBlockNodesContext, MarkdownDocumentProvider } from '../components/MarkdownDocumentContext'
 import { markdownTaskPatch } from '@shared/markdownTasks'
@@ -139,8 +140,10 @@ export function DocumentsSection({
   emptyDocumentStateText
 }: DocumentsSectionProps) {
   const [editorMode, setEditorMode] = useState(readEditorMode)
+  const modeTransition = useRef(0)
+  const currentDocument = useRef(selectedDocument?.id); currentDocument.current = selectedDocument?.id
   useEffect(() => {
-    const update = (event: StorageEvent) => { if (event.key === editorModeKey) setEditorMode(readEditorMode()) }
+    const update = (event: StorageEvent) => { if (event.key === editorModeKey && !canonicalInlineInputLocked()) void flushCanonicalInlinePendingChanges().then(ready => { if (ready) setEditorMode(readEditorMode()) }) }
     window.addEventListener('storage', update)
     return () => window.removeEventListener('storage', update)
   }, [])
@@ -357,10 +360,14 @@ export function DocumentsSection({
             }} /> : null}
           {documentReady && !isReadingMode && richEditorProps ? <div className="document-editor-mode" role="group" aria-label={previewHeaderProps.isZh ? '编辑模式' : 'Editing mode'}>
             {(['rich', 'markdown'] as const).map(mode => <button key={mode} type="button" aria-pressed={editorMode === mode} onClick={() => {
-              richEditorProps.checkpoint()
-              blockEditorRowSharedProps?.clearBlockSelection?.()
-              setEditorMode(mode)
-              try { localStorage.setItem(editorModeKey, mode) } catch { /* The current session still changes mode. */ }
+              const sequence = ++modeTransition.current
+              if (canonicalInlineInputLocked()) return
+              const documentId = selectedDocument?.id
+              void flushCanonicalInlinePendingChanges().then(ready => {
+                if (!ready || canonicalInlineInputLocked() || sequence !== modeTransition.current || documentId !== currentDocument.current) return
+                richEditorProps.checkpoint(); blockEditorRowSharedProps?.clearBlockSelection?.(); setEditorMode(mode)
+                try { localStorage.setItem(editorModeKey, mode) } catch { /* The current session still changes mode. */ }
+              })
             }}>{mode === 'rich' ? (previewHeaderProps.isZh ? '富文本' : 'Rich text') : 'Markdown'}</button>)}
           </div> : null}
         </div>

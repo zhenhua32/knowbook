@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3'
 import type { DocumentDetail, DocumentChild, LinkedDocument } from '../../shared/contracts'
 import type { SyncedHostWorkingBefore } from '../../shared/synced-blocks'
-import { assertSyncedShape, isSyncedBlockId, SyncedValidationError, validateSyncedHostForest } from '../../shared/syncedBlockValidation'
+import { assertSyncedShape, isSyncedBlockId, SyncedValidationError, validatePersistedHostForest, validateSyncedHostForest } from '../../shared/syncedBlockValidation'
 import { parseStrictJson } from '../../shared/strictJson'
 
 export type HostContent = SyncedHostWorkingBefore['workingBefore']
@@ -18,6 +18,10 @@ function array<T>(value: unknown, read: (item: unknown) => T): T[] { return Arra
 
 /** Complete closed DTO codec, also used for the immutable operation ACK. */
 export function validateHostDocumentDetail(value: unknown): DocumentDetail {
+  return validateHostDocumentDetailUsing(value, false)
+}
+
+function validateHostDocumentDetailUsing(value: unknown, persistedOrdinary: boolean): DocumentDetail {
   assertSyncedShape(value, ['id', 'title', 'path', 'summary', 'updatedAt', 'blocks', 'children', 'outgoingLinks', 'backlinks'])
   const blocks = array(value.blocks, raw => {
     assertSyncedShape(raw, ['id', 'type', 'content', 'checked', 'depth', 'parentBlockId', 'sortOrder'],
@@ -27,7 +31,7 @@ export function validateHostDocumentDetail(value: unknown): DocumentDetail {
     return { block, sortOrder: sortOrder as number }
   })
   // Individual child rows are decoded below as one real forest, including depth/parent roles.
-  const forest = validateSyncedHostForest(blocks.map(row => row.block))
+  const forest = (persistedOrdinary ? validatePersistedHostForest : validateSyncedHostForest)(blocks.map(row => row.block))
   if (blocks.some((block, index) => index > 0 && block.sortOrder <= blocks[index - 1].sortOrder)) return bad()
   const children = array<DocumentChild>(value.children, raw => {
     assertSyncedShape(raw, ['id', 'title', 'path']); return { id: id(raw.id), title: string(raw.title), path: string(raw.path) }
@@ -48,6 +52,15 @@ export function readStrictHostDocument(db: Database.Database, documentId: string
   return readHostDocument(db, documentId, false)
 }
 
+/** Same physical reader for the complete live runtime's startup admission.
+ * Signed native document sort orders are original data, not block depth or a
+ * portable V3 limit. This leaf owns no migration, repair or write permission. */
+export function readCanonicalRuntimeHostDocumentOwned(db:Database.Database,documentId:string):StrictHostDocument|null{
+  const version=db.pragma('main.user_version',{simple:true})
+  if(!db.open||!db.inTransaction||version!==26&&version!==27)return bad()
+  return readHostDocument(db,documentId,true,true)
+}
+
 /** The ordinary sync writer accepts every safe signed document sortOrder.
  * Preserve those actual SQL values when observing a recovery source, without
  * widening the live host-operation/ACK reader or changing block-order rules.
@@ -58,7 +71,7 @@ export function readRawCapsule2HostDocumentOwned(db: Database.Database, document
   return readHostDocument(db, documentId, true)
 }
 
-function readHostDocument(db: Database.Database, documentId: string, signedDocumentOrder: boolean): StrictHostDocument | null {
+function readHostDocument(db: Database.Database, documentId: string, signedDocumentOrder: boolean, runtimeOrdinary = false): StrictHostDocument | null {
   const document = db.prepare('SELECT id,title,path,summary,updated_at,created_at,parent_id,sort_order FROM documents WHERE id=?')
     .get(documentId) as { id: string; title: string; path: string; summary: string; updated_at: string; created_at: string; parent_id: string | null; sort_order: number } | undefined
   if (!document) return null
@@ -95,8 +108,8 @@ function readHostDocument(db: Database.Database, documentId: string, signedDocum
     }>).map(row => ({ id: row.id, title: row.title, path: row.path, label: row.label,
       ...(row.context_snippet === null ? {} : { contextSnippet: row.context_snippet }) }))
   const children = db.prepare('SELECT id,title,path FROM documents WHERE parent_id=? ORDER BY path').all(documentId)
-  const detail = validateHostDocumentDetail({ id: document.id, title: document.title, path: document.path, summary: document.summary,
-    updatedAt: document.updated_at, blocks, children, outgoingLinks, backlinks })
+  const detail = validateHostDocumentDetailUsing({ id: document.id, title: document.title, path: document.path, summary: document.summary,
+    updatedAt: document.updated_at, blocks, children, outgoingLinks, backlinks }, runtimeOrdinary && !blocks.some(block => block.type === 'synced-block'))
   const content: HostContent = { title: detail.title, summary: detail.summary, blocks: detail.blocks.map(({ sortOrder: _sortOrder, ...block }) => block) }
   return { detail, content, createdAt: hostTime(document.created_at), parentId: document.parent_id, sortOrder: document.sort_order, births }
 }

@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
 import type { SyncedHostWorkingBefore } from '@shared/synced-blocks'
-import { MarkdownSourceDialog } from '../../components/DocumentMarkdownSourceDialog'
+import { MarkdownSourceDialog, type MarkdownSourceLocalState } from '../../components/DocumentMarkdownSourceDialog'
 import { areDocumentDraftBlocksEqual } from '../../utils/documentDraftComparison'
 import { applySyncedHostSourceChanges, createSyncedHostSourceDraft, prepareSyncedHostSourceApply,
   type PreparedSyncedHostSource } from './hostSource'
@@ -18,6 +18,7 @@ export type SyncedHostSourceDialogProps = {
   applyPrepared: (prepared: PreparedSyncedHostSource) => Promise<boolean>
   onCompositionChange?: (composing: boolean) => void
   isZh: boolean
+  onLocalStateChange?: (state: Readonly<MarkdownSourceLocalState>) => void
   onClose: () => void
 }
 
@@ -45,7 +46,7 @@ function HostSourceOpening(props: SyncedHostSourceDialogProps & { ownsOpening: (
     const current = latest.current.getCurrent()
     return current !== null && current.hostSession === opening.hostSession && current.host.documentId === opening.draft.opening.documentId
   }
-  return <MarkdownSourceDialog sessionKey={opening.sessionKey} isZh={props.isZh} onClose={props.onClose}
+  return <MarkdownSourceDialog sessionKey={opening.sessionKey} isZh={props.isZh} onClose={props.onClose} onLocalStateChange={props.onLocalStateChange}
     createDraft={() => opening.draft} replaceChanges={applySyncedHostSourceChanges}
     isCurrent={isCurrent} getReturnFocus={() => opening.opener} onCompositionChange={opening.onCompositionChange}
     text={{ title: props.isZh ? '编辑宿主正文源码' : 'Edit host body source',

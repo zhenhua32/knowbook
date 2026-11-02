@@ -38,6 +38,7 @@
     "test:e2e": "npm run build && playwright test --grep @electron",
     "test:runtime-smoke": "npm run build && electron --no-sandbox --disable-gpu --disable-software-rasterizer --in-process-gpu scripts/quickjs-runtime-smoke.mjs",
     "test:plugin-security": "cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx --test --test-timeout=120000 tests/main-plugin-platform-quickjs-realm.test.ts tests/main-plugin-platform-capability-broker.test.ts",
+    "test:system-plugin-native-paths": "cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx --test --test-timeout=120000 tests/main-system-plugin-artifact.test.ts tests/main-system-plugin-dependency-runner.test.ts tests/main-system-plugin-managed-paths.test.ts tests/main-system-plugin-runtime-links.test.ts",
     "test:packaged-runtime-smoke": "node scripts/packaged-runtime-smoke.mjs",
     "test:packaged-system-plugins": "node scripts/packaged-system-plugin-smoke.mjs",
     "prepare:host-upgrade": "node scripts/prepare-host-upgrade.mjs",
@@ -122,6 +123,7 @@
     "electron-vite": "^3.1.0",
     "mermaid": "^12.0.0",
     "semver": "^7.7.4",
+    "terser": "5.51.2",
     "tsx": "^4.21.0",
     "typescript": "^5.8.3",
     "vite": "^6.3.5"

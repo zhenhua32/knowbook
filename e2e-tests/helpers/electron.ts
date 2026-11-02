@@ -173,7 +173,7 @@ export async function launchElectronApp(
   try {
     // Keep CI and local runs independent of the operating system language.
     // Override explicitly when checking the other supported UI language.
-    app = await electron.launch({ ...target, env, locale: process.env.PLAYWRIGHT_ELECTRON_LOCALE ?? 'en-US' })
+    app = await electron.launch({ ...target, env, locale: env.PLAYWRIGHT_ELECTRON_LOCALE ?? 'en-US' })
     // Electron's independently created context bypasses Playwright's browser
     // fixture setup. Apply the project's configured action/navigation limits
     // before any native-page work, including pages created after startup.

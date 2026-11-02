@@ -1,3 +1,4 @@
+import { canonicalInlineInputLocked } from '../features/synced-blocks/inlineBridge'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DocumentDetail } from '@shared/contracts'
 
@@ -27,6 +28,7 @@ export function useDocumentNavigationState({ onActivePageChange, onBeforeOpenDoc
 
   const prepareNavigation = useCallback(async (documentId: string, shouldContinue?: () => boolean): Promise<boolean> => {
     const sequence = ++navigationSequenceRef.current
+    if (canonicalInlineInputLocked()) return false
     if (documentId !== selectedDocumentId) {
       const allowed = await onBeforeOpenDocument?.(documentId)
       if (allowed === false || sequence !== navigationSequenceRef.current) {
@@ -34,7 +36,7 @@ export function useDocumentNavigationState({ onActivePageChange, onBeforeOpenDoc
       }
     }
 
-    return sequence === navigationSequenceRef.current && (shouldContinue?.() ?? true)
+    return !canonicalInlineInputLocked() && sequence === navigationSequenceRef.current && (shouldContinue?.() ?? true)
   }, [onBeforeOpenDocument, selectedDocumentId])
 
   const openDocumentInDocumentsPage = useCallback((documentId: string, shouldContinue?: () => boolean) => {

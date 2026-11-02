@@ -263,6 +263,12 @@ class GroupController implements SyncedGroupController {
       phase: 'clean', incoming: null, failure: null, error: null, pending: null, composingInstanceIds: [],
       canUndo: snapshot.history.undoToken !== null, canRedo: snapshot.history.redoToken !== null })
     this.currentEndpoint = this.baselineEndpoint(this.state.working, 0, this.state.snapshot)
+    const flush = this.flush
+    const cleanBaseline = () => !this.frames.length && !this.pending && !this.historyBusy && !this.compositions.size
+      && !this.state.dirty && !this.state.pending && !this.state.composingInstanceIds.length && !this.state.incoming
+      && this.state.failure?.status !== 'conflict' && equal(this.state.working, syncedCanonicalEdits(this.state.snapshot.blocks))
+    groupFlushPorts.set(this, { state: () => this.state, flush: options => flush(options), cleanBaseline,
+      settleClean: async () => { const queue = this.queue; await queue; return this.queue === queue && cleanBaseline() } })
   }
 
   private baselineEndpoint(working: SyncedCanonicalEdit[], sequence: number, snapshot: SyncedGroupSnapshot): Endpoint {
@@ -805,6 +811,23 @@ export interface SyncedWorkspaceController {
 }
 
 const workspaces = new WeakMap<SyncedBlocksApi, SyncedWorkspaceController>()
+export interface SyncedWorkspaceFlushOptions { shouldContinue?: () => boolean }
+const groupFlushPorts = new WeakMap<GroupController, {
+  state: () => SyncedGroupDraftState
+  flush: (options: SyncedWorkspaceFlushOptions) => Promise<boolean>
+  cleanBaseline: () => boolean
+  settleClean: () => Promise<boolean>
+}>()
+const workspaceFlushPorts = new WeakMap<SyncedWorkspaceController, (options: SyncedWorkspaceFlushOptions) => Promise<boolean>>()
+
+/** Only a real workspace registry supplies its complete private group set.
+ * No caller controller list, group IDs, state DTO or skip option can replace
+ * it. A false result leaves every uncommitted draft and pending ACK intact. */
+export function flushSyncedWorkspacePendingChanges(workspace: SyncedWorkspaceController,
+  options: SyncedWorkspaceFlushOptions = {}): Promise<boolean> {
+  const port = workspaceFlushPorts.get(workspace)
+  return port ? port(options) : Promise.resolve(false)
+}
 
 /** The API port identifies a renderer workspace session; occurrences reuse this registry. */
 export function getSyncedWorkspaceController(api: SyncedBlocksApi, options: SyncedControllerOptions = {}): SyncedWorkspaceController {
@@ -812,10 +835,12 @@ export function getSyncedWorkspaceController(api: SyncedBlocksApi, options: Sync
   if (existing) return existing
   const readSources = options.readSources
   const groups = new Map<string, GroupController>(), reads = new Map<string, Promise<void>>(), epochs = new Map<string, number>()
-  let workspaceScope: string | null = null, disposed = false
+  let workspaceScope: string | null = null, disposed = false, flushReadEpoch = 0
+  let flushQueue: Promise<void> = Promise.resolve()
   const loadOne = (id: string): Promise<void> => {
     const running = reads.get(id)
     if (running) return running
+    flushReadEpoch++
     const read = (async () => {
       for (;;) {
         const epoch = epochs.get(id) ?? 0, baseline = groups.get(id)?.getSnapshot().snapshot
@@ -859,9 +884,51 @@ export function getSyncedWorkspaceController(api: SyncedBlocksApi, options: Sync
     releaseClean: id => { const group = groups.get(id); if (!group?.canRelease() || reads.has(id)) return false; group.releaseReadOwner(); return groups.delete(id) },
     dispose: () => {
       if (reads.size || [...groups.values()].some(group => !group.canRelease())) return false
-      disposed = true; unsubscribe(); for (const group of groups.values()) group.releaseReadOwner(); groups.clear(); workspaces.delete(api); return true
+      disposed = true; unsubscribe(); for (const group of groups.values()) group.releaseReadOwner(); groups.clear(); workspaces.delete(api); workspaceFlushPorts.delete(workspace); return true
     }
   }
   workspaces.set(api, workspace)
+  workspaceFlushPorts.set(workspace, options => {
+    let requestedContinue: SyncedWorkspaceFlushOptions['shouldContinue']
+    try { requestedContinue = options.shouldContinue; if (requestedContinue !== undefined && typeof requestedContinue !== 'function') return Promise.resolve(false) }
+    catch { return Promise.resolve(false) }
+    const task = flushQueue.then(async () => {
+      // These are the actual registry reads, not caller promises or success
+      // DTOs. A failed clean read is handled below without discarding any W.
+      if (reads.size) await Promise.allSettled([...reads.values()])
+      const readEpoch = flushReadEpoch, captured = [...groups.entries()]
+      const sameRegistry = () => !disposed && !reads.size && flushReadEpoch === readEpoch && groups.size === captured.length
+        && captured.every(([id, group]) => groups.get(id) === group)
+      const continues = () => {
+        try { return sameRegistry() && requestedContinue?.() !== false && sameRegistry() } catch { return false }
+      }
+      const blocked = (group: GroupController, beforeWrite = false) => {
+        const state = groupFlushPorts.get(group)?.state()
+        if (!state) return true
+        if (beforeWrite) return state.composingInstanceIds.length > 0 || state.pending === null
+          && (state.incoming !== null || state.failure?.status === 'conflict')
+        return state.composingInstanceIds.length > 0 || state.incoming !== null || state.failure !== null || state.error !== null
+      }
+      if (!continues() || captured.some(([, group]) => blocked(group, true))) return false
+      for (const [, group] of captured) {
+        const port = groupFlushPorts.get(group)
+        if (port && continues() && await port.settleClean() && continues()) continue
+        // The original writer may first settle an uncertain in-flight ACK.
+        // A remembered transport error must not suppress that mailbox/retry
+        // path; incoming/conflict can still prevent its next new write.
+        if (!port || !continues() || blocked(group, true) || !await port.flush({ shouldContinue: continues })) return false
+      }
+      // Group.flush closes only its invocation's throughSequence. Input that
+      // arrived while an earlier ACK was pending must never look like a fully
+      // drained workspace merely because that original call returned true.
+      return continues() && captured.every(([, group]) => {
+        const state = groupFlushPorts.get(group)?.state()
+        return !!state && (groupFlushPorts.get(group)?.cleanBaseline()
+          || !blocked(group) && !state.dirty && state.pending === null && state.phase === 'clean')
+      })
+    }).catch(() => false)
+    flushQueue = task.then(() => undefined, () => undefined)
+    return task
+  })
   return workspace
 }

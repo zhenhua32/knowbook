@@ -5,6 +5,7 @@ import { act, createElement, useCallback, useState } from 'react'
 import { JSDOM } from 'jsdom'
 import type { AiConfig, ElectronApi, UpdateAiConfigInput } from '../src/shared/contracts'
 import { useAiState } from '../src/renderer/src/hooks/useAiState'
+import * as aiStateActions from '../src/renderer/src/hooks/aiStateActions'
 import { getActiveUiText, getUiText, setActiveUiLanguage } from '../src/renderer/src/i18n'
 
 register(`data:text/javascript,${encodeURIComponent(`
@@ -102,7 +103,7 @@ async function withSettings(run: (context: Context) => Promise<void>, language: 
     }, [])
     state = useAiState({ aiConfig: config, selectedDocumentId: null, ui: getUiText(language), onAiConfigChange,
       onHomeDataChange: () => { homeChanges++ }, onSelectedDocumentChange: () => {},
-      onDraftSummaryChange: () => {}, onMessage: (message, level) => messages.push([message, level]) })
+      onDraftSummaryChange: () => {}, onMessage: (message, level) => messages.push([message, level]) }, async () => aiStateActions)
     const view: View = { config, saving: state.aiSaving, clearing: state.aiClearingApiKey, saveError: state.aiSaveError, dirty: state.aiSettingsDirty,
       drafts: { enabled: state.aiEnabledDraft, baseUrl: state.aiBaseUrlDraft, model: state.aiModelDraft,
         autoSummaryOnSave: state.aiAutoSummaryOnSaveDraft, relatedNotesEnabled: state.aiRelatedNotesEnabledDraft,

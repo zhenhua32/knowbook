@@ -11,6 +11,7 @@ type MarkdownDocumentShape = {
 }
 
 export function buildDocumentMarkdown(document: MarkdownDocumentShape): string {
+  if (document.blocks.some(block => block.type === 'synced-block')) throw new Error('此文档包含同步块，单文件 Markdown 无法保留实例和 canonical 正文。请使用完整 V3 工作区备份。')
   const first = document.blocks[0]
   const header = first?.type === 'frontmatter' ? first.content + '\n\n' : ''
   const body = serializeBlocksToMarkdown(header ? document.blocks.slice(1) : document.blocks)

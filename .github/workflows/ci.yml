@@ -455,6 +455,9 @@ jobs:
       - name: Run isolated-realm security tests
         run: npm run test:plugin-security
 
+      - name: Run System Plugin native path regression tests
+        run: npm run test:system-plugin-native-paths
+
       # Verify native Windows transport on its own before the full parallel
       # restore suite. That suite still repeats these tests with unchanged limits.
       - name: Verify native Windows restore process readiness

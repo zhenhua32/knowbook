@@ -5,6 +5,7 @@ import test from 'node:test'
 import { act, createElement } from 'react'
 import { JSDOM } from 'jsdom'
 import { useAiState } from '../src/renderer/src/hooks/useAiState'
+import * as aiStateActions from '../src/renderer/src/hooks/aiStateActions'
 import { getUiText } from '../src/renderer/src/i18n'
 import type { AskAiInput, AskAiResult, ElectronApi, SearchSemanticNotesInput, SemanticSearchResult } from '../src/shared/contracts'
 
@@ -13,6 +14,8 @@ const hookSource = readFileSync(
   'utf8'
 )
 
+const actionsSource = readFileSync(join(process.cwd(), 'src/renderer/src/hooks/aiStateActions.ts'), 'utf8')
+
 function extractFunction(name: string): string {
   const startIndex = hookSource.indexOf(`const ${name} = useCallback`)
   assert.ok(startIndex !== -1, `expected ${name} to exist in useAiState.ts`)
@@ -20,7 +23,12 @@ function extractFunction(name: string): string {
   const endIndex = hookSource.indexOf('\n  }, [', startIndex)
   assert.ok(endIndex !== -1, `expected ${name} to be a useCallback`)
 
-  return hookSource.slice(startIndex, endIndex)
+  const hook = hookSource.slice(startIndex, endIndex)
+  assert.match(hook, /runDeferredAiAction\(createActionContext\(\), \{ kind: 'automation'/)
+  const actionStart = actionsSource.indexOf('async function completeRunAutomations(')
+  const actionEnd = actionsSource.indexOf('\nexport async function completeAiAction', actionStart)
+  assert.ok(actionStart !== -1 && actionEnd > actionStart, 'the real deferred automation must exist')
+  return hook + '\n' + actionsSource.slice(actionStart, actionEnd)
 }
 
 test('AI automation results are ignored when the user switches documents mid-flight', () => {
@@ -102,7 +110,7 @@ async function withAiState(run: (context: {
   const aiConfig = { ...availability, baseUrl: '', model: '', autoSummaryOnSave: false, relatedNotesEnabled: true }
   function Harness({ id }: { id: string | null }) {
     state = useAiState({ aiConfig, selectedDocumentId: id, ui: getUiText('zh-CN'),
-      onHomeDataChange: noop, onAiConfigChange: noop, onSelectedDocumentChange: noop, onDraftSummaryChange: noop, onMessage: noop })
+      onHomeDataChange: noop, onAiConfigChange: noop, onSelectedDocumentChange: noop, onDraftSummaryChange: noop, onMessage: noop }, async () => aiStateActions)
     return null
   }
   const selectDocument = async (id: string | null) => {
@@ -260,9 +268,15 @@ for (const outcome of ['success', 'failure'] as const) {
       await act(async () => {
         oldAnswer = state().askAiOnSelectedDocument()
         oldSearch = state().findRelatedNotesForPrompt()
+      })
+      assert.equal(answers.length, 1, 'the original answer request must actually be in flight')
+      assert.equal(searches.length, 1, 'the original note request must actually be in flight')
+      await act(async () => {
         newAnswer = state().askAiOnSelectedDocument()
         newSearch = state().findRelatedNotesForPrompt()
       })
+      assert.equal(answers.length, 2, 'the replacement answer request must also be in flight')
+      assert.equal(searches.length, 2, 'the replacement note request must also be in flight')
       await act(async () => {
         answers[1].resolve({ answer: '新回答', references: [] })
         searches[1].resolve([relatedNote('新资料')])

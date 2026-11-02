@@ -1,3 +1,5 @@
+import type { SyncedHostSourceCurrent } from '../features/synced-blocks/SyncedHostSourceDialog'
+import { hasCanonicalInlinePendingChanges, flushCanonicalInlinePendingChanges, canonicalInlineInputLocked } from '../features/synced-blocks/inlineBridge'
 import { isTaskBlockType, canBlockHaveParent } from '@shared/blockTypes'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DocumentBlockDraft } from '@shared/contracts'
@@ -62,7 +64,19 @@ export function useDocumentsDomainState({
   }), [])
 
   const [activeBlockIndex, setActiveBlockIndex] = useState<number | null>(null)
-  const [isReadingMode, setIsReadingMode] = useState(false)
+  const [isReadingMode, setReadingModeState] = useState(false)
+  const modeTransitionRef = useRef(0), foldTransitionRef = useRef(0)
+  const getSyncedHostViewRef = useRef<() => SyncedHostSourceCurrent | null>(() => null)
+  const setIsReadingMode = useCallback((next: boolean | ((previous: boolean) => boolean)) => {
+    const sequence = ++modeTransitionRef.current
+    if (canonicalInlineInputLocked()) return
+    if (!hasCanonicalInlinePendingChanges()) { setReadingModeState(next); return }
+    const opening = getSyncedHostViewRef.current()
+    void flushCanonicalInlinePendingChanges().then(ready => {
+      const current = getSyncedHostViewRef.current()
+      if (ready && !canonicalInlineInputLocked() && sequence === modeTransitionRef.current && opening && current?.hostSession === opening.hostSession && current.editSequence === opening.editSequence) setReadingModeState(next)
+    })
+  }, [])
   const [blockNavigationRequest, setBlockNavigationRequest] = useState<{
     index: number; documentId: string; sequence: number; headingIndex?: number
   } | null>(null)
@@ -149,6 +163,10 @@ export function useDocumentsDomainState({
     draftTitle,
     flushPendingChanges,
     getDraftBlocks,
+    getSyncedHostEditorState,
+    adoptSyncedHostStructureResult,
+    applyOrdinaryMarkdownSource,
+    isSyncedHostComposing,
     hasPendingDraftChanges,
     getDraftMarkdownExport,
     getRenameTarget,
@@ -185,9 +203,10 @@ export function useDocumentsDomainState({
     ui
   })
   flushPendingDocumentChangesRef.current = flushPendingChanges
+  getSyncedHostViewRef.current = getSyncedHostEditorState
 
   useEffect(() => {
-    if (!selectedDocumentId || !selectedDocument || isSaving || isBlockMoveBusy || hasPendingDraftChanges) {
+    if (!selectedDocumentId || !selectedDocument || isSaving || isBlockMoveBusy || hasPendingDraftChanges || hasCanonicalInlinePendingChanges()) {
       return
     }
 
@@ -198,7 +217,7 @@ export function useDocumentsDomainState({
 
     let cancelled = false
     void window.knowbook.getDocumentDetail(selectedDocumentId).then((detail) => {
-      if (cancelled || !detail || detail.updatedAt === selectedDocument.updatedAt) {
+      if (cancelled || hasCanonicalInlinePendingChanges() || !detail || detail.updatedAt === selectedDocument.updatedAt) {
         return
       }
       setSelectedDocument(detail)
@@ -336,7 +355,8 @@ export function useDocumentsDomainState({
     selectionStaleGuard: ui.selectionStaleGuard
   })
 
-  const { toggleBlockCollapse, collapseAllSections, expandAllSections, focusSection, exitSectionFocus } = useDocumentFoldingActions({
+  const { toggleBlockCollapse: rawToggleBlockCollapse, collapseAllSections: rawCollapseAllSections, expandAllSections: rawExpandAllSections,
+    focusSection: rawFocusSection, exitSectionFocus: rawExitSectionFocus } = useDocumentFoldingActions({
     documentId: selectedDocumentId, draftBlocks, sections, foldView, setFoldView,
     activeBlockIndex, selectedBlockRange, blockTextareaRefs, clearBlockSelection,
     setActiveBlockIndex, setActiveCursorPosition, setSelectedBlockRange, setSelectionAnchorBlockId,
@@ -345,6 +365,22 @@ export function useDocumentsDomainState({
       if (selectedDocumentId) setBlockNavigationRequest((previous) => ({ index, documentId: selectedDocumentId, sequence: (previous?.sequence ?? 0) + 1 }))
     }
   })
+
+  const guardedFold = (action: () => void) => {
+    const sequence = ++foldTransitionRef.current
+    if (canonicalInlineInputLocked()) return
+    if (!hasCanonicalInlinePendingChanges()) { action(); return }
+    const opening = getSyncedHostEditorState()
+    void flushCanonicalInlinePendingChanges().then(ready => {
+      const current = getSyncedHostEditorState()
+      if (ready && !canonicalInlineInputLocked() && sequence === foldTransitionRef.current && opening && current?.hostSession === opening.hostSession && current.editSequence === opening.editSequence) action()
+    })
+  }
+  const toggleBlockCollapse = (id: string) => guardedFold(() => rawToggleBlockCollapse(id))
+  const collapseAllSections = () => guardedFold(rawCollapseAllSections)
+  const expandAllSections = () => guardedFold(rawExpandAllSections)
+  const focusSection = (index: number) => guardedFold(() => rawFocusSection(index))
+  const exitSectionFocus = () => guardedFold(rawExitSectionFocus)
 
   const { documentLoadError, retryDocumentLoad } = useDocumentsLoadingOrchestration({
     detailLoading,
@@ -639,6 +675,10 @@ export function useDocumentsDomainState({
     draftTitle,
     flushPendingChanges,
     getDraftBlocks,
+    getSyncedHostEditorState,
+    adoptSyncedHostStructureResult,
+    applyOrdinaryMarkdownSource,
+    isSyncedHostComposing,
     draggingBlockIndex,
     getDraftMarkdownExport,
     getRenameTarget,
@@ -708,6 +748,7 @@ export function useDocumentsDomainState({
     navigateMarkdownLink,
     notifyBlockMouseDown,
     openBlockSearch,
+    openDocumentAnchorInDocumentsPage,
     openDocumentBlockInDocumentsPage,
     openDocumentInDocumentsPage,
     selectDocumentContext,
