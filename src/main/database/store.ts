@@ -1,3 +1,5 @@
+import type { DocumentRenameAdmissionResult } from '../../shared/document-rename-admission'
+import { readDocumentRenameAdmissionOwned2, OrdinaryRenameRequiresTitle2 } from './ordinary-title-rename-admission2'
 import { assertCanonicalRuntimeReadableOwned, hasCanonicalRuntimeDataOwned } from './canonical-runtime-read'
 import { readCanonicalBackupRevision } from './canonical-backup-revision'
 import { readConfirmedSyncedBackupV3PublicationOwned } from './synced-backup-v3-publication-read'
@@ -1058,6 +1060,10 @@ export class KnowbookStore {
     return changed ? healed : blocks
   }
 
+  getDocumentRenameAdmission(input: unknown): DocumentRenameAdmissionResult {
+    return this.db.transaction(() => readDocumentRenameAdmissionOwned2(this.db, input))()
+  }
+
   getDocumentDetail(documentId: string): DocumentDetail | null {
     const document = this.db.prepare(`
       SELECT id, title, path, summary, updated_at
@@ -1564,6 +1570,17 @@ export class KnowbookStore {
     `)
 
     const transaction = this.db.transaction(() => {
+      if (newPath !== oldPath) {
+        const actual = this.db.prepare('SELECT title,path,parent_id,updated_at FROM documents WHERE id=?').get(documentId) as
+          { title: string; path: string; parent_id: string | null; updated_at: string } | undefined
+        if (!actual || !current || actual.updated_at !== current.updated_at || actual.title !== document.title
+          || actual.path !== oldPath || actual.parent_id !== document.parent_id) throw new Error('The actual document changed before its rename; the complete draft is retained.')
+        // A previously false readonly hint confers no permission. Re-read every
+        // actual affected typed binding before the first identity/checkpoint DML.
+        const admission = readDocumentRenameAdmissionOwned2(this.db, { documentId, expectedUpdatedAt: actual.updated_at })
+        if (admission.status !== 'ready') throw new Error('The actual document rename address became unavailable.')
+        if (admission.requiresFencedTitle2) throw new OrdinaryRenameRequiresTitle2()
+      }
       this.blockIdentities.assertDocumentWrite(documentId, persistedBlocks.map(block => block.id))
       const identities = this.blockIdentities.getMany(persistedBlocks.map(block => block.id))
       if (newPath !== oldPath) this.preserveBlockRoutes(pathChangedDocuments)
@@ -1640,7 +1657,8 @@ export class KnowbookStore {
       }
     })
 
-    transaction()
+    if (newPath !== oldPath) transaction.immediate()
+    else transaction()
     return [...new Set([...(newPath !== oldPath ? pathChangedDocuments.map(entry => entry.id) : [documentId]), ...rewrittenDocumentIds])]
   }
 

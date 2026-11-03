@@ -7,14 +7,14 @@ import { withV3Fixture } from './helpers/synced-backup-v3-fixture'
 import { decodedCapsule2Table, withCapsule2RawCopy, writeMixedOrdinary501 } from './helpers/capsule2-raw-fixture'
 
 test('capsule2 raw content keeps a real mixed ordinary501 and Main group source without changing the public wire500 rule', () => withV3Fixture(async f => {
-  const { title, template } = writeMixedOrdinary501(f)
+  const { title, template, documentId } = writeMixedOrdinary501(f)
   f.store.saveSetting('ai.apiKey', 'capsule2-private-test-secret')
   await withCapsule2RawCopy(f, db => {
     assert.throws(() => readRawCapsule2ContentOwned(db), /owned事务/)
     const before = db.prepare('SELECT total_changes() AS count').get()
     assert.throws(() => db.transaction(() => readInitialIncomingWorkspace(db))(), /文档标题无效/)
     const raw = db.transaction(() => readRawCapsule2ContentOwned(db))()
-    assert.equal(decodedCapsule2Table(raw, 'documents').find(row => row.id === f.targetId)?.title, title)
+    assert.equal(decodedCapsule2Table(raw, 'documents').find(row => row.id === documentId)?.title, title)
     assert.equal(decodedCapsule2Table(raw, 'synced_groups').length, 1)
     assert.equal(decodedCapsule2Table(raw, 'document_templates').find(row => row.id === template.id)?.blocks_json,
       (db.prepare('SELECT blocks_json FROM document_templates WHERE id=?').get(template.id) as { blocks_json: string }).blocks_json)
@@ -29,11 +29,11 @@ test('capsule2 raw content keeps a real mixed ordinary501 and Main group source 
 }))
 
 test('capsule2 raw content preserves actual ordinary history rowid order and all NULL-composite-PK occurrences as unvalidated storage', () => withV3Fixture(async f => {
-  const { title } = writeMixedOrdinary501(f)
-  f.store.documentRecovery.checkpoint(f.targetId, 'edit', true)
-  const detail = f.store.getDocumentDetail(f.targetId); assert.ok(detail)
-  f.store.updateDocument(f.targetId, { title, summary: 'A real later ordinary summary', blocks: detail.blocks })
-  f.store.documentRecovery.checkpoint(f.targetId, 'edit', true)
+  const { title, documentId } = writeMixedOrdinary501(f)
+  f.store.documentRecovery.checkpoint(documentId, 'edit', true)
+  const detail = f.store.getDocumentDetail(documentId); assert.ok(detail)
+  f.store.updateDocument(documentId, { title, summary: 'A real later ordinary summary', blocks: detail.blocks })
+  f.store.documentRecovery.checkpoint(documentId, 'edit', true)
   // Legal SQLite legacy storage shape, deliberately not claimed to have a
   // valid semantic owner. Raw preparation must retain it for the later owner.
   const insert = f.db.prepare('INSERT INTO document_database_values(document_id,column_id,value_text,updated_at,entity_id) VALUES(NULL,?,?,?,NULL)')

@@ -47,7 +47,10 @@ async function setup(source: V3Fixture, current: V3Fixture) {
   assert.ok(target)
   assert.equal(target.blocks.some(block => block.type === 'synced-block'), false)
   const targetBlockIds = target.blocks.map(block => block.id)
-  source.store.updateDocument(source.targetId, { title: longTitle, summary: target.summary, blocks: target.blocks })
+  const longDocumentId = source.store.createDocument(null), ordinary = source.store.getDocumentDetail(longDocumentId)
+  assert.ok(ordinary)
+  source.store.updateDocument(longDocumentId, { title: longTitle, summary: ordinary.summary, blocks: ordinary.blocks })
+  assert.equal(source.store.getDocumentDetail(longDocumentId)!.title, longTitle)
   assert.deepEqual(source.store.getDocumentDetail(source.targetId)!.blocks.map(block => block.id), targetBlockIds)
   const template = source.store.saveDocumentTemplate({ name: 'Reference policy synced template', title: 'Saved local draft',
     summary: 'Local template references stay deferred', blocks: [{ ...freshBlock(ids.childId,
@@ -62,7 +65,7 @@ async function setup(source: V3Fixture, current: V3Fixture) {
   const captured = await captureMixedRootKnowledgeConservationPlan3({ profileRoot: current.userDataRoot,
     operationId: randomUUID(), sourceDirectory: exported.directory })
   return { source, current, ids, freeInstanceId, leftCreate, rightCreate, sourceGroup, currentGroup,
-    sourceFirstBirth, currentFirstBirth, currentRaw, longTitle, template, targetBlockIds, captured,
+    sourceFirstBirth, currentFirstBirth, currentRaw, longTitle, longDocumentId, template, targetBlockIds, captured,
     beforeSource: allTables(source.db), beforeCurrent: allTables(current.db) }
 }
 

@@ -16,17 +16,18 @@ import { withV3Fixture, allTables, freshBlock, randomUUID } from './helpers/sync
 
 test('independent cold merged candidates recover retained descendants and chosen NULL occurrences from copied originals and the same kernel', () =>
   withV3Fixture(source => withV3Fixture(async receiver => {
-    source.store.updateDocument(source.targetId, { title: 'Merge original parent', summary: '',
-      blocks: [{ ...freshBlock(source.targetBodyId, 'Target heading'), type: 'heading-1' }] })
+    const parentDocumentId = source.store.createDocument(null), parentBodyId = randomUUID()
+    source.store.updateDocument(parentDocumentId, { title: 'Merge original parent', summary: '',
+      blocks: [{ ...freshBlock(parentBodyId, 'Target heading'), type: 'heading-1' }] })
     source.store.saveDocumentTemplate({ name: 'Original merged draft', title: '{{title}}', summary: '',
       blocks: [freshBlock('local template block', 'Unexpanded {{title}}')] })
     const add = source.db.prepare('INSERT INTO document_database_values(document_id,column_id,value_text,updated_at,entity_id) VALUES(NULL,?,?,?,NULL)')
     add.run(source.catalogColumn.id, null, '2026-01-01T00:00:00.000Z')
     add.run(source.catalogColumn.id, 'source anonymous', '2026-01-01T00:00:00.000Z')
     const left = await captureMixedSource(source, 2)
-    source.store.updateDocument(source.targetId, { title: 'Current changed parent', summary: '',
-      blocks: [{ ...freshBlock(source.targetBodyId, 'Current target heading'), type: 'heading-1' }] })
-    const retained = source.store.createDocument(source.targetId)
+    source.store.updateDocument(parentDocumentId, { title: 'Current changed parent', summary: '',
+      blocks: [{ ...freshBlock(parentBodyId, 'Current target heading'), type: 'heading-1' }] })
+    const retained = source.store.createDocument(parentDocumentId)
     source.store.updateDocument(retained, { title: 'Current retained child', summary: '', blocks: [freshBlock(randomUUID(), 'Retained body')] })
     source.store.saveDocumentTemplate({ name: 'Current retained draft', title: 'Retained template', summary: '',
       blocks: [freshBlock('independent local block', 'Current template body')] })

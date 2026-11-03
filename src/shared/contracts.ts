@@ -1,3 +1,4 @@
+import type { DocumentRenameAdmissionInput, DocumentRenameAdmissionResult } from './document-rename-admission'
 import type { EditorCloseRequest, EditorCloseCancelled, EditorCloseAcknowledgement } from './editor-close'
 export type { EditorCloseRequest, EditorCloseCancelled, EditorCloseAcknowledgement, EditorCloseReason } from './editor-close'
 import type {
@@ -982,6 +983,7 @@ export interface ElectronApi {
   checkForAppUpdates: () => Promise<AppUpdateState>
   installAppUpdate: () => Promise<void>
   getDocumentDetail: (documentId: string) => Promise<DocumentDetail | null>
+  getDocumentRenameAdmission: (input: DocumentRenameAdmissionInput) => Promise<DocumentRenameAdmissionResult>
   checkDocumentLinks: (documentId: string) => Promise<DocumentLinkCheck>
   clipWebPage: (input: ClipWebPageInput) => Promise<ClipWebPageResult>
   getWebClipBridgeStatus: () => Promise<WebClipBridgeStatus>

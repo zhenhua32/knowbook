@@ -106,7 +106,7 @@ test('actual Main merged content preserves complete source forests current-only 
   })
 
   await t.test('current-only documents descendants and exact retained slugs survive the final whole document layout', () => {
-    const documents = rows(value, 'documents'), host = documents.find(entry => entry.values.id === mapped('document', f.source.targetId))!
+    const documents = rows(value, 'documents'), host = documents.find(entry => entry.values.id === mapped('document', c.parentDocumentId))!
     assert.equal(host.values.title, c.sourceTitle)
     for (const id of [c.retainedDocumentId, c.retainedChildId, c.retainedDescendantId, c.orphanHostId]) {
       const selected = documents.find(entry => entry.values.id === id)!, original = originals(f, 'current', 'documents').find(entry => entry.value.id === id)!

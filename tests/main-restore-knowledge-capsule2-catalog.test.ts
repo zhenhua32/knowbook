@@ -80,10 +80,13 @@ test('capsule2 catalog preserves real Store view orders outside the wire safe-in
 
 function atom(f: V3Fixture, place: 'host' | 'canonical', databaseId: string, viewId: string) {
   const content = serializeDatabaseViewPayload({ version: 1, databaseId, viewId, config: createDefaultDatabaseViewConfig() })
-  if (place === 'host') f.store.updateDocument(f.targetId, { title: 'Source atom host', summary: '', blocks: [
-    { id: f.targetBodyId, type: 'database-view', content, checked: false, depth: 0, parentBlockId: null }
-  ] })
-  else {
+  if (place === 'host') {
+    const target = f.store.getDocumentDetail(f.targetId)
+    assert.ok(target)
+    f.store.updateDocument(f.targetId, { title: target.title, summary: '', blocks: [
+      { id: f.targetBodyId, type: 'database-view', content, checked: false, depth: 0, parentBlockId: null }
+    ] })
+  } else {
     const group = snapshot(f.db, f.groupId)
     editCreatedGroup(f.db, f.groupId, group.blocks.map(({ createdAt: _birth, ...block }) => ({ ...block, type: 'database-view', content })))
   }

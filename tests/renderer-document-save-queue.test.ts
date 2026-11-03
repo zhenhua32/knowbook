@@ -4,6 +4,7 @@ import { act, createElement, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { JSDOM } from 'jsdom'
 import type { DocumentDetail, UpdateDocumentInput, UpdateDocumentResult } from '../src/shared/contracts'
+import type { DocumentRenameAdmissionInput } from '../src/shared/document-rename-admission'
 import { useDocumentEditorState } from '../src/renderer/src/hooks/useDocumentEditorState'
 import { completeDocumentDraftWrite } from '../src/renderer/src/utils/documentDraftWriter'
 import { getUiText } from '../src/renderer/src/i18n'
@@ -33,6 +34,10 @@ async function withEditor(run: (context: {
   const dom = new JSDOM('<div id="root"></div><div class="document-summary-card"><input id="title"></div>')
   const requests: SaveRequest[] = [], messages: string[] = []
   Object.defineProperty(dom.window, 'knowbook', { value: {
+    getDocumentRenameAdmission: async ({ documentId, expectedUpdatedAt }: DocumentRenameAdmissionInput) => ({
+      status: 'ready', documentId, documentCreatedAt: '2026-11-03T00:00:00.000Z', updatedAt: expectedUpdatedAt,
+      requiresFencedTitle2: false, writePermit: false
+    }),
     updateDocument: (documentId: string, input: UpdateDocumentInput) => new Promise<UpdateDocumentResult>((resolve, reject) => {
       requests.push({ documentId, input, resolve, reject })
     }),

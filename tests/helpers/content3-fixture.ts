@@ -10,7 +10,7 @@ import { captureMixedRootKnowledgeConservationPlan3 } from '../../src/main/datab
 import { tryReadCertifiedCapsule2SourceInputs } from '../../src/main/database/restore-knowledge-capsule2-source-certificate'
 
 type SourcePacket = NonNullable<Awaited<ReturnType<typeof tryReadCertifiedCapsule2SourceInputs>>>['value']
-type BeforeCurrent = (source: Parameters<typeof captureMixedSource>[0], original: SourcePacket) => void | Promise<void>
+type BeforeCurrent = (source: Parameters<typeof captureMixedSource>[0], original: SourcePacket, ordinary: ReturnType<typeof writeMixedOrdinary501>) => void | Promise<void>
 export async function withContent3Fixture(run: (f: Awaited<ReturnType<typeof setup>>) => Promise<void>, beforeCurrent?: BeforeCurrent,
   beforeSource?: (source: Parameters<typeof captureMixedSource>[0]) => void | Promise<void>,
   beforeOrdinary?: (source: Parameters<typeof captureMixedSource>[0]) => void | Promise<void>) {
@@ -34,7 +34,7 @@ async function setup(source: Parameters<typeof captureMixedSource>[0], receiver:
   const sourcePacket = (await tryReadCertifiedCapsule2SourceInputs(left.handle))!.value
   source.db.prepare('UPDATE blocks SET content=? WHERE id=?').run('Different current business body', source.targetBodyId)
   source.store.saveSetting('ai.apiKey', 'current-key-is-retained-policy-only')
-  await beforeCurrent?.(source, sourcePacket)
+  await beforeCurrent?.(source, sourcePacket, ordinary)
   const right = await captureMixedSource(source, 2)
   const currentPacket = (await tryReadCertifiedCapsule2SourceInputs(right.handle))!.value
   const dag = await captureActualFirstRequiredSqlDag({ profileRoot: source.userDataRoot,

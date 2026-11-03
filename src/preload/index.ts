@@ -198,6 +198,7 @@ const api: ElectronApi = {
   checkForAppUpdates: () => ipcRenderer.invoke('knowbook:check-for-app-updates') as Promise<AppUpdateState>,
   installAppUpdate: () => ipcRenderer.invoke('knowbook:install-app-update') as Promise<void>,
   getDocumentDetail: (documentId: string) => ipcRenderer.invoke('knowbook:get-document-detail', documentId) as Promise<DocumentDetail | null>,
+  getDocumentRenameAdmission: input => ipcRenderer.invoke('knowbook:get-document-rename-admission', input) as ReturnType<ElectronApi['getDocumentRenameAdmission']>,
   checkDocumentLinks: (documentId: string) => ipcRenderer.invoke('knowbook:check-document-links', documentId) as Promise<DocumentLinkCheck>,
   clipWebPage: (input: ClipWebPageInput) => ipcRenderer.invoke('knowbook:clip-web-page', input) as Promise<ClipWebPageResult>,
   getWebClipBridgeStatus: () => ipcRenderer.invoke('knowbook:get-web-clip-bridge-status') as Promise<WebClipBridgeStatus>,

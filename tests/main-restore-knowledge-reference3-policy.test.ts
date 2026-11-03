@@ -46,7 +46,7 @@ test('independent Main same-ID group births remain distinct and every incoming i
     assert.equal(canonical.find(entry => entry.value.id === root.targetId)!.value.group_id, group.targetId)
     const descendant = canonical.find(entry => entry.value.id === child.targetId)!.value
     assert.equal(descendant.group_id, group.targetId); assert.equal(descendant.parent_block_id, root.targetId)
-    const targetDocumentId = slot('document', f.source.targetId).targetId
+    const targetDocumentId = slot('document', f.longDocumentId).targetId
     const longDocument = rows(prepared.value, 'documents').find(entry => entry.value.id === targetDocumentId)!
     assert.equal(longDocument.row.sourceRef.side, 'source')
     assert.equal(longDocument.value.title, f.longTitle)

@@ -28,7 +28,7 @@ async function unchangedSource(f: V3Fixture, inspect: (db: Database.Database) =>
 }
 
 test('capsule2 document tree keeps actual case-distinct promoted siblings, ordinary501 and signed order with complete original parent identities', () => withV3Fixture(async f => {
-  const { title } = writeMixedOrdinary501(f)
+  const { title, documentId } = writeMixedOrdinary501(f)
   const top = document(f, 'Promotion parent')
   const lower = document(f, 'case', top), lowerChild = document(f, 'Child', lower)
   const upper = document(f, 'Case'), upperChild = document(f, 'Child', upper)
@@ -43,7 +43,7 @@ test('capsule2 document tree keeps actual case-distinct promoted siblings, ordin
   f.store.applySyncRecords([record])
   await unchangedSource(f, db => {
     const value = readRawCapsule2PhysicalGraphOwned(db)
-    assert.equal(value.documents.find(row => row.documentId === f.targetId)?.title, title)
+    assert.equal(value.documents.find(row => row.documentId === documentId)?.title, title)
     assert.deepEqual([lower, upper].map(id => value.documents.find(row => row.documentId === id)?.title), ['case', 'Case'])
     assert.deepEqual([lowerChild, upperChild].map(id => value.documents.find(row => row.documentId === id)?.parentId), [lower, upper])
     assert.equal(value.documents.find(row => row.documentId === ordered)?.sortOrder, -7)

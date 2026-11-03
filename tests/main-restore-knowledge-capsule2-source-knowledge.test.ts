@@ -28,7 +28,7 @@ test('capsule2 source K retains actual mixed ordinary501 identities and unreserv
   assert.equal(value.version, 2)
   assert.ok(knowledge.groups.some(group => group.tuple.groupId === f.groupId))
   assert.ok(knowledge.instances.some(instance => instance.instanceId === f.instanceId))
-  assert.ok(knowledge.occupancy.some(item => item.namespace === 'document' && item.id === f.targetId && item.kind === 'physical'))
+  assert.ok(knowledge.occupancy.some(item => item.namespace === 'document' && item.id === mixed.documentId && item.kind === 'physical'))
   for (const block of mixed.template.blocks) assert.ok(knowledge.occupancy.some(item => item.id === block.id && item.kind === 'template'))
   assert.ok(knowledge.historicalMaterial.length > 0)
   assert.equal(knowledge.sourceContentHash, value.assetArchive.sourceContentHash)
@@ -64,14 +64,14 @@ test('capsule2 source K binds every actual prior-C support row while keeping its
 }))
 
 test('capsule2 source K requery remains bound to immutable originals after the genuine live Store creates later content and history', () => withV3Fixture(async f => {
-  const mixed = writeMixedOrdinary501(f), { material, value } = await capture(f), detail = f.store.getDocumentDetail(f.targetId)!
-  f.store.updateDocument(f.targetId, { title:'Changed after original capture',summary:detail.summary,blocks:detail.blocks })
+  const mixed = writeMixedOrdinary501(f), { material, value } = await capture(f), detail = f.store.getDocumentDetail(mixed.documentId)!
+  f.store.updateDocument(mixed.documentId, { title:'Changed after original capture',summary:detail.summary,blocks:detail.blocks })
   const hot = await withCapsule2RawCopy(f, db => db.transaction(() => readRawCapsule2SourceKnowledgeOwned(db))())
   assert.notEqual(hot.knowledge.observationHash, value.knowledge.observationHash)
   const reread = await readCapsule2SourceMaterial(material)
   assert.deepEqual(reread.knowledge, value.knowledge)
   assert.ok(decodedCapsule2Table(reread.source.sourceContent,'documents').some(row => row.title === mixed.title))
-  assert.equal(f.store.getDocumentDetail(f.targetId)!.title, 'Changed after original capture')
+  assert.equal(f.store.getDocumentDetail(mixed.documentId)!.title, 'Changed after original capture')
 }))
 
 test('capsule2 source K rejects actual writable autocommit FK-off and query-only-off connections without changing source rows', () => withV3Fixture(async f => {

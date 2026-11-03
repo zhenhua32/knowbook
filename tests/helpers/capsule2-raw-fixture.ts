@@ -9,15 +9,20 @@ import type { Capsule2RawContent } from '../../src/main/database/restore-knowled
 /** Real ordinary Store writer remains alive from before the first Main group.
  * These inputs are not publication wire and do not mint an exposure. */
 export function writeMixedOrdinary501(f: V3Fixture) {
-  const title = '源'.repeat(501), detail = f.store.getDocumentDetail(f.targetId)
-  assert.ok(detail)
-  f.store.updateDocument(f.targetId, { title, summary: detail.summary, blocks: detail.blocks })
+  const title = '源'.repeat(501), targetBefore = f.store.getDocumentDetail(f.targetId)
+  assert.ok(targetBefore)
+  // Keep the original canonical heading target intact. This independent real
+  // ordinary document owns its own IDs; the 501 title is not publication wire.
+  const documentId = f.store.createDocument(null), detail = f.store.getDocumentDetail(documentId)
+  assert.ok(detail && detail.blocks.length)
+  f.store.updateDocument(documentId, { title, summary: detail.summary, blocks: detail.blocks })
   const template = f.store.saveDocumentTemplate({ name: 'Actual capsule2 ordinary template', title: 'Template source', summary: 'Original template',
     blocks: [{ type: 'paragraph', content: 'Template has no physical ledger reservation', checked: false, depth: 0, parentBlockId: null }] })
-  assert.equal(f.store.getDocumentDetail(f.targetId)?.title, title)
+  assert.equal(f.store.getDocumentDetail(documentId)?.title, title)
+  assert.deepEqual(f.store.getDocumentDetail(f.targetId), targetBefore)
   assert.ok(f.db.prepare('SELECT 1 FROM synced_groups WHERE id=?').get(f.groupId), 'The nonempty group/ACK is produced by the actual Main create writer')
   for (const block of template.blocks) { assert.ok(block.id); assert.equal(f.db.prepare('SELECT 1 FROM block_identities WHERE id=?').get(block.id), undefined) }
-  return { title, template }
+  return { title, template, documentId, bodyBlockId: detail.blocks[0].id }
 }
 /** A real SQLite online backup makes an independent scratch for raw SQL tests.
  * This helper does not certify or seal a capsule2, a DAG or accepted coverage. */

@@ -603,7 +603,7 @@ export function useDocumentEditorState({
       const promise = (async (): Promise<boolean> => {
         try {
           const requiresSyncedWriter = hasCanonicalHostSavePending() || [...normalizedBlocks, ...detail.blocks].some(block => block.type === 'synced-block')
-          const syncedHost = requiresSyncedWriter ? getSyncedHostEditorState() : null
+          const syncedHost = requiresSyncedWriter || intent ? getSyncedHostEditorState() : null
           const { completeDocumentDraftWrite } = await loadWriter()
           return await completeDocumentDraftWrite({ documentId, title, summary, normalizedBlocks, detail, baseTitle,
             renaming: Boolean(intent), saveFailed: ui.documentSaveFailed, requiresSyncedWriter, syncedHost,

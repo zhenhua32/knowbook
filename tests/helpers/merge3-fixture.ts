@@ -8,6 +8,7 @@ import { createDefaultDatabaseViewConfig } from '../../src/shared/database-works
 
 type ContentFixture = Parameters<Parameters<typeof withContent3Fixture>[0]>[0]
 export interface Merge3Scenario {
+  readonly parentDocumentId: string
   readonly sourceTitle: string
   readonly currentTitle: string
   readonly currentParentBlockId: string
@@ -57,8 +58,9 @@ export async function withMerge3Fixture(run: (fixture: Merge3Fixture) => Promise
   await withContent3Fixture(async f => {
     assert.ok(scenario)
     await run({ ...f, merge: scenario })
-  }, f => {
-    assert.equal(f.store.getDocumentDetail(f.targetId)!.title, sourceTitle)
+  }, (f, _original, ordinary) => {
+    const parentDocumentId = ordinary.documentId
+    assert.equal(f.store.getDocumentDetail(parentDocumentId)!.title, sourceTitle)
     const currentParentBlockId = randomUUID(), currentChildBlockId = randomUUID()
     applied(applySyncedHostFinal(f.db, request(f.db, [f.hostId], after => {
       after[0].blocks.push({ ...freshBlock(currentParentBlockId, 'Current-only host parent'), type: 'toggle' },
@@ -67,10 +69,10 @@ export async function withMerge3Fixture(run: (fixture: Merge3Fixture) => Promise
 
     // The host-final command deliberately refuses title changes. Exercise the
     // real ordinary document writer for the parent-title/layout scenario.
-    f.store.updateDocument(f.targetId, { title: currentTitle, summary: 'Independent target summary',
-      blocks: [{ ...freshBlock(f.targetBodyId, 'Different current business body'), type: 'heading-1' }] })
+    f.store.updateDocument(parentDocumentId, { title: currentTitle, summary: 'Independent target summary',
+      blocks: [{ ...freshBlock(ordinary.bodyBlockId, 'Different current business body'), type: 'heading-1' }] })
     const retainedDocumentId = f.store.createDocument(null), retainedChildId = f.store.createDocument(retainedDocumentId)
-    const retainedDescendantId = f.store.createDocument(f.targetId)
+    const retainedDescendantId = f.store.createDocument(parentDocumentId)
     const retainedBodyId = randomUUID(), retainedChildBodyId = randomUUID(), retainedDescendantBodyId = randomUUID()
     f.store.updateDocument(retainedDocumentId, { title: 'Retained merge branch', summary: 'Current-only root',
       blocks: [freshBlock(retainedBodyId, 'Retained root body')] })
@@ -124,7 +126,7 @@ export async function withMerge3Fixture(run: (fixture: Merge3Fixture) => Promise
     addAnonymousRows(f, anonymousStamp)
     const currentAnonymousRowIds = anonymousRows(f)
     assert.equal(currentAnonymousRowIds.length, 2)
-    scenario = { sourceTitle, currentTitle, currentParentBlockId, currentChildBlockId, currentCanonicalBlockId,
+    scenario = { parentDocumentId, sourceTitle, currentTitle, currentParentBlockId, currentChildBlockId, currentCanonicalBlockId,
       retainedDocumentId, retainedChildId, retainedDescendantId, retainedBodyId, retainedChildBodyId, retainedDescendantBodyId,
       externalInstanceId: external.action.instanceId, orphanHostId, orphanGroupId: orphan.action.groupId, orphanCanonicalBlockId,
       sharedTemplateId, currentTemplateId: currentTemplate.id, currentDatabaseId: database.id, currentColumnId: column.id,

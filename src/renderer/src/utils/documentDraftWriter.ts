@@ -32,7 +32,14 @@ export async function completeDocumentDraftWrite(context: Context): Promise<bool
   let updateResult: Awaited<ReturnType<typeof window.knowbook.updateDocument>> | null = null
   let submittedTitle = title, submittedSummary = summary, submittedBlocks = normalizedBlocks
   let refreshedDetail: DocumentDetail | null
-  if (requiresSyncedWriter) {
+  let useSyncedWriter = requiresSyncedWriter
+  if (renaming && !useSyncedWriter) {
+    const hint = await window.knowbook.getDocumentRenameAdmission({ documentId, expectedUpdatedAt: detail.updatedAt })
+    if (!isCurrentSession()) return false
+    if (hint.status !== 'ready' || hint.documentId !== documentId || hint.updatedAt !== detail.updatedAt || hint.writePermit !== false) throw new Error(saveFailed)
+    useSyncedWriter = hint.requiresFencedTitle2
+  }
+  if (useSyncedWriter) {
     if (!syncedHost) throw new Error(saveFailed)
     const { persistCanonicalHostDraft } = await import('../features/synced-blocks/inlineHostPersistence')
     if (!isCurrentSession()) return false

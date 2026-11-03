@@ -1621,6 +1621,8 @@ function registerIpcHandlers(): void {
     return document
   })
 
+  ipcMain.handle('knowbook:get-document-rename-admission', (_event, input: unknown) => store.getDocumentRenameAdmission(input))
+
   ipcMain.handle('knowbook:check-document-links', (_event, documentId: string) => {
     if (typeof documentId !== 'string' || !documentId) throw new Error('Invalid document ID')
     return store.checkDocumentLinks(documentId, (url) => checkMarkdownAttachment(url, webClipAssetRoot))
