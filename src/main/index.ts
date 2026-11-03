@@ -1,4 +1,5 @@
 import { createEditorCloseBarrier } from './editor-close-barrier'
+import { runSyncedEditingSessionWithAdmission } from './synced-editing-session-admission'
 import { EDITOR_CLOSE_ACKNOWLEDGE_CHANNEL, EDITOR_CLOSE_READY_CHANNEL } from '../shared/editor-close'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, createReadStream } from 'node:fs'
 import { rm as removePath } from 'node:fs/promises'
@@ -2401,9 +2402,7 @@ function registerIpcHandlers(): void {
     }
     return result
     }
-    return input.method === 'updateSyncedBlockGroup' || input.method === 'restoreSyncedGroupOperation'
-      || input.method === 'applySyncedHostStructure' || input.method === 'restoreSyncedHostOperation'
-      ? editorCloseBarrier.runEditorMutation(event, invoke) : invoke()
+    return runSyncedEditingSessionWithAdmission(editorCloseBarrier, event, input.method, invoke)
   })
   ipcMain.handle('knowbook:release-synced-editing-session', (event, sessionId: string) => {
     store.releaseSyncedEditingSession(event.senderFrame!,sessionId)

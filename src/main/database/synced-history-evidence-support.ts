@@ -15,6 +15,15 @@ export function assertHistoricalEvidenceOwned(db: Database.Database): void {
  * below are Main-owned constants, never caller input. */
 export function readHistoricalExactRows<T>(db: Database.Database, table: RawHistoricalEvidenceTable,
   columns: readonly string[], where = '', parameters: readonly (string | number)[] = []): T[] {
+  return readOriginalSqlTextRowsOwned2<T>(db, table, columns, where, parameters)
+}
+/** Reuse the original storage-class/encoding/roundtrip check for a finite
+ * physical source-point selector. This is data-only SQL, not a historical
+ * locator family, file capability or an install/write permit. Old historical
+ * readers retain the narrower table type and the exact same returned values. */
+export function readOriginalSqlTextRowsOwned2<T>(db: Database.Database,
+  table: RawHistoricalEvidenceTable | 'documents' | 'blocks' | 'synced_group_blocks',
+  columns: readonly string[], where = '', parameters: readonly (string | number)[] = []): T[] {
   assertHistoricalEvidenceOwned(db)
   const encoding = String(db.pragma('encoding', { simple: true })).toLowerCase()
   const label = encoding === 'utf-8' ? 'utf-8' : encoding === 'utf-16le' ? 'utf-16le' : encoding === 'utf-16be' ? 'utf-16be' : null

@@ -9,6 +9,8 @@ import { parseStrictJson } from '../../shared/strictJson'
 import { getSyncedGroupSnapshots } from './synced-blocks-read'
 import { readSyncedBindingSources, type SyncedVerifiedBindingSource } from './synced-block-links'
 import { decodeSyncedGroupOperationAck, readSyncedGroupOperationRow, validateSyncedOperationLookupInput } from './synced-group-operation-receipt'
+import { captureSyncedMetadataReadBaselineOwned2, readSyncedMetadataCaptureRecordOwned2, SYNCED_METADATA_BASELINE2_PREFIX,
+  type PreparedSyncedMetadataCaptureRecord2 } from './synced-metadata-capture-record2'
 
 /** No eviction: owners and ticket aliases share the original count/byte budget.
  * Main restart ends these private capabilities; portable data never contains them. */
@@ -41,6 +43,8 @@ type Registry = {
 type Workspace = { scope: string; epoch: string }
 type CapturedSource = { entries: SyncedVerifiedBindingSource[]; digest: string }
 const registries = new WeakMap<Database.Database, Registry>()
+// Private association only: no source packet/ACK/hash shape is widened.
+const metadataBaselines2 = new WeakMap<ReadOwner, PreparedSyncedMetadataCaptureRecord2>()
 function fail(message: string): never { throw new SyncedValidationError('binding', message) }
 const bytesOf = (value: unknown): number => Buffer.byteLength(JSON.stringify(value), 'utf8')
 function identity(db: Database.Database): Workspace {
@@ -126,10 +130,11 @@ function newOwner(groupId: string, capturedIncarnation: string): ReadOwner {
   return { readOwnerId, groupId, incarnation: capturedIncarnation, aliases: new Map(), bytes }
 }
 
-/** All callers reach this only after their owned read has ended. Reuse and all
- * new payloads/aliases/owners are planned before the registry changes at all. */
-function publishCapturedSources(db: Database.Database, workspace: Workspace,
-  sources: readonly (CapturedSource | null)[], owner: ReadOwner | null = null, publishOwner = false): Array<SyncedBindingSource | null> {
+/** Private publication planning changes no registry. The metadata2 baseline
+ * can therefore reject capacity before its first SQL write, while every actual
+ * owner/ticket remains unpublished until the original transaction commits. */
+function prepareCapturedSources(db: Database.Database, workspace: Workspace,
+  sources: readonly (CapturedSource | null)[], owner: ReadOwner | null = null, publishOwner = false) {
   const previous = registries.get(db)
   const registry = previous?.epoch === workspace.epoch ? previous : newRegistry(workspace)
   if (owner && !publishOwner && registry.owners.get(owner.readOwnerId) !== owner) return fail('同步块来源 owner 已失效。')
@@ -155,6 +160,13 @@ function publishCapturedSources(db: Database.Database, workspace: Workspace,
   }
   // Clone all outward handles before publication, including the reuse path.
   const result = tickets.map(ticket => ticket ? structuredClone(ticket.publicSource) : null)
+  return { db, registry, pendingPayloads, pendingTickets, owner, publishOwner, addedBytes, result }
+}
+/** Capacity validation and outward handle cloning preceded this commit.
+ * Callers publish synchronously after their actual SQL read/write has ended;
+ * no caller DTO or asynchronous continuation can supply a publication plan. */
+function commitCapturedSources(plan: ReturnType<typeof prepareCapturedSources>): Array<SyncedBindingSource | null> {
+  const { db, registry, pendingPayloads, pendingTickets, owner, publishOwner, addedBytes, result } = plan
   for (const payload of pendingPayloads.values()) registry.payloads.set(payload.digest, payload)
   for (const ticket of pendingTickets.values()) {
     registry.tickets.set(ticket.ticketId, ticket)
@@ -165,6 +177,11 @@ function publishCapturedSources(db: Database.Database, workspace: Workspace,
   registry.bytes += addedBytes
   registries.set(db, registry)
   return result
+}
+/** Legacy read-only callers keep their original after-read publication order. */
+function publishCapturedSources(db: Database.Database, workspace: Workspace,
+  sources: readonly (CapturedSource | null)[], owner: ReadOwner | null = null, publishOwner = false): Array<SyncedBindingSource | null> {
+  return commitCapturedSources(prepareCapturedSources(db, workspace, sources, owner, publishOwner))
 }
 
 /** Owned read only: signing inside a writer's uncommitted after-state would let
@@ -205,7 +222,10 @@ export function getSyncedOperationWithLinkSource(db: Database.Database, input: u
 export function captureSyncedBaselineOwner(db: Database.Database, input: unknown): SyncedBaselineOwnerResult {
   ownRead(db)
   const { groupId } = ownerInput(input, ['groupId'])
-  const captured = db.transaction(() => {
+  const captured = db.transaction(() => captureBaselineOwned(db, groupId))()
+  return publishBaseline(db, groupId, captured)
+}
+function captureBaselineOwned(db: Database.Database, groupId: string) {
     assertSyncedEditingFenceOwned(db)
     const workspace = identity(db), result = getSyncedGroupSnapshots(db, { groupIds: [groupId] })
     if (result.workspaceScope !== workspace.scope) return fail('同步块读取与来源 owner 不属于同一工作区。')
@@ -214,12 +234,59 @@ export function captureSyncedBaselineOwner(db: Database.Database, input: unknown
     const capturedIncarnation = currentIncarnation(db, groupId)
     if (capturedIncarnation !== incarnation(item.snapshot)) return fail('同步块完整基线与真实组身份不一致。')
     return { workspace, item, capturedIncarnation, source: captureSource(db, item.snapshot) }
-  })()
+}
+function publishBaseline(db: Database.Database, groupId: string, captured: ReturnType<typeof captureBaselineOwned>): SyncedBaselineOwnerResult {
   if (captured.item.status === 'missing') return { status: 'missing', workspaceScope: captured.workspace.scope, groupId }
   const owner = newOwner(groupId, captured.capturedIncarnation!)
   const [bindingSource] = publishCapturedSources(db, captured.workspace, [captured.source!], owner, true)
   return { status: 'ready', workspaceScope: captured.workspace.scope, readOwnerId: owner.readOwnerId,
     snapshot: captured.item.snapshot, bindingSource: bindingSource! }
+}
+
+/** The new production session baseline has one actual IMMEDIATE SQL capture.
+ * Durable read evidence is independent of business ACKs and never pins groups.
+ * The legacy source API above keeps its exact readonly/output/hash semantics. */
+export function captureSyncedBaselineOwnerWithMetadata2(db: Database.Database, input: unknown): SyncedBaselineOwnerResult {
+  ownRead(db)
+  const {groupId} = ownerInput(input, ['groupId'])
+  const captured = db.transaction(() => {
+    const baseline = captureBaselineOwned(db, groupId)
+    if (baseline.item.status === 'missing') return { status: 'missing' as const, workspaceScope: baseline.workspace.scope }
+    const owner = newOwner(groupId, baseline.capturedIncarnation!)
+    // The private capture registry retains only db/key/hash. Charge its fixed
+    // pointer before persistence, without inventing or publishing that point.
+    owner.bytes += bytesOf({metadataPoint:{key:SYNCED_METADATA_BASELINE2_PREFIX+'0'.repeat(64),recordHash:'0'.repeat(64)}})
+    const publication = prepareCapturedSources(db, baseline.workspace, [baseline.source!], owner, true)
+    const metadataPoint = captureSyncedMetadataReadBaselineOwned2(db, groupId)
+    // Independently read its actual record before the transaction ends. No
+    // matching-hash/caller pair is used to associate it with this read owner.
+    const record = readSyncedMetadataCaptureRecordOwned2(db, metadataPoint)
+    const source = record.sources[0]
+    if (source.wire.id !== groupId || source.revision !== baseline.item.snapshot.revision
+        || source.topologyRevision !== baseline.item.snapshot.topologyRevision || incarnation(baseline.item.snapshot) !== incarnation({groupId:source.wire.id,
+          creationId:source.wire.creationId,createdAt:source.wire.createdAt,origin:source.wire.origin})
+        || canonicalSyncedPortableJson(source.wire.blocks) !== canonicalSyncedPortableJson(baseline.item.snapshot.blocks)
+        || canonicalSyncedPortableJson(source.wire.bindings) !== canonicalSyncedPortableJson(baseline.item.snapshot.bindings)) return fail('Metadata2 read point does not equal its same-transaction genuine baseline.')
+    return { status: 'ready' as const, workspaceScope: baseline.workspace.scope, snapshot: baseline.item.snapshot, owner, publication, metadataPoint }
+  }).immediate()
+  if (captured.status === 'missing') return { status: 'missing', workspaceScope: captured.workspaceScope, groupId }
+  const [bindingSource] = commitCapturedSources(captured.publication)
+  metadataBaselines2.set(captured.owner, captured.metadataPoint)
+  return { status: 'ready', workspaceScope: captured.workspaceScope, readOwnerId: captured.owner.readOwnerId,
+    snapshot: captured.snapshot, bindingSource: bindingSource! }
+}
+
+/** Main-only data seam for a genuine existing read owner. Legacy ACK aliases
+ * do not acquire historical heading birth by sharing the same group/URL.
+ * Final metadata writers must still prove their exact Key continuity. */
+export function readSyncedBaselineMetadataCaptureOwned2(db: Database.Database, readOwnerId: string) {
+  if (!db.open || !db.inTransaction) return fail('Metadata2 baseline read requires the actual owned SQL transaction.')
+  if (!isSyncedUuid(readOwnerId)) return fail('Metadata2 baseline read owner identity invalid.')
+  const registry = registries.get(db), owner = registry?.owners.get(readOwnerId), workspace = identity(db)
+  const point = owner && metadataBaselines2.get(owner)
+  if (!registry || registry.epoch !== workspace.epoch || !owner || !point || currentIncarnation(db,owner.groupId) !== owner.incarnation)
+    return {status:'owner-unavailable' as const,writePermit:false as const}
+  return {status:'captured' as const,record:readSyncedMetadataCaptureRecordOwned2(db,point),writePermit:false as const,historicalKeyLineageComplete:false as const}
 }
 
 /** Validate this original capability in one owned read without allocating a
@@ -278,6 +345,7 @@ export function releaseSyncedReadOwner(db: Database.Database, input: unknown): v
     }
   }
   owner.aliases.clear()
+  metadataBaselines2.delete(owner)
   registry.owners.delete(readOwnerId)
   registry.bytes -= owner.bytes
 }

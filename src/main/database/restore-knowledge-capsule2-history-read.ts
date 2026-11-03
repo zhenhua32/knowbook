@@ -1,3 +1,4 @@
+import { assertSyncedMetadataCaptureFamilyOwned2, readSyncedMetadataCaptureOriginalRowOwned2, SYNCED_METADATA_CAPTURE2_PREFIX, SYNCED_METADATA_BASELINE2_PREFIX, SYNCED_METADATA_CAPTURE2_PIN } from './synced-metadata-capture-record2'
 import type Database from 'better-sqlite3'
 import { isSyncedUuid } from '../../shared/syncedBlockValidation'
 import { parseExchangeStored, exchangeJobKey, exchangeJobPhaseKey } from '../sync/synced-exchange-model'
@@ -45,6 +46,7 @@ type Member = { attempt_id: string; group_id: string; creation_id: string; revis
  * roots/IDs/DTO, removable spool, public admission or certificate factory. */
 export function readRawCapsule2HistoricalEvidenceOwned(db: Database.Database): RawCapsule2HistoricalObservation {
   assertHistoricalEvidenceOwned(db)
+  assertSyncedMetadataCaptureFamilyOwned2(db)
   const observer = readRawCapsule2ObserverOwned(db), coverage = observer.coverage
   const coverageById = new Map(coverage.requirements.entries.map(entry => [coverageOperationId(entry.operationId), entry]))
   const coverageByMetadata = new Map(coverage.requirements.entries.flatMap(entry => [[String(entry.supports.coverage.key[0]), entry.supports.coverage], [String(entry.supports.receipt.key[0]), entry.supports.receipt]] as const))
@@ -92,6 +94,14 @@ export function readRawCapsule2HistoricalEvidenceOwned(db: Database.Database): R
     if (!historicalHash(row.request_hash) || !historicalTime(row.created_at)) return historicalEvidenceInvalid('原operation hash/时点无效。')
     const value = parseExchangeStored(row.result_json)
     const kind = value && typeof value === 'object' && !Array.isArray(value) && 'kind' in value ? value.kind : null
+    if (/^synced[.:]metadata2/i.test(row.client_operation_id)) {
+      if (schema !== 27 || !row.client_operation_id.startsWith(SYNCED_METADATA_CAPTURE2_PREFIX) && !row.client_operation_id.startsWith(SYNCED_METADATA_BASELINE2_PREFIX)) return historicalEvidenceInvalid('未知 metadata2 原事实 family/version。')
+      const record = readSyncedMetadataCaptureOriginalRowOwned2(db,row)
+      const supports = record.kind === 'synced-metadata2-read-baseline-record' ? [] : record.sources.map(source =>
+        readHistoricalRowLocator(db,'synced_group_pins',[source.wire.id,SYNCED_METADATA_CAPTURE2_PIN,row.client_operation_id]))
+      facts.push(historicalFact('metadata2-current-capture',2,historicalOperationLocator(row),supports))
+      continue
+    }
     const coverageEntry = coverageById.get(row.client_operation_id)
     if (coverageEntry) {
       if (capsuleJson(historicalOperationLocator(row)) !== capsuleJson(coverageEntry.supports.link)) return historicalEvidenceInvalid('total2实际C link完整行不一致')

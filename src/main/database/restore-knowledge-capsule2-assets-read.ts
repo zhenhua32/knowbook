@@ -10,6 +10,7 @@ import { decodeHostJournal, hostJournalKind, validateHostSides } from './synced-
 import type { SyncedHostHistoryBranchRow } from './synced-host-history-branch'
 import { decodeSyncedOperationAck } from './synced-host-operation-receipt'
 import type { SyncedGroupOperationRow } from './synced-group-operation-receipt'
+import { readSyncedMetadataCaptureOriginalRowOwned2 } from './synced-metadata-capture-record2'
 import { validateExchangeJob } from '../sync/synced-exchange-model'
 import type { SyncedProtocol5Record } from '../sync/synced-protocol5-model'
 import { validateSyncedLogicalDeletionProof } from '../sync/synced-logical-deletion-model'
@@ -112,10 +113,17 @@ export function readRawCapsule2AssetReferenceSourceOwned(db: Database.Database) 
       if ('create' in journal) group(['synced_host_history', row.id, 'action_json', 'create', 'wire'], journal.create.wire)
     }
   }
-  for (const row of rows<SyncedGroupOperationRow>('synced_operations', 'client_operation_id')) {
+  for (const row of rows<SyncedGroupOperationRow & { created_at: string }>('synced_operations', 'client_operation_id')) {
     const value = JSON.parse(row.result_json) as { kind?: string; version?: number }
     const source = ['synced_operations', row.client_operation_id, 'result_json']
-    if (value.kind === undefined || value.kind === 'synced-host-operation' || value.kind === 'synced-host-create-operation') {
+    if (value.kind === 'synced-metadata2-current-capture-record' || value.kind === 'synced-metadata2-group-capture-record' || value.kind === 'synced-metadata2-read-baseline-record') {
+      const capture = readSyncedMetadataCaptureOriginalRowOwned2(db,row)
+      for (const item of capture.sources) group([...source,'sources',item.wire.id,'wire'],item.wire)
+      for (const item of capture.capture.groups) if (item.kind === 'namespace-material') group([...source,'capture','groups',item.wire.id,'wire'],item.wire)
+      for (const item of capture.capture.namespaces) body([...source,'capture','namespaces',item.host.documentId,'host'],item.host)
+      // Key.raw, headings/slug text and Origin are derived/opaque fields, not
+      // additional Markdown authority or independent file grants.
+    } else if (value.kind === undefined || value.kind === 'synced-host-operation' || value.kind === 'synced-host-create-operation') {
       const ack = decodeSyncedOperationAck(row)
       if ('snapshot' in ack) group([...source, 'snapshot'], ack.snapshot)
       else {

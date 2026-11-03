@@ -7,7 +7,8 @@ const formats = {
   'exchange-state': [1, 2], 'exchange-job': [1, 2, 3, 4, 5, 6, 7], 'exchange-job-head': [1],
   'exchange-job-phase': [1, 2], 'conflict-preview': [1, 2], 'both-preview': [1, 2],
   'deletion-preview': [1], 'exchange-history-index': [1], 'exchange-history-row': [1],
-  'exchange-host-cut': [1], 'backup-v3': [1], 'recovery-boundary': [1], 'member-exposure': [null]
+  'exchange-host-cut': [1], 'backup-v3': [1], 'recovery-boundary': [1], 'member-exposure': [null],
+  'metadata2-current-capture': [2]
 } as const
 for (const versions of Object.values(formats)) Object.freeze(versions)
 export const RAW_SYNCED_HISTORICAL_FORMATS = Object.freeze(formats)

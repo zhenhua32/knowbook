@@ -6,7 +6,7 @@ import { assertSyncedShape, isSyncedBlockId, isSyncedUuid } from '../../shared/s
 import { getSyncedGroupSnapshots, listSyncedGroups, getSyncedHostHistory } from './synced-blocks-read'
 import { updateSyncedBlockGroup, restoreSyncedGroupOperation, getSyncedOperation } from './synced-blocks-content'
 import { applySyncedHostFinal, applySyncedHostCommand, restoreSyncedHostOperation } from './synced-host-final'
-import { captureSyncedBaselineOwner, getSyncedOperationWithOwnedLinkSource, validateSyncedReadOwner, releaseSyncedReadOwner } from './synced-binding-sources'
+import { captureSyncedBaselineOwnerWithMetadata2, getSyncedOperationWithOwnedLinkSource, validateSyncedReadOwner, releaseSyncedReadOwner } from './synced-binding-sources'
 import { captureSyncedEditingFenceOwned, runWithSyncedEditingFence, assertSyncedEditingFenceOwned, assertSyncedEditingFenceRead,
   type SyncedEditingFence } from './synced-editing-fence'
 import { resolveSyncedInlineInstance } from './workspace-search-occurrences'
@@ -88,7 +88,7 @@ export class SyncedEditingSessionRepository {
         case'getSyncedOperation':return getSyncedOperation(this.db,request)
         case'applySyncedHostStructure':return(request as {mode?:unknown}).mode==='command'?applySyncedHostCommand(this.db,request):applySyncedHostFinal(this.db,request)
         case'restoreSyncedHostOperation':return restoreSyncedHostOperation(this.db,request)
-        case'captureBaseline':return captureSyncedBaselineOwner(this.db,request)
+        case'captureBaseline':return captureSyncedBaselineOwnerWithMetadata2(this.db,request)
         case'ownedOperation':return getSyncedOperationWithOwnedLinkSource(this.db,request)
         case'validateOwner':return validateSyncedReadOwner(this.db,request)
         default:return fail('closed dispatch method omitted')
