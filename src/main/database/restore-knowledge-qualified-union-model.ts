@@ -72,7 +72,7 @@ export function unionQualifiedKnowledgeDiagnostics2(input: unknown): QualifiedKn
     for (const value of payload.observations) observations.push({ origin, value })
     for (const value of payload.occupancy) occupancy.push({ origin, value })
     for (const value of payload.historicalMaterial) {
-      if (['initial-baseline', 'exchange-state', 'exchange-job-head', 'member-exposure'].includes(value.fact.family)) continue
+      if (['initial-baseline', 'exchange-state', 'exchange-job-head', 'member-exposure', 'metadata2-title-head'].includes(value.fact.family)) continue
       // This selected-primary diagnostic deliberately retains K1's scope+family
       // key and four-family filter. It is not the stable group/document key.
       const key = capsuleJson([origin.workspaceScope, value.fact.family, value.fact.locator.table, value.fact.locator.key])

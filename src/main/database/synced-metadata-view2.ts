@@ -7,9 +7,10 @@ import { validateSyncedStructureInput } from '../../shared/syncedBlockInputs'
 import { BlockIdentityRepository } from './block-identities'
 import { getSyncedGroupSnapshots } from './synced-blocks-read'
 import { hostEqual, type HostFinalInput } from './synced-host-journal'
-import { readStrictHostDocument, readCanonicalRuntimeHostDocumentOwned, type StrictHostDocument, type HostContent } from './synced-host-document-read'
+import { readCanonicalRuntimeHostDocumentOwned, type StrictHostDocument, type HostContent } from './synced-host-document-read'
 import { resolveRawLiveBlockOwner } from './block-identities-raw-read'
 import { readOriginalSqlTextRowsOwned2 } from './synced-history-evidence-support'
+import { assertSyncedStoredBindings } from './synced-stored-binding-read'
 import { assertCanonicalSearchSnapshotOwned, inlineInstanceFromRow, resolveSyncedInlineInstance, syncedInlineInstancesSql, type SyncedInlineInstanceSqlRow } from './workspace-search-occurrences'
 import { projectSyncedHostHeadings2, planSyncedHeadingRewrites2 } from './synced-heading-projection2'
 import { planStoredDocumentTitle2 } from './document-metadata-plan2'
@@ -33,6 +34,7 @@ export function readSyncedMetadataTargetSourceOwned2(db:Database.Database,groupI
     readOriginalSqlTextRowsOwned2(db,'synced_group_blocks',['id','group_id','parent_block_id','type','content','tags_json','language','markdown_format_json','highlight','created_at'],'group_id=?',[id])
     const item=getSyncedGroupSnapshots(db,{groupIds:[id]}).items[0]
     if(!item||item.status!=='ready')return fail('actual referenced source-point group missing')
+    assertSyncedStoredBindings(db,item.snapshot.origin,item.snapshot.blocks,item.snapshot.bindings)
     groups.set(id,item.snapshot);return item.snapshot
   }
   const original=loadGroup(groupId),documentIds=new Set<string>()
@@ -86,7 +88,7 @@ export function readSyncedMetadataWorkspaceOwned2(db:Database.Database):SyncedMe
   }
   const hosts=new Map<string,SyncedMetadataHostView2>()
   for(const row of db.prepare('SELECT id FROM documents ORDER BY id').all() as Array<{id:string}>){
-    const host=readStrictHostDocument(db,row.id)??fail('actual document disappeared'),instances=new Map<string,SyncedInlineInstanceAddress>()
+    const host=readCanonicalRuntimeHostDocumentOwned(db,row.id)??fail('actual document disappeared'),instances=new Map<string,SyncedInlineInstanceAddress>()
     for(const leaf of host.content.blocks)if(leaf.type==='synced-block'){
       const groupId=parseSyncedBlockPayload(leaf.content).groupId,actual=actualInstances.get(leaf.id),group=groups.get(groupId)
       const physical=groupPositions.get(leaf.id),position=physical?.position

@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { encodeDocumentIndexEntry } from '../src/shared/document-catalog-payload'
 import { ensureDocumentMetadataEditor, hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
+import { closeEvents, observeRealEditorClose } from './helpers/canonical-inline'
 
 test('workspace load failure has diagnostics and retry recovers without restarting @electron', async ({}, testInfo) => {
   test.skip(!hasBuiltElectronApp(), 'Run npm run build first.')
@@ -19,10 +20,21 @@ test('workspace load failure has diagnostics and retry recovers without restarti
     await expect(page.locator('.sidebar-create-button')).toBeDisabled()
     await recovery.locator('summary').click()
     await expect(recovery.locator('pre')).toContainText('workspace temporarily unavailable')
+    await observeRealEditorClose(page)
+    const beforeReload = await closeEvents(page)
     await recovery.getByRole('button', { name: uiText('Reload interface', '重新加载界面') }).click()
-    const confirmation = page.getByRole('alertdialog', { name: uiText('Reload interface', '重新加载界面') })
-    await expect(confirmation).toContainText(/Unsaved changes may be lost|未保存的内容可能丢失/)
-    await confirmation.getByRole('button', { name: uiText('Cancel', '取消') }).click()
+    await expect.poll(async () => (await closeEvents(page)).cancelled.length).toBe(beforeReload.cancelled.length + 1)
+    const afterReload = await closeEvents(page)
+    expect(afterReload.requests).toHaveLength(beforeReload.requests.length + 1)
+    const request = afterReload.requests.at(-1)!
+    expect(request.reason).toBe('reload')
+    expect(afterReload.cancelled.at(-1)).toMatchObject({ requestId: request.requestId, reason: 'reload' })
+    await expect(page.locator('.app-notifications').getByRole('alert').filter({
+      hasText: /Unsaved editor or source changes keep this window open|编辑草稿或源码尚未保存，窗口保持打开/
+    })).toContainText(
+      /Unsaved editor or source changes keep this window open|编辑草稿或源码尚未保存，窗口保持打开/
+    )
+    await expect.poll(() => page.evaluate(() => document.documentElement.inert)).toBe(false)
     await expect(recovery).toBeVisible()
     await page.screenshot({ path: testInfo.outputPath('workspace-load-error.png') })
     await app.evaluate(({ ipcMain }, serialized) => {

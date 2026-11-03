@@ -208,7 +208,7 @@ test('Enter splits text, Shift+Enter saves a hard break, and list Backspace exit
     await expect(rows(page)).toHaveCount(2)
     await expect(rows(page).last().locator('br:not(.ProseMirror-trailingBreak)')).toHaveCount(1)
     await save(page)
-    await expect.poll(async () => (await detail(page, id))?.blocks[1].content).toMatch(/^New(?:\\| {2})\ndef$/)
+    await expect.poll(async () => (await detail(page, id))?.blocks[1]?.content).toMatch(/^New(?:\\| {2})\ndef$/)
     await reopen(page, title)
     await expect(rows(page).last().locator('br:not(.ProseMirror-trailingBreak)')).toHaveCount(1)
 

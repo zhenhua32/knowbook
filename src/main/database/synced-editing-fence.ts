@@ -86,6 +86,13 @@ export function assertSyncedEditingFenceOwned(db:Database.Database):void {
   if(active.method==='getSyncedHostHistory')host(request.documentId)
 }
 
+/** New metadata business writers are production session consumers only. They
+ * cannot silently acquire the legacy direct writer's unfenced compatibility. */
+export function requireSyncedMetadataEditingFenceOwned2(db:Database.Database):void {
+  if(!running.has(db))return fail('metadata2 requires the genuine active Main editing session')
+  assertSyncedEditingFenceOwned(db)
+}
+
 /** Negative readonly results still belong to the current real epoch. Only a
  * genuine running context uses SQL; old unfenced early returns stay unchanged.
  * The callback is just this assertion, never an outer wrapper of an old reader. */

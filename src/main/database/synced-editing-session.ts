@@ -4,8 +4,8 @@ import type { OpenSyncedEditingSessionInput, OpenSyncedEditingSessionResult, Syn
   SyncedEditingRequest, SyncedEditingResult } from '../../shared/synced-editing-session'
 import { assertSyncedShape, isSyncedBlockId, isSyncedUuid } from '../../shared/syncedBlockValidation'
 import { getSyncedGroupSnapshots, listSyncedGroups, getSyncedHostHistory } from './synced-blocks-read'
-import { updateSyncedBlockGroup, restoreSyncedGroupOperation, getSyncedOperation } from './synced-blocks-content'
-import { applySyncedHostFinal, applySyncedHostCommand, restoreSyncedHostOperation } from './synced-host-final'
+import { updateSyncedBlockGroup, restoreSyncedGroupOperation } from './synced-blocks-content'
+import { applySyncedHostStructureWithTitle2, restoreSyncedHostStructureWithTitle2, getSyncedOperationWithTitle2 } from './synced-host-title2'
 import { captureSyncedBaselineOwnerWithMetadata2, getSyncedOperationWithOwnedLinkSource, validateSyncedReadOwner, releaseSyncedReadOwner } from './synced-binding-sources'
 import { captureSyncedEditingFenceOwned, runWithSyncedEditingFence, assertSyncedEditingFenceOwned, assertSyncedEditingFenceRead,
   type SyncedEditingFence } from './synced-editing-fence'
@@ -85,9 +85,9 @@ export class SyncedEditingSessionRepository {
         case'getSyncedHostHistory':return this.db.transaction(()=>{assertSyncedEditingFenceOwned(this.db);return getSyncedHostHistory(this.db,request)})()
         case'updateSyncedBlockGroup':return updateSyncedBlockGroup(this.db,request)
         case'restoreSyncedGroupOperation':return restoreSyncedGroupOperation(this.db,request)
-        case'getSyncedOperation':return getSyncedOperation(this.db,request)
-        case'applySyncedHostStructure':return(request as {mode?:unknown}).mode==='command'?applySyncedHostCommand(this.db,request):applySyncedHostFinal(this.db,request)
-        case'restoreSyncedHostOperation':return restoreSyncedHostOperation(this.db,request)
+        case'getSyncedOperation':return getSyncedOperationWithTitle2(this.db,request)
+        case'applySyncedHostStructure':return applySyncedHostStructureWithTitle2(this.db,request)
+        case'restoreSyncedHostOperation':return restoreSyncedHostStructureWithTitle2(this.db,request)
         case'captureBaseline':return captureSyncedBaselineOwnerWithMetadata2(this.db,request)
         case'ownedOperation':return getSyncedOperationWithOwnedLinkSource(this.db,request)
         case'validateOwner':return validateSyncedReadOwner(this.db,request)

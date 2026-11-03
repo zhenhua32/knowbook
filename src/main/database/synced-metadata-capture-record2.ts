@@ -75,7 +75,7 @@ function validateCapture(value:unknown,sources:Source[]):Capture{
       return original.wire.id
     }
     assertSyncedShape(item,['kind','wire','revision','topologyRevision']);if(item.kind!=='namespace-material')return fail('unknown namespace material kind')
-    const wire=validateSyncedGroupWire(item.wire)
+    const wire=source({wire:item.wire,revision:item.revision,topologyRevision:item.topologyRevision}).wire
     if(groupFacts.has(wire.id))return fail('source namespace material is duplicated rather than referenced')
     groupFacts.set(wire.id,{groupId:wire.id,creationId:wire.creationId,createdAt:wire.createdAt,origin:wire.origin,bindings:wire.bindings,blocks:wire.blocks});return wire.id
   },item=>item))

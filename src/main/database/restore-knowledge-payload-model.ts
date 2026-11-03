@@ -180,7 +180,7 @@ export function unionKnowledgePayloadDiagnostics(input: readonly CapsuleKnowledg
       // Exclude evolving state/head/baseline/exposure primaries. All remaining
       // primary row variants are diagnostic across originals, not contradictions
       // or authority; equal locators do not establish accepted shared lineage.
-      if (['initial-baseline', 'exchange-state', 'exchange-job-head', 'member-exposure'].includes(value.fact.family)) continue
+      if (['initial-baseline', 'exchange-state', 'exchange-job-head', 'member-exposure', 'metadata2-title-head'].includes(value.fact.family)) continue
       const key = capsuleJson([origin.workspaceScope, value.fact.family, value.fact.locator.table, value.fact.locator.key])
       const list = historicalPrimaryRows.get(key) ?? []; list.push({ origin, value }); historicalPrimaryRows.set(key, list)
     }

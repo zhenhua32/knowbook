@@ -1,5 +1,7 @@
 import { readSyncedHistoricalOperationsWithMetadata2Owned2, readSyncedMetadataCaptureOriginalRowOwned2, SYNCED_METADATA_CAPTURE2_PREFIX, SYNCED_METADATA_BASELINE2_PREFIX, SYNCED_METADATA_CAPTURE2_PIN } from './synced-metadata-capture-record2'
 import type Database from 'better-sqlite3'
+import { assertTitle2OriginalFamilyOwned, title2OriginalSupportsOwned, decodeTitle2GroupHead } from './synced-host-title2-read'
+import { TITLE2_OPERATION_KIND, TITLE2_GROUP_HEAD_PREFIX, title2CompanionKey } from './synced-host-title2-codec'
 import { isSyncedUuid } from '../../shared/syncedBlockValidation'
 import { parseExchangeStored, exchangeJobKey, exchangeJobPhaseKey } from '../sync/synced-exchange-model'
 import { initialIncomingRequestHash, validateInitialIncomingReceipt } from '../sync/synced-initial-incoming-model'
@@ -31,6 +33,7 @@ export function assertRawSyncedHistoricalEvidenceOwned(db: Database.Database): R
   assertHistoricalEvidenceOwned(db)
   const schema = db.pragma('user_version', { simple: true })
   if (schema !== 26 && schema !== 27) return historicalEvidenceInvalid('尚无该schema的完整同步历史adapter；不会推定empty。')
+  const titleMetadata=schema===27?assertTitle2OriginalFamilyOwned(db):[],titleKeys=new Set(titleMetadata.map(row=>row.key))
   const rows = readSyncedHistoricalOperationsWithMetadata2Owned2(db), metadata = readHistoricalMetadata(db)
   const operations = new Map(rows.map(row => [row.client_operation_id, row])), settings = new Map(metadata.map(row => [row.key, row]))
   const facts: RawHistoricalEvidenceFact[] = []
@@ -100,7 +103,11 @@ export function assertRawSyncedHistoricalEvidenceOwned(db: Database.Database): R
       continue
     }
     if (!isSyncedUuid(row.client_operation_id)) return historicalEvidenceInvalid('原普通operation key不是准确UUID。')
-    if (kind === null || kind === 'synced-host-operation' || kind === 'synced-host-create-operation') {
+    if (kind === TITLE2_OPERATION_KIND) {
+      if(schema!==27)return historicalEvidenceInvalid('schema26不接受metadata2 title业务记录。')
+      const {supports}=title2OriginalSupportsOwned(db,row.client_operation_id)
+      facts.push(historicalFact('metadata2-title-operation',2,historicalOperationLocator(row),supports))
+    } else if (kind === null || kind === 'synced-host-operation' || kind === 'synced-host-create-operation') {
       decodeSyncedOperationAck(row)
       if (schema === 26 && kind === 'synced-host-create-operation') return historicalEvidenceInvalid('schema26不支持create lifecycle ACK。')
       facts.push(historicalFact(kind === null ? 'group-ack' : kind === 'synced-host-operation' ? 'host-ack' : 'host-create-ack',
@@ -167,7 +174,11 @@ export function assertRawSyncedHistoricalEvidenceOwned(db: Database.Database): R
       }
       facts.push(historicalFact('recovery-boundary', 1, setting(key), supports))
     }
-    for (const row of selectedMetadata) if (!/^sync\.webdav\.protocol5\./.test(row.key)
+    for(const row of titleMetadata)if(row.key.startsWith(TITLE2_GROUP_HEAD_PREFIX)){
+      const head=decodeTitle2GroupHead(parseExchangeStored(row.value))
+      facts.push(historicalFact('metadata2-title-head',2,historicalMetadataLocator(row),[operation(head.operationId),setting(title2CompanionKey(head.operationId))],'index-attempt-only'))
+    }
+    for (const row of selectedMetadata) if (!titleKeys.has(row.key)&&!/^sync\.webdav\.protocol5\./.test(row.key)
       && !/^synced\.backup\.v3\./.test(row.key) && !/^synced\.recovery\.history\.v1\./.test(row.key))
       return historicalEvidenceInvalid('未知原同步metadata family/版本；不能只hash认证。')
   }

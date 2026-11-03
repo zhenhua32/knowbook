@@ -178,10 +178,14 @@ test.describe('Document CRUD Operations @electron', () => {
       await getTitleInput(page).fill(targetTitle)
       await page.getByRole('button', { name: uiText('Save', '保存') }).click()
 
-      const targetId = await page.evaluate(async (title) => {
-        const catalog = await window.knowbook.getDocumentCatalog()
-        return catalog.find((document) => document.title === title)?.id ?? null
-      }, targetTitle)
+      let targetId: string | null = null
+      await expect.poll(async () => {
+        targetId = await page.evaluate(async (title) => {
+          const catalog = await window.knowbook.getDocumentCatalog()
+          return catalog.find((document) => document.title === title)?.id ?? null
+        }, targetTitle)
+        return targetId
+      }).not.toBeNull()
       expect(targetId).not.toBeNull()
 
       await dragTreeDocument(page, sourceTitle, getTreeButton(page, targetTitle))

@@ -11,6 +11,8 @@ import type { SyncedHostHistoryBranchRow } from './synced-host-history-branch'
 import { decodeSyncedOperationAck } from './synced-host-operation-receipt'
 import type { SyncedGroupOperationRow } from './synced-group-operation-receipt'
 import { readSyncedMetadataCaptureOriginalRowOwned2 } from './synced-metadata-capture-record2'
+import { TITLE2_OPERATION_KIND } from './synced-host-title2-codec'
+import { readTitle2OriginalOperationOwned } from './synced-host-title2-read'
 import { validateExchangeJob } from '../sync/synced-exchange-model'
 import type { SyncedProtocol5Record } from '../sync/synced-protocol5-model'
 import { validateSyncedLogicalDeletionProof } from '../sync/synced-logical-deletion-model'
@@ -116,7 +118,15 @@ export function readRawCapsule2AssetReferenceSourceOwned(db: Database.Database) 
   for (const row of rows<SyncedGroupOperationRow & { created_at: string }>('synced_operations', 'client_operation_id')) {
     const value = JSON.parse(row.result_json) as { kind?: string; version?: number }
     const source = ['synced_operations', row.client_operation_id, 'result_json']
-    if (value.kind === 'synced-metadata2-current-capture-record' || value.kind === 'synced-metadata2-group-capture-record' || value.kind === 'synced-metadata2-read-baseline-record') {
+    if(value.kind===TITLE2_OPERATION_KIND){
+      const original=readTitle2OriginalOperationOwned(db,row.client_operation_id)
+      if(!original)return bad('metadata2 title原件缺失')
+      for(const host of original.envelope.result.hosts){body([...source,'result','hosts',host.documentId,'logicalBefore'],host.logicalBefore)
+        body([...source,'result','hosts',host.documentId,'after'],host.after)}
+      for(const item of original.envelope.result.groups)group([...source,'result','groups',item.groupId],item)
+      // Compact recorded navigation deltas are not additional Markdown/file
+      // grants. Their complete actual before source points are visited above.
+    }else if (value.kind === 'synced-metadata2-current-capture-record' || value.kind === 'synced-metadata2-group-capture-record' || value.kind === 'synced-metadata2-read-baseline-record') {
       const capture = readSyncedMetadataCaptureOriginalRowOwned2(db,row)
       for (const item of capture.sources) group([...source,'sources',item.wire.id,'wire'],item.wire)
       for (const item of capture.capture.groups) if (item.kind === 'namespace-material') group([...source,'capture','groups',item.wire.id,'wire'],item.wire)
