@@ -1,5 +1,6 @@
 import { createEditorCloseDelivery } from './editor-close-delivery'
 import { EDITOR_CLOSE_REQUEST_CHANNEL, EDITOR_CLOSE_CANCELLED_CHANNEL, EDITOR_CLOSE_ACKNOWLEDGE_CHANNEL, EDITOR_CLOSE_READY_CHANNEL,
+  EDITOR_RELOAD_REQUEST_CHANNEL,
   type EditorCloseRequest, type EditorCloseCancelled } from '../shared/editor-close'
 import electron from 'electron'
 import type { WorkspaceSearchOccurrence, WorkspaceSearchOccurrenceResult } from '../shared/workspace-search-occurrence'
@@ -142,6 +143,7 @@ const api: ElectronApi = {
   onEditorCloseRequest: listener => editorCloseDelivery.onRequest(listener),
   onEditorCloseCancelled: listener => editorCloseDelivery.onCancelled(listener),
   acknowledgeEditorClose: (input) => ipcRenderer.invoke(EDITOR_CLOSE_ACKNOWLEDGE_CHANNEL, input) as Promise<boolean>,
+  requestEditorReload: () => ipcRenderer.invoke(EDITOR_RELOAD_REQUEST_CHANNEL) as Promise<boolean>,
   getWebDavSyncStatus: () => ipcRenderer.invoke('knowbook:get-webdav-sync-status'),
   saveWebDavSyncConfig: (input) => ipcRenderer.invoke('knowbook:save-webdav-sync-config', input),
   testWebDavConnection: () => ipcRenderer.invoke('knowbook:test-webdav-connection'),

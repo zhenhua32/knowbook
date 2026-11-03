@@ -966,6 +966,9 @@ export interface ElectronApi {
   onEditorCloseRequest: (listener: (request: EditorCloseRequest) => void) => () => void
   onEditorCloseCancelled: (listener: (request: EditorCloseCancelled) => void) => () => void
   acknowledgeEditorClose: (input: EditorCloseAcknowledgement) => Promise<boolean>
+  /** Requests a Main-owned editor drain; true means admitted to the handshake,
+   * not a fabricated save ACK or permission for renderer location.reload(). */
+  requestEditorReload: () => Promise<boolean>
   getHomeData: () => Promise<HomeData>
   getPluginHomeData: () => Promise<PluginHomeData>
   onWorkspaceMutated: (listener: () => void) => () => void

@@ -1,6 +1,7 @@
 import { createEditorCloseBarrier } from './editor-close-barrier'
 import { runSyncedEditingSessionWithAdmission } from './synced-editing-session-admission'
-import { EDITOR_CLOSE_ACKNOWLEDGE_CHANNEL, EDITOR_CLOSE_READY_CHANNEL } from '../shared/editor-close'
+import { editorReloadKey, guardEditorReloadMenu } from './editor-reload-entrypoints'
+import { EDITOR_CLOSE_ACKNOWLEDGE_CHANNEL, EDITOR_CLOSE_READY_CHANNEL, EDITOR_RELOAD_REQUEST_CHANNEL } from '../shared/editor-close'
 import { existsSync, mkdirSync, readFileSync, writeFileSync, createReadStream } from 'node:fs'
 import { rm as removePath } from 'node:fs/promises'
 import { Readable } from 'node:stream'
@@ -291,6 +292,11 @@ const backupHealth = new BackupHealthTracker((state) => {
 let shutdownComplete = false
 let shutdownPromise: Promise<void> | null = null
 const editorCloseBarrier = createEditorCloseBarrier({
+  reloadEditor: (window, ignoreCache) => {
+    if (window !== mainWindow || mainWindow.isDestroyed()) throw new Error('The original registered editor is unavailable')
+    if (ignoreCache) mainWindow.webContents.reloadIgnoringCache()
+    else mainWindow.webContents.reload()
+  },
   beginShutdown: () => {
     if (!shutdownPromise) {
       shutdownPromise = shutdownServices()
@@ -1064,6 +1070,26 @@ function createWindow(): ElectronBrowserWindow {
   })
 
   editorCloseBarrier.registerWindow(mainWindow)
+  const editorWindow = mainWindow
+  editorWindow.webContents.on('before-input-event', (event, input) => {
+    const reload = editorReloadKey(input)
+    if (!reload) return
+    // preventDefault also prevents Electron's menu accelerator. A composed
+    // editor must answer blocked through the real nonce, not lose its IME W.
+    event.preventDefault()
+    editorCloseBarrier.requestReload({ sender: editorWindow.webContents, senderFrame: editorWindow.webContents.mainFrame }, reload.ignoreCache)
+  })
+  const oldMenu = electron.Menu.getApplicationMenu() ?? electron.Menu.buildFromTemplate([
+    ...(process.platform === 'darwin' ? [{ role: 'appMenu' as const }] : []),
+    { role: 'fileMenu' }, { role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' }
+  ])
+  const reloadMenu = guardEditorReloadMenu(oldMenu, items => electron.Menu.buildFromTemplate(items), (focused, ignoreCache) => {
+    const target = focused ? BrowserWindow.fromId(focused.id) : mainWindow
+    if (!target || target !== mainWindow) return false
+    editorCloseBarrier.requestReload({ sender: target.webContents, senderFrame: target.webContents.mainFrame }, ignoreCache)
+    return true // A blocked registered editor must never fall back to native reload.
+  })
+  if (reloadMenu !== oldMenu || !electron.Menu.getApplicationMenu()) electron.Menu.setApplicationMenu(reloadMenu)
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
     const policyEntry = [...fullTrustFramePolicies.entries()].find(([, candidate]) => (
@@ -2383,6 +2409,7 @@ function registerIpcHandlers(): void {
     return store.resolveSyncedInlineInstance(input)
   })
   ipcMain.handle(EDITOR_CLOSE_READY_CHANNEL, event => editorCloseBarrier.replayPending(event))
+  ipcMain.handle(EDITOR_RELOAD_REQUEST_CHANNEL, event => editorCloseBarrier.requestReload(event) !== null)
   ipcMain.handle(EDITOR_CLOSE_ACKNOWLEDGE_CHANNEL, (event, input: unknown) => editorCloseBarrier.acknowledge(event, input))
   ipcMain.handle('knowbook:open-synced-editing-session', (event, input: OpenSyncedEditingSessionInput): OpenSyncedEditingSessionResult => {
     return store.openSyncedEditingSession(event.senderFrame!,input)

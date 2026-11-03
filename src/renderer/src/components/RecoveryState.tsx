@@ -32,12 +32,15 @@ export function RecoveryState({ title, description, error, onRetry, onNavigate, 
     } finally { lock.current = false; setRunning(false) }
   }
   const restart = async (safe: boolean) => {
-    const label = safe ? (isZh ? '安全模式重启' : 'Restart in safe mode') : (isZh ? '重新加载界面' : 'Reload interface')
-    await confirmAction({ title: label, tone: 'warning',
+    if (!safe) {
+      if (!await window.knowbook.requestEditorReload()) throw new Error(isZh ? '当前编辑会话无法安全重载，草稿仍保留。' : 'The current editor cannot reload safely; drafts remain retained.')
+      return
+    }
+    await confirmAction({ title: isZh ? '安全模式重启' : 'Restart in safe mode', tone: 'warning',
       description: isZh
-        ? `${safe ? '将重启应用，并在本次启动中跳过系统插件。' : '将重新加载界面。'}未保存的内容可能丢失。`
-        : `${safe ? 'The app will restart without system plugins for this boot.' : 'The interface will reload.'} Unsaved changes may be lost.`,
-      onConfirm: () => safe ? window.knowbook.restartInSystemPluginSafeMode() : window.location.reload()
+        ? '将重启应用，并在本次启动中跳过系统插件。未保存的内容可能丢失。'
+        : 'The app will restart without system plugins for this boot. Unsaved changes may be lost.',
+      onConfirm: () => window.knowbook.restartInSystemPluginSafeMode()
     })
   }
   return <section className={`recovery-state${compact ? ' recovery-state-compact' : ''}`} aria-label={title} aria-busy={busy || running}>

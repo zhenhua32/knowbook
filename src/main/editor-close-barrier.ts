@@ -28,16 +28,21 @@ interface FrameIdentity {
 interface Registered {
   readonly window: EditorCloseWindow; readonly contents: EditorCloseWebContents
   lifecycle: number; writes: number; approvedClose: string | null
+  approvedReload: string | null; afterReload: 'window' | 'quit' | null
 }
 interface Target { readonly registered: Registered; readonly frame: FrameIdentity; state: 'waiting' | 'flushed' | 'closed' }
 interface Attempt {
   readonly requestId: string; readonly reason: EditorCloseReason; readonly targets: Map<Registered, Target>
-  phase: 'waiting' | 'closing'; timer: unknown; dispatching: number
+  phase: 'waiting' | 'closing' | 'reloading'; timer: unknown; dispatching: number
+  reloadIgnoringCache: boolean
 }
 export interface EditorCloseBarrierOptions {
   /** Called once, only after every current editor frame has acknowledged.
    * This begins the existing irreversible services/plugin shutdown policy. */
   beginShutdown: () => void | Promise<void>
+  /** Main's actual registered editor only, after its real complete drain ACK.
+   * This must synchronously call webContents.reload[IgnoringCache], not await. */
+  reloadEditor?: (window: EditorCloseWindow, ignoreCache: boolean) => void
   onShutdownError?: (error: unknown) => void
   timeoutMs?: number
   setTimer?: (callback: () => void, milliseconds: number) => unknown
@@ -47,6 +52,7 @@ export interface EditorCloseBarrier {
   registerWindow(window: EditorCloseWindow): void
   replayPending(event: EditorCloseIpcEvent): boolean
   requestQuit(): string | null
+  requestReload(event: EditorCloseIpcEvent, ignoreCache?: boolean): string | null
   acknowledge(event: EditorCloseIpcEvent, input: unknown): boolean
   assertEditorMutationAllowed(event: EditorCloseIpcEvent): void
   runEditorMutation<T>(event: EditorCloseIpcEvent, operation: () => T | Promise<T>): Promise<T>
@@ -78,6 +84,7 @@ export function createEditorCloseBarrier(options: EditorCloseBarrierOptions): Ed
   const setTimer = options.setTimer ?? ((callback: () => void, milliseconds: number) => { const timer = setTimeout(callback, milliseconds); timer.unref(); return timer })
   const clearTimer = options.clearTimer ?? (timer => clearTimeout(timer as ReturnType<typeof setTimeout>))
   let attempt: Attempt | null = null, shuttingDown = false, activeWrites = 0
+  let reloadLanding: { entry: Registered; requestId: string } | null = null
 
   const frameIdentity = (entry: Registered): FrameIdentity | null => {
     try {
@@ -107,8 +114,11 @@ export function createEditorCloseBarrier(options: EditorCloseBarrierOptions): Ed
     const cancelled = attempt
     if (!cancelled || shuttingDown) return
     attempt = null; clearTimer(cancelled.timer)
+    if (reloadLanding?.requestId === cancelled.requestId) reloadLanding = null
     for (const target of cancelled.targets.values()) {
       if (target.registered.approvedClose === cancelled.requestId) target.registered.approvedClose = null
+      if (target.registered.approvedReload === cancelled.requestId) target.registered.approvedReload = null
+      target.registered.afterReload = null
       try { send(target.registered, EDITOR_CLOSE_CANCELLED_CHANNEL, { requestId: cancelled.requestId, reason: cancelled.reason, message }) } catch { /* The frame may have exited; its peers must still unfreeze. */ }
     }
   }
@@ -141,6 +151,20 @@ export function createEditorCloseBarrier(options: EditorCloseBarrierOptions): Ed
       }
       beginShutdown(); return
     }
+    if (current.reason === 'reload') {
+      const target = [...current.targets.values()][0]
+      if (current.targets.size !== 1 || !target || !options.reloadEditor) { cancel('The registered editor cannot reload safely.'); return }
+      current.phase = 'reloading'
+      target.registered.approvedReload = current.requestId
+      reloadLanding = { entry: target.registered, requestId: current.requestId }
+      // Admission is now committed: every W is saved and the old renderer is
+      // still frozen. The 8s budget only cancels a WAITING drain. Unfreezing
+      // after invoking reload could accept new W before queued navigation.
+      clearTimer(current.timer)
+      try { options.reloadEditor(target.registered.window, current.reloadIgnoringCache) }
+      catch { if (attempt === current) cancel('The editor reload could not start; the saved editor remains open.') }
+      return
+    }
     current.phase = 'closing'
     for (const target of [...current.targets.values()]) {
       if (attempt !== current || shuttingDown) break
@@ -162,10 +186,12 @@ export function createEditorCloseBarrier(options: EditorCloseBarrierOptions): Ed
     if (attempt === current) complete()
     return attempt === current
   }
-  const start = (reason: EditorCloseReason, entries: readonly Registered[]) => {
-    const current: Attempt = { requestId: randomUUID(), reason, targets: new Map(), phase: 'waiting', timer: null, dispatching: 1 }
+  const start = (reason: EditorCloseReason, entries: readonly Registered[], reloadIgnoringCache = false) => {
+    const current: Attempt = { requestId: randomUUID(), reason, targets: new Map(), phase: 'waiting', timer: null, dispatching: 1, reloadIgnoringCache }
     attempt = current
-    current.timer = setTimer(() => { if (attempt === current) cancel('Saving the editor did not finish before the close timeout.'); }, timeoutMs)
+    current.timer = setTimer(() => {
+      if (attempt === current && (current.reason !== 'reload' || current.phase === 'waiting')) cancel('Saving the editor did not finish before the close timeout.')
+    }, timeoutMs)
     for (const entry of entries) if (!addTarget(current, entry)) { current.dispatching--; return current.requestId }
     current.dispatching--
     if (!current.targets.size) {
@@ -177,6 +203,11 @@ export function createEditorCloseBarrier(options: EditorCloseBarrierOptions): Ed
   }
   const requestWindow = (entry: Registered) => {
     if (shuttingDown) return null
+    if (reloadLanding) {
+      if (entry.afterReload !== 'quit') entry.afterReload = 'window'
+      return reloadLanding.requestId
+    }
+    if (attempt?.reason === 'reload') cancel('Window close replaced the pending editor reload.')
     if (attempt?.targets.has(entry)) return attempt.requestId
     if (attempt?.reason === 'quit') { addTarget(attempt, entry); return attempt?.requestId ?? null }
     const entries = attempt ? [...attempt.targets.keys(), entry] : [entry]
@@ -185,6 +216,10 @@ export function createEditorCloseBarrier(options: EditorCloseBarrierOptions): Ed
   }
   const requestQuit = () => {
     if (shuttingDown) return null
+    if (reloadLanding) {
+      reloadLanding.entry.afterReload = 'quit'
+      return reloadLanding.requestId
+    }
     if (attempt?.reason === 'quit') return attempt.requestId
     if (attempt) cancel('Application quit replaced the window close request.')
     return start('quit', [...windows.values()].filter(entry => !entry.window.isDestroyed()))
@@ -192,6 +227,8 @@ export function createEditorCloseBarrier(options: EditorCloseBarrierOptions): Ed
   const mutationAllowed = (event: EditorCloseIpcEvent) => {
     const entry = currentEntry(event)
     if (!entry || shuttingDown) return false
+    // A navigation start does not yet establish the new realm's listeners.
+    if (reloadLanding?.entry === entry) return false
     const target = attempt?.targets.get(entry)
     return !target || target.state === 'waiting'
   }
@@ -202,11 +239,12 @@ export function createEditorCloseBarrier(options: EditorCloseBarrierOptions): Ed
     registerWindow(window) {
       if (windows.has(window)) return
       if (shuttingDown) throw new Error('Cannot register an editor after service shutdown begins.')
-      const entry: Registered = { window, contents: window.webContents, lifecycle: 0, writes: 0, approvedClose: null }
+      const entry: Registered = { window, contents: window.webContents, lifecycle: 0, writes: 0, approvedClose: null, approvedReload: null, afterReload: null }
       windows.set(window, entry); contents.set(entry.contents, entry)
       const closed = () => {
         const current = attempt, target = current?.targets.get(entry)
         windows.delete(window); contents.delete(entry.contents)
+        if (reloadLanding?.entry === entry) reloadLanding = null
         if (target && current?.phase === 'closing' && entry.approvedClose === current.requestId) { target.state = 'closed'; finishWindowAttempt() }
         else if (target && !shuttingDown) cancel('The editor exited before its close request completed.')
         for (const [emitter, event, listener] of listeners) emitter.removeListener(event, listener)
@@ -225,8 +263,19 @@ export function createEditorCloseBarrier(options: EditorCloseBarrierOptions): Ed
         }
         event.preventDefault(); requestWindow(entry)
       }
-      const navigation = (_event: unknown, _url: unknown, _inPlace: unknown, mainFrame: unknown) => { if (mainFrame === true) invalidated(true) }
-      const exited = () => invalidated()
+      const navigation = (_event: unknown, _url: unknown, inPlace: unknown, mainFrame: unknown) => {
+        if (mainFrame !== true) return
+        if (attempt?.reason === 'reload' && attempt.phase === 'reloading' && entry.approvedReload === attempt.requestId) {
+          if (inPlace === true) return // A hash change cannot unfreeze the realm awaiting its admitted full reload.
+          // The actual Main call has begun navigation. No old-frame cancel or
+          // ACK is sent; its complete saved realm remains frozen until gone.
+          entry.lifecycle++; entry.approvedReload = null
+          clearTimer(attempt.timer); attempt = null
+          return
+        }
+        invalidated(true)
+      }
+      const exited = () => { invalidated(); if (reloadLanding?.entry === entry) reloadLanding = null }
       const listeners: Array<[EditorCloseWindow | EditorCloseWebContents, string, (...args: any[]) => void]> = [
         [window,'close',close], [window,'closed',closed], [entry.contents,'did-start-navigation',navigation],
         [entry.contents,'render-process-gone',exited], [entry.contents,'destroyed',exited]
@@ -235,8 +284,26 @@ export function createEditorCloseBarrier(options: EditorCloseBarrierOptions): Ed
       if (attempt?.reason === 'quit' && !shuttingDown) addTarget(attempt, entry)
     },
     requestQuit,
+    requestReload(event, ignoreCache = false) {
+      const entry = currentEntry(event)
+      if (!entry || shuttingDown || !options.reloadEditor || typeof ignoreCache !== 'boolean') return null
+      // A repeated key/menu request never extends the deadline, upgrades cache
+      // mode or replaces an already admitted close/quit action.
+      if (reloadLanding) return reloadLanding.requestId
+      if (attempt) return attempt.requestId
+      return start('reload', [entry], ignoreCache)
+    },
     replayPending(event) {
-      const current = attempt, entry = currentEntry(event)
+      const entry = currentEntry(event)
+      if (!attempt && entry && reloadLanding?.entry === entry && !shuttingDown) {
+        reloadLanding = null
+        const queued = [...windows.values()].filter(item => item.afterReload !== null && !item.window.isDestroyed())
+        const quit = queued.some(item => item.afterReload === 'quit')
+        for (const item of queued) item.afterReload = null
+        if (quit) return requestQuit() !== null
+        if (queued.length) return start('window', queued) !== null
+      }
+      const current = attempt
       if (!current || !entry || shuttingDown || current.phase !== 'waiting') return false
       const target = current.targets.get(entry)
       if (!target || target.state !== 'waiting' || !sameFrame(entry, target.frame)) return false
