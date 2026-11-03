@@ -5,7 +5,7 @@ import { assertSyncedShape, isSyncedBlockId, isSyncedUuid, validateSyncedGroupWi
 import { collectSyncedBindingOccurrences } from '../sync/synced-binding-occurrences'
 import { hostEncode, hostEqual, hostHash } from './synced-host-journal'
 import { hostJson, hostTime } from './synced-host-document-read'
-import { readHistoricalExactRows } from './synced-history-evidence-support'
+import { readHistoricalExactRows, readHistoricalOperationsWithMetadata2RowsOwned2 } from './synced-history-evidence-support'
 import { projectSyncedHostHeadingFacts2, type SyncedHeadingHostFacts2, type SyncedHeadingInstanceIdentity2, type SyncedHeadingGroupFacts2 } from './synced-heading-projection2'
 import { prepareSyncedMetadataAffectedTransitionsOwned2, prepareSyncedMetadataGroupCurrentCaptureOwned2, prepareSyncedMetadataGroupBaselineCurrentCaptureOwned2 } from './synced-metadata-transition2'
 
@@ -270,9 +270,22 @@ export function readSyncedMetadataCaptureOriginalRowOwned2(db:Database.Database,
  * every normal read-source open. */
 export function assertSyncedMetadataCaptureFamilyOwned2(db:Database.Database):void{
   if(!db.open||!db.inTransaction)return fail('reserved capture family requires actual owned SQL')
+  const rows=readHistoricalExactRows<Row>(db,'synced_operations',['client_operation_id','request_hash','result_json','created_at'],
+    "lower(client_operation_id) LIKE 'synced.metadata2%' OR lower(client_operation_id) LIKE 'synced:metadata2%'")
+  assertActualMetadataCaptureRowsOwned2(db,rows)
+}
+/** Fixed Main factory: actual full SQL rows and their SQL-selected subset come
+ * from this invocation. No caller rows/allowlist/cache can enter validation.
+ * Public standalone family assertion above retains its own original read. */
+export function readSyncedHistoricalOperationsWithMetadata2Owned2(db:Database.Database):Row[]{
+  if(!db.open||!db.inTransaction)return fail('reserved capture family requires actual owned SQL')
+  const actual=readHistoricalOperationsWithMetadata2RowsOwned2(db)
+  assertActualMetadataCaptureRowsOwned2(db,actual.reserved)
+  return actual.rows
+}
+function assertActualMetadataCaptureRowsOwned2(db:Database.Database,rows:readonly Row[]):void{
   const keys=new Set<string>()
-  for(const row of readHistoricalExactRows<Row>(db,'synced_operations',['client_operation_id','request_hash','result_json','created_at'],
-    "lower(client_operation_id) LIKE 'synced.metadata2%' OR lower(client_operation_id) LIKE 'synced:metadata2%'")){
+  for(const row of rows){
     const record=actualRecord(db,row.client_operation_id)
     if(hostEncode(record)!==row.result_json)return fail('reserved original capture bytes differ')
     keys.add(row.client_operation_id)

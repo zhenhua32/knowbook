@@ -24,13 +24,21 @@ export function readHistoricalExactRows<T>(db: Database.Database, table: RawHist
 export function readOriginalSqlTextRowsOwned2<T>(db: Database.Database,
   table: RawHistoricalEvidenceTable | 'documents' | 'blocks' | 'synced_group_blocks',
   columns: readonly string[], where = '', parameters: readonly (string | number)[] = []): T[] {
+  return readOriginalSqlTextRowsWithPrivateFactOwned2<T>(db, table, columns, where, parameters)
+}
+/** Only the fixed factory below supplies this private SQL projection/observer.
+ * No public reader accepts a projection, caller rows, classification or mode. */
+function readOriginalSqlTextRowsWithPrivateFactOwned2<T>(db: Database.Database,
+  table: RawHistoricalEvidenceTable | 'documents' | 'blocks' | 'synced_group_blocks',
+  columns: readonly string[], where: string, parameters: readonly (string | number)[],
+  fact?: { selection: string; observe: (raw: Record<string, unknown>, actual: T) => void }): T[] {
   assertHistoricalEvidenceOwned(db)
   const encoding = String(db.pragma('encoding', { simple: true })).toLowerCase()
   const label = encoding === 'utf-8' ? 'utf-8' : encoding === 'utf-16le' ? 'utf-16le' : encoding === 'utf-16be' ? 'utf-16be' : null
   if (!label) return historicalEvidenceInvalid('不支持原数据库TEXT编码；不会推定empty。')
   const decoder = new TextDecoder(label, { fatal: true, ignoreBOM: true })
   const selection = columns.map(column => `${column},typeof(${column}) AS __type_${column},CAST(${column} AS BLOB) AS __bytes_${column}`).join(',')
-  return (db.prepare('SELECT ' + selection + ' FROM ' + table + (where ? ' WHERE ' + where : '')).all(...parameters) as Record<string, unknown>[])
+  return (db.prepare('SELECT ' + selection + (fact?.selection ?? '') + ' FROM ' + table + (where ? ' WHERE ' + where : '')).all(...parameters) as Record<string, unknown>[])
     .map(raw => {
       const result: Record<string, unknown> = {}
       for (const column of columns) {
@@ -48,6 +56,7 @@ export function readOriginalSqlTextRowsOwned2<T>(db: Database.Database,
         if (!encoded.equals(originalBytes)) return historicalEvidenceInvalid(table + '原TEXT回编码字节不相等。')
         result[column] = text
       }
+      fact?.observe(raw, result as T)
       return result as T
     })
 }
@@ -60,6 +69,23 @@ export function readHistoricalTextRows<T>(db: Database.Database, table: RawHisto
 }
 export function readHistoricalOperations(db: Database.Database): HistoricalOperationRow[] {
   return readHistoricalTextRows(db, 'synced_operations', ['client_operation_id', 'request_hash', 'result_json', 'created_at'])
+}
+/** Fixed same-read data source. SQL applies the exact old lower/LIKE predicate
+ * while the original full operations query preserves all four exact TEXTs.
+ * The private subset is never accepted back from an external caller. */
+export function readHistoricalOperationsWithMetadata2RowsOwned2(db: Database.Database) {
+  const columns = ['client_operation_id', 'request_hash', 'result_json', 'created_at'] as const
+  const reserved: HistoricalOperationRow[] = []
+  const rows = readOriginalSqlTextRowsWithPrivateFactOwned2<HistoricalOperationRow>(db, 'synced_operations', columns, '', [], {
+    selection: ",CASE WHEN lower(client_operation_id) LIKE 'synced.metadata2%' OR lower(client_operation_id) LIKE 'synced:metadata2%' THEN 1 ELSE 0 END AS __metadata2_reserved",
+    observe(raw, actual) {
+      const selected = raw.__metadata2_reserved
+      if (selected !== 0 && selected !== 1 && selected !== 0n && selected !== 1n) return historicalEvidenceInvalid('实际 metadata2 SQL 分类无效。')
+      if (selected === 1 || selected === 1n) reserved.push(actual)
+    }
+  })
+  for (const row of rows) if (columns.some(column => typeof row[column] !== 'string')) return historicalEvidenceInvalid('synced_operations原TEXT列损坏。')
+  return { rows, reserved }
 }
 export function readHistoricalMetadata(db: Database.Database): HistoricalMetadataRow[] {
   return readHistoricalTextRows(db, 'app_settings', ['key', 'value', 'updated_at'])

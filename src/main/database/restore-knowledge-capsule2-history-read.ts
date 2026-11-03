@@ -1,4 +1,4 @@
-import { assertSyncedMetadataCaptureFamilyOwned2, readSyncedMetadataCaptureOriginalRowOwned2, SYNCED_METADATA_CAPTURE2_PREFIX, SYNCED_METADATA_BASELINE2_PREFIX, SYNCED_METADATA_CAPTURE2_PIN } from './synced-metadata-capture-record2'
+import { readSyncedHistoricalOperationsWithMetadata2Owned2, readSyncedMetadataCaptureOriginalRowOwned2, SYNCED_METADATA_CAPTURE2_PREFIX, SYNCED_METADATA_BASELINE2_PREFIX, SYNCED_METADATA_CAPTURE2_PIN } from './synced-metadata-capture-record2'
 import type Database from 'better-sqlite3'
 import { isSyncedUuid } from '../../shared/syncedBlockValidation'
 import { parseExchangeStored, exchangeJobKey, exchangeJobPhaseKey } from '../sync/synced-exchange-model'
@@ -16,7 +16,7 @@ import { assertSyncedLifecycleCoverage, readSyncedGroupLifecycles } from './sync
 import { assertRawSyncedExchangeHistoricalMetadataOwned } from './synced-exchange-history-metadata-read'
 import { assertRawSyncedBackupV3MetadataOwned } from './synced-backup-v3-metadata-read'
 import { assertHistoricalEvidenceOwned, historicalEvidenceInvalid, historicalFact, historicalHash, historicalMetadataLocator,
-  historicalOperationLocator, historicalRowLocator, readHistoricalRowLocator, historicalTime, readHistoricalExactRows, readHistoricalMetadata, readHistoricalOperations } from './synced-history-evidence-support'
+  historicalOperationLocator, historicalRowLocator, readHistoricalRowLocator, historicalTime, readHistoricalExactRows, readHistoricalMetadata } from './synced-history-evidence-support'
 import type { RawHistoricalEvidenceFact, RawHistoricalEvidenceLocator } from './synced-history-evidence-model'
 
 
@@ -46,13 +46,12 @@ type Member = { attempt_id: string; group_id: string; creation_id: string; revis
  * roots/IDs/DTO, removable spool, public admission or certificate factory. */
 export function readRawCapsule2HistoricalEvidenceOwned(db: Database.Database): RawCapsule2HistoricalObservation {
   assertHistoricalEvidenceOwned(db)
-  assertSyncedMetadataCaptureFamilyOwned2(db)
   const observer = readRawCapsule2ObserverOwned(db), coverage = observer.coverage
   const coverageById = new Map(coverage.requirements.entries.map(entry => [coverageOperationId(entry.operationId), entry]))
   const coverageByMetadata = new Map(coverage.requirements.entries.flatMap(entry => [[String(entry.supports.coverage.key[0]), entry.supports.coverage], [String(entry.supports.receipt.key[0]), entry.supports.receipt]] as const))
   const schema = db.pragma('user_version', { simple: true })
   if (schema !== 26 && schema !== 27) return historicalEvidenceInvalid('尚无该schema的完整同步历史adapter；不会推定empty。')
-  const rows = readHistoricalOperations(db), metadata = readHistoricalMetadata(db)
+  const rows = readSyncedHistoricalOperationsWithMetadata2Owned2(db), metadata = readHistoricalMetadata(db)
   const operations = new Map(rows.map(row => [row.client_operation_id, row])), settings = new Map(metadata.map(row => [row.key, row]))
   const facts: RawHistoricalEvidenceFact[] = []
   const operation = (id: string): RawHistoricalEvidenceLocator => {
