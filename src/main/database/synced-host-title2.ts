@@ -1,3 +1,6 @@
+import { applySyncedHostHeadingTitle3, restoreSyncedHostHeadingTitle3 } from './synced-heading-title3'
+import { readHeadingTitle3OriginalOperationOwned } from './synced-heading-title3-read'
+import { HEADING_TITLE3_OPERATION_KIND, headingTitle3JournalKey } from './synced-heading-title3-codec'
 import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
 import type { SyncedGroupSnapshot, SyncedGroupWire, SyncedStructureApplied, SyncedStructureInput } from '../../shared/synced-blocks'
@@ -319,6 +322,42 @@ export function restoreSyncedHostTitleMetadata2(db:Database.Database,value:unkno
       {key:title2CompanionKey(original.pointer.initialOperationId),hash:saved.companionHash},before.content)
   })
 }
+/** Read-only implementation selection. This supplies no write permit or
+ * cached proof. The selected writer rechecks the complete current workspace,
+ * session/birth/CAS and both incoming Key closures in ITS own IMMEDIATE. */
+function routeHeadingTitle3Apply(db:Database.Database,input:SyncedStructureInput):boolean{
+  return db.transaction(()=>{
+    const old=db.prepare('SELECT result_json FROM synced_operations WHERE client_operation_id=?').get(input.clientOperationId) as {result_json:string}|undefined
+    if(old){const packet=hostJson(old.result_json);return Boolean(packet&&typeof packet==='object'&&'kind'in packet&&packet.kind===HEADING_TITLE3_OPERATION_KIND)}
+    if(input.mode!=='host-final')return false
+    const affected=new Set<string>()
+    for(const side of input.hostsWorkingBefore){
+      const actual=db.prepare('SELECT title,updated_at FROM documents WHERE id=?').get(side.documentId) as {title:string;updated_at:string}|undefined
+      if(actual&&actual.updated_at===side.expectedPersistedUpdatedAt&&(actual.title!==side.workingBefore.title
+        ||input.finalAfter.find(after=>after.documentId===side.documentId)?.title!==actual.title))affected.add(side.documentId)
+    }
+    if(!affected.size)return false
+    const children=new Map<string,string[]>()
+    for(const row of db.prepare('SELECT id,parent_id FROM documents').all() as Array<{id:string;parent_id:string|null}>){
+      if(row.parent_id!==null){const list=children.get(row.parent_id)??[];list.push(row.id);children.set(row.parent_id,list)}
+    }
+    const queue=[...affected]
+    for(let index=0;index<queue.length;index++)for(const id of children.get(queue[index])??[])if(!affected.has(id)){affected.add(id);queue.push(id)}
+    for(const row of db.prepare('SELECT id FROM synced_groups ORDER BY id').all() as Array<{id:string}>){
+      const item=getSyncedGroupSnapshots(db,{groupIds:[row.id]}).items[0]
+      if(item?.status==='ready'&&item.snapshot.bindings.some(binding=>binding.target.kind==='heading'&&affected.has(binding.target.documentId)))return true
+    }
+    return false
+  })()
+}
+function routeHeadingTitle3Restore(db:Database.Database,input:ReturnType<typeof validateSyncedRestoreHostInput>):boolean{
+  return db.transaction(()=>{
+    const old=db.prepare('SELECT result_json FROM synced_operations WHERE client_operation_id=?').get(input.clientOperationId) as {result_json:string}|undefined
+    if(old){const packet=hostJson(old.result_json);return Boolean(packet&&typeof packet==='object'&&'kind'in packet&&packet.kind===HEADING_TITLE3_OPERATION_KIND)}
+    return Boolean(db.prepare('SELECT 1 FROM app_settings WHERE key=?').get(headingTitle3JournalKey(input.historyToken)))
+  })()
+}
+
 /** Routing reads select an implementation only. Every authority/CAS/nonce is
  * rechecked inside the selected original writer's own outer transaction. */
 export function applySyncedHostStructureWithTitle2(db:Database.Database,value:unknown){
@@ -326,6 +365,7 @@ export function applySyncedHostStructureWithTitle2(db:Database.Database,value:un
   try{input=validateSyncedStructureInput(value)}catch{
     return value&&typeof value==='object'&&'mode'in value&&value.mode==='command'?applySyncedHostCommand(db,value):applySyncedHostFinal(db,value)
   }
+  if(routeHeadingTitle3Apply(db,input))return applySyncedHostHeadingTitle3(db,input)
   const selected=db.transaction(()=>{
     const row=db.prepare('SELECT result_json FROM synced_operations WHERE client_operation_id=?').get(input.clientOperationId) as {result_json:string}|undefined
     if(row){const packet=hostJson(row.result_json);return Boolean(packet&&typeof packet==='object'&&'kind'in packet&&packet.kind===TITLE2_OPERATION_KIND)}
@@ -339,6 +379,7 @@ export function applySyncedHostStructureWithTitle2(db:Database.Database,value:un
 export function restoreSyncedHostStructureWithTitle2(db:Database.Database,value:unknown){
   let input:ReturnType<typeof validateSyncedRestoreHostInput>
   try{input=validateSyncedRestoreHostInput(value)}catch{return restoreSyncedHostOperation(db,value)}
+  if(routeHeadingTitle3Restore(db,input))return restoreSyncedHostHeadingTitle3(db,input)
   const selected=db.transaction(()=>{
     const row=db.prepare('SELECT result_json FROM synced_operations WHERE client_operation_id=?').get(input.clientOperationId) as {result_json:string}|undefined
     if(row){const packet=hostJson(row.result_json);return Boolean(packet&&typeof packet==='object'&&'kind'in packet&&packet.kind===TITLE2_OPERATION_KIND)}
@@ -348,6 +389,6 @@ export function restoreSyncedHostStructureWithTitle2(db:Database.Database,value:
 }
 export function getSyncedOperationWithTitle2(db:Database.Database,value:unknown){
   const id=validateSyncedOperationLookupInput(value)
-  const original=db.transaction(()=>{requireSyncedMetadataEditingFenceOwned2(db);return readTitle2OriginalOperationOwned(db,id)})()
+  const original=db.transaction(()=>{requireSyncedMetadataEditingFenceOwned2(db);return readHeadingTitle3OriginalOperationOwned(db,id)??readTitle2OriginalOperationOwned(db,id)})()
   return original?{status:'committed' as const,result:{...original.envelope.result,replayed:true}}:getSyncedOperation(db,value)
 }

@@ -1,3 +1,5 @@
+import { HEADING_TITLE3_OPERATION_KIND } from './synced-heading-title3-codec'
+import { headingTitle3OriginalsFromRaw } from './restore-knowledge-heading-title3-original'
 // Main-private draft. Pure validation/replay; these DTOs confer no FS authority.
 import { TextDecoder } from 'node:util'
 import { assertSyncedShape } from '../../shared/syncedBlockValidation'
@@ -13,6 +15,8 @@ import { publicationHash, publicationJson } from '../sync/synced-publication-mod
 import { validateSyncedProtocol5Record, validateSyncedProtocol5Snapshot, type SyncedProtocol5Snapshot } from '../sync/synced-protocol5-model'
 import { mergeSyncedProtocol5Record } from '../sync/synced-merge'
 import { decodeSyncedOperationAck } from './synced-host-operation-receipt'
+import { HEADING_CREATE_BIRTH2_OPERATION_KIND } from './synced-heading-create-birth-codec2'
+import { headingCreateBirthOriginalsFromRaw2 } from './restore-knowledge-heading-create-birth-original2'
 import type { SyncedGroupOperationRow } from './synced-group-operation-receipt'
 import { validateSyncedLogicalDeletionProof } from '../sync/synced-logical-deletion-model'
 import { validateSyncedLogicalDeletionChoiceProof } from '../sync/synced-logical-deletion-choice-model'
@@ -105,6 +109,8 @@ export interface Root3SettledCandidateProjectorForMain3 {
 function deriveSettledWorkingEvidence(raw: Capsule2RawContent, projector?: Root3SettledCandidateProjectorForMain3,
   options: { readonly preferProjectedCandidate?: boolean } = {}): Map<string, Root3SettledWorkingEvidence3> {
   const settings = graph3Rows(raw, 'app_settings'), operations = graph3Rows(raw, 'synced_operations')
+  let headingOriginals: ReturnType<typeof headingCreateBirthOriginalsFromRaw2> | undefined
+  let titleOriginals: ReturnType<typeof headingTitle3OriginalsFromRaw> | undefined
   const receipts = new Map<string, { row: typeof operations[number]; receipt: M.ExchangeReceipt }>()
   const jobs = new Map<string, { row: typeof settings[number]; job: M.ExchangeJob }>()
   const wanted = new Set<string>()
@@ -168,6 +174,20 @@ function deriveSettledWorkingEvidence(raw: Capsule2RawContent, projector?: Root3
     if (value.kind === 'synced-logical-deletion-proof') {
       const proof = value.version === 2 ? validateSyncedLogicalDeletionChoiceProof(value) : validateSyncedLogicalDeletionProof(value)
       add(proof.before, [...source, 'before'], [row]); if ('base' in proof) add(proof.base, [...source, 'base'], [row])
+    } else if (value.kind === HEADING_TITLE3_OPERATION_KIND) {
+      const original = (titleOriginals ??= headingTitle3OriginalsFromRaw(raw))(String(row.value.client_operation_id))
+      if (original.primarySource.original !== row.original) return fail('title3 envelope is not this exact original packet row')
+      for (const group of original.envelope.result.groups)
+        add(wire(group), [...source, 'result', 'groups', group.groupId], [row, ...original.supportSources])
+      // Only a complete typed ACK group can match an immutable whole W hash.
+      // Its companion/point namespace does not promote ACK.after to a document.
+    } else if (value.kind === HEADING_CREATE_BIRTH2_OPERATION_KIND) {
+      const original = (headingOriginals ??= headingCreateBirthOriginalsFromRaw2(raw))(String(row.value.client_operation_id))
+      if (original.primarySource.original !== row.original) return fail('new create envelope is not the exact same original packet row')
+      for (const group of original.result.groups)
+        add(wire(group), [...source, 'result', 'groups', group.groupId], [row, ...original.supportSources])
+      // Namespace/Key facts do not promote ACK.after or an arbitrary metadata
+      // body into a complete protocol record or another file grant.
     } else if (value.kind === undefined || value.kind === 'synced-host-operation' || value.kind === 'synced-host-create-operation') {
       const ack = decodeSyncedOperationAck(row.value as unknown as SyncedGroupOperationRow)
       if ('snapshot' in ack) add(wire(ack.snapshot), [...source, 'snapshot'], [row])

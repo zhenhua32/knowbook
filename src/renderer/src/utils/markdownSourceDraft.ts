@@ -7,6 +7,11 @@ import { assertColumnStructure } from '@shared/columns'
 export type MarkdownSourceChange = { from: number; to: number; insert: string }
 type SourceAnchor = { block: DocumentBlockDraft; from: number; to: number; original: string }
 export type MarkdownSourceDraft = { source: string; anchors: SourceAnchor[]; initialSource: string; initialBlocks: DocumentBlockDraft[] }
+/** Equal text can still contain a deliberate deletion/recreation of original
+ * identities. The accepted anchor side, not only bytes, is the clean floor. */
+export function hasMarkdownSourceDraftChanges(draft: MarkdownSourceDraft, accepted: MarkdownSourceDraft): boolean {
+  return draft.source !== accepted.source || JSON.stringify(draft.anchors) !== JSON.stringify(accepted.anchors)
+}
 export type MarkdownSourceDraftSerializer = (originalBlocks: DocumentBlockDraft[]) => {
   markdown: string; ranges: readonly MarkdownBlockSourceRange[]
 }

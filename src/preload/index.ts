@@ -1,4 +1,5 @@
 import { createEditorCloseDelivery } from './editor-close-delivery'
+import { EDITOR_RECOVERY_CHANNELS } from '../shared/editor-recovery-drafts'
 import { EDITOR_CLOSE_REQUEST_CHANNEL, EDITOR_CLOSE_CANCELLED_CHANNEL, EDITOR_CLOSE_ACKNOWLEDGE_CHANNEL, EDITOR_CLOSE_READY_CHANNEL,
   EDITOR_RELOAD_REQUEST_CHANNEL,
   type EditorCloseRequest, type EditorCloseCancelled } from '../shared/editor-close'
@@ -141,6 +142,14 @@ void ipcRenderer.invoke(EDITOR_CLOSE_READY_CHANNEL).catch(error => console.error
 
 const api: ElectronApi = {
   onEditorCloseRequest: listener => editorCloseDelivery.onRequest(listener),
+  openEditorRecoveryDraft: input => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.open, input),
+  writeEditorRecoveryDrafts: input => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.write, input),
+  listEditorRecoveryDrafts: input => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.list, input),
+  readEditorRecoveryDraft: input => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.read, input),
+  decideEditorRecoveryDraft: input => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.decide, input),
+  retireCleanEditorRecoveryDraft: input => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.retire, input),
+  prepareEditorRecoveryGroup: input => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.prepareGroup, input),
+  parkEditorRecoveryDraft: input => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.park, input),
   onEditorCloseCancelled: listener => editorCloseDelivery.onCancelled(listener),
   acknowledgeEditorClose: (input) => ipcRenderer.invoke(EDITOR_CLOSE_ACKNOWLEDGE_CHANNEL, input) as Promise<boolean>,
   requestEditorReload: () => ipcRenderer.invoke(EDITOR_RELOAD_REQUEST_CHANNEL) as Promise<boolean>,

@@ -14,7 +14,7 @@ import { isIndependentEditorIsland } from '../utils/editorIsland'
 import type { SyncedStructureApplied } from '@shared/synced-blocks'
 import type { SyncedHostSourceCurrent } from '../features/synced-blocks/SyncedHostSourceDialog'
 import type { SyncedHostHistoryTransition } from '../features/synced-blocks/hostHistoryTypes'
-import { canonicalInlineInputLocked, canApplyCanonicalHostDraftChange, flushCanonicalInlinePendingChanges, hasCanonicalHostSavePending, ownsCanonicalHostHistory, adoptCanonicalHostResult, getCanonicalHostHistoryAction, type CanonicalInlineFlushOptions } from '../features/synced-blocks/inlineBridge'
+import { canonicalInlineInputLocked, canApplyCanonicalHostDraftChange, flushCanonicalInlinePendingChanges, hasCanonicalHostSavePending, ownsCanonicalHostHistory, adoptCanonicalHostResult, adoptCanonicalLocalDraft, getCanonicalHostHistoryAction, type CanonicalInlineFlushOptions } from '../features/synced-blocks/inlineBridge'
 import {
   areDocumentDraftBlocksEqual,
   normalizeComparableDocumentTitle
@@ -701,20 +701,14 @@ export function useDocumentEditorState({
   const adoptSyncedHostHistoryResult = useCallback((before: SyncedHostSourceCurrent, result: SyncedStructureApplied) =>
     adoptSyncedHostResult(before, result, true), [adoptSyncedHostResult])
 
-  const applyOrdinaryMarkdownSource = useCallback((before: SyncedHostSourceCurrent, after: {
-    documentId: string; title: string; summary: string; blocks: DocumentBlockDraft[]
-  }): boolean => {
-    const current = getSyncedHostEditorState(), persisted = selectedDocumentRef.current
-    if (canonicalInlineInputLocked() || !current || current.hostSession !== before.hostSession || current.editSequence !== before.editSequence
-      || current.host.documentId !== after.documentId || after.documentId !== before.host.documentId
-      || after.title !== before.host.workingBefore.title || after.summary !== before.host.workingBefore.summary
-      || [...current.host.workingBefore.blocks, ...after.blocks, ...(persisted?.blocks ?? [])].some(block => block.type === 'synced-block')
-      || !areDocumentDraftBlocksEqual(current.host.workingBefore.blocks, before.host.workingBefore.blocks)) return false
-    const blocks = normalizeDraftBlocks(after.blocks)
-    if (!validateBlockTreeStructure(blocks).valid) return false
-    checkpointDraft(); draftBlocksRef.current = blocks; setDraftBlocksState(blocks)
-    return true
-  }, [checkpointDraft, getSyncedHostEditorState])
+  const adoptLocalDraft = useCallback((before: SyncedHostSourceCurrent, after: { documentId?: string; title: string; summary: string; blocks: DocumentBlockDraft[] }, recovery: boolean): boolean =>
+    adoptCanonicalLocalDraft({ editor: getBlockMoveContext(() => mountedRef.current),
+      hooks: [getSyncedHostEditorState, composingDraftRef, pendingSaveRef, clearAutoSaveTimer, checkpointDraft] }, before, after, recovery),
+  [checkpointDraft, clearAutoSaveTimer, getBlockMoveContext, getSyncedHostEditorState])
+  const applyOrdinaryMarkdownSource = useCallback((before: SyncedHostSourceCurrent, after: { documentId: string; title: string; summary: string; blocks: DocumentBlockDraft[] }) =>
+    adoptLocalDraft(before, after, false), [adoptLocalDraft])
+  const adoptRecoveryDraft = useCallback((before: SyncedHostSourceCurrent, after: { title: string; summary: string; blocks: DocumentBlockDraft[] }) =>
+    adoptLocalDraft(before, after, true), [adoptLocalDraft])
 
   const getBlockActionTarget = useCallback((blockIds: readonly string[]): DocumentBlockActionTarget | null => {
     const documentId = selectedDocumentIdRef.current, blocks = draftBlocksRef.current
@@ -883,6 +877,7 @@ export function useDocumentEditorState({
     adoptSyncedHostStructureResult,
     adoptSyncedHostHistoryResult,
     applyOrdinaryMarkdownSource,
+    adoptRecoveryDraft,
     isSyncedHostComposing: () => composingDraftRef.current,
     getDraftMarkdownExport,
     getRenameTarget,

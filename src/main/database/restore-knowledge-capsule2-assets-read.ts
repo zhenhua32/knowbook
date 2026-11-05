@@ -1,3 +1,6 @@
+import { HEADING_TITLE3_OPERATION_KIND } from './synced-heading-title3-codec'
+import { HEADING_CREATE_BIRTH2_OPERATION_KIND } from './synced-heading-create-birth-codec2'
+import { readSyncedHeadingCreateBirthOriginalOwned2 } from './synced-heading-create-birth-read2'
 import type Database from 'better-sqlite3'
 import type { SyncedStableBlockDraft } from '../../shared/synced-blocks'
 import type { DocumentBlockDraft } from '../../shared/contracts'
@@ -5,7 +8,7 @@ import { serializeMarkdownWithBlockRanges } from '../../shared/markdown'
 import { collectStoredMarkdownAssetDestinations } from '../../shared/syncedBlockPortable'
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-model'
-import { readRawCapsule2WorkspaceHistorySourceOwned } from './restore-knowledge-capsule2-workspace-history-read'
+import { readRawCapsule2WorkspaceHistorySourceWithHeadingTitle3Owned } from './restore-knowledge-capsule2-workspace-history-read'
 import { decodeHostJournal, hostJournalKind, validateHostSides } from './synced-host-journal'
 import type { SyncedHostHistoryBranchRow } from './synced-host-history-branch'
 import { decodeSyncedOperationAck } from './synced-host-operation-receipt'
@@ -49,7 +52,7 @@ export function readRawCapsule2AssetReferencesOwned(db: Database.Database): RawC
 /** One fixed same-transaction source pipeline for the material owner; the
  * public raw observation above keeps its exact original DTO/hash domain. */
 export function readRawCapsule2AssetReferenceSourceOwned(db: Database.Database) {
-  const source = readRawCapsule2WorkspaceHistorySourceOwned(db), { history, physical } = source
+  const {source,headingTitleOriginals}=readRawCapsule2WorkspaceHistorySourceWithHeadingTitle3Owned(db), { history, physical } = source
   const scopes: Scope[] = [], keys = new Set<string>()
   let bytes = 0
   const add = (source: string[], body: Body) => {
@@ -118,7 +121,24 @@ export function readRawCapsule2AssetReferenceSourceOwned(db: Database.Database) 
   for (const row of rows<SyncedGroupOperationRow & { created_at: string }>('synced_operations', 'client_operation_id')) {
     const value = JSON.parse(row.result_json) as { kind?: string; version?: number }
     const source = ['synced_operations', row.client_operation_id, 'result_json']
-    if(value.kind===TITLE2_OPERATION_KIND){
+    if(value.kind===HEADING_TITLE3_OPERATION_KIND){
+      const original=headingTitleOriginals.get(row.client_operation_id)?.original
+      if(!original||original.row.request_hash!==row.request_hash||original.row.result_json!==row.result_json||original.row.created_at!==row.created_at)return bad('heading title3完整实际业务原件缺失／不同')
+      for(const host of original.envelope.result.hosts){body([...source,'result','hosts',host.documentId,'logicalBefore'],host.logicalBefore)
+        body([...source,'result','hosts',host.documentId,'after'],host.after)}
+      for(const item of original.envelope.result.groups)group([...source,'result','groups',item.groupId],item)
+      // Before/after point rows have their own strict original body visits.
+      // Companion edits, Key.raw and headings never mint extra file scopes.
+    }else if(value.kind===HEADING_CREATE_BIRTH2_OPERATION_KIND){
+      const original=readSyncedHeadingCreateBirthOriginalOwned2(db,row.client_operation_id)
+      if(!original)return bad('heading birth业务原件缺失')
+      for(const host of original.result.hosts){body([...source,'result','hosts',host.documentId,'logicalBefore'],host.logicalBefore)
+        body([...source,'result','hosts',host.documentId,'after'],host.after)}
+      for(const item of original.result.groups)group([...source,'result','groups',item.groupId],item)
+      // The genuine compact point is a real operations original visited below;
+      // its complete namespace bodies are retained even after live targets go.
+      // covered Key.raw/slug/location are never additional asset authority.
+    }else if(value.kind===TITLE2_OPERATION_KIND){
       const original=readTitle2OriginalOperationOwned(db,row.client_operation_id)
       if(!original)return bad('metadata2 title原件缺失')
       for(const host of original.envelope.result.hosts){body([...source,'result','hosts',host.documentId,'logicalBefore'],host.logicalBefore)

@@ -10,6 +10,7 @@ import { readSourceReadOwnerAccess, installSourceHistorySide, revokeSourceHistor
 import { createDomain, createConsumer, issueWitness, revokeConsumer, whenDomainDrained, domainDrained,
   type CopyDomain, type DomainIssuer, type ConsumerIssuer, type WitnessLease } from './sourceCopyResources'
 import type { SyncedBindingKey } from '@shared/synced-blocks'
+import { installControllerRecoverySource } from './recoveryReadOwnerPort'
 
 /** Trusted private adapters only. No production Store/IPC/UI is connected here. */
 export interface SyncedReadSourcesPort {
@@ -206,6 +207,9 @@ export async function captureControllerReadOwner(input: SyncedReadSourcesPort, g
       if (!dropped) { dropped = true; release(saved) }
     } })
     contexts.set(context, saved)
+    installControllerRecoverySource(context, () => saved.references <= 0 || saved.cleanupFailed ? null : {
+      workspaceScope: saved.workspaceScope, readOwnerId: saved.readOwnerId,
+      snapshot: structuredClone(saved.snapshot), bindingSource: structuredClone(saved.source) })
     return { status: 'ready', workspaceScope: saved.workspaceScope, snapshot, context }
   } catch (error) {
     if (issuedId) { try { await port.release({ readOwnerId: issuedId }) } catch { /* No confirmed cleanup; never register the malformed owner. */ } }

@@ -9,7 +9,8 @@ import { parseStrictJson } from '../../shared/strictJson'
 import { getSyncedGroupSnapshots } from './synced-blocks-read'
 import { readSyncedBindingSources, type SyncedVerifiedBindingSource } from './synced-block-links'
 import { decodeSyncedGroupOperationAck, readSyncedGroupOperationRow, validateSyncedOperationLookupInput } from './synced-group-operation-receipt'
-import { captureSyncedMetadataReadBaselineOwned2, readSyncedMetadataCaptureRecordOwned2, SYNCED_METADATA_BASELINE2_PREFIX,
+import { prepareSyncedMetadataGroupBaselineCurrentCaptureOwned2 } from './synced-metadata-transition2'
+import { captureSyncedMetadataReadBaselineOwned2, reopenSyncedMetadataCaptureRecordOwned2, readSyncedMetadataCaptureRecordOwned2, SYNCED_METADATA_BASELINE2_PREFIX,
   type PreparedSyncedMetadataCaptureRecord2 } from './synced-metadata-capture-record2'
 
 /** No eviction: owners and ticket aliases share the original count/byte budget.
@@ -270,6 +271,56 @@ export function captureSyncedBaselineOwnerWithMetadata2(db: Database.Database, i
     return { status: 'ready' as const, workspaceScope: baseline.workspace.scope, snapshot: baseline.item.snapshot, owner, publication, metadataPoint }
   }).immediate()
   if (captured.status === 'missing') return { status: 'missing', workspaceScope: captured.workspaceScope, groupId }
+  const [bindingSource] = commitCapturedSources(captured.publication)
+  metadataBaselines2.set(captured.owner, captured.metadataPoint)
+  return { status: 'ready', workspaceScope: captured.workspaceScope, readOwnerId: captured.owner.readOwnerId,
+    snapshot: captured.snapshot, bindingSource: bindingSource! }
+}
+
+/** Main-only recovery input. The recovery service selects this exact Original
+ * from its durable record and actual cold owner; it is not a renderer proof. */
+export interface SyncedRecoveryBaselineInput {
+  sessionId: string; groupId: string; originalKey: string; originalRecordHash: string
+}
+/** Reopen a genuine OLD read point, not a fresh capture. Complete current
+ * source/namespace/history material must still equal that original. This only
+ * mints a new local readonly source owner; historical heading flags stay false. */
+export function reopenSyncedRecoveryBaselineOwner(db: Database.Database,
+  input: Omit<SyncedRecoveryBaselineInput, 'sessionId'>): SyncedBaselineOwnerResult {
+  ownRead(db)
+  assertSyncedShape(input, ['groupId', 'originalKey', 'originalRecordHash'])
+  if (!isSyncedUuid(input.groupId) || typeof input.originalKey !== 'string'
+    || !input.originalKey.startsWith(SYNCED_METADATA_BASELINE2_PREFIX)
+    || !/^[a-f0-9]{64}$/.test(input.originalKey.slice(SYNCED_METADATA_BASELINE2_PREFIX.length))
+    || typeof input.originalRecordHash !== 'string' || !/^[a-f0-9]{64}$/.test(input.originalRecordHash))
+    return fail('Recovery requires the exact sealed baseline address and hash.')
+  const captured = db.transaction(() => {
+    const baseline = captureBaselineOwned(db, input.groupId)
+    if (baseline.item.status === 'missing') return fail('Recovery source incarnation is missing or retired.')
+    const metadataPoint = reopenSyncedMetadataCaptureRecordOwned2(db, input.originalKey)
+    const record = readSyncedMetadataCaptureRecordOwned2(db, metadataPoint)
+    if (record.kind !== 'synced-metadata2-read-baseline-record' || record.recordHash !== input.originalRecordHash
+      || record.sources.length !== 1 || record.sources[0].wire.id !== input.groupId)
+      return fail('Recovery baseline Original differs from the sealed source.')
+    const current = prepareSyncedMetadataGroupBaselineCurrentCaptureOwned2(db, input.groupId)
+    const material = (value: Pick<typeof current, 'workspaceScope' | 'recoveryEpoch' | 'requestHash' | 'capture' | 'sources' | 'groupHistories'>) => ({
+      workspaceScope: value.workspaceScope, recoveryEpoch: value.recoveryEpoch, requestHash: value.requestHash,
+      capture: value.capture, sources: value.sources, groupHistories: value.groupHistories })
+    if (canonicalSyncedPortableJson(material(current)) !== canonicalSyncedPortableJson(material(record)))
+      return fail('Recovery source or its complete target namespace changed; keep the sealed draft for explicit review.')
+    const source = record.sources[0], snapshot = baseline.item.snapshot
+    if (source.revision !== snapshot.revision || source.topologyRevision !== snapshot.topologyRevision
+      || incarnation(snapshot) !== incarnation({ groupId: source.wire.id, creationId: source.wire.creationId, createdAt: source.wire.createdAt, origin: source.wire.origin })
+      || canonicalSyncedPortableJson(source.wire.blocks) !== canonicalSyncedPortableJson(snapshot.blocks)
+      || canonicalSyncedPortableJson(source.wire.bindings) !== canonicalSyncedPortableJson(snapshot.bindings))
+      return fail('Recovery source no longer equals its actual native group.')
+    const owner = newOwner(input.groupId, baseline.capturedIncarnation!)
+    owner.bytes += bytesOf({ metadataPoint: { key: input.originalKey, recordHash: input.originalRecordHash } })
+    const publication = prepareCapturedSources(db, baseline.workspace, [baseline.source!], owner, true)
+    return { owner, publication, metadataPoint, snapshot, workspaceScope: baseline.workspace.scope }
+  })()
+  // No SQL writes occurred. Publish only after the actual readonly snapshot
+  // ended, exactly like the normal read-owner capability publication.
   const [bindingSource] = commitCapturedSources(captured.publication)
   metadataBaselines2.set(captured.owner, captured.metadataPoint)
   return { status: 'ready', workspaceScope: captured.workspaceScope, readOwnerId: captured.owner.readOwnerId,

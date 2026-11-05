@@ -1,4 +1,8 @@
-import { readSyncedHistoricalOperationsWithMetadata2Owned2, readSyncedMetadataCaptureOriginalRowOwned2, SYNCED_METADATA_CAPTURE2_PREFIX, SYNCED_METADATA_BASELINE2_PREFIX, SYNCED_METADATA_CAPTURE2_PIN } from './synced-metadata-capture-record2'
+import { HEADING_TITLE3_OPERATION_KIND, HEADING_TITLE3_GROUP_HEAD_PREFIX, headingTitle3CompanionKey, decodeHeadingTitle3GroupHead } from './synced-heading-title3-codec'
+import { readHistoricalMetadataWithHeadingTitle3Owned } from './synced-heading-title3-history-read'
+import { HEADING_CREATE_BIRTH2_OPERATION_KIND } from './synced-heading-create-birth-codec2'
+import { syncedHeadingCreateBirthOriginalSupportsOwned2 } from './synced-heading-create-birth-read2'
+import { readSyncedMetadataCaptureOriginalRowOwned2, SYNCED_METADATA_CAPTURE2_PREFIX, SYNCED_METADATA_BASELINE2_PREFIX, SYNCED_METADATA_CAPTURE2_PIN } from './synced-metadata-capture-record2'
 import type Database from 'better-sqlite3'
 import { assertTitle2OriginalFamilyOwned, title2OriginalSupportsOwned, decodeTitle2GroupHead } from './synced-host-title2-read'
 import { TITLE2_OPERATION_KIND, TITLE2_GROUP_HEAD_PREFIX, title2CompanionKey } from './synced-host-title2-codec'
@@ -18,7 +22,7 @@ import { assertSyncedLifecycleCoverage, readSyncedGroupLifecycles } from './sync
 import { assertRawSyncedExchangeHistoricalMetadataOwned } from './synced-exchange-history-metadata-read'
 import { assertRawSyncedBackupV3MetadataOwned } from './synced-backup-v3-metadata-read'
 import { assertHistoricalEvidenceOwned, historicalEvidenceInvalid, historicalFact, historicalHash, historicalMetadataLocator,
-  historicalOperationLocator, historicalRowLocator, readHistoricalRowLocator, historicalTime, readHistoricalExactRows, readHistoricalMetadata } from './synced-history-evidence-support'
+  historicalOperationLocator, historicalRowLocator, readHistoricalRowLocator, historicalTime, readHistoricalExactRows } from './synced-history-evidence-support'
 import type { RawHistoricalEvidenceFact, RawHistoricalEvidenceLocator, RawSyncedHistoricalEvidence } from './synced-history-evidence-model'
 export type { RawHistoricalEvidenceFact, RawHistoricalEvidenceLocator, RawSyncedHistoricalEvidence } from './synced-history-evidence-model'
 
@@ -33,8 +37,9 @@ export function assertRawSyncedHistoricalEvidenceOwned(db: Database.Database): R
   assertHistoricalEvidenceOwned(db)
   const schema = db.pragma('user_version', { simple: true })
   if (schema !== 26 && schema !== 27) return historicalEvidenceInvalid('尚无该schema的完整同步历史adapter；不会推定empty。')
-  const titleMetadata=schema===27?assertTitle2OriginalFamilyOwned(db):[],titleKeys=new Set(titleMetadata.map(row=>row.key))
-  const rows = readSyncedHistoricalOperationsWithMetadata2Owned2(db), metadata = readHistoricalMetadata(db)
+  const titleMetadata=schema===27?assertTitle2OriginalFamilyOwned(db):[]
+  const {rows,metadata,headingBirthMetadata,headingTitleMetadata,originals:headingTitleOriginals}=readHistoricalMetadataWithHeadingTitle3Owned(db)
+  const titleKeys=new Set([...titleMetadata,...headingBirthMetadata,...headingTitleMetadata].map(row=>row.key))
   const operations = new Map(rows.map(row => [row.client_operation_id, row])), settings = new Map(metadata.map(row => [row.key, row]))
   const facts: RawHistoricalEvidenceFact[] = []
   const operation = (id: string): RawHistoricalEvidenceLocator => {
@@ -103,7 +108,18 @@ export function assertRawSyncedHistoricalEvidenceOwned(db: Database.Database): R
       continue
     }
     if (!isSyncedUuid(row.client_operation_id)) return historicalEvidenceInvalid('原普通operation key不是准确UUID。')
-    if (kind === TITLE2_OPERATION_KIND) {
+    if (kind === HEADING_TITLE3_OPERATION_KIND) {
+      if(schema!==27)return historicalEvidenceInvalid('schema26不接受heading title3业务原件。')
+      const exact=headingTitleOriginals.get(row.client_operation_id)
+      if(!exact)return historicalEvidenceInvalid('heading title3缺本次实际认证原件。')
+      const {original,supports}=exact
+      if(original.row.request_hash!==row.request_hash||original.row.result_json!==row.result_json||original.row.created_at!==row.created_at)return historicalEvidenceInvalid('heading title3不是同次实际四列原件。')
+      facts.push(historicalFact('heading-title-transition',3,historicalOperationLocator(row),supports))
+    } else if (kind === HEADING_CREATE_BIRTH2_OPERATION_KIND) {
+      if(schema!==27)return historicalEvidenceInvalid('schema26不接受heading birth业务原件。')
+      const {supports}=syncedHeadingCreateBirthOriginalSupportsOwned2(db,row.client_operation_id)
+      facts.push(historicalFact('heading-create-birth',1,historicalOperationLocator(row),supports))
+    } else if (kind === TITLE2_OPERATION_KIND) {
       if(schema!==27)return historicalEvidenceInvalid('schema26不接受metadata2 title业务记录。')
       const {supports}=title2OriginalSupportsOwned(db,row.client_operation_id)
       facts.push(historicalFact('metadata2-title-operation',2,historicalOperationLocator(row),supports))
@@ -173,6 +189,11 @@ export function assertRawSyncedHistoricalEvidenceOwned(db: Database.Database): R
         supports.push(historicalRowLocator('synced_group_pins', [pin.groupId, pin.kind, pin.pinId], original))
       }
       facts.push(historicalFact('recovery-boundary', 1, setting(key), supports))
+    }
+    for(const row of headingTitleMetadata)if(row.key.startsWith(HEADING_TITLE3_GROUP_HEAD_PREFIX)){
+      const head=decodeHeadingTitle3GroupHead(parseExchangeStored(row.value))
+      if(!headingTitleOriginals.has(head.operationId))return historicalEvidenceInvalid('heading title3 head缺本次实际业务原件。')
+      facts.push(historicalFact('heading-title-head',3,historicalMetadataLocator(row),[operation(head.operationId),setting(headingTitle3CompanionKey(head.operationId))],'index-attempt-only'))
     }
     for(const row of titleMetadata)if(row.key.startsWith(TITLE2_GROUP_HEAD_PREFIX)){
       const head=decodeTitle2GroupHead(parseExchangeStored(row.value))

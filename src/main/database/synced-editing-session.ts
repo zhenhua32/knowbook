@@ -6,7 +6,7 @@ import { assertSyncedShape, isSyncedBlockId, isSyncedUuid } from '../../shared/s
 import { getSyncedGroupSnapshots, listSyncedGroups, getSyncedHostHistory } from './synced-blocks-read'
 import { updateSyncedBlockGroup, restoreSyncedGroupOperation } from './synced-blocks-content'
 import { applySyncedHostStructureWithTitle2, restoreSyncedHostStructureWithTitle2, getSyncedOperationWithTitle2 } from './synced-host-title2'
-import { captureSyncedBaselineOwnerWithMetadata2, getSyncedOperationWithOwnedLinkSource, validateSyncedReadOwner, releaseSyncedReadOwner } from './synced-binding-sources'
+import { captureSyncedBaselineOwnerWithMetadata2, reopenSyncedRecoveryBaselineOwner, type SyncedRecoveryBaselineInput, getSyncedOperationWithOwnedLinkSource, validateSyncedReadOwner, releaseSyncedReadOwner } from './synced-binding-sources'
 import { captureSyncedEditingFenceOwned, runWithSyncedEditingFence, assertSyncedEditingFenceOwned, assertSyncedEditingFenceRead,
   type SyncedEditingFence } from './synced-editing-fence'
 import { resolveSyncedInlineInstance } from './workspace-search-occurrences'
@@ -98,6 +98,21 @@ export class SyncedEditingSessionRepository {
     // Do not mint a new mount from an ACK or run another fallible SQL read after
     // commit. Changed instance bindings require the real inline open path again.
     return result as SyncedEditingResult<M>
+  }
+  /** Fixed Main recovery seam, intentionally absent from the IPC method set.
+   * The draft service supplies its sealed Original after a genuine cold read. */
+  reopenRecoveryBaseline(sender:object,value:SyncedRecoveryBaselineInput) {
+    assertSyncedShape(value,['sessionId','groupId','originalKey','originalRecordHash'])
+    if(!isSyncedUuid(value.sessionId))return fail('recovery session identity invalid')
+    const entry=this.entries.get(value.sessionId)
+    if(!entry||entry.sender!==sender)return fail('not the actual new recovery frame session')
+    const input=structuredClone({groupId:value.groupId,originalKey:value.originalKey,originalRecordHash:value.originalRecordHash})
+    // Reuse the readonly baseline fence domain, but never invoke its capture
+    // producer or persist a new point for old Source text.
+    const result=runWithSyncedEditingFence(this.db,entry.fence,'captureBaseline',{groupId:input.groupId},()=>
+      reopenSyncedRecoveryBaselineOwner(this.db,input))
+    if(result.status==='ready')entry.readOwners.add(result.readOwnerId)
+    return result
   }
   release(sender:object,sessionId:string):void {
     if(!isSyncedUuid(sessionId))return fail('session token invalid')

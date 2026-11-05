@@ -1,4 +1,4 @@
-import type { DocumentHostAdoptContext, DocumentHostHistoryContext } from '../../utils/documentHostHistory'
+import type { DocumentHostAdoptContext, DocumentHostHistoryContext, DocumentLocalDraftContext } from '../../utils/documentHostHistory'
 import type { SyncedStructureApplied } from '@shared/synced-blocks'
 import type { SyncedHostSourceCurrent } from './SyncedHostSourceDialog'
 import type { DocumentBlockDraft } from '@shared/contracts'
@@ -21,6 +21,8 @@ interface InlineTransitionPort {
   ownsHistory?: (transition: SyncedHostHistoryTransition) => boolean
   adoptHostResult?: (context: DocumentHostAdoptContext, before: SyncedHostSourceCurrent, result: SyncedStructureApplied, history: boolean) => boolean
   runHostHistory?: (context: DocumentHostHistoryContext) => Promise<boolean>
+  adoptLocalDraft?: (context: DocumentLocalDraftContext, before: SyncedHostSourceCurrent,
+    after: { documentId?: string; title: string; summary: string; blocks: DocumentBlockDraft[] }, recovery: boolean) => boolean
 }
 let port: InlineTransitionPort | null = null, owner: object | null = null
 const asynchronousEdits = new Set<object>(), unlockWaiters = new Set<() => void>()
@@ -56,6 +58,8 @@ export const restoreCanonicalHostHistory = (transition: SyncedHostHistoryTransit
 export const adoptCanonicalHostResult = (context: DocumentHostAdoptContext, before: SyncedHostSourceCurrent,
   result: SyncedStructureApplied, history: boolean): boolean => port?.adoptHostResult?.(context, before, result, history) ?? false
 export const getCanonicalHostHistoryAction = () => port?.runHostHistory ?? null
+export const adoptCanonicalLocalDraft = (context: DocumentLocalDraftContext, before: SyncedHostSourceCurrent,
+  after: { documentId?: string; title: string; summary: string; blocks: DocumentBlockDraft[] }, recovery: boolean): boolean => port?.adoptLocalDraft?.(context, before, after, recovery) ?? false
 export const hasCanonicalInlinePendingChanges = () => asynchronousEdits.size > 0 || (port?.pending() ?? false)
 export async function flushCanonicalInlinePendingChanges(options?: CanonicalInlineFlushOptions): Promise<boolean> {
   // Document navigation may retire the original attachment view. Its real

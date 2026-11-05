@@ -5,6 +5,7 @@ import { getCanonicalInlineRuntime } from './inlineRuntime'
 import { SyncedCanonicalSourceDialog } from './SyncedCanonicalSourceDialog'
 import { SyncedHostSourceDialog } from './SyncedHostSourceDialog'
 import { SyncedStructureDialog } from './SyncedStructureDialog'
+import { RecoveryDraftsPanel } from '../editor-recovery/RecoveryDraftsPanel'
 
 /** Global lifetime: an expired document mount cannot silently discard the
  * exact opening Source buffer. Only its actual Cancel/accepted Apply closes it. */
@@ -32,6 +33,7 @@ export default function CanonicalInlineShell({ documents, isZh, notify, workspac
     selectedHostId: () => latest.current.documents.selectedDocumentId,
     notify: message => latest.current.notify(message, 'error'), isZh })
   const state = useSyncExternalStore(runtime.subscribe, runtime.getSnapshot, runtime.getSnapshot)
+  useEffect(() => { runtime.observeRecoveryHost() })
   useEffect(() => {
     const attention = () => runtime.cancelNavigation()
     const events = ['pointerdown', 'keydown', 'wheel', 'compositionstart'] as const
@@ -65,9 +67,28 @@ export default function CanonicalInlineShell({ documents, isZh, notify, workspac
             && await runtime.flush({ shouldContinue: () => runtime.ownsClose(input.requestId) }) && runtime.closeReady()
         } catch (error) { latest.current.notify(String(error), 'error') }
         if (!runtime.ownsClose(input.requestId)) return
-        try { await window.knowbook.acknowledgeEditorClose({ requestId: input.requestId,
-          status: flushed ? 'flushed' : 'blocked', message: flushed ? undefined
-            : latest.current.isZh ? '编辑草稿或源码尚未保存，窗口保持打开。' : 'Unsaved editor or source changes keep this window open.' }) }
+        if (flushed) {
+          try { flushed = await runtime.checkpointFlushedClose(input.requestId) }
+          catch (error) {
+            // The business drain already succeeded. A failed private cleanup
+            // checkpoint retains its old draft; it cannot undo a real Save.
+            console.warn('Saved editor recovery checkpoint was deferred.', error)
+          }
+        }
+        try {
+          if (!flushed && input.reason !== 'reload') {
+            try {
+              const receipt = await runtime.journalClose(input.requestId)
+              if (!runtime.ownsClose(input.requestId) || receipt.closeGeneration === null) return
+              await window.knowbook.acknowledgeEditorClose({ requestId: input.requestId, status: 'draft-journaled',
+                closeGeneration: receipt.closeGeneration, receiptId: receipt.receiptId })
+              return
+            } catch (error) { latest.current.notify(String(error), 'error') }
+          }
+          await window.knowbook.acknowledgeEditorClose({ requestId: input.requestId,
+            status: flushed ? 'flushed' : 'blocked', message: flushed ? undefined
+              : latest.current.isZh ? '编辑草稿或源码尚未保存，窗口保持打开。' : 'Unsaved editor or source changes keep this window open.' })
+        }
         catch (error) { latest.current.notify(String(error), 'error') }
         // ACK means remain frozen. Only matching Main cancellation unlocks.
       })()
@@ -84,15 +105,17 @@ export default function CanonicalInlineShell({ documents, isZh, notify, workspac
       if (!runtime.isLocked()) unlock()
     }
   }, [runtime])
-  if (state.command) return <SyncedStructureDialog commands={runtime.commands} view={state.command} isZh={isZh} />
+  const recovery = <RecoveryDraftsPanel documents={documents} runtime={runtime} isZh={isZh} notify={notify} ready={workspaceReady} />
+  if (state.command) return <>{recovery}<SyncedStructureDialog commands={runtime.commands} view={state.command} isZh={isZh} /></>
   const dialog = state.dialog
-  if (!dialog) return null
-  return dialog.kind === 'canonical'
+  if (!dialog) return recovery
+  return <>{recovery}{dialog.kind === 'canonical'
     ? <SyncedCanonicalSourceDialog binding={dialog.binding} isZh={isZh}
       opener={dialog.opener} onLocalStateChange={dialog.report} onClose={dialog.close} />
     : <SyncedHostSourceDialog sessionKey={dialog.id} getCurrent={runtime.sourceCurrent}
+      restored={dialog.restored}
       isCurrent={() => runtime.sourceIsCurrent(dialog)} opener={dialog.opener} isZh={isZh}
       applyPrepared={prepared => runtime.applyHostSource(dialog, prepared)}
       applySubmission={submission => runtime.applyHostSourceSubmission(dialog, submission)}
-      onLocalStateChange={dialog.report} onClose={dialog.close} />
+      onLocalStateChange={dialog.report} onClose={dialog.close} />}</>
 }

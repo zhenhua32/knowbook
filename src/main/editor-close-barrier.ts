@@ -30,9 +30,10 @@ interface Registered {
   lifecycle: number; writes: number; approvedClose: string | null
   approvedReload: string | null; afterReload: 'window' | 'quit' | null
 }
-interface Target { readonly registered: Registered; readonly frame: FrameIdentity; state: 'waiting' | 'flushed' | 'closed' }
+interface Target { readonly registered: Registered; readonly frame: FrameIdentity; state: 'waiting' | 'admitted' | 'closed' }
+export interface EditorCloseRecoveryCapture { readonly kind: 'main-owned-editor-recovery-close-capture' }
 interface Attempt {
-  readonly requestId: string; readonly reason: EditorCloseReason; readonly targets: Map<Registered, Target>
+  readonly requestId: string; readonly reason: EditorCloseReason; readonly targets: Map<Registered, Target>; readonly closeGeneration: number
   phase: 'waiting' | 'closing' | 'reloading'; timer: unknown; dispatching: number
   reloadIgnoringCache: boolean
 }
@@ -43,6 +44,7 @@ export interface EditorCloseBarrierOptions {
   /** Main's actual registered editor only, after its real complete drain ACK.
    * This must synchronously call webContents.reload[IgnoringCache], not await. */
   reloadEditor?: (window: EditorCloseWindow, ignoreCache: boolean) => void
+  verifyRecoveryReceipt?: (event: EditorCloseIpcEvent, receipt: Extract<EditorCloseAcknowledgement, { status: 'draft-journaled' }>) => boolean
   onShutdownError?: (error: unknown) => void
   timeoutMs?: number
   setTimer?: (callback: () => void, milliseconds: number) => unknown
@@ -54,6 +56,8 @@ export interface EditorCloseBarrier {
   requestQuit(): string | null
   requestReload(event: EditorCloseIpcEvent, ignoreCache?: boolean): string | null
   acknowledge(event: EditorCloseIpcEvent, input: unknown): boolean
+  captureRecovery(event: EditorCloseIpcEvent, requestId: string): EditorCloseRecoveryCapture | null
+  readRecoveryCapture(event: EditorCloseIpcEvent, capture: EditorCloseRecoveryCapture): { requestId: string; closeGeneration: number } | null
   assertEditorMutationAllowed(event: EditorCloseIpcEvent): void
   runEditorMutation<T>(event: EditorCloseIpcEvent, operation: () => T | Promise<T>): Promise<T>
   isShuttingDown(): boolean
@@ -63,15 +67,21 @@ function acknowledgement(value: unknown): EditorCloseAcknowledgement | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)
     || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return null
   const descriptors = Object.getOwnPropertyDescriptors(value), keys = Reflect.ownKeys(descriptors)
-  if (keys.some(key => typeof key !== 'string' || !['requestId','status','message'].includes(key))
-    || !Object.hasOwn(descriptors, 'requestId') || !Object.hasOwn(descriptors, 'status')) return null
-  for (const key of keys) {
-    const descriptor = descriptors[key as string]
-    if (!descriptor.enumerable || !('value' in descriptor)) return null
+  if (!Object.hasOwn(descriptors, 'requestId') || !Object.hasOwn(descriptors, 'status')) return null
+  for (const key of keys) { if (typeof key !== 'string') return null; const descriptor = descriptors[key]
+    if (!descriptor.enumerable || !('value' in descriptor)) return null }
+  const requestId = descriptors.requestId.value, status = descriptors.status.value
+  const uuid = (input: unknown): input is string => typeof input === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(input)
+  if (!uuid(requestId)) return null
+  if (status === 'draft-journaled') {
+    if (keys.length !== 4 || keys.some(key => !['requestId','status','closeGeneration','receiptId'].includes(key as string))) return null
+    const closeGeneration = descriptors.closeGeneration?.value, receiptId = descriptors.receiptId?.value
+    if (!Number.isSafeInteger(closeGeneration) || closeGeneration < 1 || !uuid(receiptId)) return null
+    return { requestId, status, closeGeneration, receiptId }
   }
-  const requestId = descriptors.requestId.value, status = descriptors.status.value, message = descriptors.message?.value
-  if (typeof requestId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(requestId)
-    || status !== 'flushed' && status !== 'blocked' || message !== undefined && (typeof message !== 'string' || message.length > 2048)) return null
+  if (status !== 'flushed' && status !== 'blocked' || keys.some(key => !['requestId','status','message'].includes(key as string))) return null
+  const message = descriptors.message?.value
+  if (message !== undefined && (typeof message !== 'string' || message.length > 2048)) return null
   return { requestId, status, ...(message === undefined ? {} : { message }) }
 }
 
@@ -83,7 +93,8 @@ export function createEditorCloseBarrier(options: EditorCloseBarrierOptions): Ed
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 8000) throw new Error('Editor close ACK budget must be within 1..8000 ms.')
   const setTimer = options.setTimer ?? ((callback: () => void, milliseconds: number) => { const timer = setTimeout(callback, milliseconds); timer.unref(); return timer })
   const clearTimer = options.clearTimer ?? (timer => clearTimeout(timer as ReturnType<typeof setTimeout>))
-  let attempt: Attempt | null = null, shuttingDown = false, activeWrites = 0
+  let attempt: Attempt | null = null, shuttingDown = false, activeWrites = 0, nextCloseGeneration = 0
+  const recoveryCaptures = new WeakMap<EditorCloseRecoveryCapture, { attempt: Attempt; target: Target }>()
   let reloadLanding: { entry: Registered; requestId: string } | null = null
 
   const frameIdentity = (entry: Registered): FrameIdentity | null => {
@@ -141,7 +152,7 @@ export function createEditorCloseBarrier(options: EditorCloseBarrierOptions): Ed
   const complete = () => {
     const current = attempt
     if (!current || shuttingDown || current.phase !== 'waiting' || current.dispatching) return
-    if ([...current.targets.values()].some(target => target.state !== 'flushed')) return
+    if ([...current.targets.values()].some(target => target.state !== 'admitted')) return
     if (activeWrites || [...current.targets.values()].some(target => target.registered.writes || !sameFrame(target.registered, target.frame))) {
       cancel('Editor state changed before close admission completed.'); return
     }
@@ -157,7 +168,7 @@ export function createEditorCloseBarrier(options: EditorCloseBarrierOptions): Ed
       current.phase = 'reloading'
       target.registered.approvedReload = current.requestId
       reloadLanding = { entry: target.registered, requestId: current.requestId }
-      // Admission is now committed: every W is saved and the old renderer is
+      // Admission is now committed: every W is saved or durably journaled and the old renderer is
       // still frozen. The 8s budget only cancels a WAITING drain. Unfreezing
       // after invoking reload could accept new W before queued navigation.
       clearTimer(current.timer)
@@ -187,7 +198,7 @@ export function createEditorCloseBarrier(options: EditorCloseBarrierOptions): Ed
     return attempt === current
   }
   const start = (reason: EditorCloseReason, entries: readonly Registered[], reloadIgnoringCache = false) => {
-    const current: Attempt = { requestId: randomUUID(), reason, targets: new Map(), phase: 'waiting', timer: null, dispatching: 1, reloadIgnoringCache }
+    const current: Attempt = { requestId: randomUUID(), reason, targets: new Map(), closeGeneration: ++nextCloseGeneration, phase: 'waiting', timer: null, dispatching: 1, reloadIgnoringCache }
     attempt = current
     current.timer = setTimer(() => {
       if (attempt === current && (current.reason !== 'reload' || current.phase === 'waiting')) cancel('Saving the editor did not finish before the close timeout.')
@@ -268,7 +279,7 @@ export function createEditorCloseBarrier(options: EditorCloseBarrierOptions): Ed
         if (attempt?.reason === 'reload' && attempt.phase === 'reloading' && entry.approvedReload === attempt.requestId) {
           if (inPlace === true) return // A hash change cannot unfreeze the realm awaiting its admitted full reload.
           // The actual Main call has begun navigation. No old-frame cancel or
-          // ACK is sent; its complete saved realm remains frozen until gone.
+          // ACK is sent; its complete durably preserved realm remains frozen until gone.
           entry.lifecycle++; entry.approvedReload = null
           clearTimer(attempt.timer); attempt = null
           return
@@ -323,7 +334,26 @@ export function createEditorCloseBarrier(options: EditorCloseBarrierOptions): Ed
       if (!target || target.state !== 'waiting' || !sameFrame(entry, target.frame)) return false
       if (value.status === 'blocked') { cancel(value.message || 'The editor has changes that could not be saved.'); return true }
       if (entry.writes) { cancel('Editor writes are still running; finish them before closing.'); return false }
-      target.state = 'flushed'; complete(); return true
+      if (value.status === 'draft-journaled') {
+        if (current.reason === 'reload' || value.closeGeneration !== current.closeGeneration || !options.verifyRecoveryReceipt) return false
+        try { if (!options.verifyRecoveryReceipt(event, value)) return false }
+        catch { cancel('The durable editor draft receipt could not be verified.'); return false }
+      }
+      target.state = 'admitted'; complete(); return true
+    },
+    captureRecovery(event, requestId) {
+      const current = attempt, entry = currentEntry(event), target = entry && current?.targets.get(entry)
+      if (!current || current.reason === 'reload' || current.requestId !== requestId || current.phase !== 'waiting' || shuttingDown || !target
+        || target.state !== 'waiting' || entry!.writes || activeWrites || !sameFrame(entry!, target.frame)) return null
+      const owner: EditorCloseRecoveryCapture = Object.freeze({ kind: 'main-owned-editor-recovery-close-capture' })
+      recoveryCaptures.set(owner, { attempt: current, target }); return owner
+    },
+    readRecoveryCapture(event, capture) {
+      const original = recoveryCaptures.get(capture), current = attempt, entry = currentEntry(event)
+      if (!original || !current || current.reason === 'reload' || original.attempt !== current || original.target.registered !== entry
+        || current.phase !== 'waiting' || shuttingDown || original.target.state !== 'waiting'
+        || !entry || entry.writes || activeWrites || !sameFrame(entry, original.target.frame)) return null
+      return { requestId: current.requestId, closeGeneration: current.closeGeneration }
     },
     assertEditorMutationAllowed,
     async runEditorMutation(event, operation) {

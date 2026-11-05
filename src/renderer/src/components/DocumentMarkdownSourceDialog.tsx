@@ -4,7 +4,7 @@ import { Annotation, EditorState, Prec } from '@codemirror/state'
 import { EditorView, drawSelection, keymap, type ViewUpdate } from '@codemirror/view'
 import { standardKeymap } from '@codemirror/commands'
 import type { DocumentBlockDraft } from '@shared/contracts'
-import { createMarkdownSourceDraft, markdownSourceChange, markdownSourceDraftToBlocks, replaceMarkdownSourceChanges, type MarkdownSourceDraft, type MarkdownSourceChange } from '../utils/markdownSourceDraft'
+import { createMarkdownSourceDraft, hasMarkdownSourceDraftChanges, markdownSourceChange, markdownSourceDraftToBlocks, replaceMarkdownSourceChanges, type MarkdownSourceDraft, type MarkdownSourceChange } from '../utils/markdownSourceDraft'
 import { formatMarkdownSelection, markdownFormatShortcut, type MarkdownFormat } from '../utils/markdownFormatting'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 import { MarkdownFormatToolbar } from './MarkdownFormatToolbar'
@@ -12,6 +12,7 @@ import { importAttachmentFiles } from '../utils/attachments'
 import { attachmentMarkdown } from '@shared/attachments'
 import { createMarkdownSourceSession, markdownSourceEditorText } from '../utils/markdownSourceSession'
 import './document-markdown-source.css'
+import { registerRecoverySource, recoveryData, type RecoverySourceAddress } from '../features/editor-recovery/sourceSnapshots'
 
 type Snapshot<Draft> = { draft: Draft; start: number; end: number }
 const sourceCommand = Annotation.define<boolean>()
@@ -46,8 +47,12 @@ export type MarkdownSourceDialogProps<Draft extends { source: string }> = {
   getReturnFocus: () => HTMLElement | null
   onCompositionChange?: (composing: boolean) => void
   onLocalStateChange?: (state: Readonly<MarkdownSourceLocalState>) => void
+  recoveryAddress?: RecoverySourceAddress
+  readRecoveryProvenance?: (draft: Draft) => unknown
+  hasUnappliedChanges?: (draft: Draft, accepted: Draft) => boolean
+  restored?: { draft: Draft; accepted: Draft; opening: Draft; selection: { anchor: number; head: number } }
   isZh: boolean
-  onClose: () => void
+  onClose: () => void | boolean
   text?: Partial<MarkdownSourceDialogText>
 }
 
@@ -62,6 +67,7 @@ export default function DocumentMarkdownSourceDialog({ blocks, isZh, onApply, on
   return <MarkdownSourceDialog<MarkdownSourceDraft> sessionKey={sessionKey} isZh={isZh} onClose={onClose}
     createDraft={() => createMarkdownSourceDraft(blocks)}
     replaceChanges={(draft, changes) => replaceMarkdownSourceChanges(draft, [...changes])}
+    hasUnappliedChanges={hasMarkdownSourceDraftChanges}
     onApply={draft => onApply(markdownSourceDraftToBlocks(draft))} isCurrent={() => true}
     getReturnFocus={() => {
       if (!opener.current) opener.current = document.querySelector<HTMLElement>('.document-header-more-button')
@@ -80,9 +86,15 @@ export function MarkdownSourceDialog<Draft extends { source: string }>(props: Ma
 
 function MarkdownSourceDialogOpening<Draft extends { source: string }>(props: MarkdownSourceDialogProps<Draft> & { ownsOpening: () => boolean }) {
   const { isZh } = props
-  const [snapshot, setSnapshot] = useState<Snapshot<Draft>>(() => ({ draft: props.createDraft(), start: 0, end: 0 }))
+  const [snapshot, setSnapshot] = useState<Snapshot<Draft>>(() => {
+    const restored = props.restored, draft = restored?.draft ?? props.createDraft()
+    return { draft, start: restored ? markdownSourceEditorText(draft.source.slice(0, restored.selection.anchor)).length : 0,
+      end: restored ? markdownSourceEditorText(draft.source.slice(0, restored.selection.head)).length : 0 }
+  })
   const current = useRef(snapshot), live = useRef(props); live.current = props
-  const history = useRef({ entries: [snapshot], index: 0, lastInput: 0 })
+  const history = useRef({ entries: props.restored ? [{ draft: props.restored.accepted,
+    start: Math.min(snapshot.start, markdownSourceEditorText(props.restored.accepted.source).length),
+    end: Math.min(snapshot.end, markdownSourceEditorText(props.restored.accepted.source).length) }, snapshot] : [snapshot], index: props.restored ? 1 : 0, lastInput: 0 })
   const dialog = useRef<HTMLDialogElement>(null)
   const editorHost = useRef<HTMLDivElement>(null)
   const editor = useRef<EditorView | null>(null)
@@ -94,11 +106,35 @@ function MarkdownSourceDialogOpening<Draft extends { source: string }>(props: Ma
   const [error, setError] = useState('')
   const [isApplying, setIsApplying] = useState(false)
   const [importing, setImporting] = useState(false), importLock = useRef(false)
-  const acceptedSource = useRef(snapshot.draft.source)
+  const acceptedSource = useRef(props.restored?.accepted.source ?? snapshot.draft.source)
+  const originalDraft = useRef(props.restored?.opening ?? snapshot.draft), acceptedDraft = useRef(props.restored?.accepted ?? snapshot.draft)
+  const recovery = useRef<ReturnType<typeof registerRecoverySource> | null>(null)
+  const dirty = (draft: Draft) => live.current.hasUnappliedChanges?.(draft, acceptedDraft.current) ?? draft.source !== acceptedSource.current
+  const reportRecovery = () => {
+    const view = editor.current, entry = recovery.current
+    if (!mounted.current || !entry || !view) return
+    const draft = session.read(view.state), selection = view.state.selection.main
+    const rawOffset = (offset: number) => {
+      let raw = 0, normalized = 0
+      while (raw < draft.source.length && normalized < offset) {
+        if (draft.source[raw] === '\r' && draft.source[raw + 1] === '\n') raw++
+        raw++; normalized++
+      }
+      return raw
+    }
+    entry.update({ openingSource: originalDraft.current.source, acceptedSource: acceptedSource.current, source: draft.source,
+      dirty: dirty(draft),
+      selection: { anchor: rawOffset(selection.anchor), head: rawOffset(selection.head) },
+      composing: composing.current, applying: applying.current !== null, importing: importLock.current,
+      replayJson: JSON.stringify(recoveryData({ kind: 'knowbook-source-replay-data', version: 1,
+        opening: originalDraft.current, accepted: acceptedDraft.current, current: draft,
+        provenance: live.current.readRecoveryProvenance?.(draft) ?? null })) })
+  }
   const reportedLocalState = useRef<Readonly<MarkdownSourceLocalState> | null>(null)
   const reportLocalState = () => {
     if (!mounted.current) return
-    const state: Readonly<MarkdownSourceLocalState> = Object.freeze({ dirty: current.current.draft.source !== acceptedSource.current,
+    reportRecovery()
+    const state: Readonly<MarkdownSourceLocalState> = Object.freeze({ dirty: dirty(current.current.draft),
       composing: composing.current, applying: applying.current !== null, importing: importLock.current })
     const before = reportedLocalState.current
     if (before && before.dirty === state.dirty && before.composing === state.composing
@@ -169,7 +205,9 @@ function MarkdownSourceDialogOpening<Draft extends { source: string }>(props: Ma
   // Explicit Cancel can discard a stale opening; staleness removes its write
   // authority, never the user's ability to close it after preserving text.
   const close = () => {
-    if (mounted.current && live.current.ownsOpening() && !composing.current && !applying.current && !importLock.current) live.current.onClose()
+    if (mounted.current && live.current.ownsOpening() && !composing.current && !applying.current && !importLock.current) {
+      if (live.current.onClose() !== false) { recovery.current?.acceptedClose(); recovery.current = null }
+    }
   }
   const apply = async () => {
     if (composing.current || importLock.current || applying.current || !canUse()) return
@@ -211,14 +249,18 @@ function MarkdownSourceDialogOpening<Draft extends { source: string }>(props: Ma
         history.current = { entries, index, lastInput: 0 }
         compositionHistoryIndex.current = composing.current ? Math.min(index, compositionIndex) : -1
         acceptedSource.current = checkpoint.acceptedSource
+        acceptedDraft.current = checkpoint.baseDraft
         checkpoint.committed()
         reportLocalState()
       }
       if (accepted === true) {
         acceptedSource.current = submitted.source
+        acceptedDraft.current = checkpoint?.baseDraft ?? submitted
         reportLocalState()
         if (!canUse() || live.current.sessionKey !== opening.sessionKey) return
-        if (submittedStillCurrent && !composing.current && !importLock.current) opening.onClose()
+        if (submittedStillCurrent && !composing.current && !importLock.current) {
+          if (opening.onClose() !== false) { recovery.current?.acceptedClose(); recovery.current = null }
+        }
         else setError(text.laterEdits)
       } else if (accepted === false) setError(checkpoint ? text.laterEdits : text.conflict)
       else throw new Error('Markdown source Apply must return a boolean result')
@@ -270,6 +312,7 @@ function MarkdownSourceDialogOpening<Draft extends { source: string }>(props: Ma
         current.current = next
       }
       if (changed) { setSnapshot(current.current); reportLocalState() }
+      else if (update.selectionSet) reportRecovery()
     },
     keydown: event => {
       if (isImeKeyboardEvent(event, composing.current)) { event.stopPropagation(); return false }
@@ -286,9 +329,11 @@ function MarkdownSourceDialogOpening<Draft extends { source: string }>(props: Ma
   }
   useLayoutEffect(() => {
     mounted.current = true
+    if (live.current.recoveryAddress) recovery.current = registerRecoverySource(live.current.sessionKey, live.current.recoveryAddress)
     const returnFocus = live.current.getReturnFocus()
     if (canUse()) dialog.current?.showModal()
     const view = new EditorView({ parent: editorHost.current!, state: EditorState.create({ doc: markdownSourceEditorText(current.current.draft.source),
+      selection: { anchor: current.current.start, head: current.current.end },
       extensions: [session.extension, EditorState.tabSize.of(2), EditorView.lineWrapping, drawSelection(), keymap.of(standardKeymap),
         EditorView.theme({ '&.cm-focused .cm-selectionBackground, .cm-selectionBackground': {
           backgroundColor: 'color-mix(in srgb, var(--kb-accent) 25%, transparent)'

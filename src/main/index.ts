@@ -1,4 +1,9 @@
 import { createEditorCloseBarrier } from './editor-close-barrier'
+import { EditorRecoveryDraftStore } from './editor-recovery/draft-store'
+import { EditorRecoveryDraftService } from './editor-recovery/draft-service'
+import { EditorRecoveryCloseReceipts } from './editor-recovery/close-receipts'
+import { EDITOR_RECOVERY_CHANNELS, validateEditorRecoveryWriteInput, validateEditorRecoveryPageInput,
+  validateEditorRecoveryDecisionInput } from '../shared/editor-recovery-drafts'
 import { runSyncedEditingSessionWithAdmission } from './synced-editing-session-admission'
 import { editorReloadKey, guardEditorReloadMenu } from './editor-reload-entrypoints'
 import { EDITOR_CLOSE_ACKNOWLEDGE_CHANNEL, EDITOR_CLOSE_READY_CHANNEL, EDITOR_RELOAD_REQUEST_CHANNEL } from '../shared/editor-close'
@@ -292,6 +297,7 @@ const backupHealth = new BackupHealthTracker((state) => {
 let shutdownComplete = false
 let shutdownPromise: Promise<void> | null = null
 const editorCloseBarrier = createEditorCloseBarrier({
+  verifyRecoveryReceipt: (event, receipt) => editorRecoveryReceipts?.verify(event, receipt) === true,
   reloadEditor: (window, ignoreCache) => {
     if (window !== mainWindow || mainWindow.isDestroyed()) throw new Error('The original registered editor is unavailable')
     if (ignoreCache) mainWindow.webContents.reloadIgnoringCache()
@@ -433,6 +439,21 @@ const systemPluginDataRoot = join(systemPluginRoot, 'data')
 const systemPluginLogRoot = join(systemPluginRoot, 'logs')
 const systemPluginBackupRoot = join(userDataRoot, 'backups', 'system-plugins')
 let store: KnowbookStore
+let editorRecoverySide: EditorRecoveryDraftStore | null = null
+let editorRecoveryService: EditorRecoveryDraftService | null = null
+let editorRecoveryReceipts: EditorRecoveryCloseReceipts | null = null
+function editorRecovery() {
+  if (!servicesInitialized) throw new Error('Editor draft recovery is not ready.')
+  if (!editorRecoverySide) {
+    // The private side database is never the workspace database or a V3/wire
+    // source. A bad side database disables recovery, not canonical startup.
+    const side = new EditorRecoveryDraftStore(join(userDataRoot, 'storage', 'recovery'))
+    const service = new EditorRecoveryDraftService(side, store, event => editorCloseBarrier.assertEditorMutationAllowed(event))
+    editorRecoverySide = side; editorRecoveryService = service
+    editorRecoveryReceipts = new EditorRecoveryCloseReceipts(side, service, editorCloseBarrier)
+  }
+  return { service: editorRecoveryService!, receipts: editorRecoveryReceipts! }
+}
 let backupService: MarkdownBackupService
 let restoreService: MarkdownRestoreService
 let workspaceEventBus: WorkspaceEventBus
@@ -1071,6 +1092,15 @@ function createWindow(): ElectronBrowserWindow {
 
   editorCloseBarrier.registerWindow(mainWindow)
   const editorWindow = mainWindow
+  const releaseRecoveryFrame = () => {
+    editorRecoveryService?.releaseSender(editorWindow.webContents)
+    editorRecoveryReceipts?.releaseSender(editorWindow.webContents)
+  }
+  editorWindow.webContents.on('did-start-navigation', (_event, _url, inPlace, isMainFrame) => {
+    if (isMainFrame && !inPlace) releaseRecoveryFrame()
+  })
+  editorWindow.webContents.on('render-process-gone', releaseRecoveryFrame)
+  editorWindow.webContents.on('destroyed', releaseRecoveryFrame)
   editorWindow.webContents.on('before-input-event', (event, input) => {
     const reload = editorReloadKey(input)
     if (!reload) return
@@ -2413,6 +2443,22 @@ function registerIpcHandlers(): void {
   ipcMain.handle(EDITOR_CLOSE_READY_CHANNEL, event => editorCloseBarrier.replayPending(event))
   ipcMain.handle(EDITOR_RELOAD_REQUEST_CHANNEL, event => editorCloseBarrier.requestReload(event) !== null)
   ipcMain.handle(EDITOR_CLOSE_ACKNOWLEDGE_CHANNEL, (event, input: unknown) => editorCloseBarrier.acknowledge(event, input))
+  ipcMain.handle(EDITOR_RECOVERY_CHANNELS.open, (event, input: unknown) => editorRecovery().service.open(event, input))
+  ipcMain.handle(EDITOR_RECOVERY_CHANNELS.write, (event, input: unknown) => {
+    const request = validateEditorRecoveryWriteInput(input), recovery = editorRecovery()
+    return request.purpose === 'close'
+      ? recovery.receipts.seal(event, request.requestId, { records: request.records })
+      : recovery.service.write(event, { records: request.records }, { kind: 'background' })
+  })
+  ipcMain.handle(EDITOR_RECOVERY_CHANNELS.list, (event, input: unknown) => editorRecovery().service.list(event, validateEditorRecoveryPageInput(input)))
+  ipcMain.handle(EDITOR_RECOVERY_CHANNELS.read, (event, input: unknown) => editorRecovery().service.read(event, input))
+  ipcMain.handle(EDITOR_RECOVERY_CHANNELS.retire, (event, input: unknown) => editorRecovery().service.retireClean(event, input))
+  ipcMain.handle(EDITOR_RECOVERY_CHANNELS.prepareGroup, (event, input: unknown) => editorRecovery().service.prepareGroup(event, input))
+  ipcMain.handle(EDITOR_RECOVERY_CHANNELS.park, (event, input: unknown) => editorRecovery().service.park(event, input))
+  ipcMain.handle(EDITOR_RECOVERY_CHANNELS.decide, (event, input: unknown) => {
+    const request = validateEditorRecoveryDecisionInput(input)
+    return editorRecovery().service.decide(event, request.recoveryOwnerId, request.decision)
+  })
   ipcMain.handle('knowbook:open-synced-editing-session', (event, input: OpenSyncedEditingSessionInput): OpenSyncedEditingSessionResult => {
     return store.openSyncedEditingSession(event.senderFrame!,input)
   })
@@ -2996,6 +3042,9 @@ async function shutdownServices(): Promise<void> {
   rejectPendingPluginUiPreparations('Plugin iframe UI preparation was cancelled during shutdown.')
   pluginUiDocuments.clear()
   activePluginUiDocumentTokens.clear()
+  editorRecoveryService?.dispose(); editorRecoveryService = null
+  editorRecoveryReceipts = null
+  editorRecoverySide?.close(); editorRecoverySide = null
   store.destroy()
 }
 

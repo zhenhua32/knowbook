@@ -1,4 +1,4 @@
-import { adoptDocumentHostResult, restoreDocumentHostHistory } from '../../utils/documentHostHistory'
+import { adoptDocumentHostResult, restoreDocumentHostHistory, adoptDocumentLocalDraft } from '../../utils/documentHostHistory'
 import type { DocumentDetail } from '@shared/contracts'
 import { SyncedStructureCommands, type StructureCommandView } from './structureCommands'
 import { SyncedHostStructureHistory } from './hostStructureHistory'
@@ -8,12 +8,16 @@ import type { SyncedEditingMethod, SyncedEditingMethods, SyncedEditingRequest, S
 import type { SyncedInlineInstanceAddress, WorkspaceSearchOccurrence } from '@shared/workspace-search-occurrence'
 import { isSameWorkspaceSearchOccurrence } from '@shared/workspace-search-occurrence'
 import { parseSyncedBlockPayload } from '@shared/syncedBlockValidation'
-import { getSyncedWorkspaceController, flushSyncedWorkspacePendingChanges } from './controller'
+import { getSyncedWorkspaceController, flushSyncedWorkspacePendingChanges, captureSyncedWorkspaceRecovery } from './controller'
+import { getEditorRecoveryCoordinator, recoveryOpening, type RawRecoveryPending } from '../editor-recovery/coordinator'
+import { syncedCanonicalEdits } from '@shared/syncedBlockValidation'
+import { recoveryData } from '../editor-recovery/sourceSnapshots'
 import type { SyncedReadSourcesPort } from './sourceReadOwner'
 import type { SyncedHostSourceCurrent } from './SyncedHostSourceDialog'
 import type { PreparedSyncedHostSource } from './hostSource'
-import { readSyncedHostSourceSubmission, acceptSyncedHostSourceCheckpoint,
-  type SyncedHostSourceSubmission, type SyncedHostSourceApplyOutcome } from './hostSource'
+import { readSyncedHostSourceSubmission, acceptSyncedHostSourceCheckpoint, restoreSyncedHostSourceDraft,
+  type SyncedHostSourceSubmission, type SyncedHostSourceApplyOutcome, type RestoredSyncedHostSource } from './hostSource'
+import { openColdHostSourceOwner } from '../editor-recovery/sourceColdOwner'
 import type { MarkdownSourceLocalState } from '../../components/DocumentMarkdownSourceDialog'
 import { areDocumentDraftBlocksEqual } from '../../utils/documentDraftComparison'
 import { installCanonicalInlineTransitions, hasCanonicalInlineAsyncEdits, signalCanonicalInlineUnlock, type CanonicalInlineFlushOptions } from './inlineBridge'
@@ -39,9 +43,9 @@ export interface InlineMount {
   mountEpoch: object; root: () => HTMLElement | null; isCurrent: () => boolean
 }
 export interface InlineOpening { address: SyncedInlineInstanceAddress; binding: SyncedGroupBinding; group: SyncedGroupController }
-type SourceState = { id: object; local: Readonly<MarkdownSourceLocalState>; report: (state: Readonly<MarkdownSourceLocalState>) => void; close: () => void }
+type SourceState = { id: object; local: Readonly<MarkdownSourceLocalState>; reported: boolean; report: (state: Readonly<MarkdownSourceLocalState>) => void; close: () => boolean }
 export type InlineDialog = ({ kind: 'canonical'; binding: SyncedGroupBinding; opener: HTMLElement | null }
-  | { kind: 'host'; opening: SyncedHostSourceCurrent; opener: HTMLElement | null; operationId: string }) & SourceState
+  | { kind: 'host'; opening: SyncedHostSourceCurrent; opener: HTMLElement | null; operationId: string; restored?: RestoredSyncedHostSource }) & SourceState
 export interface InlineNavigation {
   sequence: number; occurrence: WorkspaceSearchOccurrence; shouldContinue: () => boolean
   finish: (success: boolean) => void
@@ -83,6 +87,10 @@ class InlineRuntime {
   private readonly windowSessionId = crypto.randomUUID()
   private readonly port: MainSyncedApi
   private readonly workspace: ReturnType<typeof getSyncedWorkspaceController>
+  private readonly recovery = getEditorRecoveryCoordinator()
+  private recoveryHost: object | null = null
+  private recoveryReview = false
+  private readonly recoveryGroups = new Map<string, object>()
   constructor() {
     const invoke = <M extends SyncedEditingMethod>(method: M, input: SyncedEditingMethods[M]['input']) => this.invoke(method, input)
     this.port = {
@@ -108,7 +116,26 @@ class InlineRuntime {
       })
     }
     const readSources: SyncedReadSourcesPort = {
-      captureBaseline: input => invoke('captureBaseline', input), operation: input => invoke('ownedOperation', input),
+      captureBaseline: async input => {
+        const sessionId = this.session?.sessionId, result = await invoke('captureBaseline', input)
+        if (result.status === 'ready' && sessionId) {
+          const identity = Object.freeze({}), groupId = input.groupId
+          this.recoveryGroups.set(groupId, identity)
+          this.recovery.register(identity, { kind: 'group', groupId }, recoveryOpening({
+            kind: 'group', groupId, sessionId, readOwnerId: result.readOwnerId }), () => {
+            const captured = captureSyncedWorkspaceRecovery(this.workspace).find(item => item.state.snapshot.groupId === groupId)
+            if (!captured) return null
+            const { state, pending } = captured
+            return { working: { kind: 'group', blocks: state.working,
+              incoming: state.incoming ? { kind: 'group', blocks: syncedCanonicalEdits(state.incoming.blocks), incoming: null } : null },
+              pending: [], rawPending: pending ? [{ method: pending.method, input: pending.input,
+                submittedWorking: { kind: 'group', blocks: pending.submitted, incoming: null } }] : [],
+              selection: null, composing: state.composingInstanceIds.length > 0, importing: false,
+              replayJson: JSON.stringify(recoveryData(captured.replay)) }
+          })
+        }
+        return result
+      }, operation: input => invoke('ownedOperation', input),
       validate: input => invoke('validateOwner', input), release: input => invoke('releaseOwner', input)
     }
     this.workspace = getSyncedWorkspaceController(this.port, { readSources })
@@ -117,7 +144,7 @@ class InlineRuntime {
       // The history's own unsettled request is intentionally excluded here so
       // the exact original Undo/Redo can recover its receipt. All other owners
       // still block it, including close, attachments, Source and commands.
-      blocked: () => this.locked || this.invalid || Boolean(this.dialog) || this.commands?.pending() === true
+      blocked: () => this.locked || this.recoveryReview || this.invalid || Boolean(this.dialog) || this.commands?.pending() === true
         || this.hostWrites.size > 0 || this.sourceWrites.size > 0 || this.host?.isReady?.() !== true
         || this.host?.isComposing?.() === true || hasCanonicalInlineAsyncEdits(),
       openHost: async id => Boolean(await this.open({ kind: 'host', hostDocumentId: id })),
@@ -131,7 +158,7 @@ class InlineRuntime {
       adopt: (before, result) => this.host?.adoptHistory(before, result) ?? false,
       changed: () => this.emit(), released: () => this.releaseDeferred(), notify: (zh, en) => this.notify(zh, en) })
     this.commands = new SyncedStructureCommands({ current: () => this.sourceCurrent(),
-      blocked: () => this.isLocked() || this.history.isBusy() || this.invalid || Boolean(this.dialog) || this.hostWrites.size > 0 || this.sourceWrites.size > 0
+      blocked: () => this.isLocked() || this.recoveryReview || this.history.isBusy() || this.invalid || Boolean(this.dialog) || this.hostWrites.size > 0 || this.sourceWrites.size > 0
         || this.host?.isReady?.() !== true || this.host?.isComposing?.() === true || this.host?.canStartStructure?.() === false || hasCanonicalInlineAsyncEdits(),
       openHost: async id => Boolean(await this.open({ kind: 'host', hostDocumentId: id })),
       list: input => this.invoke('listSyncedGroups', input), guards: (id, extra) => this.structureGuards(id, extra),
@@ -147,6 +174,7 @@ class InlineRuntime {
     installCanonicalInlineTransitions(this, { flush: options => this.flush(options), pending: () => this.pending(), hostPending: () => this.hostWrites.size > 0, navigate: () => this.preparePageNavigation(), locked: () => this.isLocked(),
       restoreHistory: (transition, direction) => this.history.restore(transition, direction), ownsHistory: transition => this.history.owns(transition),
       adoptHostResult: adoptDocumentHostResult,
+      adoptLocalDraft: adoptDocumentLocalDraft,
       runHostHistory: restoreDocumentHostHistory,
       notifyBlocked: () => this.notify('请先完成共享正文或源码的保存。', 'Finish saving the shared body or source first.') })
   }
@@ -158,9 +186,62 @@ class InlineRuntime {
     return !blocked() && await this.flush() && !blocked()
   }
   configure(host: InlineHostPort) { this.host = host }
+  beginRecoveryReview(): boolean {
+    if (this.isLocked() || this.dialog || this.commands.pending() || this.history.isBusy() || this.pending()) return false
+    this.recoveryReview = true; this.emit(); return true
+  }
+  finishRecoveryReview(): void { this.recoveryReview = false; this.emit() }
+  reviewingRecovery(): boolean { return this.recoveryReview }
+  observeRecoveryHost() {
+    const current = this.sourceCurrent(), persisted = this.host?.getPersisted()
+    if (!current || !persisted || persisted.id !== current.host.documentId) return
+    if (this.recoveryHost && this.recoveryHost !== current.hostSession) this.recovery.detach(this.recoveryHost)
+    this.recoveryHost = current.hostSession
+    if (!this.recovery.has(current.hostSession)) {
+      const identity = current.hostSession, documentId = current.host.documentId
+      this.recovery.register(identity, { kind: 'host', documentId }, recoveryOpening({
+        kind: 'host', documentId, expectedUpdatedAt: current.host.expectedPersistedUpdatedAt }), () => {
+        const now = this.sourceCurrent()
+        if (!now || now.hostSession !== identity || now.host.documentId !== documentId) return null
+        const rawPending: RawRecoveryPending[] = []
+        const write = this.hostWrites.get(identity)
+        if (write) rawPending.push({ method: 'applySyncedHostStructure', input: write.input,
+          submittedWorking: { kind: 'host', ...write.submitted.host.workingBefore } })
+        for (const source of this.sourceWrites.values()) if (source.opening.hostSession === identity
+          && !rawPending.some(item => item.input.clientOperationId === source.input.clientOperationId)) {
+          const submitted = source.input.mode === 'host-final' ? source.input.finalAfter.find(host => host.documentId === documentId) : null
+          rawPending.push({ method: 'applySyncedHostStructure', input: source.input,
+            submittedWorking: submitted ? { kind: 'host', title: submitted.title, summary: submitted.summary, blocks: submitted.blocks }
+              : { kind: 'host', ...source.opening.host.workingBefore } })
+        }
+        return { working: { kind: 'host', ...now.host.workingBefore }, pending: [], rawPending,
+          selection: null, composing: this.host?.isComposing?.() === true, importing: hasCanonicalInlineAsyncEdits() }
+      })
+    }
+    this.recovery.observe(current.hostSession)
+    this.recovery.changed()
+  }
+  async journalClose(requestId: string) {
+    if (!this.sourceHasReported()) throw new Error('The open Source has not reported its first editor snapshot')
+    this.observeRecoveryHost()
+    // No caller group allowlist: verify every actual controller has its genuine
+    // initial Main capture before asking the side store for one whole receipt.
+    for (const item of captureSyncedWorkspaceRecovery(this.workspace)) {
+      const identity = this.recoveryGroups.get(item.state.snapshot.groupId)
+      if (!identity || !this.recovery.has(identity)) throw new Error('A shared body recovery opening is unavailable')
+    }
+    if (this.openingBindings.size || this.host?.isComposing?.() || hasCanonicalInlineAsyncEdits()
+      || this.history.isBusy() || this.commands.pending()) throw new Error('An editor operation is unfinished')
+    return this.recovery.journalClose(requestId, () => this.ownsClose(requestId) && this.sourceHasReported())
+  }
+  checkpointFlushedClose(requestId: string): Promise<boolean> {
+    this.observeRecoveryHost()
+    return this.recovery.checkpointFlushed(() => this.ownsClose(requestId) && this.sourceHasReported())
+  }
   getSnapshot = () => this.ui
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => this.listeners.delete(listener) }
   private emit() {
+    this.recovery.changed()
     this.ui = Object.freeze({ revision: ++this.revision, locked: this.isLocked(), dialog: this.dialog, navigation: this.navigation, command: this.commands.getSnapshot() })
     for (const listener of [...this.listeners, ...this.idle]) { try { listener() } catch (error) { console.error('Synced view observer failed', error) } }
   }
@@ -199,7 +280,7 @@ class InlineRuntime {
     return () => { this.surfaces.delete(identity) }
   }
   closeReady() {
-    if (this.host?.isReady?.() !== true || this.openingBindings.size) return false
+    if (this.host?.isReady?.() !== true || this.openingBindings.size || !this.sourceHasReported()) return false
     if (!this.host.requiresHostSurface?.()) return true
     const current = this.sourceCurrent()
     return Boolean(current && [...this.surfaces.values()].some(surface => surface.hostSession === current.hostSession
@@ -280,7 +361,9 @@ class InlineRuntime {
     return [...this.groups].some(id => { const group = this.workspace.getGroup(id); return Boolean(group && !clean(group.getSnapshot())) })
   }
   async flush(options: CanonicalInlineFlushOptions = {}) {
-    const current = () => options.shouldContinue?.() !== false && (options.purpose !== 'document-navigation' || !this.isLocked())
+    if (this.recoveryReview) return false
+    const current = () => options.shouldContinue?.() !== false && this.sourceHasReported()
+      && (options.purpose !== 'document-navigation' || !this.isLocked())
     if (!current()) return false
     if (this.history.pending()) { this.notify('原结构撤销或重做回执尚未确认，请重试同一操作。', 'Retry the original Undo or Redo to settle its acknowledgement.'); return false }
     if (this.commands.pending()) { this.notify('请先完成或取消当前同步块操作。', 'Finish or cancel the current synced block operation first.'); return false }
@@ -301,14 +384,18 @@ class InlineRuntime {
     return current() && (!this.dialog || !Object.values(this.dialog.local).some(Boolean))
       && await flushSyncedWorkspacePendingChanges(this.workspace, { shouldContinue: current })
   }
+  private sourceHasReported(): boolean { return !this.dialog || this.dialog.reported }
   private sourceState(): SourceState {
     const id = Object.freeze({})
-    return { id, local: blankSource, report: state => {
-      if (this.dialog?.id !== id || same(this.dialog.local, state)) return
+    return { id, local: blankSource, reported: false, report: state => {
+      if (this.dialog?.id !== id) return
+      // The Source component updates its recovery snapshot before this report.
+      if (this.dialog.reported && same(this.dialog.local, state)) return
+      this.dialog.reported = true
       this.dialog.local = Object.freeze({ ...state }); this.emit()
     }, close: () => { if (this.dialog?.id === id) {
-      if (this.sourceWrites.has(id)) { this.notify('原源码操作回执尚未确认，请重试应用以核对。', 'Retry Apply to settle the original source operation.'); return }
-      this.dialog = null; this.emit() } } }
+      if (this.sourceWrites.has(id)) { this.notify('原源码操作回执尚未确认，请重试应用以核对。', 'Retry Apply to settle the original source operation.'); return false }
+      this.dialog = null; this.emit(); return true } return false } }
   }
   openCanonicalSource(binding: SyncedGroupBinding, opener: HTMLElement | null) {
     if (this.isLocked() || this.dialog || this.history.isBusy() || this.commands.pending() || !binding.isCurrent()) return false
@@ -318,8 +405,32 @@ class InlineRuntime {
     if (this.isLocked() || this.dialog || this.history.isBusy() || this.commands.pending() || !await this.host?.flushHost()) return false
     const opening = this.host?.getCurrent()
     if (!opening || !await this.open({ kind: 'host', hostDocumentId: opening.host.documentId })) return false
-    if (this.host?.getCurrent()?.hostSession !== opening.hostSession || this.dialog || this.isLocked()) return false
+    this.observeRecoveryHost()
+    try { await this.recovery.renewHost(opening.hostSession, { kind: 'host', documentId: opening.host.documentId, expectedUpdatedAt: opening.host.expectedPersistedUpdatedAt }) }
+    catch (error) {
+      console.warn('Editor recovery opening is unavailable; no journal close acknowledgement will be issued.', error)
+      this.notify('草稿保护暂时不可用，源码未应用时请保留此窗口。', 'Draft protection is temporarily unavailable. Keep this window open while source changes remain unapplied.')
+    }
+    const after = this.host?.getCurrent()
+    if (after?.hostSession !== opening.hostSession || after.editSequence !== opening.editSequence
+      || after.host.expectedPersistedUpdatedAt !== opening.host.expectedPersistedUpdatedAt || this.dialog || this.isLocked()) return false
     this.dialog = { ...this.sourceState(), kind: 'host', opening, opener, operationId: crypto.randomUUID() }; this.emit(); return true
+  }
+  async restoreRecoverySource(recoveryOwnerId: string, before: SyncedHostSourceCurrent): Promise<boolean> {
+    const unchanged = () => {
+      const current = this.sourceCurrent()
+      return !this.isLocked() && !this.dialog && !this.pending() && !this.recoveryReview && current?.hostSession === before.hostSession
+        && current.editSequence === before.editSequence && current.host.documentId === before.host.documentId
+        && current.host.expectedPersistedUpdatedAt === before.host.expectedPersistedUpdatedAt
+        && current.host.workingBefore.title === before.host.workingBefore.title && current.host.workingBefore.summary === before.host.workingBefore.summary
+        && areDocumentDraftBlocksEqual(current.host.workingBefore.blocks, before.host.workingBefore.blocks)
+    }
+    if (!unchanged() || !await this.open({ kind: 'host', hostDocumentId: before.host.documentId }) || !unchanged()) return false
+    const owner = await openColdHostSourceOwner(recoveryOwnerId)
+    if (!unchanged()) return false
+    const restored = restoreSyncedHostSourceDraft(owner, this.sourceCurrent()!)
+    this.dialog = { ...this.sourceState(), kind: 'host', opening: before, restored, opener: null, operationId: crypto.randomUUID() }
+    this.emit(); return true
   }
   sourceCurrent = () => this.host?.getCurrent() ?? null
   sourceIsCurrent(dialog: InlineDialog) { return !this.invalid && this.dialog?.id === dialog.id
@@ -468,6 +579,7 @@ class InlineRuntime {
   navigationFor(hostId: string, instanceId: string) { const request = this.navigation
     return request?.occurrence.hostDocumentId === hostId && request.occurrence.instanceId === instanceId ? request : null }
   freeze(requestId: string) {
+    this.observeRecoveryHost(); this.recovery.freeze()
     for (const timer of this.saveTimers.values()) clearTimeout(timer)
     this.saveTimers.clear()
     this.requestId = requestId; this.locked = true; this.navigation?.finish(false); this.emit()
@@ -475,6 +587,7 @@ class InlineRuntime {
   cancelFreeze(requestId: string) {
     if (this.requestId !== requestId) return
     this.requestId = null; this.locked = false; this.releaseDeferred()
+    this.recovery.unfreeze()
   }
   private releaseDeferred() {
     this.emit()

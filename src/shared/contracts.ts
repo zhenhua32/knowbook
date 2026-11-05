@@ -1,4 +1,9 @@
 import type { DocumentRenameAdmissionInput, DocumentRenameAdmissionResult } from './document-rename-admission'
+import type { OpenEditorRecoveryDraftInput, EditorRecoveryOpened, WriteEditorRecoveryDraftsInput, EditorRecoveryReceipt,
+  EditorRecoveryPageInput, EditorRecoveryPage, EditorRecoveryExpected, EditorRecoveryCandidate,
+  DecideEditorRecoveryDraftInput, EditorRecoveryRecord, RetireEditorRecoveryDraftInput,
+  PrepareEditorRecoveryGroupInput, PreparedEditorRecoveryGroup } from './editor-recovery-drafts'
+import type { ParkEditorRecoveryDraftInput } from './editor-recovery-drafts'
 import type { EditorCloseRequest, EditorCloseCancelled, EditorCloseAcknowledgement } from './editor-close'
 export type { EditorCloseRequest, EditorCloseCancelled, EditorCloseAcknowledgement, EditorCloseReason } from './editor-close'
 import type {
@@ -965,6 +970,14 @@ export interface DocumentLinkCheck {
 
 export interface ElectronApi {
   onEditorCloseRequest: (listener: (request: EditorCloseRequest) => void) => () => void
+  openEditorRecoveryDraft: (input: OpenEditorRecoveryDraftInput) => Promise<EditorRecoveryOpened>
+  writeEditorRecoveryDrafts: (input: WriteEditorRecoveryDraftsInput) => Promise<EditorRecoveryReceipt>
+  listEditorRecoveryDrafts: (input: EditorRecoveryPageInput) => Promise<EditorRecoveryPage>
+  readEditorRecoveryDraft: (input: EditorRecoveryExpected) => Promise<EditorRecoveryCandidate>
+  decideEditorRecoveryDraft: (input: DecideEditorRecoveryDraftInput) => Promise<EditorRecoveryRecord | null>
+  retireCleanEditorRecoveryDraft: (input: RetireEditorRecoveryDraftInput) => Promise<boolean>
+  prepareEditorRecoveryGroup: (input: PrepareEditorRecoveryGroupInput) => Promise<PreparedEditorRecoveryGroup>
+  parkEditorRecoveryDraft: (input: ParkEditorRecoveryDraftInput) => Promise<void>
   onEditorCloseCancelled: (listener: (request: EditorCloseCancelled) => void) => () => void
   acknowledgeEditorClose: (input: EditorCloseAcknowledgement) => Promise<boolean>
   /** Requests a Main-owned editor drain; true means admitted to the handshake,

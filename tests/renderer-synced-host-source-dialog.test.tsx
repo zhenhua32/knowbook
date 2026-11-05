@@ -6,9 +6,10 @@ import { act, createElement } from 'react'
 import { EditorView } from '@codemirror/view'
 import { JSDOM } from 'jsdom'
 import type { SyncedHostWorkingBefore } from '../src/shared/synced-blocks'
-import { serializeSyncedBlockPayload } from '../src/shared/syncedBlockValidation'
+import { serializeSyncedBlockPayload, SYNCED_BLOCK_FENCE_INFO } from '../src/shared/syncedBlockValidation'
 import type { PreparedSyncedHostSource } from '../src/renderer/src/features/synced-blocks/hostSource'
 import type { SyncedHostSourceCurrent, SyncedHostSourceDialogProps } from '../src/renderer/src/features/synced-blocks/SyncedHostSourceDialog'
+import { readRecoverySources } from '../src/renderer/src/features/editor-recovery/sourceSnapshots'
 
 register(`data:text/javascript,${encodeURIComponent(`
   export async function load(url, context, nextLoad) {
@@ -241,4 +242,38 @@ test('opening replacement during IME never fabricates an end or transfers the ol
     assert.deepEqual(nextComposition, [true, false]); assert.deepEqual(originalComposition, [true])
     assert.equal(api.calls.length, 0); assert.equal(api.closes(), 0)
   }, { composition: value => originalComposition.push(value) })
+})
+
+test('same-byte full CM replacement preserves its lost reference identity as dirty recovery data until actual Cancel instead of treating text equality as a saved Source', async () => {
+  await withHost(async api => {
+    const states: Readonly<import('../src/renderer/src/components/DocumentMarkdownSourceDialog').MarkdownSourceLocalState>[] = []
+    const address = { kind: 'host' as const, documentId: api.current().host.documentId }
+    const oldIds = new Set(readRecoverySources(address).map(source => source.sourceId))
+    const before = structuredClone(api.current().host)
+    await api.render({ ...api.props, onLocalStateChange: state => states.push(state) })
+    const view = api.view(), raw = view.state.doc.toString()
+    await act(async () => view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: raw } }))
+    assert.equal(view.state.doc.toString(), raw)
+    assert.equal(states.at(-1)?.dirty, true, 'The actual accepted CM transaction removed a reference source even at identical bytes')
+    const retained = readRecoverySources(address).filter(source => !oldIds.has(source.sourceId))
+    assert.equal(retained.length, 1); assert.equal(retained[0].source, retained[0].acceptedSource); assert.equal(retained[0].dirty, true)
+    const replay = JSON.parse(retained[0].replayJson!)
+    assert.equal(replay.opening.references.anchors.length, 1); assert.equal(replay.current.references.anchors.length, 0)
+    await api.click('Apply changes')
+    assert.equal(api.calls.length, 1); assert.equal(api.closes(), 0)
+    const prepared = api.calls[0], originalReference = before.workingBefore.blocks.find(block => block.type === 'synced-block')!
+    assert.deepEqual(prepared.hostsWorkingBefore, [before]); assert.deepEqual(prepared.newRefSources, [])
+    assert.equal(prepared.finalAfter.length, 1); assert.equal(prepared.finalAfter[0].documentId, before.documentId)
+    assert.equal(prepared.finalAfter[0].blocks.some(block => block.type === 'synced-block'), false)
+    const code = prepared.finalAfter[0].blocks[0]
+    assert.equal(code.type, 'code'); assert.equal(code.content, originalReference.content); assert.notEqual(code.id, originalReference.id)
+    assert.equal(code.markdownFormat?.codeInfo ?? code.language, SYNCED_BLOCK_FENCE_INFO)
+    assert.deepEqual(api.current().host, before, 'The injected coordinator declined; this CM test does not execute a Main writer')
+    assert.equal(readRecoverySources(address).filter(source => !oldIds.has(source.sourceId)).length, 1)
+    assert.equal(readRecoverySources(address).find(source => !oldIds.has(source.sourceId))?.dirty, true)
+    await api.click('Cancel')
+    assert.equal(api.closes(), 1)
+    assert.deepEqual(readRecoverySources(address).filter(source => !oldIds.has(source.sourceId)), [], 'Actual Cancel removes exactly this opening')
+    assert.deepEqual(new Set(readRecoverySources(address).map(source => source.sourceId)), oldIds, 'Unexpected earlier unmounts retain their own unresolved C')
+  })
 })

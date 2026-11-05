@@ -1,12 +1,12 @@
 import { useMemo, useRef, useState } from 'react'
 import { MarkdownSourceDialog, type MarkdownSourceLocalState } from '../../components/DocumentMarkdownSourceDialog'
 import { areDocumentDraftBlocksEqual } from '../../utils/documentDraftComparison'
-import { replaceMarkdownSourceChanges } from '../../utils/markdownSourceDraft'
+import { replaceMarkdownSourceChanges, hasMarkdownSourceDraftChanges } from '../../utils/markdownSourceDraft'
 import { canonicalSourceDraftToBlocks, createCanonicalSourceDraft } from './canonicalSource'
 import type { SyncedGroupBinding } from './types'
 import { syncedSnapshotGuard } from './types'
 
-type Props = { binding: SyncedGroupBinding; isZh: boolean; opener: HTMLElement | null; onClose: () => void; onLocalStateChange?: (state: Readonly<MarkdownSourceLocalState>) => void }
+type Props = { binding: SyncedGroupBinding; isZh: boolean; opener: HTMLElement | null; onClose: () => void | boolean; onLocalStateChange?: (state: Readonly<MarkdownSourceLocalState>) => void }
 
 /** The instance shell supplies the real binding/opener. This dialog has no
  * second writer or history and never routes canonical content through a host. */
@@ -25,6 +25,8 @@ function CanonicalSourceOpening({ binding, isZh, opener, onClose, onLocalStateCh
   })
   const isCurrent = () => isOwnerCurrent() && binding.isCurrent()
   return <MarkdownSourceDialog sessionKey={opening.sessionKey} isZh={isZh} onClose={onClose} onLocalStateChange={onLocalStateChange}
+    recoveryAddress={{ kind: 'group', groupId: binding.scope.owner.groupId }}
+    hasUnappliedChanges={hasMarkdownSourceDraftChanges}
     createDraft={() => opening.draft} replaceChanges={(draft, changes) => replaceMarkdownSourceChanges(draft, [...changes])}
     isCurrent={isCurrent} getReturnFocus={() => opening.opener} onCompositionChange={binding.setComposing}
     text={{ title: isZh ? '编辑共享正文源码' : 'Edit shared body source',

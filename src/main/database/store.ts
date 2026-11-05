@@ -2495,6 +2495,11 @@ export class KnowbookStore {
   invokeSyncedEditingSession<M extends SyncedEditingMethod>(sender:object,input:SyncedEditingRequest<M>):SyncedEditingResult<M> {
     return this.editingSessions().invoke(sender,input)
   }
+  /** Main-only. Cold draft registry supplies the exact sealed original;
+   * renderer IPC never accepts baseline addresses as recovery authority. */
+  reopenSyncedRecoveryBaseline(sender:object,input:import('./synced-binding-sources').SyncedRecoveryBaselineInput) {
+    return this.editingSessions().reopenRecoveryBaseline(sender,input)
+  }
   releaseSyncedEditingSession(sender:object,sessionId:string):void {
     this.editingSessions().release(sender,sessionId)
   }

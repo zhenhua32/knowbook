@@ -1,4 +1,6 @@
 import type Database from 'better-sqlite3'
+import { validateSyncedStructureInput } from '../../shared/syncedBlockInputs'
+import { canonicalSyncedPortableJson } from '../../shared/syncedBlockPortable'
 import type { SyncedInlineInstanceAddress } from '../../shared/workspace-search-occurrence'
 import { isSyncedUuid } from '../../shared/syncedBlockValidation'
 import { readStrictHostDocument } from './synced-host-document-read'
@@ -100,4 +102,17 @@ export function assertSyncedEditingFenceRead(db:Database.Database):void {
   if(!running.has(db))return
   if(db.inTransaction)return fail('readonly fence requires its own SQL snapshot')
   db.transaction(()=>{assertSyncedEditingFenceOwned(db)})()
+}
+
+/** True only while the real production session dispatches this exact fresh
+ * create request. Legacy direct APIs retain their old receipt domain. */
+export function hasSyncedHeadingBirthCreateFenceOwned2(db:Database.Database,input:unknown):boolean {
+  const active=running.get(db)
+  if(!active)return false
+  if(active.method!=='applySyncedHostStructure')return fail('heading birth capture requires its original create dispatch')
+  assertSyncedEditingFenceOwned(db)
+  const actual=validateSyncedStructureInput(active.input),checked=validateSyncedStructureInput(input)
+  if(actual.mode!=='command'||actual.action.kind!=='create'||checked.mode!=='command'||checked.action.kind!=='create'
+    ||canonicalSyncedPortableJson(actual)!==canonicalSyncedPortableJson(checked))return fail('heading birth capture is not the actual dispatched create')
+  return true
 }

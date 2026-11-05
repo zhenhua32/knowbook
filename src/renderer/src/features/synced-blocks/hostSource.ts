@@ -2,12 +2,13 @@ import type { SyncedHostWorkingBefore, SyncedReferenceIdentity, SyncedStableBloc
 import { parseMarkdownSourceStrict, serializeMarkdownHostSource } from '@shared/markdownSource'
 import { assertSyncedShape, isSyncedBlockId, parseSyncedBlockPayload, serializeSyncedBlockPayload, SyncedValidationError,
   validateSyncedHostForest } from '@shared/syncedBlockValidation'
-import { replaceMarkdownSourceChanges, type MarkdownSourceChange, type MarkdownSourceDraft } from '../../utils/markdownSourceDraft'
+import { replaceMarkdownSourceChanges, hasMarkdownSourceDraftChanges, type MarkdownSourceChange, type MarkdownSourceDraft } from '../../utils/markdownSourceDraft'
 import { reconcileMarkdownSourceDraft, type MarkdownSourceReconciliationPort } from './canonicalSource'
 import type { SyncedHostSourceCurrent } from './SyncedHostSourceDialog'
 import { areDocumentDraftBlocksEqual } from '../../utils/documentDraftComparison'
 import { applySyncedSourceChanges, copySyncedSourceRange, createSyncedSourceSnapshot, insertSyncedSourceReference,
-  moveSyncedSourceRange, type SyncedSourceIdFactory, type SyncedSourceRangeOperation, type SyncedSourceSnapshot } from './sourceAnchors'
+  moveSyncedSourceRange, restoreEmptySyncedSourceSnapshot, type SyncedSourceIdFactory, type SyncedSourceRangeOperation, type SyncedSourceSnapshot } from './sourceAnchors'
+import { readColdHostSourceOwner, type ColdHostSourceOwner } from '../editor-recovery/sourceColdOwner'
 
 export type SyncedHostSourceDraft = Readonly<{
   source: string
@@ -20,6 +21,9 @@ export type SyncedHostSourceDraft = Readonly<{
 type HostFinal = Extract<SyncedStructureInput, { mode: 'host-final' }>
 export type PreparedSyncedHostSource = Pick<HostFinal, 'hostsWorkingBefore' | 'finalAfter' | 'newRefSources'>
 const owned = new WeakSet<object>()
+type RecoveryAccepted = { input: SyncedStructureInput; ack: SyncedStructureApplied;
+  submitted: SyncedHostSourceDraft; acceptedRanges: Array<{ blockId: string; from: number; to: number }> }
+const recoveryAccepted = new WeakMap<SyncedHostSourceDraft, RecoveryAccepted>()
 type TrackedChange = { previous: SyncedHostSourceDraft; changes: readonly MarkdownSourceChange[] }
 // Only a captured in-flight submission starts tracking. Ordinary cold draft
 // editing does not retain an unbounded parent chain for every prior keystroke.
@@ -32,14 +36,20 @@ function sealOrdinary(draft: MarkdownSourceDraft): MarkdownSourceDraft {
   Object.freeze(draft.anchors)
   return Object.freeze(draft)
 }
-function seal(draft: SyncedHostSourceDraft): SyncedHostSourceDraft {
+function seal(draft: SyncedHostSourceDraft, previous?: SyncedHostSourceDraft): SyncedHostSourceDraft {
   if (draft.source !== draft.ordinary.source || draft.source !== draft.references.source) invalid('Source draft coordinates diverged.')
   const result = Object.freeze(draft)
   owned.add(result)
+  const accepted = previous && recoveryAccepted.get(previous)
+  if (accepted) recoveryAccepted.set(result, accepted)
   return result
 }
 function current(draft: SyncedHostSourceDraft): void {
   if (!owned.has(draft)) invalid('Source draft does not belong to this opening session.')
+}
+export function hasSyncedHostSourceChanges(draft: SyncedHostSourceDraft, accepted: SyncedHostSourceDraft): boolean {
+  current(draft); current(accepted)
+  return hasMarkdownSourceDraftChanges(draft.ordinary, accepted.ordinary) || JSON.stringify(draft.references.anchors) !== JSON.stringify(accepted.references.anchors)
 }
 function assertNewReferenceIdentities(draft: SyncedHostSourceDraft, references: SyncedSourceSnapshot): void {
   const openingIds = new Set(draft.opening.workingBefore.blocks.map(block => block.id))
@@ -104,7 +114,7 @@ export function applySyncedHostSourceChanges(draft: SyncedHostSourceDraft,
   const references = applySyncedSourceChanges(draft.references, changes)
   const ordinary = sealOrdinary(replaceMarkdownSourceChanges(draft.ordinary, [...changes]))
   if (references === draft.references && ordinary === draft.ordinary) return draft
-  const next = seal({ ...draft, source: references.source, ordinary, references })
+  const next = seal({ ...draft, source: references.source, ordinary, references }, draft)
   if (trackedChanges.has(draft)) trackedChanges.set(next, { previous: draft,
     changes: Object.freeze(changes.map(change => Object.freeze({ ...change }))) })
   return next
@@ -137,7 +147,7 @@ export function moveSyncedHostSourceRange(draft: SyncedHostSourceDraft, operatio
     ...(emptyOnlyMove ? targetEmptyAnchors.map(anchor => ({ ...anchor, from: at + selectedText.length, to: at + selectedText.length })) : [])]
     .sort((left, right) => left.from - right.from || left.to - right.to)
   const ordinary = sealOrdinary({ ...edited, anchors })
-  return seal({ ...draft, source: references.source, ordinary, references })
+  return seal({ ...draft, source: references.source, ordinary, references }, draft)
 }
 export function copySyncedHostSourceRange(draft: SyncedHostSourceDraft, operation: SyncedSourceRangeOperation,
   freshId?: SyncedSourceIdFactory): SyncedHostSourceDraft {
@@ -152,7 +162,7 @@ export function copySyncedHostSourceRange(draft: SyncedHostSourceDraft, operatio
   const filledEmptySlots = new Set(copiedText.trim() ? draft.ordinary.anchors.filter(anchor => anchor.from === anchor.to
     && anchor.from === operation.insertAt).map(anchor => anchor.block) : [])
   const ordinary = sealOrdinary({ ...edited, anchors: edited.anchors.filter(anchor => !filledEmptySlots.has(anchor.block)) })
-  return seal({ ...draft, source: references.source, ordinary, references })
+  return seal({ ...draft, source: references.source, ordinary, references }, draft)
 }
 export function insertSyncedHostSourceReference(draft: SyncedHostSourceDraft,
   insertion: Readonly<{ at: number; identity: SyncedReferenceIdentity }>, freshId?: SyncedSourceIdFactory): SyncedHostSourceDraft {
@@ -162,7 +172,7 @@ export function insertSyncedHostSourceReference(draft: SyncedHostSourceDraft,
   const length = references.source.length - draft.source.length
   const ordinary = sealOrdinary(replaceMarkdownSourceChanges(draft.ordinary, [{ from: insertion.at, to: insertion.at,
     insert: references.source.slice(insertion.at, insertion.at + length) }]))
-  return seal({ ...draft, source: references.source, ordinary, references })
+  return seal({ ...draft, source: references.source, ordinary, references }, draft)
 }
 
 /** Prepare exactly the existing host-final fields; this neither calls IPC nor
@@ -283,6 +293,8 @@ export function acceptSyncedHostSourceCheckpoint(handle: SyncedHostSourceSubmiss
   if (anchors.length !== blocks.filter(block => block.type === 'synced-block').length) invalid('The accepted reference source set is incomplete.')
   const references = createSyncedSourceSnapshot({ sessionKey: freshUuid(), sourceDocumentId: opening.documentId, source: captured.draft.source, anchors })
   const baseDraft = seal({ source: captured.draft.source, opening, ordinary, references, initialOrdinary: ordinary, initialReferences: references })
+  recoveryAccepted.set(baseDraft, freezeValue({ input: structuredClone(input), ack: structuredClone(result),
+    submitted: captured.draft, acceptedRanges: [...captured.ranges].map(([blockId, range]) => ({ blockId, ...range })) }))
   const rebased = new WeakMap<SyncedHostSourceDraft, SyncedHostSourceDraft>([[captured.draft, baseDraft]])
   const rebase = (draft: SyncedHostSourceDraft): SyncedHostSourceDraft | null => {
     if (!owned.has(draft)) return null
@@ -311,3 +323,25 @@ export function readSyncedHostSourceCheckpoint(handle: SyncedHostSourceCheckpoin
   if (!checkpoint) invalid('This Source checkpoint is not an original accepted handle.')
   return checkpoint
 }
+/** Only an actual owned Source draft can expose its genuine accepted mailbox.
+ * A JSON object with equal text/opening cannot fabricate this producer fact.
+ * Main must still reread and attest the original operation before cold use. */
+export function readSyncedHostSourceRecovery(draft: SyncedHostSourceDraft) {
+  current(draft)
+  const accepted = recoveryAccepted.get(draft)
+  return accepted ? { kind: 'actual-host-source-ack' as const, ...accepted }
+    : { kind: 'actual-host-source-opening' as const, opening: draft.opening,
+      initialOrdinary: draft.initialOrdinary, initialReferences: draft.initialReferences }
+}
+export function restoreSyncedHostSourceDraft(owner: ColdHostSourceOwner, current: SyncedHostSourceCurrent) {
+  const actual = readColdHostSourceOwner(owner, current), opening = freezeValue(structuredClone(actual.current.opening))
+  const initialOrdinary = sealOrdinary(freezeValue(structuredClone(actual.current.initialOrdinary)))
+  const initialReferences = createSyncedSourceSnapshot({ sessionKey: freshUuid(), sourceDocumentId: opening.documentId,
+    source: initialOrdinary.source, anchors: [] })
+  const accepted = seal({ source: initialOrdinary.source, opening, ordinary: initialOrdinary, references: initialReferences, initialOrdinary, initialReferences })
+  const ordinary = sealOrdinary(freezeValue(structuredClone(actual.current.ordinary)))
+  const draft = seal({ source: actual.current.source, opening, ordinary,
+    references: restoreEmptySyncedSourceSnapshot(initialReferences, actual.current.source), initialOrdinary, initialReferences })
+  return { draft, accepted, opening: accepted, selection: { ...actual.record.draft.sources[0].selection } }
+}
+export type RestoredSyncedHostSource = ReturnType<typeof restoreSyncedHostSourceDraft>

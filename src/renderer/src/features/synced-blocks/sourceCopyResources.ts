@@ -154,6 +154,12 @@ export function discardPrepared(value: PreparedBatch): void {
   drop(state); state?.owner.batches.delete(value)
 }
 export function dropFrame(value: FrameLease): void { drop(frames.get(value)) }
+/** Genuine retained frame facts only. Old IDs are data after a restart and
+ * must be rebound through independently verified original Main sources. */
+export function readFrameRecoverySources(value: FrameLease): ReadonlyArray<Readonly<{ ticketId: string; entryId: string }>> | null {
+  const holding = frames.get(value)
+  return holding?.live ? Object.freeze(holding.sources.map(source => Object.freeze({ ticketId: source.ticketId, entryId: source.entryId }))) : null
+}
 export function dropPending(value: PendingLease): void { drop(pending.get(value)) }
 export function revokeConsumer(issuer: ConsumerIssuer): void {
   const owner = consumers.get(issuer)

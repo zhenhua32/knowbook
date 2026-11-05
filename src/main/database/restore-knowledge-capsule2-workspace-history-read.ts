@@ -6,7 +6,7 @@ import { parseInitialIncomingStored } from '../sync/synced-initial-incoming-mode
 import { publicationHash, publicationInvalid, publicationJson } from '../sync/synced-publication-model'
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { readRawCapsule2OrdinaryPolicySourceOwned } from './restore-knowledge-capsule2-policy-source-read'
-import { readRawCapsule2HistoricalEvidenceOwned } from './restore-knowledge-capsule2-history-read'
+import { readRawCapsule2HistoricalEvidenceSourceOwned } from './restore-knowledge-capsule2-history-read'
 import { CAPSULE2_READER, CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-model'
 
 interface InitialIncomingIdentity { id: string; last_owner_kind: 'document' | 'group' | 'reserved'; last_owner_id: string; state: 'live' | 'retained'; created_at: string | null }
@@ -40,6 +40,10 @@ export function readRawCapsule2WorkspaceHistoryOwned(db: Database.Database): Raw
 /** Same fixed checks and history result, retaining the complete actual source
  * for the private material owner. No DTO, selected rows or read mode enters. */
 export function readRawCapsule2WorkspaceHistorySourceOwned(db: Database.Database) {
+  return readRawCapsule2WorkspaceHistorySourceWithHeadingTitle3Owned(db).source
+}
+/** Fixed same-read handoff only; no serialized owner/map or caller skip. */
+export function readRawCapsule2WorkspaceHistorySourceWithHeadingTitle3Owned(db: Database.Database) {
   const source = readRawCapsule2OrdinaryPolicySourceOwned(db)
   const { physical, policy } = source
   const sourceContentHash = policy.sourceContentHash
@@ -200,7 +204,7 @@ export function readRawCapsule2WorkspaceHistorySourceOwned(db: Database.Database
   // operations/settings or prove pins/lifecycle business semantics. Those
   // checks come from this fixed actual total2 -> observer2 composition.
   // It repeats content/coverage/physical scans; peak memory/cost are unmeasured.
-  const total = readRawCapsule2HistoricalEvidenceOwned(db)
+  const totalRead = readRawCapsule2HistoricalEvidenceSourceOwned(db), total=totalRead.history
   const compare = (a: string, b: string): number => a < b ? -1 : a > b ? 1 : 0
   const body = { kind: 'capsule2-workspace-identity-history-observation' as const, version: 1 as const, forReader: CAPSULE2_READER,
     state: 'bounded-legacy-workspace-history-composite-only' as const, certified: false as const, semanticValidationComplete: false as const,
@@ -214,5 +218,5 @@ export function readRawCapsule2WorkspaceHistorySourceOwned(db: Database.Database
   const result = { ...body, observationHash: capsuleBytesHash('knowbook.capsule2.workspace-identity-history-observation.v1\0' + capsuleJson(body)) }
   if (Buffer.byteLength(capsuleJson(result)) > CAPSULE2_RAW_MAX_JSON_BYTES) return publicationInvalid('workspace history2完整JSON超准备预算，不截断。')
   const history: RawCapsule2WorkspaceHistoryObservation = freezeCapsuleValue(result)
-  return Object.freeze({ ...source, history, total })
+  return Object.freeze({source:Object.freeze({ ...source, history, total }),headingTitleOriginals:totalRead.headingTitleOriginals})
 }

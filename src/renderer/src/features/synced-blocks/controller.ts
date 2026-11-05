@@ -11,8 +11,9 @@ import { syncedScopeInstanceGuard, syncedSnapshotGuard } from './types'
 import { composeSyncedBindingClaims, syncedBindingClaimsAreIdentity, validateSyncedWorkingClaims } from './bindingClaims'
 
 import type { SyncedReadSourcesPort, ControllerReadOwnerContext } from './sourceReadOwner'
+import { readControllerRecoverySource } from './recoveryReadOwnerPort'
 import { reserveApply, planFrameUpdate, commitFramePlan, cancelPlan, cancelReservation, dropFrame, pinPending, dropPending, pendingMatches,
-  type PreparedBatch, type ApplyReservation, type FramePlan, type FrameLease, type PendingLease } from './sourceCopyResources'
+  readFrameRecoverySources, type PreparedBatch, type ApplyReservation, type FramePlan, type FrameLease, type PendingLease } from './sourceCopyResources'
 interface SourceCopyApply { readonly preparation: object; readonly batch: PreparedBatch }
 
 /** Local read capabilities only. Public fields cannot reconstruct ownership. */
@@ -245,6 +246,7 @@ class GroupController implements SyncedGroupController {
   private serverRedo: ServerRedo[] = []
   private cutServerRedo = false
   private pending: Pending | null = null
+  private recoveryAccepted: { method: 'updateSyncedBlockGroup' | 'restoreSyncedGroupOperation'; input: SyncedUpdateGroupInput | SyncedRestoreGroupInput; ack: SyncedGroupSaved } | null = null
   private queue: Promise<void> = Promise.resolve()
   private historyBusy = false
   private workspaceInvalid = false
@@ -263,6 +265,20 @@ class GroupController implements SyncedGroupController {
       phase: 'clean', incoming: null, failure: null, error: null, pending: null, composingInstanceIds: [],
       canUndo: snapshot.history.undoToken !== null, canRedo: snapshot.history.redoToken !== null })
     this.currentEndpoint = this.baselineEndpoint(this.state.working, 0, this.state.snapshot)
+    recoveryGroupPorts.set(this, () => {
+      const pending = this.pending
+      return { identity: this, state: this.state, replay: {
+        kind: 'knowbook-canonical-recovery-data', version: 1, snapshot: structuredClone(this.state.snapshot),
+        readSource: this.readOwner ? readControllerRecoverySource(this.readOwner) : null,
+        accepted: structuredClone(this.recoveryAccepted),
+        frames: this.frames.map(frame => ({ before: structuredClone(frame.before), after: structuredClone(frame.after),
+          ...(frame.bindingClaims === undefined ? {} : { bindingClaims: structuredClone(frame.bindingClaims) }),
+          copySources: frame.copyLease ? readFrameRecoverySources(frame.copyLease) : [],
+          instance: { ...frame.instance }, transactionId: frame.transactionId, sequence: frame.sequence })) }, pending: pending ? {
+        method: pending.kind === 'content' ? 'updateSyncedBlockGroup' : 'restoreSyncedGroupOperation',
+        input: structuredClone(pending.input), submitted: structuredClone(pending.kind === 'content'
+          ? pending.frame.after : syncedCanonicalEdits(pending.before.blocks)) } : null }
+    })
     const flush = this.flush
     const cleanBaseline = () => !this.frames.length && !this.pending && !this.historyBusy && !this.compositions.size
       && !this.state.dirty && !this.state.pending && !this.state.composingInstanceIds.length && !this.state.incoming
@@ -637,6 +653,8 @@ class GroupController implements SyncedGroupController {
       }
     }
     if (this.historyBookmarks.size > 256) this.historyBookmarks.delete(this.historyBookmarks.keys().next().value!)
+    this.recoveryAccepted = { method: pending.kind === 'content' ? 'updateSyncedBlockGroup' : 'restoreSyncedGroupOperation',
+      input: structuredClone(pending.input), ack: structuredClone(result) }
     this.pending = null
     if (pending.kind === 'history') {
       if (result.status === 'saved') this.expireEndpoints()
@@ -810,6 +828,23 @@ export interface SyncedWorkspaceController {
   dispose: () => boolean
 }
 
+export interface SyncedRecoveryControllerCapture {
+  identity: object
+  state: SyncedGroupDraftState
+  replay: unknown
+  pending: { method: 'updateSyncedBlockGroup' | 'restoreSyncedGroupOperation'; input: SyncedUpdateGroupInput | SyncedRestoreGroupInput;
+    submitted: SyncedCanonicalEdit[] } | null
+}
+const recoveryGroupPorts = new WeakMap<SyncedGroupController, () => SyncedRecoveryControllerCapture>()
+const recoveryWorkspacePorts = new WeakMap<SyncedWorkspaceController, () => SyncedRecoveryControllerCapture[]>()
+/** This reads the actual registry, including controllers without mounted
+ * occurrences. A caller list or public getSnapshot cannot stand in for it. */
+export function captureSyncedWorkspaceRecovery(workspace: SyncedWorkspaceController): SyncedRecoveryControllerCapture[] {
+  const port = recoveryWorkspacePorts.get(workspace)
+  if (!port) throw new Error('The actual recovery workspace is unavailable')
+  return port()
+}
+
 const workspaces = new WeakMap<SyncedBlocksApi, SyncedWorkspaceController>()
 export interface SyncedWorkspaceFlushOptions { shouldContinue?: () => boolean }
 const groupFlushPorts = new WeakMap<GroupController, {
@@ -884,10 +919,18 @@ export function getSyncedWorkspaceController(api: SyncedBlocksApi, options: Sync
     releaseClean: id => { const group = groups.get(id); if (!group?.canRelease() || reads.has(id)) return false; group.releaseReadOwner(); return groups.delete(id) },
     dispose: () => {
       if (reads.size || [...groups.values()].some(group => !group.canRelease())) return false
-      disposed = true; unsubscribe(); for (const group of groups.values()) group.releaseReadOwner(); groups.clear(); workspaces.delete(api); workspaceFlushPorts.delete(workspace); return true
+      disposed = true; unsubscribe(); for (const group of groups.values()) group.releaseReadOwner(); groups.clear(); workspaces.delete(api); workspaceFlushPorts.delete(workspace); recoveryWorkspacePorts.delete(workspace); return true
     }
   }
   workspaces.set(api, workspace)
+  recoveryWorkspacePorts.set(workspace, () => {
+    if (disposed || reads.size) throw new Error('Shared body reads are still pending')
+    return [...groups.values()].map(group => {
+      const port = recoveryGroupPorts.get(group)
+      if (!port) throw new Error('A shared body recovery producer is unavailable')
+      return port()
+    })
+  })
   workspaceFlushPorts.set(workspace, options => {
     let requestedContinue: SyncedWorkspaceFlushOptions['shouldContinue']
     try { requestedContinue = options.shouldContinue; if (requestedContinue !== undefined && typeof requestedContinue !== 'function') return Promise.resolve(false) }

@@ -1,7 +1,8 @@
+import { decodeSyncedOperationWithHeadingTitle3Owned } from './synced-heading-title3-read'
 import { createHash, randomUUID } from 'node:crypto'
 import { assertSyncedEditingFenceOwned } from './synced-editing-fence'
 import type Database from 'better-sqlite3'
-import { decodeSyncedOperationAck, type SyncedMainOperationResult } from './synced-host-operation-receipt'
+import { type SyncedMainOperationResult } from './synced-host-operation-receipt'
 import type { SyncedCanonicalEdit, SyncedCanonicalWire, SyncedFailure, SyncedGroupMutationResult, SyncedGroupSaved,
   SyncedGroupSnapshot, SyncedGroupWire, SyncedOperationResult, SyncedRestoreGroupInput,
   SyncedUpdateGroupInput } from '../../shared/synced-blocks'
@@ -280,6 +281,6 @@ export function getSyncedOperation(db: Database.Database, input: unknown): Synce
   const id = validateSyncedOperationLookupInput(input)
   return ownedTransaction<SyncedOperationResult>(db, () => {
     const row = readSyncedGroupOperationRow(db, id)
-    return row ? { status: 'committed', result: { ...decodeSyncedOperationAck(row), replayed: true } } : { status: 'unknown' }
+    return row ? { status: 'committed', result: { ...decodeSyncedOperationWithHeadingTitle3Owned(db, row), replayed: true } } : { status: 'unknown' }
   }, false)
 }

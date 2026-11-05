@@ -1,5 +1,10 @@
+import { projectSyncedHostHeadings2 } from './synced-heading-projection2'
+import { captureSyncedMetadataReadBaselineOwned2, readSyncedMetadataCaptureRecordOwned2, SYNCED_METADATA_BASELINE2_PREFIX } from './synced-metadata-capture-record2'
+import { HEADING_CREATE_BIRTH2_PREFIX, HEADING_CREATE_BIRTH2_OPERATION_KIND, hashSyncedHeadingCreateBirthCompanion2,
+  hashSyncedHeadingCreateBirthJournal2, decodeSyncedHeadingCreateBirthOperation2, type HeadingCreateBirthCompanion2 } from './synced-heading-create-birth-codec2'
+import { readSyncedHeadingCreateBirthOriginalOwned2, decodeMainHostOperationWithHeadingBirthOwned2 } from './synced-heading-create-birth-read2'
 import { hasSyncedRemoteObservationForCreate } from './synced-remote-observation-read'
-import { assertSyncedEditingFenceOwned } from './synced-editing-fence'
+import { assertSyncedEditingFenceOwned, hasSyncedHeadingBirthCreateFenceOwned2 } from './synced-editing-fence'
 import { readSyncedExchangeHostCut } from './synced-exchange-host-cut'
 import { readSyncedRecoveryHostCut } from './synced-recovery-boundary-read'
 import { randomUUID } from 'node:crypto'
@@ -14,7 +19,7 @@ import { getMarkdownHeadingRewrites, getMarkdownHeadingTargets } from '../../sha
 import { BlockIdentityRepository } from './block-identities'
 import { getSyncedGroupSnapshots, getSyncedHostHistory } from './synced-blocks-read'
 import { readSyncedGroupOperationRow } from './synced-group-operation-receipt'
-import { decodeMainHostOperationAck, validateHostOperationAck, validateHostCreateOperationAck, type SyncedMainHostSuccess } from './synced-host-operation-receipt'
+import { validateHostOperationAck, validateHostCreateOperationAck, type SyncedMainHostSuccess } from './synced-host-operation-receipt'
 import { hostJson, readStrictHostDocument, type StrictHostDocument, type HostContent } from './synced-host-document-read'
 import { decodeHostJournal, encodeHostJournal, hostEncode, hostEqual, hostHash, hostReferencedGroups,
   sameHostContent, hostJournalKind, type HostBirth, type HostFinalInput, type HostJournal, type HostSide } from './synced-host-journal'
@@ -66,7 +71,7 @@ function replay(db: Database.Database, operationId: string, requestHash: string)
   if (!row) return null
   if (!/^[a-f0-9]{64}$/.test(row.request_hash)) throw new Error('宿主操作请求哈希损坏。')
   if (row.request_hash !== requestHash) throw new Refused({ status: 'idempotency-mismatch' })
-  return { ...decodeMainHostOperationAck(row), replayed: true }
+  return { ...decodeMainHostOperationWithHeadingBirthOwned2(db, row), replayed: true }
 }
 function receipt(db: Database.Database, result: SyncedStructureApplied, requestHash: string, now: string): SyncedStructureApplied {
   const exact = validateHostOperationAck(result, result.operationId)
@@ -548,6 +553,87 @@ function createReceipt(db: Database.Database, value: SyncedHostCreateApplied, re
     hostEncode({ kind: 'synced-host-create-operation', version: 1, result: exact }), now)
   return exact
 }
+function headingCreateNamespace(host:StrictHostDocument) {
+  const headings=projectSyncedHostHeadings2(host,new Map(),new Map())
+  const facts={documentId:host.detail.id,createdAt:host.createdAt,parentId:host.parentId,sortOrder:host.sortOrder,
+    title:host.content.title,summary:host.content.summary,blocks:host.content.blocks,births:[...host.births]}
+  const namespaceHash=hostHash({documentId:host.detail.id,createdAt:host.createdAt,path:host.detail.path,
+    contentHash:hostHash(host.content),births:[...host.births],instances:[],headings})
+  return{host:facts,path:host.detail.path,updatedAt:host.detail.updatedAt,instances:[],headings,namespaceHash}
+}
+type PreparedHeadingCreateBirth = {
+  covered: HeadingCreateBirthCompanion2['covered']
+  namespaces: Map<string, ReturnType<typeof headingCreateNamespace>>
+}
+/** Only this private fresh-create branch supplies candidate/shape/targets.
+ * An old ACK, caller map or a matching current slug never enters this factory. */
+function prepareHeadingCreateBirth(db: Database.Database, input: HostCreateInput, candidate: SyncedGroupWire,
+  shape: ReturnType<typeof planSyncedHostCreate>, sourceBindings: ReturnType<typeof captureSyncedCreateBindings>,
+  all: Hosts): PreparedHeadingCreateBirth | null {
+  if (!hasSyncedHeadingBirthCreateFenceOwned2(db, input)) return null
+  const projections = new Map(projectSyncedCreateLinks(shape, captureSyncedCreateSourceFacts(input.hostsWorkingBefore[0].workingBefore.blocks).links)
+    .map(item => [createPhysicalKey(item.destination), item]))
+  const sources = new Map(sourceBindings.map(item => [createPhysicalKey(item.key), item]))
+  const covered: HeadingCreateBirthCompanion2['covered'] = [], namespaces = new Map<string, ReturnType<typeof headingCreateNamespace>>()
+  for (const binding of candidate.bindings) {
+    const target = binding.target
+    if (target.kind !== 'heading' || target.state !== 'live' || target.documentId === candidate.origin.documentId) continue
+    const host = all.get(target.documentId)
+    if (!host || host.content.blocks.some(block => block.type === 'synced-block')) continue
+    let namespace=namespaces.get(host.detail.id)
+    if(!namespace){namespace=headingCreateNamespace(host);namespaces.set(host.detail.id,namespace)}
+    const matches=namespace.headings.filter(item=>item.slug===target.slug)
+    if (matches.length !== 1 || matches[0].location.kind !== 'ordinary') continue
+    const projection = projections.get(createPhysicalKey(binding)), source = projection && sources.get(createPhysicalKey(projection.source))
+    if (!projection || !source || !hostEqual(source.target, target)) throw new Error('Fresh heading Key lacks its actual original create projection.')
+    const namespaceHash=namespace.namespaceHash
+    covered.push({ sourceKey: projection.source, canonicalKey: { blockId: binding.blockId, from: binding.from, to: binding.to,
+      raw: binding.raw, syntax: binding.syntax }, storedTarget: target, namespaceHash, heading: matches[0] })
+  }
+  return covered.length ? { covered, namespaces } : null
+}
+function readHistoricalHeadingCreatePins(db:Database.Database,row:SyncedHostHistoryBranchRow):HeadingCreateBirthCompanion2['creationPins'] {
+  const journal=decodeHostCreateJournal(row)
+  const pins=db.prepare('SELECT group_id,kind,pin_id,created_at FROM synced_group_pins WHERE kind=? AND pin_id=? ORDER BY group_id')
+    .all('host-history',row.id) as HeadingCreateBirthCompanion2['creationPins']
+  const expected=new Set(journal.groups.map(group=>group.groupId)),seen=new Set(pins.map(pin=>pin.group_id))
+  if(seen.size!==pins.length||pins.length!==expected.size||pins.some(pin=>!expected.has(pin.group_id)
+    ||pin.kind!=='host-history'||pin.pin_id!==row.id||pin.created_at!==row.created_at))throw new Error('Actual initial create pin closure differs.')
+  return pins
+}
+/** New immutable business envelope points BACK to the birth material. This is
+ * separate from the unchanged old bare-create receipt and its original hash. */
+function headingCreateReceipt(db: Database.Database, raw: SyncedHostCreateApplied, requestHash: string, now: string,
+  prepared: PreparedHeadingCreateBirth, journalRow: SyncedHostHistoryBranchRow,
+  workspace: { workspaceScope: string; recoveryEpoch: string }): SyncedHostCreateApplied {
+  const exact = validateHostCreateOperationAck(raw, raw.operationId), groupId = exact.createdLifecycle.groupId
+  const pointOwner = captureSyncedMetadataReadBaselineOwned2(db, groupId), point = readSyncedMetadataCaptureRecordOwned2(db, pointOwner)
+  if (point.kind !== 'synced-metadata2-read-baseline-record' || !point.pointHash) throw new Error('Fresh Key source point missing.')
+  for (const [documentId, expected] of prepared.namespaces) {
+    const actual = point.capture.namespaces.find(item => item.host.documentId === documentId)
+    if (!actual || !hostEqual(actual, expected)) throw new Error('External target heading namespace changed during its actual Key creation.')
+  }
+  const companion: HeadingCreateBirthCompanion2 = { kind: 'synced-heading-create-birth-companion', version: 1,
+    operationId: exact.operationId, requestHash, historyToken: exact.historyToken,
+    journalHash: hashSyncedHeadingCreateBirthJournal2(journalRow), workspaceScope: workspace.workspaceScope,
+    recoveryEpoch: workspace.recoveryEpoch, createdAt: now, groupWireHash: exact.createdLifecycle.activationHash,
+    resultHash: createRawHash(exact), sourcePoint: { key: SYNCED_METADATA_BASELINE2_PREFIX + point.pointHash,
+      recordHash: point.recordHash },
+    creationPins: readHistoricalHeadingCreatePins(db, journalRow), covered: prepared.covered }
+  const key = HEADING_CREATE_BIRTH2_PREFIX + exact.operationId
+  const envelope = { kind: HEADING_CREATE_BIRTH2_OPERATION_KIND, version: 1 as const, companionKey: key,
+    companionHash: hashSyncedHeadingCreateBirthCompanion2(companion), result: exact }
+  const operationRow = { client_operation_id: exact.operationId, request_hash: requestHash, result_json: hostEncode(envelope), created_at: now }
+  const companionRow = { key, value: hostEncode(companion), updated_at: now }
+  decodeSyncedHeadingCreateBirthOperation2(operationRow, companionRow, journalRow, point)
+  db.prepare('INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,?)').run(key, companionRow.value, now)
+  db.prepare('INSERT INTO synced_operations(client_operation_id,request_hash,result_json,created_at) VALUES(?,?,?,?)')
+    .run(operationRow.client_operation_id, requestHash, operationRow.result_json, now)
+  const original = readSyncedHeadingCreateBirthOriginalOwned2(db, exact.operationId)
+  if (!original || !hostEqual(original.result, exact)) throw new Error('Fresh heading business original did not independently read back.')
+  return original.result
+}
+
 function createLifeSide(db: Database.Database, journal: HostCreateJournal, token: string): CreatedLifecycleSide {
   if (isSyncedGroupLogicallyDeleted(db, journal.create.wire.id)) unsupported('lifecycle')
   const groupId = journal.create.wire.id, state = readSyncedGroupLifecycles(db, [groupId]).get(groupId)
@@ -608,6 +694,7 @@ function applyCreate(db: Database.Database, input: HostCreateInput, requestHash:
   const journal: HostCreateJournal = { input, persisted: persisted.map(side => ({ ...side, updatedAt: hosts.get(side.documentId)!.detail.updatedAt })), births: acceptedBirths,
     groups: dependencies, before, after, create: { wire: candidate, wireHash: createRawHash(candidate), selectedIds: shape.selectedIds, auxiliary: shape.auxiliary, instanceCreatedAt: birthMap.get(input.action.instanceId)!, sourceBindings } }
   const encoded = encodeHostCreateJournal(journal), row = { id: token, action_json: encoded.action, before_json: encoded.before, after_json: encoded.after, before_hash: encoded.beforeHash, after_hash: encoded.afterHash, created_at: now }
+  const headingBirth = prepareHeadingCreateBirth(db, input, candidate, shape, sourceBindings, all)
   decodeHostCreateJournal(row); prune(db, ids); insertHostJournal(db, row)
   db.prepare('INSERT INTO synced_groups(id,creation_id,created_at,origin_json,bindings_json,revision,topology_revision,history_cursor,history_position) VALUES(?,?,?,?,?,?,?,?,0)')
     .run(candidate.id, candidate.creationId, candidate.createdAt, hostEncode(candidate.origin), hostEncode(candidate.bindings), revision, topology, randomUUID())
@@ -617,7 +704,9 @@ function applyCreate(db: Database.Database, input: HostCreateInput, requestHash:
   for (const id of journal.create.selectedIds) db.prepare('INSERT OR IGNORE INTO document_block_routes(document_path,block_id) VALUES(?,?)').run(origin.pathAtCreation, id)
   assertSyncedStoredBindings(db, candidate.origin, candidate.blocks, candidate.bindings, candidate.id)
   appendHostHistory(db, ids, token, journal.groups, now); assertHostChain(db, ids[0])
-  return createReceipt(db, createResult(db, input.clientOperationId, token, before, required, affected, journal), requestHash, now)
+  const created = createResult(db, input.clientOperationId, token, before, required, affected, journal)
+  return headingBirth ? headingCreateReceipt(db, created, requestHash, now, headingBirth, row, workspace)
+    : createReceipt(db, created, requestHash, now)
 }
 function writeCreateOwnership(db: Database.Database, permit: CreateWritePermit): void {
   const { journal, direction } = permit, group = journal.create.wire, documentId = journal.input.action.documentId, undo = direction === 'undo'

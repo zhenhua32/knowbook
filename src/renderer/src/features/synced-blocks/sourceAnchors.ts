@@ -152,6 +152,13 @@ export function createSyncedSourceSnapshot(input: SyncedSourceSnapshotInput): Sy
   })) })
   return result
 }
+/** An ordinary cold Source can be syntactically incomplete. Only an actual
+ * owned empty opening may seed this empty current reference side; no marker,
+ * new reference or historical identity can be minted by the raw buffer. */
+export function restoreEmptySyncedSourceSnapshot(opening: SyncedSourceSnapshot, source: string): SyncedSourceSnapshot {
+  if (!ownedSnapshots.has(opening) || opening.anchors.length || typeof source !== 'string') return fail('identity', 'Actual empty Source opening required')
+  return snapshot({ sessionKey: opening.sessionKey, sourceDocumentId: opening.sourceDocumentId, source, anchors: [] })
+}
 
 function edits(source: string, changes: readonly MarkdownSourceChange[]): MarkdownSourceChange[] {
   dense(changes)

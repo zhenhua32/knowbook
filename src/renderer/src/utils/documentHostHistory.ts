@@ -1,12 +1,12 @@
 import type { DocumentBlockDraft } from '@shared/contracts'
 import type { SyncedHostHistoryTransition } from '../features/synced-blocks/hostHistoryTypes'
 import type { SyncedHostSourceCurrent } from '../features/synced-blocks/SyncedHostSourceDialog'
-import { restoreCanonicalHostHistory } from '../features/synced-blocks/inlineBridge'
+import { restoreCanonicalHostHistory, canonicalInlineInputLocked } from '../features/synced-blocks/inlineBridge'
 import { areDocumentDraftBlocksEqual } from './documentDraftComparison'
 import type { EditorHistoryBookmark, captureAsyncHistoryFocusPermission } from './editorHistoryFocus'
 import type { BlockMoveCompletionContext } from './blockMoveActions'
 import type { SyncedStructureApplied } from '@shared/synced-blocks'
-import { normalizeDraftBlocks } from './draftTreeNormalization'
+import { normalizeDraftBlocks, validateBlockTreeStructure } from './draftTreeNormalization'
 import { toDraftBlock } from './draftBlockShape'
 
 type Ref<T> = { current: T }
@@ -16,6 +16,34 @@ export type DocumentHostAdoptContext = {
   hooks: readonly [current: () => SyncedHostSourceCurrent | null, historyBusy: Ref<boolean>, clearTimer: () => void,
     checkpoint: () => void, commit: (blocks: DocumentBlockDraft[], bookmark?: EditorHistoryBookmark | null, marker?: SyncedHostHistoryTransition) => void,
     pending: Ref<DocumentBlockDraft[] | null>]
+}
+export type DocumentLocalDraftContext = {
+  editor: BlockMoveCompletionContext
+  hooks: readonly [current: () => SyncedHostSourceCurrent | null, composing: Ref<boolean>, pendingSave: Ref<unknown>, clearTimer: () => void, checkpoint: () => void]
+}
+/** Source and recovery use the same actual hook context through the tiny lazy
+ * bridge. Recovery preserves exact invalid W; normal Source retains its final
+ * local projection check. Neither route creates a Main write or a new lease. */
+export function adoptDocumentLocalDraft(context: DocumentLocalDraftContext, before: SyncedHostSourceCurrent,
+  after: { documentId?: string; title: string; summary: string; blocks: DocumentBlockDraft[] }, recovery: boolean): boolean {
+  const editor = context.editor, [readCurrent, composing, pendingSave, clearTimer, checkpoint] = context.hooks
+  const current = readCurrent(), persisted = editor.selected.current
+  if (!editor.mounted.current || canonicalInlineInputLocked() || !current || editor.busy.current
+    || current.hostSession !== before.hostSession || current.editSequence !== before.editSequence
+    || current.host.documentId !== before.host.documentId || current.host.expectedPersistedUpdatedAt !== before.host.expectedPersistedUpdatedAt
+    || current.host.workingBefore.title !== before.host.workingBefore.title || current.host.workingBefore.summary !== before.host.workingBefore.summary
+    || !areDocumentDraftBlocksEqual(current.host.workingBefore.blocks, before.host.workingBefore.blocks)
+    || [...current.host.workingBefore.blocks, ...after.blocks, ...(recovery ? [] : persisted?.blocks ?? [])].some(block => block.type === 'synced-block')) return false
+  if (recovery && (composing.current || pendingSave.current) || !recovery && (after.documentId !== current.host.documentId
+    || after.title !== before.host.workingBefore.title || after.summary !== before.host.workingBefore.summary)) return false
+  const blocks = recovery ? after.blocks.map(block => ({ ...block, tags: block.tags ? [...block.tags] : undefined,
+    markdownFormat: block.markdownFormat ? { ...block.markdownFormat } : undefined })) : normalizeDraftBlocks(after.blocks)
+  if (!recovery && !validateBlockTreeStructure(blocks).valid) return false
+  clearTimer(); checkpoint(); editor.blocks.current = blocks; editor.setBlocks(blocks)
+  if (recovery) {
+    editor.title.current = after.title; editor.summary.current = after.summary; editor.setTitle(after.title); editor.setSummary(after.summary)
+  }
+  return true
 }
 
 /** Synchronous local UI adoption, registered by the actual lazy inline runtime.
