@@ -619,15 +619,16 @@ export class QuickJsWasiPluginRealm implements NoNodePluginRuntimeInstance {
   }
 }
 
-let quickJsWasmPromise: Promise<Uint8Array> | null = null
+let quickJsWasmModulePromise: Promise<WebAssembly.Module> | null = null
 
-export function loadQuickJsWasm(): Promise<Uint8Array> {
-  if (!quickJsWasmPromise) {
+export function loadQuickJsWasm(): Promise<WebAssembly.Module> {
+  if (!quickJsWasmModulePromise) {
     const require = createRequire(import.meta.url)
     const wasmPath = require.resolve('quickjs-wasi/quickjs.wasm')
-    quickJsWasmPromise = readFile(wasmPath)
+    // Reuse the compiled code while each QuickJS VM instantiates its own memory.
+    quickJsWasmModulePromise = readFile(wasmPath).then(bytes => WebAssembly.compile(bytes))
   }
-  return quickJsWasmPromise
+  return quickJsWasmModulePromise
 }
 
 function getDataProperty(

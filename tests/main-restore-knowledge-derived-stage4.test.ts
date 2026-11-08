@@ -11,7 +11,7 @@ import { captureMixedRootKnowledgeConservationPlan3, readRootKnowledgePlanLocati
 import { prepareRootRestoreIdentityPlan3 } from '../src/main/database/restore-knowledge-identity3-read'
 import { prepareRootRestoreReferencePlan3 } from '../src/main/database/restore-knowledge-reference3-read'
 import { prepareRootRestorePhysicalStage3 } from '../src/main/database/restore-knowledge-stage3-physical'
-import { copyRestoreInventory, restoreInventory } from '../src/main/database/restore-safety-files'
+import { canonicalRestoreRoot, copyRestoreInventory, restoreInventory } from '../src/main/database/restore-safety-files'
 import { restoreSqliteFilename } from '../src/main/database/restore-safety-sqlite-path'
 import { canonicalSearchOccurrencesSql, registerCanonicalSearchFunctions } from '../src/main/database/workspace-search-occurrences'
 import { WorkspaceSearchRepository } from '../src/main/database/workspace-search'
@@ -50,8 +50,10 @@ test('actual private stage derives ordinary links and counts and independently r
     const reference = await prepareRootRestoreReferencePlan3(identity.plan, { originPolicy: 'isolate-incoming', anonymousValues: 'source' })
     const physical = await prepareRootRestorePhysicalStage3(reference.plan)
     const directory = join(physical.directory, 'database'), originalInventory = await restoreInventory(directory)
-    const beforeProbe = join(receiver.userDataRoot, 'derived-link-before-probe')
-    await copyRestoreInventory(directory, beforeProbe, originalInventory, receiver.userDataRoot)
+    // Stage directories use the canonical profile even when the fixture's TEMP contains an NTFS short name.
+    const probeRoot = await canonicalRestoreRoot(receiver.userDataRoot)
+    const beforeProbe = join(probeRoot, 'derived-link-before-probe')
+    await copyRestoreInventory(directory, beforeProbe, originalInventory, probeRoot)
     const original = readOnly(join(beforeProbe, 'knowbook.db'), db => ({
       body: db.prepare('SELECT content FROM blocks WHERE id=?').get(blockId),
       links: db.prepare('SELECT * FROM links WHERE source_document_id=?').all(documentId),
@@ -79,9 +81,9 @@ test('actual private stage derives ordinary links and counts and independently r
     await assert.rejects(readRootRestoreDerivedStage4({ kind: prepared.stage.kind }), /实际 Main 派生阶段句柄/)
 
     const derivedFile = join(prepared.directory, 'database', 'knowbook.db')
-    const outputProbe = join(receiver.userDataRoot, 'derived-link-after-probe')
+    const outputProbe = join(probeRoot, 'derived-link-after-probe')
     await copyRestoreInventory(join(prepared.directory, 'database'), outputProbe,
-      await restoreInventory(join(prepared.directory, 'database')), receiver.userDataRoot)
+      await restoreInventory(join(prepared.directory, 'database')), probeRoot)
     readOnly(join(outputProbe, 'knowbook.db'), db => {
       const links = db.prepare('SELECT target_document_id,label FROM links WHERE source_document_id=?').all(documentId) as Array<{ target_document_id: string; label: string }>
       assert.equal(links.length, 1, 'Two authored occurrences share one actual outgoing relation')

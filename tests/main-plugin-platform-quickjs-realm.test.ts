@@ -9,6 +9,7 @@ import type {
 } from '../src/shared/plugin-platform.ts'
 import {
   buildPluginRevisionPackage,
+  loadQuickJsWasm,
   QuickJsWasiPluginRealm
 } from '../src/main/plugin-platform/index.ts'
 
@@ -306,6 +307,12 @@ test('QuickJS module loader rejects Node and undeclared standard module imports'
     package: unsupported,
     callCapability: async () => null
   }), /is not installed/)
+})
+
+test('QuickJS shares the compiled default WASM module', async () => {
+  const [first, second] = await Promise.all([loadQuickJsWasm(), loadQuickJsWasm()])
+  assert.ok(first instanceof WebAssembly.Module)
+  assert.strictEqual(first, second)
 })
 
 function manifest(overrides: Record<string, unknown> = {}): Record<string, unknown> {
