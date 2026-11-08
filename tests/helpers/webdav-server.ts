@@ -13,7 +13,7 @@ interface WebDavServerOptions {
 }
 
 /** An HTTP fixture, deliberately independent of the sync implementation. */
-export async function createWebDavServer() {
+export async function createWebDavServer({ keepAliveTimeout }: { keepAliveTimeout?: number } = {}) {
   const files = new Map<string, Buffer>()
   const requests: Array<{ method: string; path: string; bytes: number }> = []
   const directories = new Set(['/'])
@@ -67,6 +67,7 @@ export async function createWebDavServer() {
       res.end(method === 'HEAD' ? undefined : existing)
     } catch { res.writeHead(500).end() }
   })
+  if (keepAliveTimeout !== undefined) server.keepAliveTimeout = keepAliveTimeout
   const port = await listenOnFetchSafePort(server)
   return { url: `http://127.0.0.1:${port}/`, files, requests,
     setHook: (next: typeof hook) => { hook = next },

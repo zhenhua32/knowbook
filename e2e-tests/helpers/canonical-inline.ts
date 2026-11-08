@@ -52,7 +52,16 @@ export async function withCanonicalInlineApp(info: TestInfo, run: (fixture: {
       const prior = context()
       await closeElectronApp(prior, { preserveUserData: true })
       current = null
-      current = await launchElectronApp({}, { userDataRoot: profile, editorMode: 'markdown' })
+      const launch = () => launchElectronApp({}, { userDataRoot: profile, editorMode: 'markdown' })
+      try {
+        current = await launch()
+      } catch (error) {
+        // The original host has exited, but Windows can briefly hold the profile lock.
+        if (process.platform !== 'win32' || !(error instanceof Error)
+          || !error.message.includes('Lock file can not be created! Error code: 32')) throw error
+        await new Promise(resolve => setTimeout(resolve, 250))
+        current = await launch()
+      }
     } })
     failed = false
   } finally {
@@ -70,7 +79,7 @@ export function inlineInstance(page: Page, instanceId: string): Locator {
 }
 
 export async function openInlineHost(page: Page, host: CanonicalHostBody): Promise<void> {
-  await page.locator('.tree-button', { hasText: host.title }).first().click()
+  await page.locator('.tree-button', { hasText: host.title }).first().click({ noWaitAfter: true })
   await expect(page.locator('.document-header-title')).toHaveText(host.title)
 }
 

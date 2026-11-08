@@ -74,7 +74,8 @@ async function publishDocumentTombstone(server: Awaited<ReturnType<typeof create
 }
 
 test('production WebDAV preserves legacy data, joins a fresh independent profile and resolves offline competition @electron', async () => {
-  const server = await createWebDavServer(), receiverRoot = mkdtempSync(join(tmpdir(), 'kb-webdav-receiver-'))
+  // Keep the loopback connection available while Main revalidates the SQLite snapshot.
+  const server = await createWebDavServer({ keepAliveTimeout: 0 }), receiverRoot = mkdtempSync(join(tmpdir(), 'kb-webdav-receiver-'))
   let sender: ElectronAppContext | null = null, receiver: ElectronAppContext | null = null
   try {
     sender = await launchElectronApp({}, { editorMode: 'markdown' })
@@ -237,7 +238,14 @@ test('production WebDAV preserves legacy data, joins a fresh independent profile
     await keepDelete.click()
     await confirmDelete.click()
     await expect(readDeletions).toBeEnabled()
-    expect(await receiver.page.evaluate(id => window.knowbook.getDocumentDetail(id), edited)).toBeNull()
+    const finalDeletion = await receiver.page.evaluate(async id => {
+      const [document, status] = await Promise.all([
+        window.knowbook.getDocumentDetail(id),
+        window.knowbook.getWebDavSyncStatus()
+      ])
+      return { document, phase: status.phase, message: status.message }
+    }, edited)
+    expect(finalDeletion.document, `WebDAV deletion status (${finalDeletion.phase}): ${finalDeletion.message}`).toBeNull()
     expect(server.files.get('/protocol5-test/manifest.json')).toEqual(tombstone)
   } finally {
     try { await closeElectronApp(receiver) }

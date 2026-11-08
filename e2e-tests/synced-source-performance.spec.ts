@@ -46,7 +46,7 @@ test('a 4000-block synced source meets frame budgets and survives a real save an
     const apply = page.getByRole('button', { name: uiText('Apply changes', '应用更改'), exact: true })
     await measureNextFrame(apply, 'click', 'source-apply-frame')
     const applyStarted = performance.now()
-    await apply.click()
+    await apply.click({ noWaitAfter: true })
     await expect(editor).toHaveCount(0)
     await expect.poll(async () => (await read())?.[0].content, { timeout: 30_000 }).toBe(`**${edited.get(0)}**`)
     const applyAndReadBackMs = performance.now() - applyStarted
