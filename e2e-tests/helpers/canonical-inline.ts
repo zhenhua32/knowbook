@@ -23,9 +23,11 @@ export async function prepareCanonicalInlineProfile(bodyBlocks = 2): Promise<{ p
   const executable = join(electronRoot, 'dist', readFileSync(join(electronRoot, 'path.txt'), 'utf8').trim())
   const env: NodeJS.ProcessEnv = { ...process.env, ELECTRON_RUN_AS_NODE: '1', KNOWBOOK_USER_DATA_DIR: profile }
   delete env.ELECTRON_RENDERER_URL
+  // The 4,000-block fixture uses real Main writes before any editor timing starts.
+  const seedTimeout = bodyBlocks === 4000 ? 90_000 : 30_000
   try {
     await runFile(executable, ['--import', 'tsx', join(helperRoot, 'canonical-inline-seed.ts'), profile, String(bodyBlocks)], {
-      cwd: repoRoot, env, windowsHide: true, timeout: 30_000, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8'
+      cwd: repoRoot, env, windowsHide: true, timeout: seedTimeout, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8'
     })
     const seed = JSON.parse(readFileSync(join(profile, 'canonical-inline-seed.json'), 'utf8')) as CanonicalInlineSeed
     if (seed.version !== 1 || seed.hosts.length !== 2 || seed.instanceIds.length !== 3 || !seed.primaryId.includes('\0')) throw new Error('Incomplete actual Main seed metadata')
