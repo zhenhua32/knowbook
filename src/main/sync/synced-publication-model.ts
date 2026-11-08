@@ -10,6 +10,7 @@ import { parseDatabaseViewPayload, mapDatabaseViewReferences, serializeDatabaseV
 import { parseStrictJson } from '../../shared/strictJson'
 import { SYNC_TABLE_COLUMNS, SYNC_TABLES, type SyncDatabases, type SyncRow, type SyncTable } from './model'
 import { collectSyncedBindingOccurrences } from './synced-binding-occurrences'
+import type { WebDavSyncConfig } from '../../shared/webdav-sync'
 
 export const PUBLICATION_RECORD_MAX_BYTES = 16 * 1024 * 1024
 export type SyncedPublicationErrorCode = 'invalid' | 'unsupported' | 'unavailable' | 'asset' | 'spool' | 'transport' | 'database'
@@ -52,11 +53,19 @@ const physicalKey = (value: { blockId: string; from: number; to: number; raw: st
   publicationJson([value.blockId, value.from, value.to, value.raw, value.syntax])
 
 export type InitialPublicationRecord = SyncedPortableHostRecord | SyncDatabases | SyncedGroupWire
+export interface Protocol5ManifestHistory { version: 1; targetFingerprint: string; generation: string; previousHash: string | null }
 export interface SyncedInitialManifest5 {
   version: 5
   workspaceId: string
   entries: Record<string, string>
   syncedInstances: Array<{ documentId: string; instanceId: string; groupId: string; groupHash: string }>
+  history?: Protocol5ManifestHistory
+}
+export function protocol5HistoryTarget(target: Pick<WebDavSyncConfig, 'url' | 'username' | 'directory'>): string {
+  return publicationHash(publicationJson(['webdav-manifest5-history.v1', target.url, target.username, target.directory]))
+}
+export function protocol5HistoryLink(targetFingerprint: string, operationId: string, previousHash: string | null): Protocol5ManifestHistory {
+  return { version: 1, targetFingerprint, previousHash, generation: publicationHash(publicationJson([targetFingerprint, operationId, previousHash])) }
 }
 export interface PublicationObjectDescriptor { key: string; path: string; hash: string; bytes: number }
 export interface PublicationAssetDescriptor { path: string; hash: string; bytes: number; names: string[] }
@@ -88,7 +97,7 @@ export function decodePublicationJson(bytes: Uint8Array, maxBytes = PUBLICATION_
   }
 }
 export function validateInitialManifest5(value: unknown): SyncedInitialManifest5 {
-  assertSyncedShape(value, ['version', 'workspaceId', 'entries', 'syncedInstances'])
+  assertSyncedShape(value, ['version', 'workspaceId', 'entries', 'syncedInstances'], ['history'])
   if (value.version !== 5) return publicationInvalid('不是 Manifest5。')
   const workspaceId = uuid(value.workspaceId)
   if (!value.entries || typeof value.entries !== 'object' || Array.isArray(value.entries)) return publicationInvalid('entries 不是闭集对象。')
@@ -105,7 +114,15 @@ export function validateInitialManifest5(value: unknown): SyncedInitialManifest5
   }), item => item.instanceId)
   const sorted = [...syncedInstances].sort((a, b) => publicationCompare(a.documentId, b.documentId) || publicationCompare(a.instanceId, b.instanceId))
   if (publicationJson(sorted) !== publicationJson(syncedInstances)) return publicationInvalid('实例依赖没有按准确身份排序。')
-  return { version: 5, workspaceId, entries: Object.fromEntries(entries), syncedInstances }
+  const manifest: SyncedInitialManifest5 = { version: 5, workspaceId, entries: Object.fromEntries(entries), syncedInstances }
+  if (Object.hasOwn(value, 'history')) {
+    const history = value.history
+    assertSyncedShape(history, ['version', 'targetFingerprint', 'generation', 'previousHash'])
+    if (history.version !== 1) return publicationInvalid('协议5历史清单版本无效。')
+    manifest.history = { version: 1, targetFingerprint: hash(history.targetFingerprint), generation: hash(history.generation),
+      previousHash: history.previousHash === null ? null : hash(history.previousHash) }
+  }
+  return manifest
 }
 export function validateInitialRecord(value: unknown, key: string): InitialPublicationRecord {
   if (!value || typeof value !== 'object' || !('kind' in value)) return publicationInvalid('对象记录无效。')

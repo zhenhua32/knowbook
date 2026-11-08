@@ -4,8 +4,7 @@ import { validateCoverageCapsuleReference, validateCoverageRootReference } from 
 import { reopenActualFirstRequiredSqlDagWithInitialMaterial, readActualFirstRequiredSqlDagMaterial, type ActualFirstRequiredSqlDag } from './restore-knowledge-mixed-required-dag-read'
 import { importMixedOriginBundleOriginal, readMountedMixedOriginBundle, writeMixedOriginBundle, createMixedOriginVerificationProfile } from './restore-knowledge-mixed-origin-bundle-files'
 import { originBundleInvalid as bad } from './restore-knowledge-origin-bundle-model'
-import { mixedOriginBundleDirectories, mixedOriginBundleFiles, MIXED_ORIGIN_BUNDLE_MAX_DESCRIPTOR_BYTES } from './restore-knowledge-mixed-origin-bundle-model'
-import { readCapsule2AssetManifest } from './restore-knowledge-capsule2-assets-files'
+import { mixedOriginBundleDirectories, mixedOriginBundleFiles } from './restore-knowledge-mixed-origin-bundle-model'
 import { originCatalogLocalPath } from './restore-knowledge-origin-bundle-files'
 import { join } from 'node:path'
 import { requiredDagCapsuleLocator } from './restore-knowledge-required-dag-model'
@@ -26,13 +25,17 @@ async function certify(mounted:Mounted) {
   const last=await readMountedMixedOriginBundle(mounted.profileRoot,mounted.operationId,mounted.mountId,mounted.original.descriptorHash)
   const handle:PreparedMixedOriginBundle=Object.freeze({kind:'prepared-mixed-origin-bundle'})
   const entry={...last,dag,material,verificationProfile};bundles.set(handle,entry)
-  return Object.freeze({bundle:handle,value:qualifiedMaterial(entry,material)})
+  return Object.freeze({bundle:handle,value:qualifiedMaterial(entry,material),original:last.original})
 }
 /** Initial data comes from this same complete import certification. Later
  * consumption still requires readPreparedMixedOriginBundle's full reread. */
-export async function capturePreparedMixedOriginBundle(input:{profileRoot:string;operationId:string;sourceDirectory:string}) {
+export async function capturePreparedMixedOriginBundleWithOriginal(input:{profileRoot:string;operationId:string;sourceDirectory:string}) {
   const row=capsuleRecord(input,['profileRoot','operationId','sourceDirectory'])
   return certify(await importMixedOriginBundleOriginal(row.profileRoot as string,row.operationId as string,row.sourceDirectory as string))
+}
+export async function capturePreparedMixedOriginBundle(input:Parameters<typeof capturePreparedMixedOriginBundleWithOriginal>[0]) {
+  const {bundle,value}=await capturePreparedMixedOriginBundleWithOriginal(input)
+  return Object.freeze({bundle,value})
 }
 export async function importPreparedMixedOriginBundle(input:Parameters<typeof capturePreparedMixedOriginBundle>[0]) {
   return (await capturePreparedMixedOriginBundle(input)).bundle
@@ -42,17 +45,22 @@ export async function importPreparedMixedOriginBundle(input:Parameters<typeof ca
  * profile and runs both real readers before exposing the snapshot. */
 export async function captureReopenedPreparedMixedOriginBundle(input:{profileRoot:string;operationId:string;mountId:string;expectedDescriptorHash:string}) {
   const row=capsuleRecord(input,['profileRoot','operationId','mountId','expectedDescriptorHash'])
-  return certify(await readMountedMixedOriginBundle(row.profileRoot as string,row.operationId as string,row.mountId as string,durableSqlDagHash(row.expectedDescriptorHash)))
+  const {bundle,value}=await certify(await readMountedMixedOriginBundle(row.profileRoot as string,row.operationId as string,row.mountId as string,durableSqlDagHash(row.expectedDescriptorHash)))
+  return Object.freeze({bundle,value})
 }
 export async function reopenPreparedMixedOriginBundle(input:Parameters<typeof captureReopenedPreparedMixedOriginBundle>[0]) {
   return (await captureReopenedPreparedMixedOriginBundle(input)).bundle
 }
-export async function readPreparedMixedOriginBundle(handle:PreparedMixedOriginBundle) {
-  const entry=bundles.get(handle);if(!entry)return bad('不是Main真实mixed bundle私有句柄')
+async function readVerifiedMixedBundle(entry:Saved) {
   const before=await readMountedMixedOriginBundle(entry.profileRoot,entry.operationId,entry.mountId,entry.original.descriptorHash)
   const material=await readActualFirstRequiredSqlDagMaterial(entry.dag)
   if(capsuleJson(material)!==capsuleJson(entry.material)||capsuleJson(before.original.descriptor)!==capsuleJson(entry.original.descriptor))return bad('mixed真实material或mounted原catalog变化')
-  await readMountedMixedOriginBundle(entry.profileRoot,entry.operationId,entry.mountId,entry.original.descriptorHash)
+  const mounted=await readMountedMixedOriginBundle(entry.profileRoot,entry.operationId,entry.mountId,entry.original.descriptorHash)
+  return {material,mounted}
+}
+export async function readPreparedMixedOriginBundle(handle:PreparedMixedOriginBundle) {
+  const entry=bundles.get(handle);if(!entry)return bad('不是Main真实mixed bundle私有句柄')
+  const {material}=await readVerifiedMixedBundle(entry)
   return qualifiedMaterial(entry,material)
 }
 function qualifiedMaterial(entry:Saved,material:Material) {
@@ -74,15 +82,14 @@ function qualifiedMaterial(entry:Saved,material:Material) {
  * accepted coverage or grants a native-profile interpretation to its SQL. */
 export async function readPreparedMixedOriginBundleOriginalInputs(handle:PreparedMixedOriginBundle) {
   const entry=bundles.get(handle);if(!entry)return bad('不是Main真实mixed bundle原件句柄')
-  const value=await readPreparedMixedOriginBundle(handle)
-  const mounted=await readMountedMixedOriginBundle(entry.profileRoot,entry.operationId,entry.mountId,entry.original.descriptorHash)
-  const original=mounted.original
+  const { material, mounted: { original } } = await readVerifiedMixedBundle(entry)
+  const value=qualifiedMaterial(entry,material)
   const descriptorPath=join(original.directory,'descriptor.json')
-  const descriptorText=await readCapsule2AssetManifest(descriptorPath,entry.profileRoot,MIXED_ORIGIN_BUNDLE_MAX_DESCRIPTOR_BYTES)
+  // The same post-SQL tree scan retained the verified raw descriptor bytes.
+  const descriptorText=original.descriptorText
   const descriptorBytes=Buffer.from(descriptorText,'utf8')
   const files=[{path:'descriptor.json',bytes:descriptorBytes.length,sha256:capsuleBytesHash(descriptorBytes),sourcePath:descriptorPath},
     ...mixedOriginBundleFiles(original.descriptor,original.workingTexts).map(file=>({...file,sourcePath:originCatalogLocalPath(original.directory,file.path)}))]
-  await readMountedMixedOriginBundle(entry.profileRoot,entry.operationId,entry.mountId,original.descriptorHash)
   return freezeCapsuleValue({profileRoot:entry.profileRoot,directory:original.directory,descriptor:original.descriptor,
     descriptorHash:original.descriptorHash,files,directories:mixedOriginBundleDirectories(original.descriptor,original.workingTexts),workingTexts:original.workingTexts,value,
     rootScope:'prepared-first-mixed-original-inputs' as const,acceptedCoverage:false as const,effective:false as const,permit:false as const})
@@ -125,9 +132,12 @@ export async function readPreparedMixedOriginalContentLocation3(handle: Prepared
  * packets/callbacks. Its actual SQL inputs must equal the original DAG's full
  * pinned material; the other public DAG readers retain their own rereads. */
 export async function readPreparedMixedOriginBundleContentPair3(handle: PreparedMixedOriginBundle) {
+  return (await readPreparedMixedOriginBundleContentAndWorkingPair5(handle)).pair
+}
+export async function readPreparedMixedOriginBundleContentAndWorkingPair5(handle: PreparedMixedOriginBundle) {
   const entry = bundles.get(handle); if (!entry) return bad('不是Main真实mixed bundle原件句柄')
-  const { readMixedOriginalContentPair3 } = await import('./restore-knowledge-qualified-originals')
-  const result = await readMixedOriginalContentPair3(handle), actual = result.originalPackage, original = actual.original
+  const { readMixedOriginalContentAndWorkingPair5 } = await import('./restore-knowledge-qualified-originals')
+  const result = await readMixedOriginalContentAndWorkingPair5(handle), actual = result.pair.originalPackage, original = actual.original
   const inputs = original.inputs.map(input => ({ capsule: input.binding.capsule, binding: input.binding, origin: input.origin, knowledge: input.knowledge }))
     .sort((a, b) => requiredDagCapsuleLocator(a.binding) < requiredDagCapsuleLocator(b.binding) ? -1 : 1)
   const material = { kind: 'actual-required-root-source-material', version: 3, scope: 'exact-first-generation-original-input-pair',
@@ -137,6 +147,7 @@ export async function readPreparedMixedOriginBundleContentPair3(handle: Prepared
   if (capsuleJson(material) !== capsuleJson(entry.material) || actual.directory !== entry.original.directory
     || actual.descriptorHash !== entry.original.descriptorHash || actual.descriptorText !== capsuleJson(entry.original.descriptor) + '\n')
     return bad('mixed本次完整内容原件与原认证DAG材料或catalog不同')
-  await readMountedMixedOriginBundle(entry.profileRoot, entry.operationId, entry.mountId, entry.original.descriptorHash)
+  // The content reader checks the complete mounted bytes after its SQL read.
+  // The comparisons above use that same result and perform no further I/O.
   return result
 }

@@ -109,7 +109,10 @@ function MarkdownSourceDialogOpening<Draft extends { source: string }>(props: Ma
   const acceptedSource = useRef(props.restored?.accepted.source ?? snapshot.draft.source)
   const originalDraft = useRef(props.restored?.opening ?? snapshot.draft), acceptedDraft = useRef(props.restored?.accepted ?? snapshot.draft)
   const recovery = useRef<ReturnType<typeof registerRecoverySource> | null>(null)
-  const dirty = (draft: Draft) => live.current.hasUnappliedChanges?.(draft, acceptedDraft.current) ?? draft.source !== acceptedSource.current
+  const dirty = (draft: Draft) => {
+    const compare = live.current.hasUnappliedChanges
+    return compare ? draft !== acceptedDraft.current && compare(draft, acceptedDraft.current) : draft.source !== acceptedSource.current
+  }
   const reportRecovery = () => {
     const view = editor.current, entry = recovery.current
     if (!mounted.current || !entry || !view) return
@@ -122,13 +125,15 @@ function MarkdownSourceDialogOpening<Draft extends { source: string }>(props: Ma
       }
       return raw
     }
-    entry.update({ openingSource: originalDraft.current.source, acceptedSource: acceptedSource.current, source: draft.source,
+    const opening = originalDraft.current, accepted = acceptedDraft.current
+    const provenance = live.current.readRecoveryProvenance?.(draft) ?? null
+    let replayJson: string | undefined
+    entry.update({ openingSource: opening.source, acceptedSource: acceptedSource.current, source: draft.source,
       dirty: dirty(draft),
       selection: { anchor: rawOffset(selection.anchor), head: rawOffset(selection.head) },
       composing: composing.current, applying: applying.current !== null, importing: importLock.current,
-      replayJson: JSON.stringify(recoveryData({ kind: 'knowbook-source-replay-data', version: 1,
-        opening: originalDraft.current, accepted: acceptedDraft.current, current: draft,
-        provenance: live.current.readRecoveryProvenance?.(draft) ?? null })) })
+      serializeReplay: () => replayJson ??= JSON.stringify(recoveryData({ kind: 'knowbook-source-replay-data', version: 1,
+        opening, accepted, current: draft, provenance })) })
   }
   const reportedLocalState = useRef<Readonly<MarkdownSourceLocalState> | null>(null)
   const reportLocalState = () => {

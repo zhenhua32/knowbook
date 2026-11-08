@@ -132,5 +132,5 @@ export async function readRootRestoreIdentityInputsAndOriginals5(handle: RootRes
   if (capsuleJson(actual) !== capsuleJson(before)) return identity3Invalid('实际完整SQL/K/内容不等于持久预分配输入')
   await readManifest(saved); await assertRootKnowledgePlanOriginalBytes3(saved.knowledge)
   const data = Object.freeze({ value, inputs, kernel: before.kernel })
-  return Object.freeze({ actual: data, pair: captured.pair, original: captured.original })
+  return Object.freeze({ actual: data, pair: captured.pair, original: captured.original, working: captured.working })
 }

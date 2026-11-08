@@ -6,6 +6,7 @@ import {
 import { toBlockRichMediaPreviewUrl } from '../utils/blockRichMedia'
 import { parseLocalMarkdownUrl } from '@shared/markdownLinks'
 import { parseWikiReference, wikiDisplayText } from '@shared/markdownWiki'
+import { SYNCED_CANONICAL_BLOCK_ADDRESS_PREFIX } from '@shared/synced-canonical-block-address'
 import { MarkdownNavigationContext } from './MarkdownNavigationContext'
 import { MarkdownBlockNodesContext, MarkdownDocumentContext } from './MarkdownDocumentContext'
 import type { ImagePresentation } from '@shared/markdownMedia'
@@ -118,16 +119,20 @@ export function renderMarkdownNodes(nodes: MarkdownNode[], options: MarkdownRend
       case 'knowbook_metadata': return null
       case 'wiki_embed': return <span key={index}>{token.content}</span>
       case 'wiki_link': {
-        if (parseWikiReference(token.content).fragment.startsWith('^')) return <span key={index}>{`[[${token.content}]]`}</span>
-        const navigate = options.onReference ?? (options.onNavigateLink ? (raw: string) => options.onNavigateLink?.('knowbook-wiki:' + raw) : undefined)
-        return options.renderReference ? options.renderReference(token.content, index) : navigate
-          ? <button key={index} className="inline-link" type="button" title={parseWikiReference(token.content).target} onClick={() => navigate(token.content)}>{wikiDisplayText(token.content)}</button>
+        const reference = parseWikiReference(token.content)
+        if (reference.fragment.startsWith('^')) return <span key={index}>{`[[${token.content}]]`}</span>
+        const canonical = reference.target.startsWith(SYNCED_CANONICAL_BLOCK_ADDRESS_PREFIX)
+        const navigate = canonical ? options.onNavigateLink && (() => options.onNavigateLink?.('knowbook-wiki:' + token.content))
+          : options.onReference ? () => options.onReference?.(token.content)
+          : options.onNavigateLink && (() => options.onNavigateLink?.('knowbook-wiki:' + token.content))
+        return !canonical && options.renderReference ? options.renderReference(token.content, index) : navigate
+          ? <button key={index} className="inline-link" type="button" title={reference.target} onClick={navigate}>{wikiDisplayText(token.content)}</button>
           : <span key={index}>{wikiDisplayText(token.content)}</span>
       }
       case 'link_open': {
         const href = String(token.attrGet('href') ?? '')
         const url = normalizeMarkdownExternalUrl(href)
-        const local = parseLocalMarkdownUrl(href)
+        const local = href.startsWith(SYNCED_CANONICAL_BLOCK_ADDRESS_PREFIX) || parseLocalMarkdownUrl(href)
         if (!url && !(local && options.onNavigateLink)) return <span key={index} data-markdown-anchor={anchor || undefined} title={href}>{nested()}</span>
         const parts = renderLinkParts(children, (content, key) => <button key={key} className="inline-link" type="button" title={String(token.attrGet('title') || href)}
           onClick={() => url ? openLink(url) : options.onNavigateLink?.(href)}>{content}</button>, options)

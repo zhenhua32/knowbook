@@ -4,7 +4,7 @@ import { HEADING_CREATE_BIRTH2_PREFIX, HEADING_CREATE_BIRTH2_OPERATION_KIND, has
   hashSyncedHeadingCreateBirthJournal2, decodeSyncedHeadingCreateBirthOperation2, type HeadingCreateBirthCompanion2 } from './synced-heading-create-birth-codec2'
 import { readSyncedHeadingCreateBirthOriginalOwned2, decodeMainHostOperationWithHeadingBirthOwned2 } from './synced-heading-create-birth-read2'
 import { hasSyncedRemoteObservationForCreate } from './synced-remote-observation-read'
-import { assertSyncedEditingFenceOwned, hasSyncedHeadingBirthCreateFenceOwned2 } from './synced-editing-fence'
+import { assertSyncedEditingFenceOwned, hasSyncedHeadingBirthCreateFenceOwned2, requireSyncedMetadataEditingFenceOwned2 } from './synced-editing-fence'
 import { readSyncedExchangeHostCut } from './synced-exchange-host-cut'
 import { readSyncedRecoveryHostCut } from './synced-recovery-boundary-read'
 import { randomUUID } from 'node:crypto'
@@ -19,10 +19,10 @@ import { getMarkdownHeadingRewrites, getMarkdownHeadingTargets } from '../../sha
 import { BlockIdentityRepository } from './block-identities'
 import { getSyncedGroupSnapshots, getSyncedHostHistory } from './synced-blocks-read'
 import { readSyncedGroupOperationRow } from './synced-group-operation-receipt'
-import { validateHostOperationAck, validateHostCreateOperationAck, type SyncedMainHostSuccess } from './synced-host-operation-receipt'
+import { validateHostOperationAck, validateHostCreateOperationAck, validateHostDetachOperationAck, type SyncedMainHostSuccess } from './synced-host-operation-receipt'
 import { hostJson, readStrictHostDocument, type StrictHostDocument, type HostContent } from './synced-host-document-read'
 import { decodeHostJournal, encodeHostJournal, hostEncode, hostEqual, hostHash, hostReferencedGroups,
-  sameHostContent, hostJournalKind, type HostBirth, type HostFinalInput, type HostJournal, type HostSide } from './synced-host-journal'
+  sameHostContent, hostJournalKind, type HostBirth, type HostDetachJournal, type HostFinalInput, type HostJournal, type HostSide } from './synced-host-journal'
 import { pruneSyncedHostRedoBranches, type SyncedHostHistoryBranchRow } from './synced-host-history-branch'
 import { MarkdownLinkIndex } from './markdown-link-index'
 import { hasSyncedInsertWorkingStructure, isHostInsertInput, planSyncedHostInsert, type HostInsertInput } from './synced-host-insert-plan'
@@ -33,6 +33,12 @@ import { decodeHostCreateJournal, encodeHostCreateJournal, validateCreatedLifecy
 import { readSyncedGroupLifecycles } from './synced-lifecycle-state'
 import { isSyncedGroupLogicallyDeleted, assertSyncedDocumentNotLogicallyDeleted } from './synced-logical-deletion-read'
 import { assertSyncedStoredBindings, captureSyncedCreateBindings } from './synced-block-links'
+import { isHostDetachInput, type HostDetachInput } from './synced-host-detach-plan'
+import { planDetachedHostSources } from './synced-host-detach-links'
+import { HOST_DETACH_OPERATION_KIND, requireHostDetachOriginalOwned } from './synced-host-detach-original'
+import { assertCreateHeadingContinuity, hasCreateHeadings } from './synced-host-create-headings'
+import { assertDetachHeadingContinuity, captureDetachDestinations, detachUsers, planSyncedHostDetach,
+  requiresDetachHeadingProof, UnsupportedSyncedHostDetach, type DetachSource } from './synced-host-detach-legacy'
 export type { SyncedHostCreateApplied } from './synced-host-create-codec'
 
 export { getSyncedHostHistory }
@@ -56,6 +62,7 @@ function mutation(db: Database.Database, run: () => SyncedMainHostSuccess): Sync
     if (error instanceof Refused) return error.result
     if (error instanceof UnsupportedSyncedHostMove) return { status: 'unsupported', reason: error.reason }
     if (error instanceof UnsupportedSyncedHostCreate) return { status: 'unsupported', reason: error.reason }
+    if (error instanceof UnsupportedSyncedHostDetach) return { status: 'unsupported', reason: error.reason }
     if (error instanceof SyncedValidationError) return { status: 'invalid', code: error.code, blockingInstances: error.blockingInstances }
     throw error
   }
@@ -357,6 +364,7 @@ function applyHostMutationOwned(db: Database.Database, request: SyncedStructureI
   createdTemplate?: CreatedTemplateHost): SyncedMainHostSuccess {
   const requestHash = hostHash({ method, input: request }), previous = replay(db, request.clientOperationId, requestHash)
   if (method === 'applySyncedHostCommand' && isHostCreateInput(request)) return applyCreate(db, request, requestHash, previous)
+  if (method === 'applySyncedHostCommand' && isHostDetachInput(request)) return applyDetach(db, request, requestHash, previous)
   if (previous && 'createdLifecycle' in previous) throw new Error('原create回执不能当其它结构请求重放。')
   const input = acceptedInput(request, method), after = plannedSides(input)
   if (previous) {
@@ -408,6 +416,104 @@ function applyHostMutationOwned(db: Database.Database, request: SyncedStructureI
   }
   for (const id of ids) assertHostChain(db, id)
   return receipt(db, result(db, input.clientOperationId, 'applied', token, before, required, affected), requestHash, now)
+}
+
+function detachedSurvivors(group: SyncedGroupSnapshot, selected: string) {
+  return group.instances.filter(item => item.instanceId !== selected)
+    .map(({ instanceId, hostDocumentId, bindingVersion }) => ({ instanceId, hostDocumentId, bindingVersion }))
+    .sort((left, right) => left.instanceId.localeCompare(right.instanceId))
+}
+
+function detachDocument(host: StrictHostDocument) {
+  return { documentId: host.detail.id, path: host.detail.path, createdAt: host.createdAt }
+}
+
+function refuseDetachInboundReferences(db: Database.Database, target: StrictHostDocument, removed: readonly string[], groups: Groups): void {
+  const removedIds = new Set(removed)
+  if ([...groups.values()].some(group => group.bindings.some(binding => binding.target.kind === 'block' && removedIds.has(binding.target.id)))) unsupported('semantic-binding')
+  // An internal link whose source is also removed does not survive the operation.
+  if (db.prepare(`WITH removed(id) AS (SELECT value FROM json_each(?))
+    SELECT 1 FROM removed AS destination JOIN markdown_link_sources AS source
+      ON source.fragment IN (destination.id, '^' || destination.id)
+    WHERE source.source_block_id NOT IN (SELECT id FROM removed)
+      AND (source.target_path=? OR EXISTS (SELECT 1 FROM document_block_routes AS route
+        WHERE route.block_id=destination.id AND route.document_path=source.target_path)) LIMIT 1`)
+    .get(JSON.stringify(removed), target.detail.path)) unsupported('semantic-binding')
+}
+
+function planDetachWithHostHeadings(db: Database.Database, input: HostDetachInput, target: StrictHostDocument, all: Hosts,
+  groups: Groups, group: SyncedGroupSnapshot, source: SyncedGroupWire, allocation: DetachSource['blockMap'], freshBirths: ReadonlyMap<string, string>) {
+  const before = input.hostsWorkingBefore[0].workingBefore
+  const legacyDetach: DetachSource = { source, revision: group.revision, users: detachUsers(group.instances, input.action.instanceId),
+    hostPath: target.detail.path, blockMap: allocation, destinations: captureDetachDestinations(db, source, all) }
+  const after = planSyncedHostDetach(input, legacyDetach)
+  const proof = assertDetachHeadingContinuity(target, before, after, groups,
+    allocation.map(({ to }) => ({ documentId: target.detail.id, blockId: to, createdAt: freshBirths.get(to)! })),
+    legacyDetach, input.action.instanceId, true)
+  legacyDetach.headingHash = proof.hash
+  legacyDetach.destinations = captureDetachDestinations(db, source, all, proof.local)
+  return { after, legacyDetach }
+}
+
+function applyDetach(db: Database.Database, input: HostDetachInput, requestHash: string, previous: SyncedMainHostSuccess | null): SyncedStructureApplied {
+  requireSyncedMetadataEditingFenceOwned2(db)
+  if (input.hostsWorkingBefore.length !== 1) unsupported('command')
+  if (previous) {
+    if ('createdLifecycle' in previous || !previous.blockIdMap.length || !previous.historyToken) throw new Error('解除同步只重放原回执。')
+    const row = db.prepare('SELECT id,action_json,before_json,after_json,before_hash,after_hash,created_at FROM synced_host_history WHERE id=?')
+      .get(previous.historyToken) as SyncedHostHistoryBranchRow | undefined
+    const journal = row && decodeHostJournal(row)
+    const allocation = journal && ('detach' in journal ? journal.detach.allocation : 'legacyDetach' in journal ? journal.legacyDetach.blockMap : null)
+    if (!journal || !allocation || !hostEqual(journal.input, input) || !hostEqual(allocation, previous.blockIdMap))
+      throw new Error('解除同步原回执与请求或实际历史不一致。')
+    return previous
+  }
+  const { groupId, instanceId } = input.action, [request] = input.hostsWorkingBefore, ids = [request.documentId]
+  const all = readAllHosts(db), groups = allGroups(db), hosts = participating(all, ids), persisted = persistedSides(hosts)
+  const target = hosts.get(request.documentId)!, group = groups.get(groupId) ?? missing('group', groupId)
+  checkUpdatedAt([{ documentId: request.documentId, expectedUpdatedAt: request.expectedPersistedUpdatedAt }], hosts, groups)
+  if (!group.instances.some(item => item.instanceId === instanceId && item.hostDocumentId === request.documentId))
+    invalid('binding', '解除同步必须指定该宿主的实际引用与原组。')
+  const before = [{ documentId: request.documentId, content: request.workingBefore }]
+  if (!hasSyncedInsertWorkingStructure(target.content, request.workingBefore)) unsupported('working-structure')
+  const required = guards(input, persisted, before, groups, hosts)
+  refuseDetachInboundReferences(db, target, [instanceId], groups)
+  const repository = new BlockIdentityRepository(db), source = wire(group), now = time(hosts)
+  const allocation = source.blocks.map(block => {
+    const id = randomUUID()
+    if (repository.get(id) || repository.resolveLiveOwner(id)) invalid('identity', '解除同步分配的副本身份已被保留。')
+    return { from: block.id, to: id }
+  })
+  const freshBirths = new Map(allocation.map(item => [item.to, now]))
+  const planned = hasCreateHeadings(source)
+    ? planDetachWithHostHeadings(db, input, target, all, groups, group, source, allocation, freshBirths)
+    : planDetachedHostSources(db, detachDocument(target), instanceId, request.workingBefore, source, allocation, freshBirths)
+  const after = [{ documentId: request.documentId, content: planned.after }]
+  if (!('legacyDetach' in planned)) checkTitlesAndHeadings(hosts, before, after)
+  nonempty(after)
+  const acceptedBirths = births(db, [...before, ...after], hosts, now), graph = finalGraph(all, groups, after), token = randomUUID()
+  const dependencies = [...hostReferencedGroups([...before, ...after])].map(id => {
+    const dependency = groups.get(id) ?? missing('group', id)
+    return { groupId: id, creationId: dependency.creationId, createdAt: dependency.createdAt, origin: dependency.origin }
+  })
+  const journal = { input, persisted: [{ ...persisted[0], updatedAt: target.detail.updatedAt }], births: acceptedBirths,
+    groups: dependencies, before, after, ...('legacyDetach' in planned ? { legacyDetach: planned.legacyDetach }
+      : { detach: { revision: group.revision, wire: source, survivors: detachedSurvivors(group, instanceId), allocation, projection: planned.projection } }) }
+  const encoded = encodeHostJournal(journal)
+  const row: SyncedHostHistoryBranchRow = { id: token, action_json: encoded.action, before_json: encoded.before, after_json: encoded.after,
+    before_hash: encoded.beforeHash, after_hash: encoded.afterHash, created_at: now }
+  decodeHostJournal(row)
+  prune(db, ids)
+  const affected = writeHosts(db, hosts, after, acceptedBirths, groups, graph, now, true)
+  insertHostJournal(db, row)
+  appendHostHistory(db, ids, token, dependencies, now)
+  assertHostChain(db, request.documentId)
+  const exact = validateHostDetachOperationAck({ ...result(db, input.clientOperationId, 'applied', token, before, required, affected), blockIdMap: allocation }, input.clientOperationId)
+  const envelope = 'legacyDetach' in planned ? { kind: 'synced-host-operation', version: 2, result: exact }
+    : { kind: HOST_DETACH_OPERATION_KIND, version: 1, journalHash: hostHash(row), result: exact }
+  db.prepare('INSERT INTO synced_operations(client_operation_id,request_hash,result_json,created_at) VALUES(?,?,?,?)')
+    .run(exact.operationId, requestHash, hostEncode(envelope), now)
+  return 'legacyDetach' in planned ? exact : requireHostDetachOriginalOwned(db, exact.operationId).result
 }
 
 export function applySyncedHostFinal(db: Database.Database, value: unknown): SyncedHostFinalResult {
@@ -509,9 +615,36 @@ export function restoreSyncedHostOperation(db: Database.Database, value: unknown
       if (current.creationId !== dependency.creationId || current.createdAt !== dependency.createdAt || !hostEqual(current.origin, dependency.origin)) conflict('group', groups, hosts)
       if (!db.prepare("SELECT 1 FROM synced_group_pins WHERE group_id=? AND kind='host-history' AND pin_id=?").get(dependency.groupId, input.historyToken)) throw new Error('逆操作所需的原 incarnation pin 缺失。')
     }
-    nonempty(to); checkTitlesAndHeadings(hosts, persisted, to)
+    nonempty(to)
+    if (!('legacyDetach' in journal) || !journal.legacyDetach.headingHash) checkTitlesAndHeadings(hosts, persisted, to)
     if (isHostMoveInput(journal.input)) assertSyncedHostMoveContext(persisted[0].content, to[0].content)
     const required = guards(input, persisted, to, groups, hosts, journal.groups.map(item => item.groupId))
+    if ('legacyDetach' in journal) {
+      const { legacyDetach: detach } = journal, { instanceId } = journal.input.action, snapshot = groups.get(detach.source.id)!
+      const target = hosts.get(ids[0])!
+      if (snapshot.revision !== detach.revision || !hostEqual(wire(snapshot), detach.source)) conflict('group', groups, hosts)
+      if (!hostEqual(detachUsers(snapshot.instances, instanceId), detach.users)) conflict('topology', groups, hosts)
+      const proof = requiresDetachHeadingProof(detach.source) ? assertDetachHeadingContinuity(target, journal.before[0].content,
+        journal.after[0].content, groups, journal.births, detach, instanceId, false) : undefined
+      if (proof && proof.hash !== detach.headingHash) unsupported('heading-rewrite')
+      if (target.detail.path !== detach.hostPath
+        || !hostEqual(captureDetachDestinations(db, detach.source, all, proof?.local), detach.destinations)) unsupported('semantic-binding')
+      refuseDetachInboundReferences(db, target, undo ? detach.blockMap.map(item => item.to) : [instanceId], groups)
+    }
+    if ('detach' in journal) {
+      requireSyncedMetadataEditingFenceOwned2(db)
+      if (requireHostDetachOriginalOwned(db, journal.input.clientOperationId).row.id !== input.historyToken) conflict('history', groups, hosts)
+      const { instanceId, groupId } = journal.input.action, group = groups.get(groupId) ?? missing('group', groupId)
+      const target = hosts.get(journal.before[0].documentId)!, selected = group.instances.find(item => item.instanceId === instanceId)
+      if (group.revision !== journal.detach.revision || !hostEqual(wire(group), journal.detach.wire)) conflict('group', groups, hosts)
+      if (Boolean(selected) === undo || selected && selected.hostDocumentId !== target.detail.id
+        || !hostEqual(detachedSurvivors(group, instanceId), journal.detach.survivors)) conflict('topology', groups, hosts)
+      const removed = undo ? journal.detach.allocation.map(item => item.to) : [instanceId]
+      refuseDetachInboundReferences(db, target, removed, groups)
+      const planned = planDetachedHostSources(db, detachDocument(target), instanceId, journal.before[0].content, journal.detach.wire,
+        journal.detach.allocation, new Map(journal.births.map(birth => [birth.blockId, birth.createdAt])))
+      if (!hostEqual(planned.projection, journal.detach.projection) || !hostEqual(planned.after, journal.after[0].content)) conflict('history', groups, hosts)
+    }
     const now = time(hosts), acceptedBirths = births(db, [...from, ...to], hosts, now, journal.births), graph = finalGraph(all, groups, to)
     if (to.every(side => sameHostContent(hosts.get(side.documentId)!.content, side.content))) return receipt(db,
       result(db, input.clientOperationId, 'noop', null, persisted, required, []), requestHash, now)
@@ -680,13 +813,20 @@ function applyCreate(db: Database.Database, input: HostCreateInput, requestHash:
     allocated.add(id); return { id, createdAt: now }
   })
   const after: HostSide[] = [{ documentId: input.action.documentId, content: shape.after }]
-  nonempty(after); checkTitlesAndHeadings(hosts, before, after)
+  nonempty(after)
   const acceptedBirths = births(db, [...before, ...after], hosts, now), birthMap = new Map(acceptedBirths.map(item => [item.blockId, item.createdAt]))
   const origin = { version: 1 as const, documentId: input.action.documentId, pathAtCreation: hosts.get(input.action.documentId)!.detail.path, firstInstanceId: input.action.instanceId }
-  const sourceBindings = captureSyncedCreateBindings(db, origin, before[0].content.blocks), sourceMap = new Map(sourceBindings.map(item => [createPhysicalKey(item.key), item]))
   const auxMap = new Map(shape.auxiliary.map(item => [item.id, item]))
-  const candidate = validateSyncedGroupWire({ kind: 'synced-group', id: input.action.groupId, creationId: randomUUID(), createdAt: now, origin,
+  const proposed: SyncedGroupWire = { kind: 'synced-group', id: input.action.groupId, creationId: randomUUID(), createdAt: now, origin,
     blocks: shape.canonical.map(block => ({ ...block, createdAt: auxMap.get(block.id)?.createdAt ?? oldBirths.get(block.id) ?? invalid('identity', 'canonical 选区缺少其Main准确birth。') })),
+    bindings: [] }
+  const withHeadings = hasCreateHeadings(proposed)
+  if (!withHeadings) checkTitlesAndHeadings(hosts, before, after)
+  const headings = withHeadings ? assertCreateHeadingContinuity(hosts.get(ids[0])!, before[0].content, after[0].content,
+    groups, proposed, acceptedBirths, shape.selectedIds, true) : undefined
+  const sourceBindings = captureSyncedCreateBindings(db, origin, before[0].content.blocks, headings)
+  const sourceMap = new Map(sourceBindings.map(item => [createPhysicalKey(item.key), item]))
+  const candidate = validateSyncedGroupWire({ ...proposed,
     bindings: projectSyncedCreateLinks(shape, captureSyncedCreateSourceFacts(before[0].content.blocks).links).filter(item => sourceMap.has(createPhysicalKey(item.source))).map(item => ({ ...item.destination, target: sourceMap.get(createPhysicalKey(item.source))!.target })) })
   const graph = finalGraph(all, groups, after, { wire: candidate, retire: false }), token = randomUUID(), revision = randomUUID(), topology = randomUUID(), binding = randomUUID()
   const dependencies = [...required].map(id => { const group = groups.get(id)!; return { groupId: id, creationId: group.creationId, createdAt: group.createdAt, origin: group.origin } })
@@ -738,12 +878,13 @@ function stableTarget(value: HostCreateJournal['create']['sourceBindings'][numbe
   if (value.kind === 'heading') return { kind: value.kind, documentId: value.documentId, slug: value.slug }
   return value
 }
-function checkCreateInverseSources(db: Database.Database, journal: HostCreateJournal, hosts: Hosts): void {
+function checkCreateInverseSources(db: Database.Database, journal: HostCreateJournal, hosts: Hosts,
+  headings?: readonly { slug: string; text: string }[]): void {
   const original = journal.create.wire.origin, current = hosts.get(original.documentId)!
   // Relative image/asset bases are not covered by the local-document ledger.
   // This first create slice conservatively keeps the original host path.
   if (current.detail.path !== original.pathAtCreation) unsupported('semantic-binding')
-  const source = captureSyncedCreateBindings(db, { ...original, pathAtCreation: current.detail.path }, journal.before[0].content.blocks)
+  const source = captureSyncedCreateBindings(db, { ...original, pathAtCreation: current.detail.path }, journal.before[0].content.blocks, headings)
   const expected = new Map(journal.create.sourceBindings.map(item => [createPhysicalKey(item.key), item]))
   if (source.length !== expected.size || source.some(item => { const old = expected.get(createPhysicalKey(item.key)); return !old || old.url !== item.url || !hostEqual(stableTarget(old.target), stableTarget(item.target)) })) unsupported('semantic-binding')
 }
@@ -802,7 +943,13 @@ function createInversePreflight(db: Database.Database, input: SyncedRestoreHostI
   const other = guards(otherInput, withoutOwn(persisted), withoutOwn(to), groups, hosts, journal.groups.filter(item => item.groupId !== groupId).map(item => item.groupId))
   if (input.groups.length !== other.size + 1) invalid('binding', 'create 原组与retired组guard未双向闭合。')
   other.add(groupId)
-  nonempty(to); checkTitlesAndHeadings(hosts, persisted, to); checkCreateOriginalIdentities(db, journal, undo); checkCreateInverseSources(db, journal, hosts)
+  nonempty(to)
+  const withHeadings = hasCreateHeadings(journal.create.wire)
+  if (!withHeadings) checkTitlesAndHeadings(hosts, persisted, to)
+  const headings = withHeadings ? assertCreateHeadingContinuity(hosts.get(ids[0])!, journal.before[0].content,
+    journal.after[0].content, groups, journal.create.wire, journal.births, journal.create.selectedIds, false) : undefined
+  checkCreateOriginalIdentities(db, journal, undo)
+  checkCreateInverseSources(db, journal, hosts, headings)
   const graph = finalGraph(all, groups, to, { wire: journal.create.wire, retire: undo })
   return { undo, from, to, ids, all, groups, hosts, persisted, lifecycle, mappings, required: other, graph }
 }

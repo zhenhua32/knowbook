@@ -23,7 +23,7 @@
     "release:preflight": "node scripts/release-preflight.mjs",
     "release:verify-local": "npm run dist && node scripts/release-preflight.mjs --require-artifacts",
     "preview": "electron-vite preview",
-    "test": "cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx --test --test-timeout=120000 \"tests/**/*.test.ts\" \"tests/**/*.test.tsx\"",
+    "test": "node scripts/run-tests.mjs",
     "test:markdown-spec": "cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx scripts/markdown-spec-report.ts",
     "test:synced-exchange-v2-compat": "cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx scripts/verify-synced-exchange-v2.ts",
     "test:synced-exchange-v1-compat": "cross-env ELECTRON_RUN_AS_NODE=1 electron --import tsx scripts/verify-synced-exchange-v1.ts",

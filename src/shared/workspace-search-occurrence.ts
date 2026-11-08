@@ -30,6 +30,11 @@ export interface ResolveSyncedInlineInstanceInput { hostDocumentId:string;instan
 export type SyncedInlineInstanceResult=
   | {status:'ready';instance:SyncedInlineInstanceAddress;snapshot:SyncedGroupSnapshot}
   | {status:'missing'}
+export interface ResolveSyncedHeadingAnchorInput { documentId: string; expectedUpdatedAt: string; anchor: string; matchText: boolean }
+export type SyncedHeadingAnchorResult = { status: 'stale' | 'missing' }
+  | { status: 'ready'; kind: 'title' }
+  | { status: 'ready'; kind: 'ordinary'; blockId: string; headingIndex: number }
+  | { status: 'ready'; kind: 'canonical'; occurrence: WorkspaceSearchOccurrence }
 
 const keys=['version','workspaceScope','recoveryEpoch','hostDocumentId','hostCreatedAt','instanceId','instanceCreatedAt','bindingVersion',
   'parentBlockId','depth','groupId','creationId','groupCreatedAt','revision','topologyRevision','canonicalBlockId','canonicalCreatedAt'] as const

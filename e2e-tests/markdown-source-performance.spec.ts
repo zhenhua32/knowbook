@@ -1,32 +1,11 @@
-import { expect, test, type Locator } from '@playwright/test'
+import { expect, test } from '@playwright/test'
 import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import os from 'node:os'
 import { withElectronApp, uiText } from './helpers/electron'
 import { sourceEditingBlocks } from '../tests/fixtures/markdown-source-performance'
-import { expectSource, selectSource, sourceValue } from './helpers/markdown-source'
-
-// Measure inside the renderer, starting at the trusted input/click/keydown
-// event. Two animation frames include a rendering opportunity, not OS display latency.
-async function measureNextFrame(target: Locator, eventName: 'input' | 'click' | 'keydown', name: string) {
-  await target.evaluate((element, { eventName, name }) => {
-    const listener = (event: Event) => {
-      if (eventName === 'keydown' && (event as KeyboardEvent).key.toLowerCase() !== 'b') return
-      element.removeEventListener(eventName, listener, true)
-      if (!event.isTrusted) throw new Error('Expected trusted input')
-      const start = performance.now()
-      const frame = () => requestAnimationFrame(() => requestAnimationFrame(() => performance.measure(name, { start, end: performance.now() })))
-      if (name === 'source-open-frame' && !document.querySelector('.document-markdown-source .cm-content')) {
-        const observer = new MutationObserver(() => {
-          if (document.querySelector('.document-markdown-source .cm-content')) { observer.disconnect(); frame() }
-        })
-        observer.observe(document.body, { childList: true, subtree: true })
-      } else frame()
-    }
-    element.addEventListener(eventName, listener, { capture: true })
-  }, { eventName, name })
-}
+import { expectSource, measureNextFrame, selectSource, sourceValue } from './helpers/markdown-source'
 
 for (const count of [800, 4000]) test(`full Markdown source input and batch formatting stay responsive for ${count} blocks @electron`, async () => {
   test.setTimeout(240_000)

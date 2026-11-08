@@ -77,15 +77,21 @@ test('real UI creates a shared body from the original block and inserts a picked
   })
 })
 
-test('UI refuses an unsupported heading creation selection and keeps the original host body intact @electron', async ({}, info) => {
+test('UI creates and detaches a synced heading without retargeting its existing Markdown anchor @electron', async ({}, info) => {
   await withElectronFailureTrace(info, async ({ page }) => {
     const before = await page.evaluate(async () => {
-      const created = await window.knowbook.createDocument(null), headingId = crypto.randomUUID()
-      await window.knowbook.updateDocument(created.id, { title: 'Unsupported heading stays', summary: 'untouched summary', blocks: [
-        { id: headingId, type: 'heading-1', content: 'Unsupported heading stays', checked: false, depth: 0, parentBlockId: null },
-        { id: crypto.randomUUID(), type: 'paragraph', content: 'Original complete W remains', checked: false, depth: 0, parentBlockId: null }
+      const created = await window.knowbook.createDocument(null), headingId = crypto.randomUUID(), peerId = crypto.randomUUID(), linkId = crypto.randomUUID()
+      const spacer = (label: string, length: number) => Array.from({ length }, (_, index) => ({ id: crypto.randomUUID(), type: 'paragraph',
+        content: `${label} ${index}`, checked: false, depth: 0, parentBlockId: null }))
+      await window.knowbook.updateDocument(created.id, { title: 'Synced heading anchor test', summary: 'untouched summary', blocks: [
+        { id: linkId, type: 'paragraph', content: '[Reach original section](#same-name)', checked: false, depth: 0, parentBlockId: null },
+        ...spacer('Before the selected section', 24),
+        { id: headingId, type: 'heading-2', content: 'Same name', checked: false, depth: 0, parentBlockId: null },
+        ...spacer('Between the two headings', 24),
+        { id: peerId, type: 'heading-2', content: 'Same name', checked: false, depth: 0, parentBlockId: null },
+        ...spacer('After the other heading', 24)
       ] })
-      return { document: await window.knowbook.getDocumentDetail(created.id), headingId }
+      return { document: await window.knowbook.getDocumentDetail(created.id), headingId, peerId, linkId }
     })
     if (!before.document) throw Error('Original fixture missing')
     await page.reload()
@@ -95,10 +101,39 @@ test('UI refuses an unsupported heading creation selection and keeps the origina
     await row.hover(); await row.locator('.block-drag-handle').click()
     await page.getByRole('dialog', { name: uiText('Block actions', '内容块操作'), exact: true })
       .getByRole('button', { name: uiText('Create synced block…', '创建同步块…'), exact: true }).click()
-    await expect(page.getByRole('dialog', { name: uiText('Create synced block', '创建同步块'), exact: true })).toHaveCount(0)
-    await expect(page.getByText(uiText('Creating from a heading selection is not supported; the original body is retained.', '当前不能将含标题的选区转为同步块，原正文已保留。'), { exact: true })).toBeVisible()
+    const confirm = page.getByRole('dialog', { name: uiText('Create synced block', '创建同步块'), exact: true })
+    await confirm.getByRole('button', { name: uiText('Create synced block', '创建同步块'), exact: true }).click()
+    await expect(confirm).toHaveCount(0)
     const after = await page.evaluate(id => window.knowbook.getDocumentDetail(id), before.document.id)
-    expect(after).toEqual(before.document)
-    expect(after?.blocks.some(block => block.type === 'synced-block')).toBe(false)
+    const ref = after?.blocks.find(block => block.type === 'synced-block')
+    if (!ref) throw Error('The original heading must leave its actual host reference')
+    expect(after?.summary).toBe(before.document.summary)
+    expect(after?.blocks.find(block => block.id === before.linkId)?.content).toBe('[Reach original section](#same-name)')
+    expect(after?.blocks.find(block => block.id === before.peerId)?.content).toBe('Same name')
+    expect(after?.blocks.some(block => block.id === before.headingId)).toBe(false)
+    await page.locator('.document-view-toggle').click()
+    const instance = inlineInstance(page, ref.id)
+    await expectCanonicalRow(instance, before.headingId, 'Same name')
+    await page.locator('[data-block-id="' + before.linkId + '"] .inline-link').click()
+    await expect(instance.locator('[data-block-id="' + before.headingId + '"]')).toHaveClass(/block-editor-row-highlighted/)
+    await expect(page.locator('[data-block-id="' + before.peerId + '"]')).not.toHaveClass(/block-editor-row-highlighted/)
+
+    await page.locator('.document-view-toggle').click()
+    await instance.getByRole('button', { name: uiText('Detach synced block…', '解除同步…'), exact: true }).click()
+    const unsyncLabel = uiText('Detach synced block', '解除同步')
+    const unsync = page.getByRole('dialog', { name: unsyncLabel, exact: true })
+    await unsync.getByRole('button', { name: uiText('Detach', '解除同步'), exact: true }).click()
+    await expect(unsync).toHaveCount(0)
+    const detached = await page.evaluate(id => window.knowbook.getDocumentDetail(id), before.document.id)
+    const copy = detached?.blocks.find(block => !after?.blocks.some(previous => previous.id === block.id))
+    expect(copy).toMatchObject({ type: 'heading-2', content: 'Same name' })
+    expect(copy?.id).not.toBe(before.headingId)
+    await page.locator('.document-view-toggle').click()
+    await page.locator('[data-block-id="' + before.linkId + '"] .inline-link').click()
+    await expect.poll(() => page.locator('[data-block-id="' + copy!.id + '"] h2').evaluate(element => {
+      const region = element.closest('[data-testid="document-scroll-region"]')!
+      const header = region.querySelector('.document-sticky-header')!
+      return Math.abs(element.getBoundingClientRect().top - header.getBoundingClientRect().bottom - 12)
+    })).toBeLessThan(2)
   })
 })

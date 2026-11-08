@@ -1,15 +1,18 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { Worker } from 'node:worker_threads'
 import test from 'node:test'
 import { KnowbookStore } from '../src/main/database/store'
+import { captureSyncedBackupV3, readSyncedBackupV3Capture } from '../src/main/database/synced-backup-v3'
 import { MarkdownBackupService } from '../src/main/backup/exporter'
 import { readV2Header } from '../src/main/backup/v2-format'
-import { readBackupV3Archive } from '../src/main/backup/v3-reader'
+import { backupV3FileDigest, backupV3InventoryHash, buildBackupV3Files, parseBackupV3Files } from '../src/main/backup/v3-format'
+import { readBackupV3Archive, verifyBackupV3Archive } from '../src/main/backup/v3-reader'
 import { writeSyncedBackupV3 } from '../src/main/backup/v3-export'
-import { canonicalSyncedPortableJson } from '../src/shared/syncedBlockPortable'
+import { buildSyncedPortableAssetUri, canonicalSyncedPortableJson, syncedPortableAssetBackupPath } from '../src/shared/syncedBlockPortable'
 import { withV3Fixture, randomUUID, addV3Assets, fileInventory, allTables } from './helpers/synced-backup-v3-fixture'
 
 type Archive = ReturnType<typeof readBackupV3Archive>
@@ -61,6 +64,44 @@ test('V3 actual parse worker strictly reads real group and asset files and never
   sameArchive(reply.archive, expected)
   assert.deepEqual(allTables(f.db), tables)
   assert.deepEqual(fileInventory(f.destination), files)
+}))
+
+test('V3 actual parse worker returns the complete 50 MiB asset and rejects one byte over the unchanged disk limit', () => withV3Fixture(async f => {
+  const source = readSyncedBackupV3Capture(captureSyncedBackupV3(f.db))
+  assert.ok(source)
+  const bytes = new Uint8Array(50 * 1024 * 1024)
+  bytes[0] = 37
+  bytes[bytes.length - 1] = 192
+  const hash = createHash('sha256').update(bytes).digest('hex'), name = 'archive-limit.bin'
+  const uri = buildSyncedPortableAssetUri({ hash, name }), relativePath = syncedPortableAssetBackupPath(uri)
+  const documents = source.documents.map((document, index) => index === 0 ? { ...document, summary: `[attachment](${uri})` } : document)
+  const files = buildBackupV3Files({ documents, catalog: source.catalog, standaloneDatabases: source.standaloneDatabases,
+    groups: source.groups, assets: [{ relativePath, bytes, hash, name }] }, randomUUID())
+  const parsed = parseBackupV3Files(files)
+  const asset = files.find(file => file.relativePath === relativePath)!
+  assert.notEqual(asset.bytes.buffer, bytes.buffer)
+  assert.notEqual(parsed.assets[0].bytes.buffer, asset.bytes.buffer)
+  for (const file of files) {
+    const path = join(f.destination, ...file.relativePath.split('/'))
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, file.bytes, { flag: 'wx' })
+  }
+  const path = join(f.destination, ...relativePath.split('/')), before = statSync(path, { bigint: true })
+  const verified = verifyBackupV3Archive(f.destination)
+  assert.deepEqual(verified.manifest, parsed.manifest)
+  assert.deepEqual(verified.files.find(file => file.relativePath === relativePath), { relativePath, hash, bytes: bytes.length })
+  assert.equal(backupV3InventoryHash(verified.files), backupV3InventoryHash(files.map(backupV3FileDigest)))
+  const reply = await worker('backup-parse-worker.mjs', { kind: 'synced-v3', root: f.destination })
+  assert.ok(reply.archive)
+  assert.deepEqual(reply.archive.manifest, parsed.manifest)
+  assert.equal(reply.archive.assets[0].bytes.byteLength, bytes.length)
+  assert.equal(createHash('sha256').update(reply.archive.assets[0].bytes).digest('hex'), hash)
+  assert.deepEqual(statSync(path, { bigint: true }).mtimeNs, before.mtimeNs)
+
+  truncateSync(path, bytes.length + 1)
+  assert.throws(() => verifyBackupV3Archive(f.destination), /asset budget/)
+  await assert.rejects(worker('backup-parse-worker.mjs', { kind: 'synced-v3', root: f.destination }), /asset budget/)
+  assert.equal(statSync(path).size, bytes.length + 1)
 }))
 
 test('V3 actual parse worker rejects a damaged generated index and preserves the corrupted bytes for diagnosis', () => withV3Fixture(async f => {

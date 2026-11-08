@@ -1,5 +1,7 @@
 import { HEADING_TITLE3_OPERATION_KIND } from './synced-heading-title3-codec'
 import { headingTitle3OriginalsFromRaw } from './restore-knowledge-heading-title3-original'
+import { hostDetachOriginalsFromRaw } from './restore-knowledge-host-detach-original'
+import { HOST_DETACH_OPERATION_KIND } from './synced-host-detach-original'
 // Main-private draft. Pure validation/replay; these DTOs confer no FS authority.
 import { TextDecoder } from 'node:util'
 import { assertSyncedShape } from '../../shared/syncedBlockValidation'
@@ -111,6 +113,7 @@ function deriveSettledWorkingEvidence(raw: Capsule2RawContent, projector?: Root3
   const settings = graph3Rows(raw, 'app_settings'), operations = graph3Rows(raw, 'synced_operations')
   let headingOriginals: ReturnType<typeof headingCreateBirthOriginalsFromRaw2> | undefined
   let titleOriginals: ReturnType<typeof headingTitle3OriginalsFromRaw> | undefined
+  let detachOriginals: ReturnType<typeof hostDetachOriginalsFromRaw> | undefined
   const receipts = new Map<string, { row: typeof operations[number]; receipt: M.ExchangeReceipt }>()
   const jobs = new Map<string, { row: typeof settings[number]; job: M.ExchangeJob }>()
   const wanted = new Set<string>()
@@ -174,6 +177,10 @@ function deriveSettledWorkingEvidence(raw: Capsule2RawContent, projector?: Root3
     if (value.kind === 'synced-logical-deletion-proof') {
       const proof = value.version === 2 ? validateSyncedLogicalDeletionChoiceProof(value) : validateSyncedLogicalDeletionProof(value)
       add(proof.before, [...source, 'before'], [row]); if ('base' in proof) add(proof.base, [...source, 'base'], [row])
+    } else if (value.kind === HOST_DETACH_OPERATION_KIND) {
+      const original = (detachOriginals ??= hostDetachOriginalsFromRaw(raw))(row.value)
+      for (const group of original.result.groups)
+        add(wire(group), [...source, 'result', 'groups', group.groupId], [row, original.journalSource, ...original.headingSources, ...original.canonicalSources])
     } else if (value.kind === HEADING_TITLE3_OPERATION_KIND) {
       const original = (titleOriginals ??= headingTitle3OriginalsFromRaw(raw))(String(row.value.client_operation_id))
       if (original.primarySource.original !== row.original) return fail('title3 envelope is not this exact original packet row')

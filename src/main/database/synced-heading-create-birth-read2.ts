@@ -1,4 +1,5 @@
 import { decodeMainHostOperationAck, decodeSyncedOperationAck } from './synced-host-operation-receipt'
+import { decodeHostDetachOriginalOwned } from './synced-host-detach-original'
 import type Database from 'better-sqlite3'
 import { isSyncedUuid, assertSyncedShape } from '../../shared/syncedBlockValidation'
 import { hostJson } from './synced-host-document-read'
@@ -128,10 +129,10 @@ function knownHeadingOriginal(db:Database.Database,row:{client_operation_id:stri
   return original.result
 }
 export function decodeMainHostOperationWithHeadingBirthOwned2(db:Database.Database,row:{client_operation_id:string;request_hash:string;result_json:string}) {
-  return knownHeadingOriginal(db,row)??decodeMainHostOperationAck(row)
+  return decodeHostDetachOriginalOwned(db,row)?.result??knownHeadingOriginal(db,row)??decodeMainHostOperationAck(row)
 }
 export function decodeSyncedOperationWithHeadingBirthOwned2(db:Database.Database,row:{client_operation_id:string;request_hash:string;result_json:string}) {
-  return knownHeadingOriginal(db,row)??decodeSyncedOperationAck(row)
+  return decodeHostDetachOriginalOwned(db,row)?.result??knownHeadingOriginal(db,row)??decodeSyncedOperationAck(row)
 }
 
 /** Fixed Main factory: validate the reserved new family from ITS same actual

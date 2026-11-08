@@ -1,7 +1,8 @@
-import type { DocumentBlock, DocumentBlockDraft, DocumentTreeNode } from '@shared/contracts'
-import { collectMarkdownSourceLinks } from '@shared/markdownLinks'
+import type { DocumentBlock, DocumentBlockDraft, DocumentDetail, DocumentTreeNode } from '@shared/contracts'
+import { collectMarkdownSourceLinks, resolveMarkdownDocumentPath } from '@shared/markdownLinks'
 import { findWikiHeading, parseWikiReference, resolveWikiDocument, wikiDocumentPaths } from '@shared/markdownWiki'
 import { getMarkdownHeadingTargets } from '@shared/markdownLinkMaintenance'
+import { SYNCED_CANONICAL_BLOCK_ADDRESS_PREFIX } from '@shared/synced-canonical-block-address'
 import type { AppMessageHandler } from '../notify'
 type BlockReferenceCandidate = Pick<DocumentBlock, 'id' | 'content'>
 
@@ -85,22 +86,72 @@ export type InlineReferenceNavigationContext = {
   draftBlocks: DocumentBlockDraft[]
   onOpenDocument: (documentId: string) => void
   onOpenDocumentBlock: (documentId: string, blockId: string) => void
-  onOpenAnchor: (documentId: string, anchor: string) => void
+  onOpenAnchor: (documentId: string, anchor: string, matchAnchorText?: boolean) => void
   draftTitle: string
   selectedDocumentId: string | null
   notify: AppMessageHandler
+  isZh?: boolean
   uiBlockReferenceNotFound: string
   isCurrent: () => boolean
+}
+
+type MarkdownNavigationContext = Pick<InlineReferenceNavigationContext, 'onOpenDocument' | 'onOpenAnchor' | 'onOpenDocumentBlock' | 'isCurrent'> & {
+  selectedDocument: DocumentDetail | null
+  documentIds: ReadonlyMap<string, string>
+  onWikiReference: (token: string) => void
+  onMessage: AppMessageHandler
+  isZh: boolean
+}
+
+export async function navigateMarkdownLink(url: string, {
+  selectedDocument, documentIds, onOpenDocument, onOpenAnchor, onOpenDocumentBlock, onWikiReference, onMessage, isZh, isCurrent
+}: MarkdownNavigationContext): Promise<void> {
+  if (url.startsWith('knowbook-wiki:')) {
+    const raw = url.slice('knowbook-wiki:'.length)
+    if (!raw.trimStart().startsWith(SYNCED_CANONICAL_BLOCK_ADDRESS_PREFIX)) { onWikiReference(raw); return }
+    url = parseWikiReference(raw).target
+  }
+  if (!selectedDocument) return
+  if (url.startsWith(SYNCED_CANONICAL_BLOCK_ADDRESS_PREFIX)) {
+    const { navigateCanonicalBlockLink } = await import('../features/synced-blocks/canonicalBlockLinkNavigation')
+    await navigateCanonicalBlockLink(url, isCurrent, onMessage, isZh)
+    return
+  }
+  const target = resolveMarkdownDocumentPath(selectedDocument.path, url)
+  if (target?.fragment) {
+    const block = await window.knowbook.getBlockReference(target.path, target.fragment)
+    if (!isCurrent()) return
+    if (block) { onOpenDocumentBlock(block.documentId, block.block.id); return }
+    if (target.fragment.startsWith('^')) {
+      onMessage(isZh ? '找不到块链接目标。' : 'Block link target not found.', 'warning')
+      return
+    }
+  }
+  const id = target?.path === selectedDocument.path ? selectedDocument.id : target && documentIds.get(target.path)
+  if (!isCurrent()) return
+  if (!target || !id) {
+    let label = url
+    try { label = decodeURIComponent(url) } catch { /* Preserve malformed input for the message. */ }
+    onMessage(isZh ? '找不到链接目标：' + label : 'Link target not found: ' + label, 'warning')
+    return
+  }
+  if (url.includes('#')) onOpenAnchor(id, target.fragment)
+  else onOpenDocument(id)
 }
 
 /** Runs after the hook's existing cold import, with the same IPC continuation guards. */
 export async function navigateInlineReference(content: string, cursorPosition: number, {
   documentTree, draftBlocks, onOpenDocument, onOpenDocumentBlock, onOpenAnchor, draftTitle,
-  selectedDocumentId, notify, uiBlockReferenceNotFound, isCurrent
+  selectedDocumentId, notify, isZh = false, uiBlockReferenceNotFound, isCurrent
 }: InlineReferenceNavigationContext): Promise<void> {
   try {
     const token = getInlineReferenceTokenAtCursor(content, cursorPosition)
     if (!token) {
+      return
+    }
+    if (token.trimStart().startsWith(SYNCED_CANONICAL_BLOCK_ADDRESS_PREFIX)) {
+      const { navigateCanonicalBlockLink } = await import('../features/synced-blocks/canonicalBlockLinkNavigation')
+      await navigateCanonicalBlockLink(parseWikiReference(token).target, isCurrent, notify, isZh)
       return
     }
 
@@ -141,6 +192,7 @@ export async function navigateInlineReference(content: string, cursorPosition: n
       return
     }
     if (detail.blocks.some((block) => block.id === target.blockId)) onOpenDocumentBlock(detail.id, target.blockId)
+    else if (detail.blocks.some(block => block.type === 'synced-block')) onOpenAnchor(detail.id, target.blockId, true)
     else {
       const heading = findInlineReferenceHeading(target.blockId, detail.blocks, detail.title)
       if (heading) onOpenAnchor(detail.id, heading.slug)

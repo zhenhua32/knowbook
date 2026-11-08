@@ -46,6 +46,7 @@ type CapturedSource = { entries: SyncedVerifiedBindingSource[]; digest: string }
 const registries = new WeakMap<Database.Database, Registry>()
 // Private association only: no source packet/ACK/hash shape is widened.
 const metadataBaselines2 = new WeakMap<ReadOwner, PreparedSyncedMetadataCaptureRecord2>()
+const metadataBaselineTicketIds2 = new WeakMap<ReadOwner, string>()
 function fail(message: string): never { throw new SyncedValidationError('binding', message) }
 const bytesOf = (value: unknown): number => Buffer.byteLength(JSON.stringify(value), 'utf8')
 function identity(db: Database.Database): Workspace {
@@ -256,7 +257,7 @@ export function captureSyncedBaselineOwnerWithMetadata2(db: Database.Database, i
     const owner = newOwner(groupId, baseline.capturedIncarnation!)
     // The private capture registry retains only db/key/hash. Charge its fixed
     // pointer before persistence, without inventing or publishing that point.
-    owner.bytes += bytesOf({metadataPoint:{key:SYNCED_METADATA_BASELINE2_PREFIX+'0'.repeat(64),recordHash:'0'.repeat(64)}})
+    owner.bytes += bytesOf({metadataPoint:{key:SYNCED_METADATA_BASELINE2_PREFIX+'0'.repeat(64),recordHash:'0'.repeat(64)}, baselineTicketId:'0'.repeat(36)})
     const publication = prepareCapturedSources(db, baseline.workspace, [baseline.source!], owner, true)
     const metadataPoint = captureSyncedMetadataReadBaselineOwned2(db, groupId)
     // Independently read its actual record before the transaction ends. No
@@ -273,6 +274,7 @@ export function captureSyncedBaselineOwnerWithMetadata2(db: Database.Database, i
   if (captured.status === 'missing') return { status: 'missing', workspaceScope: captured.workspaceScope, groupId }
   const [bindingSource] = commitCapturedSources(captured.publication)
   metadataBaselines2.set(captured.owner, captured.metadataPoint)
+  metadataBaselineTicketIds2.set(captured.owner, bindingSource!.ticketId)
   return { status: 'ready', workspaceScope: captured.workspaceScope, readOwnerId: captured.owner.readOwnerId,
     snapshot: captured.snapshot, bindingSource: bindingSource! }
 }
@@ -315,7 +317,7 @@ export function reopenSyncedRecoveryBaselineOwner(db: Database.Database,
       || canonicalSyncedPortableJson(source.wire.bindings) !== canonicalSyncedPortableJson(snapshot.bindings))
       return fail('Recovery source no longer equals its actual native group.')
     const owner = newOwner(input.groupId, baseline.capturedIncarnation!)
-    owner.bytes += bytesOf({ metadataPoint: { key: input.originalKey, recordHash: input.originalRecordHash } })
+    owner.bytes += bytesOf({ metadataPoint: { key: input.originalKey, recordHash: input.originalRecordHash }, baselineTicketId: '0'.repeat(36) })
     const publication = prepareCapturedSources(db, baseline.workspace, [baseline.source!], owner, true)
     return { owner, publication, metadataPoint, snapshot, workspaceScope: baseline.workspace.scope }
   })()
@@ -323,6 +325,7 @@ export function reopenSyncedRecoveryBaselineOwner(db: Database.Database,
   // ended, exactly like the normal read-owner capability publication.
   const [bindingSource] = commitCapturedSources(captured.publication)
   metadataBaselines2.set(captured.owner, captured.metadataPoint)
+  metadataBaselineTicketIds2.set(captured.owner, bindingSource!.ticketId)
   return { status: 'ready', workspaceScope: captured.workspaceScope, readOwnerId: captured.owner.readOwnerId,
     snapshot: captured.snapshot, bindingSource: bindingSource! }
 }
@@ -338,6 +341,16 @@ export function readSyncedBaselineMetadataCaptureOwned2(db: Database.Database, r
   if (!registry || registry.epoch !== workspace.epoch || !owner || !point || currentIncarnation(db,owner.groupId) !== owner.incarnation)
     return {status:'owner-unavailable' as const,writePermit:false as const}
   return {status:'captured' as const,record:readSyncedMetadataCaptureRecordOwned2(db,point),writePermit:false as const,historicalKeyLineageComplete:false as const}
+}
+/** Read the original baseline alias from the genuine owner registry, never a
+ * later operation alias that happens to expose the same keys or URL. */
+export function readSyncedRecoveryBaselineAliasOwned2(db: Database.Database, readOwnerId: string) {
+  const point = readSyncedBaselineMetadataCaptureOwned2(db, readOwnerId)
+  if (point.status !== 'captured') return null
+  const registry = registries.get(db), owner = registry?.owners.get(readOwnerId)
+  const ticketId = owner && metadataBaselineTicketIds2.get(owner), ticket = ticketId ? registry?.tickets.get(ticketId) : undefined
+  if (!ticket || ticket.ownerId !== readOwnerId || owner?.aliases.get(ticket.digest) !== ticket) return null
+  return { original: point.record, bindingSource: structuredClone(ticket.publicSource) }
 }
 
 /** Validate this original capability in one owned read without allocating a

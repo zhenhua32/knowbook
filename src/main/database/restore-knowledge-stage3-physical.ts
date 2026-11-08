@@ -49,6 +49,7 @@ type Row = { readonly sourceRowId: string; readonly cells: readonly RawRestoreSq
 type Planned = ReturnType<typeof planSql>
 type Intent = ReturnType<typeof intentBody>
 type Observation = ReturnType<typeof observeSql>
+type RetainedAssetProof = { settingsHash?: string }
 type Manifest = ReturnType<typeof manifestBody>
 interface Saved {
   reference: RootRestoreReferencePlan3; copy: RootRestoreCurrentCopy3
@@ -473,7 +474,7 @@ function protectedTables(actual:Actual,plan:Planned,marker:RootRestoreStage3Mark
     .map(table=>table.name==='block_identities'?plan.ledger:table.name==='synced_group_lifecycle'?plan.lifecycle:table.name==='app_settings'
       ?{...app,rows:[...app.rows,markerRow,retainedCutRecordRow(actual,plan)].sort(rowOrder)}:cutTables.get(table.name)??table)
 }
-function observeSql(db:Database.Database,actual:Actual,plan:Planned,marker:RootRestoreStage3Marker,readonly:boolean) {
+function observeSql(db:Database.Database,actual:Actual,plan:Planned,marker:RootRestoreStage3Marker,readonly:boolean,assets?:RetainedAssetProof) {
   context(db,plan.encoding,readonly);assertSchema(db,actual)
   // Unqualified integrity_check visits every SQLite schema, including the
   // dormant temp slot, and opens its empty Btree while verifying that schema.
@@ -485,6 +486,12 @@ function observeSql(db:Database.Database,actual:Actual,plan:Planned,marker:RootR
   if(physical12TablesHash!==plan.physical12TablesHash)return fail('实际physical12不等于声明execution转换')
   const actualRows=new Map(tables.map(table=>[table.name,new Map(table.rows.map(row=>[row.sourceRowId,row]))]))
   const protectedObservations=protectedTables(actual,plan,marker).map(table=>{const observed=exactTable(db,table,plan.encoding)
+    if(assets&&table.name==='app_settings'){
+      const original=raw(actual,'app_settings'), keys=new Set(original.rows.map(row=>row.sourceRowId))
+      const retained={...observed,rows:observed.rows.filter(row=>keys.has(row.sourceRowId))}
+      if(!same(retained,{...original,rows:[...original.rows].sort(rowOrder)}))return fail('实际保留设置行不等于原字节')
+      assets.settingsHash=hash('knowbook.restore.stage3.exact-table.v1',retained)
+    }
     return {table:table.name,rows:table.rows.length,rowHash:hash('knowbook.restore.stage3.exact-table.v1',observed)}})
   const lookup=ftsProjection(db,!readonly)
   assertSyncedLifecycleCoverage(db)
@@ -717,12 +724,12 @@ async function initialFamily(databaseDirectory:string,root:string,expected:reado
   }finally{db.close();await afterReadonly(databaseDirectory,root,expected)}
 }
 async function observeIndependent(saved:Pick<Saved,'root'|'databaseDirectory'|'checksDirectory'>,actual:Actual,plan:Planned,marker:RootRestoreStage3Marker,
-  expected:readonly DurableSqlCapsuleFile[]):Promise<Observation> {
+  expected:readonly DurableSqlCapsuleFile[],assets?:RetainedAssetProof):Promise<Observation> {
   const check=join(saved.checksDirectory,randomUUID())
   await copyThree(saved.databaseDirectory,check,saved.root,expected)
   const db=new Database(restoreSqliteFilename(join(check,'knowbook.db')),{readonly:true,fileMustExist:true})
   try{db.pragma('query_only=ON');db.pragma('foreign_keys=ON')
-    return db.transaction(()=>observeSql(db,actual,plan,marker,true))()
+    return db.transaction(()=>observeSql(db,actual,plan,marker,true,assets))()
   }finally{db.close();await afterReadonly(check,saved.root,expected);await exactInventory(saved.databaseDirectory,saved.root,expected)}
 }
 async function outer(saved:Pick<Saved,'directory'|'root'>) {
@@ -741,12 +748,10 @@ function stageValue(saved:Saved,observation:Observation) {
 }
 type PreparedPhysicalStage3 = Readonly<{ stage: RootRestorePhysicalStage3; value: ReturnType<typeof stageValue>;
   stageId: string; manifestHash: string; directory: string }>
-function finishHeldStageRead(saved: Saved, observation: Observation, mode: 'read'): Promise<ReturnType<typeof stageValue>>
-function finishHeldStageRead(saved: Saved, observation: Observation, mode: 'mint'): Promise<PreparedPhysicalStage3>
-async function finishHeldStageRead(saved: Saved, observation: Observation, mode: 'read' | 'mint') {
+function holdPhysicalStageOriginalBytes(saved: Saved) {
   const inventory = saved.manifest.sealedInventory
   const small = [['intent.json', saved.intent], ['manifest.json', saved.manifest]] as const
-  const held = await holdRootRestoreStage3Files3({ profileRoot: saved.root,
+  return holdRootRestoreStage3Files3({ profileRoot: saved.root,
     directories: [{ path: saved.directory, entries: ['checks', 'database', 'intent.json', 'manifest.json'] },
       { path: saved.databaseDirectory, entries: inventory.filter(file => file.present).map(file => file.name) }],
     files: [...small.map(([name, body]) => { const bytes = capsuleJson(body) + '\n'; return {
@@ -754,6 +759,17 @@ async function finishHeldStageRead(saved: Saved, observation: Observation, mode:
       ...inventory.filter(file => file.present).map(file => ({ path: join(saved.databaseDirectory, file.name), bytes: file.bytes,
         sha256: file.sha256 ?? fail('present stage文件缺hash') }))],
     absentFiles: inventory.filter(file => !file.present).map(file => join(saved.databaseDirectory, file.name)) })
+}
+/** Exact immutable SQL-stage file guard for the separate asset/SQL envelope. */
+export async function holdRootRestorePhysicalStageOriginalBytes3(stage: RootRestorePhysicalStage3) {
+  const saved = stages.get(stage)
+  if (!saved) return fail('不是实际Main物理stage句柄')
+  return holdPhysicalStageOriginalBytes(saved)
+}
+function finishHeldStageRead(saved: Saved, observation: Observation, mode: 'read'): Promise<ReturnType<typeof stageValue>>
+function finishHeldStageRead(saved: Saved, observation: Observation, mode: 'mint'): Promise<PreparedPhysicalStage3>
+async function finishHeldStageRead(saved: Saved, observation: Observation, mode: 'read' | 'mint') {
+  const held = await holdPhysicalStageOriginalBytes(saved)
   try {
     await readRootRestoreCurrentCopyForStage3(saved.copy)
     await assertRootRestoreReferenceOriginalBytes3(saved.reference)
@@ -768,7 +784,7 @@ async function finishHeldStageRead(saved: Saved, observation: Observation, mode:
     return Object.freeze({ stage, value, stageId: saved.intent.stageId, manifestHash: saved.manifestHash, directory: saved.directory })
   } finally { closeRootRestoreStage3FilesHeld3(held) }
 }
-async function reconstruct(saved:Saved) {
+async function reconstruct(saved:Saved,assets?:RetainedAssetProof) {
   await outer(saved);await readSmall(join(saved.directory,'intent.json'),saved.intent,saved.root)
   await readSmall(join(saved.directory,'manifest.json'),saved.manifest,saved.root)
   await exactInventory(saved.databaseDirectory,saved.root,saved.manifest.sealedInventory)
@@ -778,7 +794,7 @@ async function reconstruct(saved:Saved) {
   const plan=planSql(actual,saved.intent.preparedAt,{stageId:saved.intent.stageId,copyId:copy.copyId,copyManifestHash:copy.manifestHash})
   const intended=intentBody(saved.intent.stageId,saved.intent.preparedAt,actual,copy,saved.reference,plan,saved.intent.originalRecoveryFamily)
   if(!same(intended,saved.intent)||intentHash(intended)!==saved.intentHash)return fail('fresh原件/reference不等于持久物化intent')
-  const observed=await observeIndependent(saved,actual,plan,markerFor(saved.intent),saved.manifest.sealedInventory)
+  const observed=await observeIndependent(saved,actual,plan,markerFor(saved.intent),saved.manifest.sealedInventory,assets)
   if(observed.physicalObservationHash!==saved.manifest.physicalObservationHash
     ||stageManifestHash(manifestBody(saved.intent,saved.manifest.sealedInventory,observed))!==saved.manifestHash)return fail('实际SQL回读不等于持久stage')
   return finishHeldStageRead(saved, observed, 'read')
@@ -839,6 +855,16 @@ export async function readRootRestorePhysicalStage3(stage:RootRestorePhysicalSta
   const saved=stages.get(stage)
   if(!saved)return fail('不是实际Main物理stage句柄')
   return reconstruct(saved)
+}
+
+/** Exact retained settings from the same independent SQL readback. The two
+ * stage-owned control rows remain outside this original-row commitment. */
+export async function readRootRestorePhysicalStageAssetEvidence3(stage:RootRestorePhysicalStage3) {
+  const saved=stages.get(stage)
+  if(!saved)return fail('不是实际Main物理stage句柄')
+  const retained:RetainedAssetProof={}, value=await reconstruct(saved,retained)
+  if(!retained.settingsHash)return fail('实际暂存缺保留设置行证明')
+  return Object.freeze({value, retainedSettingsHash:retained.settingsHash})
 }
 
 const coldIntentKeys = ['kind','version','stageId','preparedAt','copyId','copyManifestHash','referencePlanId','referenceManifestHash',

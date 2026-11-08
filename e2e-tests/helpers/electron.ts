@@ -182,11 +182,11 @@ export async function launchElectronApp(
     app.context().setDefaultNavigationTimeout(navigationTimeout ?? 0)
     childProcess = app.process()
     electronChildProcesses.set(app, childProcess)
-    electronHostPids.set(app, await readElectronHostPid(app, childProcess))
     childProcess.stdout?.on('data', captureStartupOutput)
     childProcess.stderr?.on('data', captureStartupOutput)
 
     const page = await app.firstWindow()
+    electronHostPids.set(app, await readElectronHostPid(app, childProcess))
     page.on('console', (message) => console.error(`[renderer:${message.type()}] ${message.text()}`))
     page.on('pageerror', (error) => console.error('[renderer:pageerror]', error))
     await page.waitForLoadState('domcontentloaded')

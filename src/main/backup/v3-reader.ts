@@ -1,6 +1,8 @@
+import { createHash } from 'node:crypto'
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, readdirSync, realpathSync, type BigIntStats } from 'node:fs'
 import { isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
-import { parseBackupV3Files, type BackupV3File } from './v3-format'
+import { backupV3FileDigest, isBackupV3AssetPath, parseCapturedBackupV3Files, parseCapturedBackupV3Inventory,
+  type BackupV3File, type BackupV3FileDigest } from './v3-format'
 
 // JSON group files share the existing Markdown content count and byte budgets.
 const limits = { entries: 20_000, depth: 32, contentFiles: 5_000,
@@ -30,13 +32,19 @@ function sameDirectory(before: BigIntStats, after: BigIntStats): boolean {
     && before.mtimeNs === after.mtimeNs && before.ctimeNs === after.ctimeNs
 }
 
-/** Bounded read-only file capture shared by producer verification and inspection. */
-export function readBackupV3Files(root: string): BackupV3File[] {
+function readArchiveChunk(fd: number, buffer: Uint8Array, offset: number, size: number): number {
+  const count = readSync(fd, buffer, offset, size, null)
+  if (!count) invalid('archive file became shorter while reading')
+  return count
+}
+
+/** Bounded read-only capture shared by byte inspection and streamed digests. */
+function captureArchiveFiles<File>(root: string, capture: (fd: number, size: number, relativePath: string) => File): File[] {
   if (typeof root !== 'string' || !isAbsolute(root)) invalid('an absolute archive directory is required')
   root = resolve(root)
   safeAncestors(root)
   if (!lstatSync(root).isDirectory() || realpathSync(root) !== root) invalid('archive root is not a real directory')
-  const files: BackupV3File[] = []
+  const files: File[] = []
   const capturedFiles: Array<{ path: string; stat: BigIntStats }> = []
   const directories: Array<{ path: string; stat: BigIntStats; names: string[] }> = []
   let entries = 0, contentFiles = 0, contentBytes = 0, assetFiles = 0, assetBytes = 0
@@ -58,7 +66,7 @@ export function readBackupV3Files(root: string): BackupV3File[] {
       const original = lstatSync(path, { bigint: true })
       if (info.nlink !== 1 || !independentFile(original)) invalid('archive file is not an independent standalone file (hardlink)')
       if (!Number.isSafeInteger(info.size) || info.size < 0) invalid('invalid archive file size')
-      const asset = relativePath.startsWith('__knowbook/assets/')
+      const asset = isBackupV3AssetPath(relativePath)
       if (asset) {
         if (++assetFiles > limits.assetFiles || info.size > limits.assetFileBytes
           || (assetBytes += info.size) > limits.assetBytes) invalid('asset budget exceeds the existing limit')
@@ -71,20 +79,14 @@ export function readBackupV3Files(root: string): BackupV3File[] {
         // reports it. Keep every supplied identity field and the fd checks.
         const deviceChanged = !(process.platform === 'win32' && info.dev === 0) && before.dev !== info.dev
         if (!before.isFile() || before.nlink !== 1 || deviceChanged || before.ino !== info.ino || before.size !== info.size) invalid('archive file changed during capture')
-        const bytes = Buffer.alloc(before.size)
-        let offset = 0
-        while (offset < bytes.length) {
-          const count = readSync(fd, bytes, offset, bytes.length - offset, null)
-          if (!count) invalid('archive file became shorter while reading')
-          offset += count
-        }
+        const file = capture(fd, before.size, relativePath)
         const excess = readSync(fd, Buffer.alloc(1), 0, 1, null), after = fstatSync(fd)
         if (excess !== 0 || after.size !== before.size || after.mtimeMs !== before.mtimeMs
           || after.ctimeMs !== before.ctimeMs) invalid('archive file changed while reading')
         const exact = fstatSync(fd, { bigint: true }), current = lstatSync(path, { bigint: true })
         safeAncestors(path)
         if (!samePathFile(original, exact) || !samePathFile(current, exact)) invalid('archive file identity changed while reading')
-        files.push({ relativePath, bytes })
+        files.push(file)
         capturedFiles.push({ path, stat: exact })
       } finally { closeSync(fd) }
     }
@@ -106,7 +108,48 @@ export function readBackupV3Files(root: string): BackupV3File[] {
   return files
 }
 
+export function readBackupV3Files(root: string): BackupV3File[] {
+  return captureArchiveFiles(root, readFileBytes)
+}
+
+function readFileBytes(fd: number, size: number, relativePath: string): BackupV3File {
+  const bytes = new Uint8Array(size)
+  for (let offset = 0; offset < size;) offset += readArchiveChunk(fd, bytes, offset, size - offset)
+  return { relativePath, bytes }
+}
+
+function readFileDigest(fd: number, size: number, relativePath: string, buffer: Uint8Array): BackupV3FileDigest {
+  const digest = createHash('sha256')
+  for (let remaining = size; remaining > 0;) {
+    const count = readArchiveChunk(fd, buffer, 0, Math.min(remaining, buffer.length))
+    digest.update(buffer.subarray(0, count))
+    remaining -= count
+  }
+  return { relativePath, hash: digest.digest('hex'), bytes: size }
+}
+
+const allocateDigestBuffer = () => new Uint8Array(1024 * 1024)
+
+/** Reauthenticate a confirmed archive without retaining its payloads in memory. */
+export function readBackupV3FileDigests(root: string): BackupV3FileDigest[] {
+  const buffer = allocateDigestBuffer()
+  return captureArchiveFiles(root, (fd, size, relativePath) => readFileDigest(fd, size, relativePath, buffer))
+}
+
+/** Whole-archive verification for publication, without materializing asset payloads. */
+export function verifyBackupV3Archive(root: string) {
+  const buffer = allocateDigestBuffer(), contents: BackupV3File[] = [], assets: BackupV3FileDigest[] = []
+  const entries = captureArchiveFiles<BackupV3File | BackupV3FileDigest>(root, (fd, size, path) =>
+    isBackupV3AssetPath(path) ? readFileDigest(fd, size, path, buffer) : readFileBytes(fd, size, path))
+  for (const entry of entries) {
+    if ('hash' in entry) assets.push(entry)
+    else contents.push(entry)
+  }
+  const archive = parseCapturedBackupV3Inventory(contents, assets)
+  return { manifest: archive.manifest, files: [...contents.map(backupV3FileDigest), ...assets] }
+}
+
 /** Strict read-only inspection. It never opens a database or stages assets. */
-export function readBackupV3Archive(root: string): ReturnType<typeof parseBackupV3Files> {
-  return parseBackupV3Files(readBackupV3Files(root))
+export function readBackupV3Archive(root: string): ReturnType<typeof parseCapturedBackupV3Files> {
+  return parseCapturedBackupV3Files(readBackupV3Files(root))
 }

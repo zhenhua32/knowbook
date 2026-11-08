@@ -9,6 +9,8 @@ import { applySyncedHostStructureWithTitle2, restoreSyncedHostStructureWithTitle
 import { captureSyncedBaselineOwnerWithMetadata2, reopenSyncedRecoveryBaselineOwner, type SyncedRecoveryBaselineInput, getSyncedOperationWithOwnedLinkSource, validateSyncedReadOwner, releaseSyncedReadOwner } from './synced-binding-sources'
 import { captureSyncedEditingFenceOwned, runWithSyncedEditingFence, assertSyncedEditingFenceOwned, assertSyncedEditingFenceRead,
   type SyncedEditingFence } from './synced-editing-fence'
+import { validateSyncedInstanceGuard } from '../../shared/syncedBlockInputs'
+import type { SyncedInstanceGuard } from '../../shared/synced-blocks'
 import { resolveSyncedInlineInstance } from './workspace-search-occurrences'
 
 type Entry={sender:object;fence:SyncedEditingFence;session:SyncedEditingSession;readOwners:Set<string>}
@@ -113,6 +115,17 @@ export class SyncedEditingSessionRepository {
       reopenSyncedRecoveryBaselineOwner(this.db,input))
     if(result.status==='ready')entry.readOwners.add(result.readOwnerId)
     return result
+  }
+  /** Internal synchronous reader for the exact mounted recovery occurrence. */
+  readRecoveryGroup<T>(sender:object,value:{sessionId:string;groupId:string;instance:SyncedInstanceGuard},read:(db:Database.Database)=>T):T {
+    assertSyncedShape(value,['sessionId','groupId','instance'])
+    if(!isSyncedUuid(value.sessionId)||!isSyncedUuid(value.groupId))return fail('invalid recovery group or session identity')
+    const entry=this.entries.get(value.sessionId)
+    if(!entry||entry.sender!==sender)return fail('not the actual new recovery frame session')
+    if(this.db.inTransaction)return fail('group recovery requires its own actual SQL snapshot')
+    const request={groupId:value.groupId,expectedInstanceBinding:validateSyncedInstanceGuard(value.instance)}
+    return runWithSyncedEditingFence(this.db,entry.fence,'readRecoveryGroupFloor',request,()=>
+      this.db.transaction(()=>{assertSyncedEditingFenceOwned(this.db);return read(this.db)})())
   }
   release(sender:object,sessionId:string):void {
     if(!isSyncedUuid(sessionId))return fail('session token invalid')

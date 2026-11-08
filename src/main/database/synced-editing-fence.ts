@@ -17,6 +17,9 @@ function workspaceOwned(db:Database.Database){
   if(!state||!isSyncedUuid(state.workspace_scope)||!isSyncedUuid(state.recovery_epoch))return fail('actual workspace boundary missing')
   return{workspaceScope:state.workspace_scope,recoveryEpoch:state.recovery_epoch}
 }
+export function readEditorRecoveryWorkspace(db:Database.Database){
+  return db.transaction(()=>workspaceOwned(db))()
+}
 /** Called only in the Main session factory's actual SQL snapshot. All host
  * births and persisted instance bindings come from SQL, never a caller DTO. */
 export function captureSyncedEditingFenceOwned(db:Database.Database,hostId:string,previous?:SyncedEditingFence){
@@ -63,6 +66,7 @@ export function assertSyncedEditingFenceOwned(db:Database.Database):void {
   const host=(id:unknown)=>{if(typeof id!=='string')return fail('host address missing')
     const birth=saved.hosts.get(id),actual=db.prepare('SELECT created_at FROM documents WHERE id=?').get(id) as {created_at:string}|undefined
     if(!birth||actual?.created_at!==birth)return fail('host birth differs from the actual opened host session')}
+  const ownsGroup=active.method==='updateSyncedBlockGroup'||active.method==='restoreSyncedGroupOperation'||active.method==='readRecoveryGroupFloor'
   const instance=(value:unknown)=>{if(!value||typeof value!=='object')return fail('actual instance guard missing')
     const expected=value as Record<string,unknown>,proof=typeof expected.instanceId==='string'?saved.instances.get(expected.instanceId):undefined
     if(!proof||expected.hostDocumentId!==proof.hostDocumentId||expected.bindingVersion!==proof.bindingVersion)return fail('instance was not read in this actual host session')
@@ -72,9 +76,9 @@ export function assertSyncedEditingFenceOwned(db:Database.Database):void {
     if(!row||row.host_created_at!==proof.hostCreatedAt||row.instance_created_at!==proof.instanceCreatedAt||row.binding_version!==proof.bindingVersion
       ||row.creation_id!==proof.creationId||row.group_created_at!==proof.groupCreatedAt||row.parent_block_id!==proof.parentBlockId||row.instance_depth!==proof.depth)
       return fail('actual instance birth/group/placement/binding changed before the writer transaction')
-    if((active.method==='updateSyncedBlockGroup'||active.method==='restoreSyncedGroupOperation')&&request.groupId!==proof.groupId)return fail('canonical request belongs to another captured group')
+    if(ownsGroup&&request.groupId!==proof.groupId)return fail('canonical request belongs to another captured group')
   }
-  if(active.method==='updateSyncedBlockGroup'||active.method==='restoreSyncedGroupOperation')instance(request.expectedInstanceBinding)
+  if(ownsGroup)instance(request.expectedInstanceBinding)
   if(active.method==='applySyncedHostStructure'){
     if(!Array.isArray(request.hostsWorkingBefore)||!Array.isArray(request.expectedInstances))return fail('complete host guards missing')
     for(const side of request.hostsWorkingBefore)host((side as Record<string,unknown>).documentId)

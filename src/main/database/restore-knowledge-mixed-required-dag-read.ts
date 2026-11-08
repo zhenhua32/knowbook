@@ -224,10 +224,14 @@ export async function readActualNoPriorOriginalInputWithContent3(profileRoot: st
 /** Genuine no-prior input plus same-read Working5 originals. Unknown objects
  * still reach the original v1 registry without caller property inspection. */
 export async function readActualNoPriorOriginalInputWithWorking5(profileRoot: string, source: Source) {
+  const { packet: _packet, ...captured } = await readActualNoPriorOriginalContentAndWorking5(profileRoot, source)
+  return captured
+}
+export async function readActualNoPriorOriginalContentAndWorking5(profileRoot: string, source: Source) {
   const profile = await canonicalRequiredSqlDagRoot(profileRoot)
   const captured = await tryReadCertifiedCapsule2SourceInputsWithWorking5(source)
-  if (captured) return { input: capsule2Input(profile, source, captured), working: captured.working }
-  return { input: await readInput(profile, source), working: undefined }
+  if (captured) return { input: capsule2Input(profile, source, captured), packet: captured.value, working: captured.working }
+  return { input: await readInput(profile, source), packet: null, working: undefined }
 }
 async function freshWithWorking5(entry: Saved) {
   const first=await readRequiredSqlDagNodeFile(entry.profileRoot,entry.file.ref)

@@ -5,6 +5,7 @@ import { join, parse, resolve } from 'node:path'
 import { editorRecoveryInvalid, editorRecoveryRecordJson, validateEditorRecoveryBase, validateEditorRecoveryDraftInput,
   validateEditorRecoveryReceipt, validateEditorRecoveryRecord, type EditorRecoveryBase, type EditorRecoveryDecision,
   type EditorRecoveryDraftInput, type EditorRecoveryReceipt, type EditorRecoveryRecord, type EditorRecoveryRecordSummary } from '../../shared/editor-recovery-drafts'
+import { assertIndependentRecoveryJournal, LegacyEditorRecoveryDraftStore } from './legacy-draft-store'
 
 const APPLICATION_ID = 0x4b425244
 const SCHEMA_VERSION = 1
@@ -85,7 +86,8 @@ function basePointer(value: unknown): BasePointer {
 }
 function storedJson(value: EditorRecoveryRecord, base: BasePointer, previousRecordId: string | null): string {
   return JSON.stringify({ kind: 'knowbook-editor-recovery-stored-draft', version: 1, recordId: value.recordId, capturedAt: value.capturedAt,
-    base, previousRecordId, draft: value.draft, writePermit: false, businessOperationCommitted: false })
+    base, previousRecordId, draft: value.draft, writePermit: false, businessOperationCommitted: false,
+    ...(value.canonicalOriginalAliasHash === undefined ? {} : { canonicalOriginalAliasHash: value.canonicalOriginalAliasHash }) })
 }
 
 /** Owns only a local private side database, never the canonical workspace DB.
@@ -93,12 +95,17 @@ function storedJson(value: EditorRecoveryRecord, base: BasePointer, previousReco
 export class EditorRecoveryDraftStore {
   private readonly db: Database.Database
   readonly file: string
+  readonly legacy: LegacyEditorRecoveryDraftStore | null
   constructor(directory: string, options: { readonly?: boolean } = {}) {
     safeDirectory(directory)
     if (!options.readonly) { mkdirSync(directory, { recursive: true }); safeDirectory(directory) }
-    this.file = join(resolve(directory), 'synced-drafts.sqlite')
-    const existed = existsSync(this.file)
-    if (existed) { const info = lstatSync(this.file); if (!info.isFile() || info.isSymbolicLink()) editorRecoveryInvalid('side-store file is not an actual regular file') }
+    const original = join(resolve(directory), 'synced-drafts.sqlite')
+    const alternate = join(resolve(directory), 'synced-drafts-v2.sqlite')
+    const legacy = new LegacyEditorRecoveryDraftStore(original)
+    this.legacy = legacy.exists() ? legacy : null
+    const useAlternate = this.legacy || (!existsSync(original) && existsSync(alternate))
+    this.file = useAlternate ? alternate : original
+    assertIndependentRecoveryJournal(this.file)
     this.db = new Database(this.file, { readonly: options.readonly === true, fileMustExist: options.readonly === true })
     try {
       this.db.pragma('foreign_keys = ON')
@@ -107,7 +114,7 @@ export class EditorRecoveryDraftStore {
       // Require the existing physical mode instead of converting an alien DB.
       // FULL synchronous is connection-local; no persistent PRAGMA precedes the
       // actual locked empty/schema decision. A parallel initializer may have
-      // populated the file after existsSync, which is deliberately not authority.
+      // populated the file since its path was selected.
       if (String(this.db.pragma('journal_mode', { simple: true })).toLowerCase() !== 'delete') return editorRecoveryInvalid('private journal durability mode refused')
       if (!options.readonly) {
         this.db.pragma('synchronous = FULL')
@@ -158,7 +165,8 @@ export class EditorRecoveryDraftStore {
       return editorRecoveryInvalid('stored record domain differs')
     const pointer = basePointer(stored.base), base = this.readBaseOwned(pointer)
     const value = validateEditorRecoveryRecord({ kind: 'knowbook-editor-recovery-draft', version: 1, recordId: stored.recordId,
-      capturedAt: stored.capturedAt, base, draft: stored.draft, writePermit: stored.writePermit, businessOperationCommitted: stored.businessOperationCommitted })
+      capturedAt: stored.capturedAt, base, draft: stored.draft, writePermit: stored.writePermit, businessOperationCommitted: stored.businessOperationCommitted,
+      ...(Object.hasOwn(stored, 'canonicalOriginalAliasHash') ? { canonicalOriginalAliasHash: stored.canonicalOriginalAliasHash } : {}) })
     if (storedJson(value, pointer, row.previous_record_id) !== row.payload.toString('utf8') || pointer.baseId !== row.base_id
       || value.recordId !== row.record_id || value.capturedAt !== row.captured_at
       || value.draft.draftSessionId !== row.draft_session_id || value.draft.generation !== row.generation) return editorRecoveryInvalid('record columns/closed bytes differ')
@@ -182,10 +190,11 @@ export class EditorRecoveryDraftStore {
     return head
   }
   /** bases are Main-owned facts, never an IPC proof/DTO supplied by renderer. */
-  write(captures: readonly { base: EditorRecoveryBase | BasePointer; draft: EditorRecoveryDraftInput }[], purpose:
+  write(captures: readonly { base: EditorRecoveryBase | BasePointer; draft: EditorRecoveryDraftInput; canonicalOriginalAliasHash?: string }[], purpose:
     { kind: 'background' } | { kind: 'close'; requestId: string; closeGeneration: number }): EditorRecoveryReceipt {
     if (this.db.readonly || this.db.inTransaction) return editorRecoveryInvalid('write requires own writable side-store transaction')
-    const values = captures.map(item => ({ base: Object.hasOwn(item.base, 'baseId') ? basePointer(item.base) : validateEditorRecoveryBase(item.base), draft: validateEditorRecoveryDraftInput(item.draft) }))
+    const values = captures.map(item => ({ base: Object.hasOwn(item.base, 'baseId') ? basePointer(item.base) : validateEditorRecoveryBase(item.base),
+      draft: validateEditorRecoveryDraftInput(item.draft), canonicalOriginalAliasHash: item.canonicalOriginalAliasHash }))
     if (new Set(values.map(item => item.draft.draftSessionId)).size !== values.length) return editorRecoveryInvalid('capture repeats draft owner')
     const receipt: EditorRecoveryReceipt = validateEditorRecoveryReceipt({ kind: 'knowbook-editor-recovery-receipt', version: 1, receiptId: randomUUID(),
       purpose: purpose.kind, requestId: purpose.kind === 'close' ? purpose.requestId : null, closeGeneration: purpose.kind === 'close' ? purpose.closeGeneration : null, records: [] })
@@ -209,8 +218,9 @@ export class EditorRecoveryDraftStore {
           receipt.records.push({ recordId: head.record_id, draftSessionId: head.draft_session_id, generation: head.generation, hash: head.payload_hash }); continue
         }
         if ((head?.generation ?? 0) !== item.draft.expectedPreviousGeneration) return editorRecoveryInvalid('stale capture generation')
-        const record: EditorRecoveryRecord = { kind: 'knowbook-editor-recovery-draft', version: 1, recordId: randomUUID(), capturedAt: new Date().toISOString(),
-          base, draft: item.draft, writePermit: false, businessOperationCommitted: false }
+        const record = validateEditorRecoveryRecord({ kind: 'knowbook-editor-recovery-draft', version: 1, recordId: randomUUID(), capturedAt: new Date().toISOString(),
+          base, draft: item.draft, writePermit: false, businessOperationCommitted: false,
+          ...(item.canonicalOriginalAliasHash === undefined ? {} : { canonicalOriginalAliasHash: item.canonicalOriginalAliasHash }) })
         if (original && JSON.stringify(original.value.base) !== JSON.stringify(base)) return editorRecoveryInvalid('generation changed its original base')
         const previous = head?.record_id ?? null, raw = Buffer.from(storedJson(record, pointer, previous)), hash = editorRecoveryHash('record', raw)
         this.db.prepare('INSERT INTO recovery_records VALUES(?,?,?,?,?,?,?,?)').run(record.recordId, item.draft.draftSessionId, item.draft.generation,

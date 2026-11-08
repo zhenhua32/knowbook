@@ -1,4 +1,10 @@
 import { randomUUID } from 'node:crypto'
+import { canonicalRecoveryHasUnsettledWork, decodeCanonicalRecoveryFollowupData } from '../../shared/editor-recovery-canonical'
+import { alreadySavedCanonicalRecoveryOwned, attestCanonicalRecoveryCompletionOwned, prepareCanonicalRecoveryCompletionOwned, prepareCanonicalRecoveryFollowupCompletionOwned,
+  type PreparedCanonicalRecoveryCompletion } from './canonical-completion'
+import { attestCanonicalRecoveryAcceptedFloorOwned } from './canonical-accepted-floor'
+import type { SyncedInstanceGuard } from '../../shared/synced-blocks'
+import { captureCanonicalOriginalAliasOwned, verifyCanonicalOriginalAlias } from './canonical-copy-original'
 import type { KnowbookStore } from '../database/store'
 import type { EditorCloseIpcEvent } from '../editor-close-barrier'
 import { readSyncedBaselineMetadataCaptureOwned2 } from '../database/synced-binding-sources'
@@ -10,16 +16,22 @@ import type { HostContent } from '../database/synced-host-document-read'
 import { editorRecoveryInvalid, validateEditorRecoveryBase, validateEditorRecoveryBatch, validateEditorRecoveryExpected, validateOpenEditorRecoveryDraftInput,
   type EditorRecoveryBase, type EditorRecoveryDecision, type EditorRecoveryExpected, type EditorRecoveryOriginal,
   validateRetireEditorRecoveryDraftInput, validateEditorRecoveryWorking,
-  validatePrepareEditorRecoveryGroupInput, type PreparedEditorRecoveryGroup,
+  validatePrepareEditorRecoveryGroupInput, validatePrepareEditorRecoveryGroupFloorInput, validateCompleteEditorRecoveryGroupInput,
+  type PreparedEditorRecoveryGroup, type PreparedEditorRecoveryGroupFloor,
   validateParkEditorRecoveryDraftInput,
-  type EditorRecoveryReceipt, type EditorRecoveryRecord, type EditorRecoveryCandidate, type EditorRecoveryOpened, type EditorRecoveryWorking } from '../../shared/editor-recovery-drafts'
+  type EditorRecoveryDraftInput, type EditorRecoveryReceipt, type EditorRecoveryRecord, type EditorRecoveryCandidate, type EditorRecoveryOpened, type EditorRecoveryWorking } from '../../shared/editor-recovery-drafts'
 import { EditorRecoveryDraftStore } from './draft-store'
 import { readOrdinaryHostRecoverySource } from '../../shared/editor-recovery-source'
 import { attestEditorRecoveryPendingOwned } from './pending-original'
+import { captureHostSourcePinsOwned } from './host-source-pins'
 
 type OriginalRow = { client_operation_id: string; request_hash: string; result_json: string; created_at: string }
-type Live = { sender: EditorCloseIpcEvent['sender']; frame: NonNullable<EditorCloseIpcEvent['senderFrame']>; base: { baseId: string; hash: string } }
-type Cold = { sender: EditorCloseIpcEvent['sender']; frame: NonNullable<EditorCloseIpcEvent['senderFrame']>; expected: EditorRecoveryExpected }
+type Live = { sender: EditorCloseIpcEvent['sender']; frame: NonNullable<EditorCloseIpcEvent['senderFrame']>; base: { baseId: string; hash: string };
+  groupSessionId?: string; alias?: { readOwnerId: string; hash: string } }
+type Cold = { sender: EditorCloseIpcEvent['sender']; frame: NonNullable<EditorCloseIpcEvent['senderFrame']>; expected: EditorRecoveryExpected;
+  completion?: { sessionId: string; draftSessionId: string; owner: PreparedCanonicalRecoveryCompletion } & (
+    { kind: 'baseline'; readOwnerId: string } | { kind: 'floor'; groupId: string; instance: SyncedInstanceGuard }
+  ) }
 /** Main/IPC request JSON omits undefined optional attrs. Preserve every defined
  * authored value (especially [] versus absent) without normalizing text. */
 function definedFields<T extends object>(value: T): T { return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined)) as T }
@@ -119,8 +131,11 @@ export class EditorRecoveryDraftService {
         const boundary = this.workspaceOwned(), detail = this.store.getDocumentDetail(input.documentId)
         const fact = db.prepare('SELECT created_at,updated_at FROM documents WHERE id=?').get(input.documentId) as { created_at: string; updated_at: string } | undefined
         if (!detail || !fact || detail.updatedAt !== fact.updated_at || fact.updated_at !== input.expectedUpdatedAt) return editorRecoveryInvalid('opened host birth/CAS/epoch changed during capture')
+        const blocks = detail.blocks.map(({ sortOrder: _order, ...block }) => definedFields(block))
+        const hostSourcePins = input.source ? captureHostSourcePinsOwned(db, detail.id, blocks) : undefined
         return validateEditorRecoveryBase({ ...boundary, owner: { kind: 'host', documentId: detail.id, createdAt: fact.created_at, updatedAt: fact.updated_at },
-          persistedWorking: { kind: 'host', title: detail.title, summary: detail.summary, blocks: detail.blocks.map(({ sortOrder: _order, ...block }) => definedFields(block)) }, originals: [] })
+          persistedWorking: { kind: 'host', title: detail.title, summary: detail.summary, blocks }, originals: [],
+          ...(hostSourcePins ? { hostSourcePins } : {}) })
       })()
     } else {
       // The source must ALREADY belong to this frame's genuine initial read.
@@ -142,20 +157,20 @@ export class EditorRecoveryDraftService {
       })()
     }
     const pointer = this.side.sealBase(base), draftSessionId = randomUUID()
-    this.live.set(draftSessionId, { sender: event.sender, frame, base: pointer })
+    this.live.set(draftSessionId, { sender: event.sender, frame, base: pointer, ...(input.kind === 'group' ? { groupSessionId: input.sessionId } : {}) })
     this.openings.set(input.openRequestId, { sender: event.sender, frame, inputJson: JSON.stringify(input), draftSessionId })
     return { draftSessionId, generation: 0, base, writePermit: false }
   }
   write(event: EditorCloseIpcEvent, value: unknown, purpose: { kind: 'background' } | { kind: 'close'; requestId: string; closeGeneration: number }): EditorRecoveryReceipt {
     this.frame(event)
     const drafts = validateEditorRecoveryBatch(value)
-    const captures = drafts.map(draft => {
+    const captures: Array<Parameters<EditorRecoveryDraftStore['write']>[0][number]> = drafts.map(draft => {
       const owner = this.live.get(draft.draftSessionId)
       if (!owner) return editorRecoveryInvalid('not a live recovery draft owner')
       this.sameFrame(event, owner)
       // This is its ORIGINAL already-sealed Main base, even if current SQL has
       // since conflicted. Reading today cannot silently change historical B.
-      return { base: owner.base, draft }
+      return { base: owner.base, draft, canonicalOriginalAliasHash: this.captureAlias(event, owner, draft) }
     })
     if (purpose.kind === 'close') for (const [id, owner] of this.dormant) {
       if (owner.sender !== event.sender || owner.frame !== event.senderFrame) continue
@@ -166,6 +181,22 @@ export class EditorRecoveryDraftService {
     const receipt = this.side.write(captures, purpose)
     this.collect([receipt.receiptId])
     return receipt
+  }
+  private captureAlias(event: EditorCloseIpcEvent, owner: Live, draft: EditorRecoveryDraftInput): string | undefined {
+    const readOwnerId = draft.canonicalReadOwnerId, sessionId = owner.groupSessionId
+    if (!readOwnerId || !sessionId) return undefined
+    // The exact alias was independently captured from this live Main frame.
+    // It is immutable, so subsequent generations need only its compact digest.
+    if (owner.alias?.readOwnerId === readOwnerId) return owner.alias.hash
+    try {
+      const ready = this.store.invokeSyncedEditingSession(event.senderFrame!, { sessionId, method: 'validateOwner', input: { readOwnerId } })
+      if (ready.status !== 'ready') return undefined
+      const db = this.store.getUnsafeDatabaseHandle(), base = this.side.readBase(owner.base)
+      if (db.inTransaction) return undefined
+      const hash = db.transaction(() => captureCanonicalOriginalAliasOwned(db, base, readOwnerId))()
+      if (hash) owner.alias = { readOwnerId, hash }
+      return hash
+    } catch { return undefined } // The raw draft remains durable without a copy recovery permit.
   }
   private collect(receiptIds: readonly string[] = []): void {
     try { this.side.collectGarbage([...new Set([...this.live.values(), ...this.dormant.values()].map(owner => owner.base.baseId))], receiptIds) }
@@ -183,6 +214,7 @@ export class EditorRecoveryDraftService {
     if (JSON.stringify(head?.expected ?? null) !== JSON.stringify(input.expectedHead)) return editorRecoveryInvalid('clean release does not bind the latest durable generation/hash')
     if (head && (JSON.stringify(head.record.draft.working) !== JSON.stringify(input.working) || head.record.draft.sources.length
       || head.record.draft.pending.length || head.record.draft.composing || head.record.draft.importing)) return false
+    if (head && canonicalRecoveryHasUnsettledWork(head.record)) return false
     const db = this.store.getUnsafeDatabaseHandle()
     if (db.inTransaction) return editorRecoveryInvalid('clean release requires its own actual Main snapshot')
     const clean = db.transaction(() => {
@@ -196,7 +228,8 @@ export class EditorRecoveryDraftService {
           blocks: detail.blocks.map(({ sortOrder: _sortOrder, ...block }) => definedFields(block)) })
       } else {
         const item = getSyncedGroupSnapshots(db, { groupIds: [base.owner.groupId] }).items[0]
-        if (item?.status === 'ready' && item.snapshot.creationId === base.owner.creationId && item.snapshot.createdAt === base.owner.createdAt)
+        if (item?.status === 'ready' && item.snapshot.creationId === base.owner.creationId && item.snapshot.createdAt === base.owner.createdAt
+          && item.snapshot.revision === base.owner.revision && item.snapshot.topologyRevision === base.owner.topologyRevision && item.snapshot.history.cursor === base.owner.historyCursor)
           current = validateEditorRecoveryWorking({ kind: 'group', blocks: syncedCanonicalEdits(item.snapshot.blocks), incoming: null })
       }
       return current !== null && samePersistedWorking(current, input.working)
@@ -226,6 +259,12 @@ export class EditorRecoveryDraftService {
       return samePersistedWorking(working, draft.working)
     })()
   }
+  private alreadySavedCanonical(record: EditorRecoveryRecord): boolean {
+    if (record.base.owner.kind !== 'group' || this.live.has(record.draft.draftSessionId) || this.dormant.has(record.draft.draftSessionId)) return false
+    const db = this.store.getUnsafeDatabaseHandle()
+    if (db.inTransaction) return editorRecoveryInvalid('saved shared body classification requires its own actual Main snapshot')
+    return db.transaction(() => alreadySavedCanonicalRecoveryOwned(db, record))()
+  }
   list(event: EditorCloseIpcEvent, input: { afterSessionId?: string; limit: number }) {
     this.frame(event)
     const excludeSessionIds = this.liveDraftSessionIds(event), records: ReturnType<EditorRecoveryDraftStore['list']>['records'] = []
@@ -236,9 +275,9 @@ export class EditorRecoveryDraftService {
         const expected = { recordId: item.recordId, generation: item.generation, hash: item.hash }, record = this.side.read(expected)
         // Current producers, including private parked heads, never appear in
         // this cold decision surface. A completed old frame may leave a clean
-        // ordinary head: only exact current SQL/birth/epoch and head CAS prove
-        // it already saved. No Source/ACK/ref intent is inferred from text.
-        if (this.alreadySavedOrdinary(record)) this.side.decide(expected, 'discard')
+        // checkpoint. The canonical domain also requires its exact original
+        // stored request, ACK and history row before the same side-head CAS.
+        if (this.alreadySavedOrdinary(record) || this.alreadySavedCanonical(record)) this.side.decide(expected, 'discard')
         else records.push(item)
       }
       next = page.next; afterSessionId = page.next ?? undefined
@@ -247,11 +286,15 @@ export class EditorRecoveryDraftService {
     // draft must not retire the live close attempt's actual receipt.
     return { records, next }
   }
-  private examine(record: EditorRecoveryRecord): Pick<EditorRecoveryCandidate, 'mode' | 'reasons' | 'pending'> {
+  private examine(record: EditorRecoveryRecord, includeCanonicalHost = false): Pick<EditorRecoveryCandidate,
+    'mode' | 'reasons' | 'pending' | 'canonicalFollowupAvailable' | 'canonicalHostDocumentId' | 'hostSourcePins'> {
     const db = this.store.getUnsafeDatabaseHandle()
     if (db.inTransaction) return editorRecoveryInvalid('cold candidate requires own actual Main snapshot')
     return db.transaction(() => {
       const boundary = this.workspaceOwned(), reasons: string[] = []
+      const originalPins = record.base.hostSourcePins
+      let hostSourcePins: EditorRecoveryCandidate['hostSourcePins'] = originalPins ? 'changed' : undefined
+      let canonicalHostDocumentId: string | undefined
       if (boundary.workspaceScope !== record.base.workspaceScope || boundary.recoveryEpoch !== record.base.recoveryEpoch) reasons.push('workspace-epoch-changed')
       const owner = record.base.owner
       if (owner.kind === 'host') {
@@ -263,13 +306,27 @@ export class EditorRecoveryDraftService {
           const currentWorking = detail && validateEditorRecoveryBase({ ...record.base, persistedWorking: { kind: 'host', title: detail.title, summary: detail.summary,
             blocks: detail.blocks.map(({ sortOrder: _order, ...block }) => definedFields(block)) } }).persistedWorking
           if (JSON.stringify(currentWorking) !== JSON.stringify(record.base.persistedWorking)) reasons.push('base-content-changed')
+          else if (originalPins && !reasons.length && currentWorking?.kind === 'host') {
+            try {
+              const actual = captureHostSourcePinsOwned(db, owner.documentId, currentWorking.blocks)
+              hostSourcePins = JSON.stringify(actual) === JSON.stringify(originalPins) ? 'unchanged' : 'changed'
+            } catch { hostSourcePins = 'unverifiable' }
+          }
         }
       } else {
         const current = db.prepare('SELECT creation_id,created_at,revision,topology_revision,history_cursor FROM synced_groups WHERE id=?').get(owner.groupId) as {
           creation_id: string; created_at: string; revision: string; topology_revision: string; history_cursor: string
         } | undefined
         if (!current || current.creation_id !== owner.creationId || current.created_at !== owner.createdAt) reasons.push('group-birth-changed-or-missing')
-        else if (current.revision !== owner.revision || current.topology_revision !== owner.topologyRevision || current.history_cursor !== owner.historyCursor) reasons.push('base-version-changed')
+        else {
+          if (includeCanonicalHost && !reasons.length) {
+            try {
+              const [item] = getSyncedGroupSnapshots(db, { groupIds: [owner.groupId] }).items
+              if (item?.status === 'ready') canonicalHostDocumentId = item.snapshot.instances[0]?.hostDocumentId
+            } catch { /* Preserve the draft for review when its live location cannot be verified. */ }
+          }
+          if (current.revision !== owner.revision || current.topology_revision !== owner.topologyRevision || current.history_cursor !== owner.historyCursor) reasons.push('base-version-changed')
+        }
       }
       for (const original of record.base.originals) {
         const row = db.prepare('SELECT client_operation_id,request_hash,result_json,created_at FROM synced_operations WHERE client_operation_id=?').get(original.key) as OriginalRow | undefined
@@ -300,12 +357,23 @@ export class EditorRecoveryDraftService {
       }
       const hasReferences = record.draft.working.kind === 'group' || record.draft.working.blocks.some(block => block.type === 'synced-block')
         || record.draft.sources.some(source => source.kind === 'canonical' || source.kind !== 'ordinary-host' && !ordinarySource)
-      if (hasReferences) reasons.push('cold-semantic-source-replay-required')
-      return { mode: reasons.length ? 'view-only' as const : ordinarySource ? 'editable-source-draft' as const : 'editable-ordinary-draft' as const, reasons, pending }
+      if (hasReferences || originalPins) reasons.push('cold-semantic-source-replay-required')
+      let canonicalFollowupAvailable: true | undefined
+      if (owner.kind === 'group' && !record.draft.sources.length && reasons.includes('base-version-changed')) {
+        const floor = attestCanonicalRecoveryAcceptedFloorOwned(db, record)
+        if (floor) {
+          try { decodeCanonicalRecoveryFollowupData(record, floor); canonicalFollowupAvailable = true }
+          catch { /* Preserve the readonly candidate when the later branch is incomplete. */ }
+        }
+      }
+      return { mode: reasons.length ? 'view-only' as const : ordinarySource ? 'editable-source-draft' as const : 'editable-ordinary-draft' as const, reasons, pending,
+        ...(canonicalFollowupAvailable ? { canonicalFollowupAvailable } : {}),
+        ...(canonicalHostDocumentId ? { canonicalHostDocumentId } : {}),
+        ...(hostSourcePins ? { hostSourcePins } : {}) }
     })()
   }
   read(event: EditorCloseIpcEvent, input: unknown): EditorRecoveryCandidate {
-    const frame = this.frame(event), expected = validateEditorRecoveryExpected(input), record = this.side.read(expected), state = this.examine(record), recoveryOwnerId = randomUUID()
+    const frame = this.frame(event), expected = validateEditorRecoveryExpected(input), record = this.side.read(expected), state = this.examine(record, true), recoveryOwnerId = randomUUID()
     this.cold.set(recoveryOwnerId, { sender: event.sender, frame, expected })
     return { status: 'candidate', recoveryOwnerId, record, ...state, writePermit: false, historicalKeyLineageComplete: false }
   }
@@ -328,7 +396,67 @@ export class EditorRecoveryDraftService {
     if (original.length !== 1) return editorRecoveryInvalid('one actual sealed baseline original required')
     const baseline = this.store.reopenSyncedRecoveryBaseline(event.senderFrame!, { sessionId: input.sessionId, groupId: owner.groupId,
       originalKey: original[0].key, originalRecordHash: original[0].requestHash })
-    return { record, baseline, writePermit: false, historicalKeyLineageComplete: false }
+    cold.completion = undefined
+    if (baseline.status === 'ready' && record.draft.replayJson !== undefined) {
+      const db = this.store.getUnsafeDatabaseHandle()
+      try {
+        const owner = db.transaction(() => prepareCanonicalRecoveryCompletionOwned(db, record, baseline))()
+        cold.completion = { kind: 'baseline', owner, sessionId: input.sessionId, readOwnerId: baseline.readOwnerId, draftSessionId: record.draft.draftSessionId }
+      } catch { /* The genuine baseline can still serve a read. Retirement requires the complete original branch. */ }
+    }
+    return { record, baseline, writePermit: false, historicalKeyLineageComplete: false,
+      ...(verifyCanonicalOriginalAlias(record) ? { canonicalOriginalAliasVerified: true } : {}) }
+  }
+  prepareGroupFloor(event: EditorCloseIpcEvent, value: unknown): PreparedEditorRecoveryGroupFloor {
+    const input = validatePrepareEditorRecoveryGroupFloorInput(value), cold = this.cold.get(input.recoveryOwnerId)
+    if (!cold) return editorRecoveryInvalid('not an actual new cold recovery owner')
+    this.sameFrame(event, cold)
+    const record = this.side.read(cold.expected), draftSessionId = record.draft.draftSessionId, head = this.side.head(draftSessionId), base = record.base.owner
+    if (!head || JSON.stringify(head.expected) !== JSON.stringify(cold.expected) || base.kind !== 'group'
+      || this.live.has(draftSessionId) || this.dormant.has(draftSessionId)) {
+      return editorRecoveryInvalid('cold group follow-up must come from the current detached side head')
+    }
+    const occurrence = { sessionId: input.sessionId, groupId: base.groupId, instance: input.instance }
+    const { floor, owner } = this.store.readSyncedRecoveryGroup(event.senderFrame!, occurrence, db => {
+      const floor = attestCanonicalRecoveryAcceptedFloorOwned(db, record)
+      if (!floor) return editorRecoveryInvalid('original accepted operation is not the current group floor')
+      const owner = prepareCanonicalRecoveryFollowupCompletionOwned(db, record, floor)
+      return { floor, owner }
+    })
+    cold.completion = { kind: 'floor', owner, draftSessionId, ...occurrence }
+    return { record, floor, writePermit: false, historicalKeyLineageComplete: false }
+  }
+  /** The actual explicit Save has already used the normal business writer.
+   * Only its complete accepted original branch can retire this old cold head. */
+  completeGroup(event: EditorCloseIpcEvent, value: unknown): boolean {
+    const input = validateCompleteEditorRecoveryGroupInput(value), cold = this.cold.get(input.recoveryOwnerId)
+    if (!cold) return false
+    this.sameFrame(event, cold)
+    const completion = cold.completion
+    if (!completion || completion.sessionId !== input.sessionId
+      || this.live.has(completion.draftSessionId) || this.dormant.has(completion.draftSessionId)) return false
+    const head = this.side.head(completion.draftSessionId)
+    if (!head || JSON.stringify(head.expected) !== JSON.stringify(cold.expected)) return false
+    const attest = (db: ReturnType<KnowbookStore['getUnsafeDatabaseHandle']>) =>
+      attestCanonicalRecoveryCompletionOwned(db, completion.owner, head.record, input.accepted)
+    let saved: boolean
+    if (completion.kind === 'floor') {
+      if (input.readOwnerId !== undefined) return false
+      saved = this.store.readSyncedRecoveryGroup(event.senderFrame!, { sessionId: input.sessionId, groupId: completion.groupId, instance: completion.instance }, attest)
+    } else {
+      if (completion.readOwnerId !== input.readOwnerId) return false
+      const ready = this.store.invokeSyncedEditingSession(event.senderFrame!, { sessionId: input.sessionId, method: 'validateOwner', input: { readOwnerId: completion.readOwnerId } })
+      if (ready.status !== 'ready') return false
+      const db = this.store.getUnsafeDatabaseHandle()
+      if (db.inTransaction) return editorRecoveryInvalid('canonical completion requires its own actual Main snapshot')
+      saved = db.transaction(() => attest(db))()
+    }
+    if (!saved) return false
+    this.side.decide(cold.expected, 'discard')
+    this.cold.delete(input.recoveryOwnerId)
+    // Leave collection to normal write/frame release so an unrelated current
+    // close receipt remains valid until its actual acknowledgement.
+    return true
   }
   decide(event: EditorCloseIpcEvent, recoveryOwnerId: string, decision: EditorRecoveryDecision): EditorRecoveryRecord | null {
     const owner = this.cold.get(recoveryOwnerId)

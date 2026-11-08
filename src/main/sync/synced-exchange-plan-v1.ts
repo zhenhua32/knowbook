@@ -3,7 +3,7 @@ import { isSyncedUuid, parseSyncedBlockPayload, SyncedValidationError } from '..
 import { parseDatabaseViewPayload } from '../../shared/databaseViewBlock'
 import { publicationCompare, publicationHash, publicationInvalid, publicationJson, SyncedPublicationError } from './synced-publication-model'
 import { syncedProtocol5RecordKey, validateSyncedProtocol5Record, validateSyncedProtocol5Snapshot,
-  type SyncedProtocol5Record, type SyncedProtocol5Snapshot } from './synced-protocol5-model'
+  withProtocol5Successor, type SyncedProtocol5Record, type SyncedProtocol5Snapshot } from './synced-protocol5-model'
 import { exchangeRecordKey, validateExchangeState, type ExchangeAcceptedSide, type ExchangeBaselineEntry, type ExchangeComponent,
   type ExchangeDeferredReason, type ExchangeState, type ExchangeTransfer, type DeferredExchangeComponent } from './synced-exchange-model'
 
@@ -316,6 +316,7 @@ export function planSyncedExchange(input: ExchangePlanInput): ExchangePlan {
     next = snapshot(nextRemote, input.remote.manifest.workspaceId); final = snapshot(localFinal, input.local.manifest.workspaceId)
   }
   const accepted = sorted(selectedParts.flatMap(row => row.component.keys)), acceptedSet = new Set(accepted), writes = accepted.filter(key => nextRemote.get(key)?.hash !== remote.get(key)?.hash), incoming = accepted.filter(key => localFinal.get(key)?.hash !== local.get(key)?.hash)
+  next = withProtocol5Successor(next, input.remote.manifest, input.operationId, writes.length > 0)
   const transfers = selectedParts.flatMap(row => transferPlan(row.component.keys, row.choices).transfers).sort((a, b) => publicationCompare(a.id, b.id))
   const finalDependencyFacts = new Map(deriveSyncedExchangeDependencyFacts(final).map(row => [row.key, row]))
   const acceptedSides: ExchangeAcceptedSide[] = accepted.map(key => {

@@ -87,7 +87,9 @@ type ContentEdit = { blockIndex: number; start: number; end: number; replacement
  * Upstream link/image rules identify reference uses, including collapsed and
  * shortcut forms; source maps keep labels and escaped table cells byte-exact.
  */
-function referenceBoundaryEdits(blocks: DocumentBlockDraft[], context: BlockTransferLinkContext, options: { inlineAllReferences?: boolean; forceMovedUse?: boolean } = {}): ContentEdit[] {
+function referenceBoundaryEdits(blocks: DocumentBlockDraft[], context: BlockTransferLinkContext, options: {
+  inlineAllReferences?: boolean; forceMovedUse?: boolean; namespaceLabels?: ReadonlyMap<string, string>
+} = {}): ContentEdit[] {
   if (context.sourcePath !== context.fromPath || !blocks.some(block => block.content.includes('['))) return []
   const { markdown, ranges, contentProjections } = serializeMarkdownWithBlockRanges(blocks)
   const env: MarkdownEnvironment = { captureSourceLinks: true }
@@ -117,13 +119,14 @@ function referenceBoundaryEdits(blocks: DocumentBlockDraft[], context: BlockTran
     if (blockIndex < 0) continue
     if (!definitions.has(label)) definitions.set(label, blockIndex)
     if (options.inlineAllReferences || !context.movedIds.has(blocks[blockIndex].id ?? '')) continue
-    let name = movedNames.get(label)
+    let name = options.namespaceLabels?.get(label) ?? movedNames.get(label)
+    if (options.namespaceLabels && !name) continue
     if (!name) {
       let ordinal = movedNames.size + 1
       do { name = 'knowbook-moved-' + ordinal++ } while (existingContent.includes(name) || usedNames.has(name))
-      movedNames.set(label, name)
       usedNames.add(name)
     }
+    movedNames.set(label, name)
     const rawLine = lines[token.map[0]]
     const labelMatch = [...rawLine.matchAll(/\[((?:\\.|[^\]\\])*)\]:/g)].find(match => markdownEngine.utils.normalizeReference(token.meta?.nativeReferenceEscaped ? decodeNativeLiteralText(match[1]).content : match[1]) === label)
     if (!labelMatch) continue
@@ -162,6 +165,12 @@ function referenceBoundaryEdits(blocks: DocumentBlockDraft[], context: BlockTran
       if (localStart === null || localEnd === null || localLabelEnd === null) continue
       const visible = blocks[actualBlock].content.slice(localStart, localLabelEnd)
       const renamed = movedNames.get(label)
+      if (options.namespaceLabels) {
+        // Keep the display range verbatim. A destination inside an image in
+        // the display can still be independently rebased by the detach planner.
+        if (renamed) edits.push({ blockIndex: actualBlock, start: localLabelEnd, end: localEnd, replacement: '[' + renamed + ']' })
+        continue
+      }
       let replacement: string
       if (movedUse && movedDefinition && renamed) replacement = visible + '[' + renamed + ']'
       else {
@@ -234,7 +243,8 @@ function normalLinkEdits(blocks: DocumentBlockDraft[], context: BlockTransferLin
  * existing parser rules without installing, replacing or enabling grammar.
  * A copy is inserted only into a verifiable top-level paragraph, otherwise the
  * caller rejects the move before its transaction has written any data. */
-function namedFootnoteEdits(blocks: DocumentBlockDraft[], context: BlockTransferLinkContext): ContentEdit[] {
+function namedFootnoteEdits(blocks: DocumentBlockDraft[], context: BlockTransferLinkContext,
+  namespaceLabels?: ReadonlyMap<string, string>): ContentEdit[] {
   if (context.sourcePath !== context.fromPath || !blocks.some(block => context.movedIds.has(block.id ?? '')
     && !['code', 'math', 'frontmatter'].includes(block.type) && block.content.includes('[^'))) return []
   const { markdown, ranges, contentProjections } = serializeMarkdownWithBlockRanges(blocks)
@@ -370,7 +380,7 @@ function namedFootnoteEdits(blocks: DocumentBlockDraft[], context: BlockTransfer
     }
     return result
   }
-  const targetNames = names(targetLabels, 'moved'), sourceNames = names(sourceLabels, 'source'), edits: ContentEdit[] = [...literalEdits]
+  const targetNames = namespaceLabels ?? names(targetLabels, 'moved'), sourceNames = names(sourceLabels, 'source'), edits: ContentEdit[] = [...literalEdits]
   for (const use of uses) {
     const name = (moved(use.blockIndex) ? targetNames : sourceNames).get(use.label)
     if (name) edits.push({ blockIndex: use.blockIndex, start: use.start, end: use.end, replacement: name })
@@ -401,7 +411,7 @@ function namedFootnoteEdits(blocks: DocumentBlockDraft[], context: BlockTransfer
     return applyContentEdits(raw, edits)
   }
 
-  const copied = (labels: Set<string>, sideNames: Map<string, string>, toTarget: boolean) => {
+  const copied = (labels: Set<string>, sideNames: ReadonlyMap<string, string>, toTarget: boolean) => {
     const copies = [...labels].map(label => effective.get(label)!).filter(definition => !toTarget || !moved(definition.blockIndex))
       .sort((a, b) => a.blockIndex - b.blockIndex || a.start - b.start)
     if (!copies.length) return
@@ -431,9 +441,22 @@ function namedFootnoteEdits(blocks: DocumentBlockDraft[], context: BlockTransfer
     if (copies.some(definition => !found.has(sideNames.get(definition.label)))) fail()
     edits.push({ blockIndex: hostIndex, start: host.content.length, end: host.content.length, replacement: suffix })
   }
-  copied(targetLabels, targetNames, true)
-  copied(sourceLabels, sourceNames, false)
+  if (!namespaceLabels) {
+    copied(targetLabels, targetNames, true)
+    copied(sourceLabels, sourceNames, false)
+  }
   return edits
+}
+
+/** Exact definition-label and actual consumer-selector spans in an independent
+ * source. The caller chooses collision-free names and proves the joined parse. */
+export function collectBlockTransferNamespaceEdits(blocks: DocumentBlockDraft[], labels: {
+  reference: ReadonlyMap<string, string>; note: ReadonlyMap<string, string>
+}): Array<{ blockIndex: number; start: number; end: number; replacement: string }> {
+  const context: BlockTransferLinkContext = { sourcePath: '', fromPath: '', toPath: '',
+    movedIds: new Set(blocks.flatMap(block => block.id === undefined ? [] : [block.id])), bindings: new Map() }
+  return [...(labels.reference.size ? referenceBoundaryEdits(blocks, context, { namespaceLabels: labels.reference }) : []),
+    ...(labels.note.size ? namedFootnoteEdits(blocks, context, labels.note) : [])]
 }
 
 /** Rewrite content before moving IDs into their new tree positions. Metadata,

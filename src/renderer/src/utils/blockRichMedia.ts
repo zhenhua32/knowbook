@@ -1,5 +1,6 @@
 import { markdownEngine, markdownTokenTree, normalizeMarkdownExternalUrl, type MarkdownEnvironment, type MarkdownNode } from '@shared/markdownEngine'
 import { parseLocalMarkdownUrl } from '@shared/markdownLinks'
+import { SYNCED_CANONICAL_BLOCK_ADDRESS_PREFIX } from '@shared/synced-canonical-block-address'
 export type BlockRichMediaImage = {
   alt: string
   url: string
@@ -16,6 +17,10 @@ export type BlockRichMedia = {
 }
 
 const KNOWBOOK_ASSET_PREVIEW_SCHEME = 'knowbook-asset'
+
+export function isBlockNavigationUrl(url: string): boolean {
+  return url.startsWith(SYNCED_CANONICAL_BLOCK_ADDRESS_PREFIX) || parseLocalMarkdownUrl(url) !== null
+}
 
 export function extractBlockRichMedia(content: string, references?: MarkdownEnvironment['references'], includeLocalLinks = false): BlockRichMedia {
   const images: BlockRichMediaImage[] = []
@@ -34,7 +39,7 @@ export function extractBlockRichMedia(content: string, references?: MarkdownEnvi
         }
       } else if (token.type === 'link_open') {
         const href = String(token.attrGet('href') ?? '')
-        const url = normalizeMarkdownExternalUrl(href) ?? (includeLocalLinks && parseLocalMarkdownUrl(href) ? href : null)
+        const url = normalizeMarkdownExternalUrl(href) ?? (includeLocalLinks && isBlockNavigationUrl(href) ? href : null)
         if (url && !linkUrls.has(url)) {
           linkUrls.add(url)
           links.push({ label: label(children) || url, url })

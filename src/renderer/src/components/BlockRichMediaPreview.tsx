@@ -1,8 +1,7 @@
 import { lazy, memo, Suspense, useState, useContext } from 'react'
 import { MarkdownReferencesContext } from './MarkdownContent'
 import { MarkdownNavigationContext } from './MarkdownNavigationContext'
-import { parseLocalMarkdownUrl } from '@shared/markdownLinks'
-import { extractBlockRichMedia, toBlockRichMediaPreviewUrl } from '../utils/blockRichMedia'
+import { extractBlockRichMedia, isBlockNavigationUrl, toBlockRichMediaPreviewUrl } from '../utils/blockRichMedia'
 import type { MarkdownImageOccurrence } from '@shared/markdownMediaOccurrences'
 import type { ImagePresentation } from '@shared/markdownMedia'
 const AttachmentCard = lazy(() => import('./AttachmentCard').then(module => ({ default: module.AttachmentCard })))
@@ -32,7 +31,7 @@ export const BlockRichMediaPreview = memo(function BlockRichMediaPreview({ conte
   }
 
   const openUrl = (url: string) => {
-    if (navigateLink && parseLocalMarkdownUrl(url)) { navigateLink(url); return }
+    if (navigateLink && isBlockNavigationUrl(url)) { navigateLink(url); return }
     void window.knowbook.openExternalUrl(url).catch((error) => {
       console.warn('Failed to open external preview URL.', error)
     })
@@ -80,7 +79,7 @@ export const BlockRichMediaPreview = memo(function BlockRichMediaPreview({ conte
                   <small>{getLinkDisplayUrl(link.url)}</small>
                 </span>
                 <span className="block-rich-media-link-action" aria-hidden="true">
-                  {parseLocalMarkdownUrl(link.url) ? '→' : <ExternalIcon />}
+                  {isBlockNavigationUrl(link.url) ? '→' : <ExternalIcon />}
                 </span>
               </button>
             ))}

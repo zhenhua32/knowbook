@@ -12,6 +12,7 @@ import { composeSyncedBindingClaims, syncedBindingClaimsAreIdentity, validateSyn
 
 import type { SyncedReadSourcesPort, ControllerReadOwnerContext } from './sourceReadOwner'
 import { readControllerRecoverySource } from './recoveryReadOwnerPort'
+import { consumeColdCanonicalRecoveryOwner, noteCanonicalRecoveryFrameSaved, type ColdCanonicalRecoveryOwner } from './canonicalRecoveryOwnerPort'
 import { reserveApply, planFrameUpdate, commitFramePlan, cancelPlan, cancelReservation, dropFrame, pinPending, dropPending, pendingMatches,
   readFrameRecoverySources, type PreparedBatch, type ApplyReservation, type FramePlan, type FrameLease, type PendingLease } from './sourceCopyResources'
 interface SourceCopyApply { readonly preparation: object; readonly batch: PreparedBatch }
@@ -56,6 +57,13 @@ export interface SyncedSourceEndpointOpening {
   }>
 }
 const endpointPorts = new WeakMap<SyncedGroupBinding, EndpointPort>()
+const recoveryBindingPorts = new WeakMap<SyncedGroupBinding, { restore: (owner: ColdCanonicalRecoveryOwner, shouldContinue: () => boolean) => boolean | Promise<boolean>; save: () => boolean }>()
+export async function restoreSyncedCanonicalRecovery(binding: SyncedGroupBinding, owner: ColdCanonicalRecoveryOwner, shouldContinue: () => boolean = () => true): Promise<boolean> {
+  return typeof shouldContinue === 'function' ? recoveryBindingPorts.get(binding)?.restore(owner, shouldContinue) ?? false : false
+}
+/** Only the actual Save button or accepted Source Apply calls this local
+ * review grant. Automatic drain/navigation continues to use the blocked flush. */
+export function acceptSyncedCanonicalRecoveryReview(binding: SyncedGroupBinding): boolean { return recoveryBindingPorts.get(binding)?.save() ?? false }
 const endpointReaders = new WeakMap<SyncedWorkingEndpointReceipt, () => SyncedWorkingEndpointRead>()
 const endpointIdentities = new WeakMap<SyncedWorkingEndpointReceipt, Endpoint>()
 const committedEndpoints = new WeakMap<SyncedCommittedEndpointReceipt, SyncedCommittedEndpointFacts>()
@@ -194,6 +202,8 @@ type Frame = {
   mount: Mount; instance: SyncedInstanceGuard; transactionId: string; sealed: boolean
   beforeBookmark: SyncedScopeBookmark | null; afterBookmark: SyncedScopeBookmark | null
 }
+export type SyncedCanonicalRecoveryFrame = Frame
+export type SyncedCanonicalRecoveryMount = Mount
 type FrameVersion = {
   frame: Frame | null; unavailable: boolean; copyLease: FrameLease | null;
   committed: Readonly<{ submittedSequence: number; ack: Readonly<SyncedGroupSaved> }> | null
@@ -249,6 +259,7 @@ class GroupController implements SyncedGroupController {
   private recoveryAccepted: { method: 'updateSyncedBlockGroup' | 'restoreSyncedGroupOperation'; input: SyncedUpdateGroupInput | SyncedRestoreGroupInput; ack: SyncedGroupSaved } | null = null
   private queue: Promise<void> = Promise.resolve()
   private historyBusy = false
+  private recoveryReview = false
   private workspaceInvalid = false
   private readonly knownOperations = new Set<string>()
   private readonly historyBookmarks = new Map<string, { before: SyncedScopeBookmark | null; after: SyncedScopeBookmark | null }>()
@@ -267,20 +278,26 @@ class GroupController implements SyncedGroupController {
     this.currentEndpoint = this.baselineEndpoint(this.state.working, 0, this.state.snapshot)
     recoveryGroupPorts.set(this, () => {
       const pending = this.pending
-      return { identity: this, state: this.state, replay: {
-        kind: 'knowbook-canonical-recovery-data', version: 1, snapshot: structuredClone(this.state.snapshot),
-        readSource: this.readOwner ? readControllerRecoverySource(this.readOwner) : null,
+      const readSource = this.readOwner ? readControllerRecoverySource(this.readOwner) : null
+      const frameData = (frame: Frame) => ({ before: structuredClone(frame.before), after: structuredClone(frame.after),
+        ...(frame.bindingClaims === undefined ? {} : { bindingClaims: structuredClone(frame.bindingClaims) }),
+        copySources: frame.copyLease ? readFrameRecoverySources(frame.copyLease) : [],
+        instance: { ...frame.instance }, transactionId: frame.transactionId, sequence: frame.sequence })
+      return { identity: this, state: this.state,
+        ...(readSource ? { canonicalReadOwnerId: readSource.readOwnerId } : {}),
+        authoredWork: this.frames.length > 0 || this.redoFrames.length > 0 || this.serverRedo.length > 0
+          || Boolean(this.cutServerRedo && this.state.snapshot.history.redoToken), replay: {
+        kind: 'knowbook-canonical-recovery-data', version: 2, snapshot: structuredClone(this.state.snapshot),
+        readSource,
         accepted: structuredClone(this.recoveryAccepted),
-        frames: this.frames.map(frame => ({ before: structuredClone(frame.before), after: structuredClone(frame.after),
-          ...(frame.bindingClaims === undefined ? {} : { bindingClaims: structuredClone(frame.bindingClaims) }),
-          copySources: frame.copyLease ? readFrameRecoverySources(frame.copyLease) : [],
-          instance: { ...frame.instance }, transactionId: frame.transactionId, sequence: frame.sequence })) }, pending: pending ? {
+        frames: this.frames.map(frameData), redoFrames: this.redoFrames.map(frameData),
+        serverRedo: structuredClone(this.serverRedo), cutServerRedo: this.cutServerRedo }, pending: pending ? {
         method: pending.kind === 'content' ? 'updateSyncedBlockGroup' : 'restoreSyncedGroupOperation',
         input: structuredClone(pending.input), submitted: structuredClone(pending.kind === 'content'
           ? pending.frame.after : syncedCanonicalEdits(pending.before.blocks)) } : null }
     })
     const flush = this.flush
-    const cleanBaseline = () => !this.frames.length && !this.pending && !this.historyBusy && !this.compositions.size
+    const cleanBaseline = () => !this.recoveryReview && !this.frames.length && !this.pending && !this.historyBusy && !this.compositions.size
       && !this.state.dirty && !this.state.pending && !this.state.composingInstanceIds.length && !this.state.incoming
       && this.state.failure?.status !== 'conflict' && equal(this.state.working, syncedCanonicalEdits(this.state.snapshot.blocks))
     groupFlushPorts.set(this, { state: () => this.state, flush: options => flush(options), cleanBaseline,
@@ -348,10 +365,11 @@ class GroupController implements SyncedGroupController {
     next.dirty = this.frames.length > 0
     next.pending = this.pending ? immutable({ clientOperationId: this.pending.input.clientOperationId, kind: this.pending.kind, editSequence: this.pending.sequence }) : null
     next.composingInstanceIds = immutable([...new Set([...this.compositions].map(mount => mount.lease.instanceId))])
+    next.recoveryReview = this.recoveryReview
     next.failure = next.failure && immutable(structuredClone(next.failure))
     next.phase = next.incoming || next.failure?.status === 'conflict' ? 'conflict'
       : next.error || next.failure ? 'error' : this.pending ? 'saving' : next.dirty ? 'dirty' : 'clean'
-    next.canUndo = this.frames.length > 0 || next.snapshot.history.undoToken !== null
+    next.canUndo = this.frames.length > 0 || !this.recoveryReview && next.snapshot.history.undoToken !== null
     next.canRedo = this.serverRedo.length > 0 || this.redoFrames.length > 0
       || (this.frames.length === 0 && !this.cutServerRedo && next.snapshot.history.redoToken !== null)
     this.state = Object.freeze(next)
@@ -418,6 +436,8 @@ class GroupController implements SyncedGroupController {
         if (this.mounts.get(scope.instanceId) === mount) { this.mounts.delete(scope.instanceId); this.checkpoint(); this.publish() }
       }
     }
+    recoveryBindingPorts.set(binding, { restore: (owner, shouldContinue) => current() && this.restoreRecovery(mount, () => current() && shouldContinue() && current(), owner),
+      save: () => { if (!current()) return false; if (this.recoveryReview) { this.recoveryReview = false; this.publish() }; return true } })
     endpointPorts.set(binding, {
       capture: () => current() && this.endpointAvailable(this.currentEndpoint) ? this.mintEndpoint(this.currentEndpoint, current) : null,
       source: validation => {
@@ -571,6 +591,29 @@ class GroupController implements SyncedGroupController {
   }
 
   checkpoint = () => { const tail = this.frames.at(-1); if (tail) tail.sealed = true }
+  private async restoreRecovery(mount: Mount, current: () => boolean, owner: ColdCanonicalRecoveryOwner): Promise<boolean> {
+    const before = this.state
+    const available = () => current() && this.state === before && !this.workspaceInvalid && !this.historyBusy && !this.pending && !this.frames.length
+      && !this.redoFrames.length && !this.serverRedo.length && !(this.cutServerRedo && before.snapshot.history.redoToken)
+      && !this.hasComposition() && !before.dirty && !before.incoming && !before.failure && !before.error && !this.recoveryReview
+    if (!available()) return false
+    const { restoreCanonicalRecovery } = await import('./canonicalRecoveryRestore')
+    return restoreCanonicalRecovery(owner, before, mount, plan => {
+      if (!available() || !consumeColdCanonicalRecoveryOwner(owner, plan.original)) return false
+      if (plan.noop) { plan.original.context?.release(); return true }
+      this.expireEndpoints()
+      this.redoFrames = plan.redo; this.serverRedo = []; this.cutServerRedo = plan.original.data.cutServerRedo
+      if (plan.original.context) {
+        this.releaseReadOwner(); this.readOwner = plan.original.context
+      }
+      this.recoveryAccepted = null
+      this.frames = plan.frames; this.recoveryReview = true
+      for (const frame of plan.frames) this.frameEndpoint(frame, frame.after, frame.sequence, false)
+      this.adoptEndpoint(plan.working, plan.sequence, before.snapshot)
+      this.publish({ working: plan.working, editSequence: plan.sequence, incoming: null, failure: null, error: null })
+      return true
+    })
+  }
   private serial<T>(run: () => Promise<T>): Promise<T> {
     const result = this.queue.then(run)
     this.queue = result.then(() => {}, () => {})
@@ -655,6 +698,7 @@ class GroupController implements SyncedGroupController {
     if (this.historyBookmarks.size > 256) this.historyBookmarks.delete(this.historyBookmarks.keys().next().value!)
     this.recoveryAccepted = { method: pending.kind === 'content' ? 'updateSyncedBlockGroup' : 'restoreSyncedGroupOperation',
       input: structuredClone(pending.input), ack: structuredClone(result) }
+    if (pending.kind === 'content') noteCanonicalRecoveryFrameSaved(pending.frame, pending.frame.transactionId, pending.input, result)
     this.pending = null
     if (pending.kind === 'history') {
       if (result.status === 'saved') this.expireEndpoints()
@@ -710,7 +754,7 @@ class GroupController implements SyncedGroupController {
     this.checkpoint()
     const throughSequence = this.state.editSequence
     return this.serial(async () => {
-      if (this.workspaceInvalid || options.shouldContinue?.() === false || this.hasComposition()) return false
+      if (this.recoveryReview || this.workspaceInvalid || options.shouldContinue?.() === false || this.hasComposition()) return false
       if (this.pending && !await this.writePending()) return false
       if (options.shouldContinue?.() === false || this.state.incoming || this.state.failure?.status === 'conflict') return false
       for (;;) {
@@ -770,6 +814,7 @@ class GroupController implements SyncedGroupController {
       }
       if (direction === 'redo' && this.frames.length) return false
       if (direction === 'redo' && !serverRedo && this.cutServerRedo) return false
+      if (this.recoveryReview) return false
       const snapshot = this.state.snapshot, token = direction === 'undo' ? snapshot.history.undoToken : snapshot.history.redoToken
       if (!token) return false
       const input: SyncedRestoreGroupInput = immutable({ ...syncedSnapshotGuard(snapshot), clientOperationId: this.operationId(),
@@ -831,6 +876,8 @@ export interface SyncedWorkspaceController {
 export interface SyncedRecoveryControllerCapture {
   identity: object
   state: SyncedGroupDraftState
+  canonicalReadOwnerId?: string
+  authoredWork: boolean
   replay: unknown
   pending: { method: 'updateSyncedBlockGroup' | 'restoreSyncedGroupOperation'; input: SyncedUpdateGroupInput | SyncedRestoreGroupInput;
     submitted: SyncedCanonicalEdit[] } | null

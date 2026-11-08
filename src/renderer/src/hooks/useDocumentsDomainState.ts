@@ -593,6 +593,7 @@ export function useDocumentsDomainState({
     onOpenDocumentBlock: openDocumentBlockInDocumentsPage,
     selectedDocumentId,
     notify: onNotification,
+    isZh: uiLanguage === 'zh-CN',
     uiBlockReferenceNotFound: ui.blockReferenceNotFound
   })
 

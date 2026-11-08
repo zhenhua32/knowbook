@@ -54,7 +54,7 @@ function scopeSource(source: readonly string[]) {
  * Native realpath/FD proof supplies content hash and ownership separately.
  * Using the original path flavour keeps cold Windows sources deterministic
  * on another host without ever opening the retired root. */
-function logicalFileAsset(uri: string, provenRootSpellingUri: string, expectedHash: string) {
+export function logicalFileAsset(uri: string, provenRootSpellingUri: string, expectedHash: string) {
   if (uri.length > 8192) return null // Existing AttachmentStore.resolve bound.
   let url: URL, root: URL
   try { url = new URL(uri); root = new URL(provenRootSpellingUri) } catch { return null }
@@ -77,7 +77,7 @@ function logicalFileAsset(uri: string, provenRootSpellingUri: string, expectedHa
   try { return { name, portableUri: buildSyncedPortableAssetUri({ hash: expectedHash, name }) } } catch { return null }
 }
 
-export function deriveCapsule2WorkingPortableEvidence5<Binding extends Capsule2SettledPortableBinding3>(input: Capsule2SettledPortableInput3<Binding>) {
+function createCapturedBasePortableProjector5<Binding extends Capsule2SettledPortableBinding3>(input: Capsule2SettledPortableInput3<Binding>) {
   const { source, referenceCapture: archive } = input, raw = source.sourceContent, assets = source.assets
   const baseUris = [...new Set(assets.scopes.flatMap(scope => scope.destinations.map(value => value.uri)))].sort()
   if (archive.sourceContentHash !== assets.sourceContentHash || archive.assetReferencesObservationHash !== assets.observationHash
@@ -161,6 +161,28 @@ export function deriveCapsule2WorkingPortableEvidence5<Binding extends Capsule2S
       return { record, binding }
     } catch { return block(unmapped ? 'captured-alias-or-original-export-rule-unresolved' : 'complete-record-not-representable-by-original-export-codec') }
   } }
+  return { projector, rejected, proofHash, settings }
+}
+
+/** Rebuild one complete original document with the existing exact base alias
+ * and catalog rules. The returned value is data from this read only. */
+export function projectCapturedBaseDocumentPortable5(input: Capsule2SettledPortableInput3<Capsule2SettledPortableBinding3>, documentId: string) {
+  const { source } = input, raw = source.sourceContent
+  const document = source.physical.documents.find(value => value.documentId === documentId)
+  const header = graph3Rows(raw, 'documents').find(row => row.value.id === documentId)
+  if (!document || !header || header.value.created_at !== document.createdAt) return null
+  const blocks = graph3Rows(raw, 'blocks').filter(row => row.value.document_id === documentId)
+  if (blocks.length !== document.blocks.length) return null
+  const { projector } = createCapturedBasePortableProjector5(input)
+  const projected = projector.project({ kind: 'document', id: documentId, parentId: document.parentId, sortOrder: document.sortOrder,
+    createdAt: document.createdAt, content: { title: document.title, summary: document.summary, blocks: document.blocks } },
+  ['documents', documentId, 'complete-original-protocol-record'], [header, ...blocks])
+  return projected?.record.kind === 'document' ? { ...projected, record: projected.record } : null
+}
+
+export function deriveCapsule2WorkingPortableEvidence5<Binding extends Capsule2SettledPortableBinding3>(input: Capsule2SettledPortableInput3<Binding>) {
+  const { source } = input, raw = source.sourceContent, assets = source.assets
+  const { projector, rejected, proofHash, settings } = createCapturedBasePortableProjector5(input)
   const evidence = deriveRoot5SettledWorkingEvidence5(raw, projector, { preferProjectedCandidate: true })
   const jobs = [...evidence].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([jobSettingKey, proof]) => ({ jobSettingKey,
     jobHash: exchangeJobHash(proof.job), contextHash: proof.contextHash, binding: proof.binding, merged: proof.merged }))

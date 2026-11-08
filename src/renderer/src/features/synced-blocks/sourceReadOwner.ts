@@ -1,4 +1,4 @@
-import type { SyncedBindingSource, SyncedGroupSaved, SyncedGroupSnapshot } from '@shared/synced-blocks'
+import type { SyncedBindingClaim, SyncedBindingSource, SyncedGroupSaved, SyncedGroupSnapshot } from '@shared/synced-blocks'
 import { isSyncedUuid, syncedCanonicalEdits, validateSyncedGroupSnapshot } from '@shared/syncedBlockValidation'
 import { validateSyncedBindingKey } from '@shared/syncedBlockInputs'
 import { collectDocumentMarkdownLinks } from '@shared/markdownLinkMaintenance'
@@ -8,7 +8,8 @@ import { readSyncedCommittedEndpoint, readSyncedWorkingEndpoint, readSyncedWorki
   type SyncedCommittedEndpointReceipt, type SyncedWorkingEndpointReceipt, type SyncedSourceReadOwnerFence } from './controller'
 import { readSourceReadOwnerAccess, installSourceHistorySide, revokeSourceHistoryOwner, type SourceCheckpoint, type AcceptedSourceCheckpoint, type AcceptedSourceCheckpointFacts } from './sourceLedger'
 import { createDomain, createConsumer, issueWitness, revokeConsumer, whenDomainDrained, domainDrained,
-  type CopyDomain, type DomainIssuer, type ConsumerIssuer, type WitnessLease } from './sourceCopyResources'
+  sealPreparedBatch, reserveApply, planFrameUpdate, commitFramePlan, cancelPlan, cancelReservation, dropWitness,
+  type CopyDomain, type DomainIssuer, type ConsumerIssuer, type WitnessLease, type FrameLease, type ApplyReservation, type FramePlan } from './sourceCopyResources'
 import type { SyncedBindingKey } from '@shared/synced-blocks'
 import { installControllerRecoverySource } from './recoveryReadOwnerPort'
 
@@ -180,6 +181,36 @@ function cleanupId(raw: unknown): string | null {
     return status && 'value' in status && status.value === 'ready' && id && 'value' in id && isSyncedUuid(id.value) ? id.value : null
   } catch { return null }
 }
+function restoreRecoveryFrame(context: Context, claims: readonly SyncedBindingClaim[]): FrameLease | null {
+  if (context.references <= 0 || context.cleanupFailed) throw new Error('The actual original recovery source expired')
+  const copies = claims.flatMap(claim => claim.kind === 'copy' && claim.source.kind === 'ticket' ? [claim.source] : [])
+  if (!copies.length) return null
+  const allowed = new Set(context.source.entries.map(entry => entry.entryId)), entries = new Set<string>()
+  for (const copy of copies) {
+    if (copy.ticketId !== context.source.ticketId || !allowed.has(copy.entryId)) throw new Error('Recovery copy escaped its new genuine original source')
+    entries.add(copy.entryId)
+  }
+  const consumer = createConsumer(context.copyIssuer), witnesses: WitnessLease[] = [], preparation = Object.freeze({})
+  let reservation: ApplyReservation | null = null, plan: FramePlan | null = null, committed = false
+  try {
+    for (const entryId of entries) {
+      const witness = issueWitness(consumer.issuer, { ticketId: context.source.ticketId, entryId })
+      if (!witness) throw new Error('Recovery copy witness could not be retained')
+      witnesses.push(witness)
+    }
+    const batch = sealPreparedBatch(preparation, witnesses, claims)
+    if (!batch || !(reservation = reserveApply(context.copyDomain, batch, preparation, claims))) throw new Error('Recovery copy sources do not cover their exact frame claims')
+    plan = planFrameUpdate({ action: 'push', old: null, incoming: reservation, finalClaims: claims })
+    if (!plan) throw new Error('Recovery copy frame could not be planned')
+    const result = commitFramePlan(plan)
+    if (result.status !== 'committed' || !result.lease) throw new Error('Recovery copy frame was not committed')
+    committed = true; return result.lease
+  } finally {
+    if (!committed) { if (plan) cancelPlan(plan); else if (reservation) cancelReservation(reservation) }
+    for (const witness of witnesses) dropWitness(witness)
+    revokeConsumer(consumer.issuer)
+  }
+}
 
 /** Capture and validate in one initial-load branch. A failed ready DTO still
  * releases its own safely extracted Main owner exactly once. */
@@ -209,7 +240,7 @@ export async function captureControllerReadOwner(input: SyncedReadSourcesPort, g
     contexts.set(context, saved)
     installControllerRecoverySource(context, () => saved.references <= 0 || saved.cleanupFailed ? null : {
       workspaceScope: saved.workspaceScope, readOwnerId: saved.readOwnerId,
-      snapshot: structuredClone(saved.snapshot), bindingSource: structuredClone(saved.source) })
+      snapshot: structuredClone(saved.snapshot), bindingSource: structuredClone(saved.source) }, claims => restoreRecoveryFrame(saved, claims))
     return { status: 'ready', workspaceScope: saved.workspaceScope, snapshot, context }
   } catch (error) {
     if (issuedId) { try { await port.release({ readOwnerId: issuedId }) } catch { /* No confirmed cleanup; never register the malformed owner. */ } }

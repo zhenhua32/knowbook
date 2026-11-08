@@ -117,8 +117,27 @@ export function retainedBackupIds(versions: BackupVersion[], now = Date.now()): 
   return retained
 }
 
+const windowsRenameDelays = [25, 50, 100]
+const renameWaitBuffer = new Int32Array(new SharedArrayBuffer(4))
+
+function renameBackupDirectory(from: string, to: string, verifyRetry?: () => void): void {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      renameSync(from, to)
+      return
+    } catch (error) {
+      const delay = windowsRenameDelays[attempt]
+      // A Windows reader that omits FILE_SHARE_DELETE can briefly block
+      // renaming the directory that contains the file it has opened.
+      if (process.platform !== 'win32' || (error as NodeJS.ErrnoException).code !== 'EPERM' || delay === undefined) throw error
+      Atomics.wait(renameWaitBuffer, 0, 0, delay)
+      verifyRetry?.()
+    }
+  }
+}
+
 /** Publish atomically, retaining the previous complete snapshot before pruning. */
-export function publishBackupSnapshot(backupRoot: string, stagingRoot: string): void {
+export function publishBackupSnapshot(backupRoot: string, stagingRoot: string, verifyStagingRetry?: () => void): void {
   const historyRoot = `${backupRoot}-history`
   mkdirSync(historyRoot, { recursive: true })
   if (!safeDirectory(historyRoot)) throw new Error('Backup history directory is not a managed directory')
@@ -128,11 +147,11 @@ export function publishBackupSnapshot(backupRoot: string, stagingRoot: string): 
   const previousRoot = join(historyRoot, archiveId)
   if (hadPrevious) {
     if (!safeDirectory(backupRoot)) throw new Error('Backup directory is not a managed directory')
-    renameSync(backupRoot, previousRoot)
+    renameBackupDirectory(backupRoot, previousRoot, verifyStagingRetry)
   }
-  try { renameSync(stagingRoot, backupRoot) }
+  try { renameBackupDirectory(stagingRoot, backupRoot, verifyStagingRetry) }
   catch (error) {
-    if (hadPrevious && !existsSync(backupRoot)) renameSync(previousRoot, backupRoot)
+    if (hadPrevious && !existsSync(backupRoot)) renameBackupDirectory(previousRoot, backupRoot)
     throw error
   }
   // Cleanup failure must not invalidate an otherwise successful backup.

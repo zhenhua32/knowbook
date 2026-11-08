@@ -5,9 +5,10 @@ import { EDITOR_CLOSE_REQUEST_CHANNEL, EDITOR_CLOSE_CANCELLED_CHANNEL, EDITOR_CL
   type EditorCloseRequest, type EditorCloseCancelled } from '../shared/editor-close'
 import electron from 'electron'
 import type { WorkspaceSearchOccurrence, WorkspaceSearchOccurrenceResult } from '../shared/workspace-search-occurrence'
+import type { SyncedCanonicalBlockNavigationResult } from '../shared/synced-canonical-block-address'
 import type { SyncedBlocksChangedEvent } from '../shared/synced-blocks'
 import type { OpenSyncedEditingSessionInput, OpenSyncedEditingSessionResult, SyncedEditingMethod, SyncedEditingRequest, SyncedEditingResult } from '../shared/synced-editing-session'
-import type { ResolveSyncedInlineInstanceInput, SyncedInlineInstanceResult } from '../shared/workspace-search-occurrence'
+import type { ResolveSyncedHeadingAnchorInput, ResolveSyncedInlineInstanceInput, SyncedHeadingAnchorResult, SyncedInlineInstanceResult } from '../shared/workspace-search-occurrence'
 import { BACKUP_HEALTH_CHANNEL, GET_BACKUP_HEALTH_CHANNEL, type BackupHealth } from '../shared/backup-health'
 import type {
   AiConfig,
@@ -146,9 +147,13 @@ const api: ElectronApi = {
   writeEditorRecoveryDrafts: input => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.write, input),
   listEditorRecoveryDrafts: input => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.list, input),
   readEditorRecoveryDraft: input => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.read, input),
+  listLegacyEditorRecoveryDrafts: afterRecordId => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.listLegacy, afterRecordId),
+  readLegacyEditorRecoveryDraft: input => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.readLegacy, input),
   decideEditorRecoveryDraft: input => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.decide, input),
   retireCleanEditorRecoveryDraft: input => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.retire, input),
   prepareEditorRecoveryGroup: input => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.prepareGroup, input),
+  prepareEditorRecoveryGroupFloor: input => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.prepareGroupFloor, input),
+  completeEditorRecoveryGroup: input => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.completeGroup, input),
   parkEditorRecoveryDraft: input => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.park, input),
   onEditorCloseCancelled: listener => editorCloseDelivery.onCancelled(listener),
   acknowledgeEditorClose: (input) => ipcRenderer.invoke(EDITOR_CLOSE_ACKNOWLEDGE_CHANNEL, input) as Promise<boolean>,
@@ -160,6 +165,10 @@ const api: ElectronApi = {
   cancelWebDavSync: () => ipcRenderer.invoke('knowbook:cancel-webdav-sync'),
   resolveWebDavSyncConflict: (input) => ipcRenderer.invoke('knowbook:resolve-webdav-sync-conflict', input),
   getWebDavSyncConflictDetails: (input) => ipcRenderer.invoke('knowbook:get-webdav-sync-conflict-details', input),
+  previewWebDavProtocol5Conflicts: () => ipcRenderer.invoke('knowbook:preview-webdav-protocol5-conflicts'),
+  resolveWebDavProtocol5Conflict: (input) => ipcRenderer.invoke('knowbook:resolve-webdav-protocol5-conflict', input),
+  previewWebDavProtocol5Deletions: () => ipcRenderer.invoke('knowbook:preview-webdav-protocol5-deletions'),
+  resolveWebDavProtocol5Deletion: (input) => ipcRenderer.invoke('knowbook:resolve-webdav-protocol5-deletion', input),
   getHomeData: async () => {
     const data = await ipcRenderer.invoke('knowbook:get-home-data') as HomeDataIpcPayload
     const documentCatalog = data.documentCatalog.map(decodeDocumentIndexEntry)
@@ -321,7 +330,9 @@ const api: ElectronApi = {
   searchDocuments: (query: string) => ipcRenderer.invoke('knowbook:search-documents', query) as Promise<GlobalSearchResult[]>,
   searchWorkspace: (input: WorkspaceSearchInput) => ipcRenderer.invoke('knowbook:search-workspace', input) as Promise<WorkspaceSearchPage>,
   resolveWorkspaceSearchOccurrence: (input: WorkspaceSearchOccurrence) => ipcRenderer.invoke('knowbook:resolve-workspace-search-occurrence', input) as Promise<WorkspaceSearchOccurrenceResult>,
+  resolveSyncedCanonicalBlockAddress: (input: string) => ipcRenderer.invoke('knowbook:resolve-synced-canonical-block-address', input) as Promise<SyncedCanonicalBlockNavigationResult>,
   resolveSyncedInlineInstance: (input: ResolveSyncedInlineInstanceInput) => ipcRenderer.invoke('knowbook:resolve-synced-inline-instance', input) as Promise<SyncedInlineInstanceResult>,
+  resolveSyncedHeadingAnchor: (input: ResolveSyncedHeadingAnchorInput) => ipcRenderer.invoke('knowbook:resolve-synced-heading-anchor', input) as Promise<SyncedHeadingAnchorResult>,
   openSyncedEditingSession: (input: OpenSyncedEditingSessionInput) => ipcRenderer.invoke('knowbook:open-synced-editing-session', input) as Promise<OpenSyncedEditingSessionResult>,
   invokeSyncedEditingSession: <M extends SyncedEditingMethod>(input: SyncedEditingRequest<M>) => ipcRenderer.invoke('knowbook:invoke-synced-editing-session', input) as Promise<SyncedEditingResult<M>>,
   releaseSyncedEditingSession: (sessionId: string) => ipcRenderer.invoke('knowbook:release-synced-editing-session', sessionId) as Promise<void>,

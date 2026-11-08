@@ -1,10 +1,11 @@
 import type { SyncedGroupSaved, SyncedStructureApplied } from '../../shared/synced-blocks'
-import { assertSyncedShape, isSyncedBlockId, isSyncedUuid, validateSyncedGroupSnapshot } from '../../shared/syncedBlockValidation'
+import { assertSyncedShape, isSyncedBlockId, isSyncedUuid, parseSyncedBlockPayload, validateSyncedGroupSnapshot } from '../../shared/syncedBlockValidation'
 import { decodeSyncedGroupOperationAck, type SyncedGroupOperationRow } from './synced-group-operation-receipt'
 import { hostJson, validateHostDocumentDetail } from './synced-host-document-read'
 import { hostHash, hostReferencedGroups, sameHostContent, validateHostContent } from './synced-host-journal'
 import { createRawHash } from './synced-host-create-plan'
 import { validateCreatedLifecycleSide, type SyncedHostCreateApplied } from './synced-host-create-codec'
+import { projectDetachedHost } from './synced-host-detach-plan'
 export type { SyncedHostCreateApplied } from './synced-host-create-codec'
 export type SyncedMainHostSuccess = SyncedStructureApplied | SyncedHostCreateApplied
 export type SyncedMainOperationResult = { status: 'unknown' } | { status: 'committed'; result: SyncedGroupSaved | SyncedMainHostSuccess }
@@ -55,9 +56,37 @@ export function decodeHostOperationAck(row: SyncedGroupOperationRow): SyncedStru
     if (!/^[a-f0-9]{64}$/.test(row.request_hash)) return bad()
     const envelope = hostJson(row.result_json)
     assertSyncedShape(envelope, ['kind', 'version', 'result'])
-    if (envelope.kind !== 'synced-host-operation' || envelope.version !== 1) return bad()
-    return validateHostOperationAck(envelope.result, row.client_operation_id)
+    if (envelope.kind !== 'synced-host-operation' || (envelope.version !== 1 && envelope.version !== 2)) return bad()
+    return envelope.version === 2 ? validateHostDetachOperationAck(envelope.result, row.client_operation_id)
+      : validateHostOperationAck(envelope.result, row.client_operation_id)
   } catch (cause) { throw new Error('宿主结构操作回执损坏，未重发或重建。', { cause }) }
+}
+
+export function validateHostDetachOperationAck(value: unknown, operationId: string): SyncedStructureApplied {
+  assertSyncedShape(value, ['status', 'operationId', 'historyToken', 'replayed', 'hosts', 'groups', 'affectedInstanceIds', 'blockIdMap'])
+  const { blockIdMap, ...withoutMap } = value
+  const ack = validateHostOperationAck({ ...withoutMap, blockIdMap: [] }, operationId)
+  if (ack.status !== 'applied' || !ack.historyToken || ack.hosts.length !== 1 || ack.affectedInstanceIds.length !== 1) return bad()
+  const allocation = unique(blockIdMap, item => {
+    assertSyncedShape(item, ['from', 'to'])
+    return { from: isSyncedBlockId(item.from) ? item.from : bad(), to: isSyncedUuid(item.to) ? item.to : bad() }
+  }, item => item.from)
+  const { logicalBefore, after } = ack.hosts[0], [instanceId] = ack.affectedInstanceIds
+  const instance = logicalBefore.blocks.find(block => block.id === instanceId)
+  if (!instance || instance.type !== 'synced-block') return bad()
+  const groupId = parseSyncedBlockPayload(instance.content).groupId
+  const group = ack.groups.find(item => item.groupId === groupId)
+  if (!group || group.instances.some(item => item.instanceId === instanceId)
+    || !same(allocation.map(item => item.from), group.blocks.map(block => block.id))) return bad()
+  const wire = { kind: 'synced-group' as const, id: group.groupId, creationId: group.creationId, createdAt: group.createdAt,
+    origin: group.origin, blocks: group.blocks, bindings: group.bindings }
+  const plan = projectDetachedHost(logicalBefore, instanceId, wire, allocation, [])
+  const copyIds = new Set(allocation.map(item => item.to))
+  const physical = { title: after.title, summary: after.summary, blocks: after.blocks.map(({ sortOrder: _sortOrder, ...block }) => ({
+    ...block, content: copyIds.has(block.id) ? '' : block.content
+  })) }
+  if (!sameHostContent({ ...plan, blocks: plan.blocks.map(block => ({ ...block, content: copyIds.has(block.id) ? '' : block.content })) }, physical)) return bad()
+  return { ...ack, blockIdMap: allocation }
 }
 /** Generic operation lookup dispatches only a validated finite envelope. Group
  * source-signing readers continue to call their group-only decoder directly. */

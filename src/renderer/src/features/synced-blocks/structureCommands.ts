@@ -1,12 +1,14 @@
 import type { SyncedGroupListResult, SyncedStructureApplied, SyncedStructureInput, SyncedOperationResult,
   SyncedGroupGuard, SyncedInstanceGuard, SyncedPlacement } from '@shared/synced-blocks'
 import type { SyncedEditingHostResult } from '@shared/synced-editing-session'
+import { parseSyncedBlockPayload } from '@shared/syncedBlockValidation'
 import type { SyncedHostSourceCurrent } from './SyncedHostSourceDialog'
 import { areDocumentDraftBlocksEqual } from '../../utils/documentDraftComparison'
 import { syncedCreateSelection, syncedInsertionAfter } from './structureIntent'
 
 type Guards = { groups: SyncedGroupGuard[]; expectedInstances: SyncedInstanceGuard[] }
 type Item = SyncedGroupListResult['items'][number]
+type DetachTarget = { instance: SyncedInstanceGuard; group: SyncedGroupGuard; canonicalIds: readonly string[]; settled: () => boolean }
 export interface StructureCommandPort {
   current: () => SyncedHostSourceCurrent | null
   blocked: () => boolean
@@ -16,20 +18,29 @@ export interface StructureCommandPort {
   flushGroups: (current: () => boolean) => Promise<boolean>
   apply: (input: SyncedStructureInput) => Promise<SyncedEditingHostResult>
   operation: (operationId: string) => Promise<SyncedOperationResult>
+  protectDetach: (hostSession: object, operationId: string, current: () => boolean) => Promise<boolean>
   adopt: (before: SyncedHostSourceCurrent, result: SyncedStructureApplied) => boolean
   changed: () => void
   notify: (zh: string, en: string) => void
   isZh: () => boolean
 }
 export interface StructureCommandView {
-  id: object; kind: 'create' | 'insert'; documentId: string; blockCount: number; opener: HTMLElement | null
+  id: object; kind: 'create' | 'insert' | 'detach'; documentId: string; blockCount: number; opener: HTMLElement | null
   busy: boolean; loading: boolean; error: string; uncertain: boolean; hasRequest: boolean
   query: string; offset: number; total: number; items: readonly Item[]; selectedGroupId: string | null
   canReturnFocus: () => boolean
 }
 type Opening = { before: SyncedHostSourceCurrent; view: StructureCommandView; operationId: string; instanceId: string;
-  action: { kind: 'create'; rootIds: string[]; groupId: string } | { kind: 'insert'; target: SyncedPlacement };
-  input: SyncedStructureInput | null; listing: number; shouldContinue: () => boolean }
+  action: { kind: 'create'; rootIds: string[]; groupId: string } | { kind: 'insert'; target: SyncedPlacement } | { kind: 'detach'; target: DetachTarget };
+  input: SyncedStructureInput | null; detachReceipt: 'idle' | 'protecting' | 'dispatched'; listing: number; shouldContinue: () => boolean }
+
+function matchesDetachAck(target: DetachTarget, result: SyncedStructureApplied): boolean {
+  const { instanceId } = target.instance, { affectedInstanceIds, blockIdMap } = result
+  const blocks = new Map(result.hosts[0].after.blocks.map(block => [block.id, block.type]))
+  return Boolean(result.historyToken) && affectedInstanceIds.length === 1 && affectedInstanceIds[0] === instanceId && !blocks.has(instanceId)
+    && blockIdMap.length === target.canonicalIds.length && new Set(blockIdMap.map(mapping => mapping.to)).size === blockIdMap.length
+    && blockIdMap.every((mapping, index) => mapping.from === target.canonicalIds[index] && blocks.has(mapping.to) && blocks.get(mapping.to) !== 'synced-block')
+}
 
 /** Renderer intentions only. The enclosing runtime supplies its genuine opaque
  * Main session; no UI DTO, group preview, or ACK is promoted into a Main fence. */
@@ -38,6 +49,13 @@ export class SyncedStructureCommands {
   constructor(private readonly port: StructureCommandPort) {}
   getSnapshot = (): Readonly<StructureCommandView> | null => this.opening?.view ?? null
   pending = () => this.opening !== null
+  pendingDetach(hostSession: object) {
+    const opening = this.opening
+    return opening?.before.hostSession === hostSession && opening.action.kind === 'detach' && opening.detachReceipt !== 'idle' ? opening.input : null
+  }
+  canJournalDetach(hostSession: object) {
+    return this.pendingDetach(hostSession) !== null && this.opening?.detachReceipt === 'dispatched' && !this.opening.view.busy
+  }
   private update(opening: Opening, changes: Partial<StructureCommandView>) {
     if (this.opening !== opening) return
     opening.view = Object.freeze({ ...opening.view, ...changes }); this.port.changed()
@@ -56,10 +74,8 @@ export class SyncedStructureCommands {
     const before = this.port.current(); if (!before) return false
     const selection = syncedCreateSelection(before.host.workingBefore.blocks, ids)
     if (!selection.ok) {
-      this.port.notify(selection.reason === 'heading' ? '当前不能将含标题的选区转为同步块，原正文已保留。'
-        : selection.reason === 'nested-sync' ? '选区内已有同步引用，不能再嵌套创建。' : '请选择连续同级的完整内容块；子块会一起纳入。',
-      selection.reason === 'heading' ? 'Creating from a heading selection is not supported; the original body is retained.'
-        : selection.reason === 'nested-sync' ? 'An existing synced reference cannot be nested inside a new group.' : 'Select consecutive sibling blocks; their complete children are included.')
+      this.port.notify(selection.reason === 'nested-sync' ? '选区内已有同步引用，不能再嵌套创建。' : '请选择连续同级的完整内容块；子块会一起纳入。',
+        selection.reason === 'nested-sync' ? 'An existing synced reference cannot be nested inside a new group.' : 'Select consecutive sibling blocks; their complete children are included.')
       return false
     }
     const opening = await this.begin(before, { kind: 'create', rootIds: selection.rootIds, groupId: crypto.randomUUID() }, selection.blockCount, shouldContinue, opener)
@@ -73,9 +89,19 @@ export class SyncedStructureCommands {
     const opening = await this.begin(before, { kind: 'insert', target }, 0, shouldContinue, opener)
     return this.getSnapshot()?.id === opening.view.id && !opening.view.error
   }
+  async openDetach(target: DetachTarget, shouldContinue: () => boolean, opener: HTMLElement | null): Promise<boolean> {
+    if (this.opening || !shouldContinue() || this.port.blocked() || !target.settled()) return false
+    const before = this.port.current()
+    if (!before || before.host.documentId !== target.instance.hostDocumentId || !target.canonicalIds.length) return false
+    const selected = before.host.workingBefore.blocks.find(block => block.id === target.instance.instanceId)
+    if (!selected || selected.type !== 'synced-block' || parseSyncedBlockPayload(selected.content).groupId !== target.group.groupId) return false
+    const captured = { ...target, instance: { ...target.instance }, group: { ...target.group }, canonicalIds: [...target.canonicalIds] }
+    const opening = await this.begin(before, { kind: 'detach', target: captured }, captured.canonicalIds.length, shouldContinue, opener)
+    return this.getSnapshot()?.id === opening.view.id && !opening.view.error
+  }
   private async begin(before: SyncedHostSourceCurrent, action: Opening['action'], blockCount: number, shouldContinue: () => boolean, opener: HTMLElement | null): Promise<Opening> {
     const opening: Opening = { before: { ...before, host: structuredClone(before.host) }, action,
-      operationId: crypto.randomUUID(), instanceId: crypto.randomUUID(), input: null, listing: 0, shouldContinue,
+      operationId: crypto.randomUUID(), instanceId: crypto.randomUUID(), input: null, detachReceipt: 'idle', listing: 0, shouldContinue,
       view: Object.freeze({ id: Object.freeze({}), kind: action.kind, documentId: before.host.documentId, blockCount, opener,
         busy: false, loading: true, error: '', uncertain: false, hasRequest: false, query: '', offset: 0, total: 0, items: [], selectedGroupId: null,
         canReturnFocus: () => !this.port.blocked() && this.port.current()?.hostSession === before.hostSession
@@ -89,7 +115,7 @@ export class SyncedStructureCommands {
     this.update(opening, { query, offset, loading: true, error: '', selectedGroupId: null, items: [] })
     try {
       if (!await this.port.openHost(opening.before.host.documentId) || !this.current(opening)) throw new Error('The original host or complete working body changed; cancel and reopen.')
-      if (opening.action.kind === 'create') { this.update(opening, { loading: false }); return }
+      if (opening.action.kind !== 'insert') { this.update(opening, { loading: false }); return }
       const result = await this.port.list({ query, offset, limit: 20 })
       if (serial !== opening.listing || this.opening !== opening) return
       if (!this.current(opening)) { this.update(opening, { loading: false, error: this.port.isZh() ? '原宿主或完整草稿已变化，请取消后重新打开。' : 'The original host or complete draft changed. Cancel and reopen.' }); return }
@@ -118,32 +144,58 @@ export class SyncedStructureCommands {
   async apply(): Promise<boolean> {
     const opening = this.opening
     if (!opening || opening.view.busy || opening.view.loading) return false
-    if (!this.current(opening)) { this.update(opening, { error: this.port.isZh() ? '原宿主、选区或完整草稿已变化，当前草稿已保留。' : 'The original host, selection, or complete draft changed; the current draft is retained.' }); return false }
+    const detach = opening.action.kind === 'detach' ? opening.action.target : null
+    if (!this.current(opening) && !(detach && opening.detachReceipt === 'dispatched')) {
+      this.update(opening, { error: this.port.isZh() ? '原宿主、选区或完整草稿已变化，当前草稿已保留。' : 'The original host, selection, or complete draft changed; the current draft is retained.' }); return false
+    }
     if (opening.action.kind === 'insert' && !opening.input && !opening.view.selectedGroupId) return false
     const recoveringOriginal = opening.input !== null
     this.update(opening, { busy: true, error: '' })
     try {
       if (!opening.input) {
-        if (!await this.port.flushGroups(() => this.current(opening)) || !this.current(opening)) {
+        const groupReady = detach ? detach.settled() : await this.port.flushGroups(() => this.current(opening))
+        if (!groupReady || !this.current(opening)) {
           this.update(opening, { error: this.port.isZh() ? '共享正文保存尚未完成，请先处理原草稿。' : 'The shared body has not finished saving. Resolve its original draft first.' }); return false
         }
-        const groupId = opening.action.kind === 'insert' ? opening.view.selectedGroupId! : null
+        const groupId = detach?.group.groupId ?? (opening.action.kind === 'insert' ? opening.view.selectedGroupId! : null)
         const guards = await this.port.guards(opening.before.host.documentId, groupId ? [groupId] : [])
         if (!guards || !this.current(opening)) throw new Error('The original host/group guards changed; the complete draft is retained.')
+        if (detach && (!detach.settled() || !guards.groups.some(group => group.groupId === detach.group.groupId
+          && group.expectedRevision === detach.group.expectedRevision && group.expectedTopologyRevision === detach.group.expectedTopologyRevision)
+          || !guards.expectedInstances.some(instance => instance.instanceId === detach.instance.instanceId
+            && instance.hostDocumentId === detach.instance.hostDocumentId && instance.bindingVersion === detach.instance.bindingVersion))) {
+          throw new Error(this.port.isZh() ? '原引用或共享正文已变化，请取消后重新打开。' : 'The original reference or shared body changed. Cancel and reopen.')
+        }
         opening.input = { clientOperationId: opening.operationId, mode: 'command', hostsWorkingBefore: [structuredClone(opening.before.host)], ...guards,
           action: opening.action.kind === 'create' ? { kind: 'create', documentId: opening.before.host.documentId,
             selectedRootIds: [...opening.action.rootIds], groupId: opening.action.groupId, instanceId: opening.instanceId }
-            : { kind: 'insert', groupId: groupId!, instanceId: opening.instanceId, target: { ...opening.action.target } } }
+            : opening.action.kind === 'insert' ? { kind: 'insert', groupId: groupId!, instanceId: opening.instanceId, target: { ...opening.action.target } }
+              : { kind: 'detach', groupId: opening.action.target.group.groupId, instanceId: opening.action.target.instance.instanceId } }
         this.update(opening, { hasRequest: true })
       }
       const input = opening.input
       let result: SyncedEditingHostResult | undefined
-      if (recoveringOriginal) {
+      if (recoveringOriginal && (!detach || opening.detachReceipt === 'dispatched')) {
         const observed = await this.port.operation(input.clientOperationId)
         if (observed.status === 'committed' && 'hosts' in observed.result) result = observed.result
         else if (observed.status !== 'unknown') throw new Error('The original receipt is not a host structure operation')
       }
       if (!result) {
+        if (detach) {
+          const ready = () => this.current(opening) && detach.settled()
+          if (!ready()) throw new Error(this.port.isZh() ? '原引用或共享正文已变化，请重新核对原操作。' : 'The original reference or shared body changed. Check the original operation again.')
+          const previous = opening.detachReceipt
+          opening.detachReceipt = 'protecting'
+          this.port.changed()
+          try {
+            if (!await this.port.protectDetach(opening.before.hostSession, input.clientOperationId, ready) || !ready())
+              throw new Error(this.port.isZh() ? '草稿保护尚未确认，请重试原操作。' : 'Draft protection has not been confirmed. Retry the original operation.')
+          } catch (error) {
+            opening.detachReceipt = previous
+            throw error
+          }
+          opening.detachReceipt = 'dispatched'
+        }
         try { result = await this.port.apply(input) }
         catch (error) {
           this.update(opening, { uncertain: true })
@@ -153,6 +205,7 @@ export class SyncedStructureCommands {
         }
       }
       if (result.status !== 'applied') {
+        opening.detachReceipt = 'idle'
         this.update(opening, { uncertain: false, error: this.port.isZh()
           ? result.status === 'unsupported' ? '当前选区、标题或正文结构暂不支持此操作，完整草稿已保留。' : '原结构操作未应用，完整草稿已保留，请取消后核对原正文。'
           : result.status === 'unsupported' ? 'This selection, heading, or working structure is not supported; the complete draft is retained.'
@@ -164,6 +217,7 @@ export class SyncedStructureCommands {
         || host.after.id !== before.host.documentId || host.logicalBefore.title !== before.host.workingBefore.title
         || host.logicalBefore.summary !== before.host.workingBefore.summary
         || !areDocumentDraftBlocksEqual(host.logicalBefore.blocks, before.host.workingBefore.blocks)
+        || detach && !matchesDetachAck(detach, result)
         || !this.current(opening) || !this.port.adopt(before, result)) {
         this.update(opening, { uncertain: true, error: 'Main returned an operation, but its original host/W acknowledgement could not be adopted. The full draft is retained; retry the same operation.' })
         return false

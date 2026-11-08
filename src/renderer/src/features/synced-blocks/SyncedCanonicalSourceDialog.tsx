@@ -5,6 +5,7 @@ import { replaceMarkdownSourceChanges, hasMarkdownSourceDraftChanges } from '../
 import { canonicalSourceDraftToBlocks, createCanonicalSourceDraft } from './canonicalSource'
 import type { SyncedGroupBinding } from './types'
 import { syncedSnapshotGuard } from './types'
+import { acceptSyncedCanonicalRecoveryReview } from './controller'
 
 type Props = { binding: SyncedGroupBinding; isZh: boolean; opener: HTMLElement | null; onClose: () => void | boolean; onLocalStateChange?: (state: Readonly<MarkdownSourceLocalState>) => void }
 
@@ -38,11 +39,20 @@ function CanonicalSourceOpening({ binding, isZh, opener, onClose, onLocalStateCh
       if (!isCurrent()) return false
       const blocks = canonicalSourceDraftToBlocks(draft)
       // An untouched source is not permission to overwrite a newer body.
-      if (areDocumentDraftBlocksEqual(blocks, opening.working)) return true
+      if (areDocumentDraftBlocksEqual(blocks, opening.working)) {
+        const current = binding.getCurrent(), guards = syncedSnapshotGuard(current.snapshot)
+        if (current.editSequence === opening.editSequence && guards.expectedRevision === opening.guards.expectedRevision
+          && guards.expectedTopologyRevision === opening.guards.expectedTopologyRevision && areDocumentDraftBlocksEqual(current.working, opening.working)) {
+          acceptSyncedCanonicalRecoveryReview(binding)
+        }
+        return true
+      }
       const current = binding.getCurrent(), guards = syncedSnapshotGuard(current.snapshot)
       if (current.editSequence !== opening.editSequence || guards.expectedRevision !== opening.guards.expectedRevision
         || guards.expectedTopologyRevision !== opening.guards.expectedTopologyRevision) return false
-      return binding.apply({ expectedEditSequence: opening.editSequence, guards: opening.guards, blocks,
+      const applied = binding.apply({ expectedEditSequence: opening.editSequence, guards: opening.guards, blocks,
         bookmark: opening.bookmark, transactionId: crypto.randomUUID() })
+      if (applied) acceptSyncedCanonicalRecoveryReview(binding)
+      return applied
     }} />
 }

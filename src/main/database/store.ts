@@ -1,4 +1,4 @@
-import type { DocumentRenameAdmissionResult } from '../../shared/document-rename-admission'
+import { hasExistingNativeHeadingTextChange, type DocumentRenameAdmissionResult } from '../../shared/document-rename-admission'
 import { readDocumentRenameAdmissionOwned2, OrdinaryRenameRequiresTitle2 } from './ordinary-title-rename-admission2'
 import { assertCanonicalRuntimeReadableOwned, hasCanonicalRuntimeDataOwned } from './canonical-runtime-read'
 import { readCanonicalBackupRevision } from './canonical-backup-revision'
@@ -11,7 +11,8 @@ import { normalizeListStart, parseMarkdownBlocks } from '@shared/markdown'
 import { createHash, randomUUID } from 'node:crypto'
 import { SyncRepository } from '../sync/repository'
 import type { SyncRecord } from '../sync/model'
-import { constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { closeSync, constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, realpathSync, rmSync } from 'node:fs'
+import { SYNC_RECEIVER_PROFILE_KEY } from '../sync/receiver-bootstrap'
 import { createRequire } from 'node:module'
 import { basename, dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -94,8 +95,10 @@ import { DocumentBlockTransfers } from './document-block-transfers'
 import type { MoveDocumentBlocksInput, RestoreDocumentBlockMoveInput, DocumentBlockMoveResult, DocumentBlockMoveHistoryEntry } from '../../shared/document-block-moves'
 import { WorkspaceSearchRepository } from './workspace-search'
 import { SyncedEditingSessionRepository } from './synced-editing-session'
+import { readEditorRecoveryWorkspace } from './synced-editing-fence'
 import type { OpenSyncedEditingSessionInput, OpenSyncedEditingSessionResult, SyncedEditingMethod, SyncedEditingRequest, SyncedEditingResult } from '../../shared/synced-editing-session'
 import { resolveWorkspaceSearchOccurrence, resolveSyncedInlineInstance } from './workspace-search-occurrences'
+import { resolveSyncedCanonicalBlockAddress } from './synced-canonical-block-navigation'
 import type { WorkspaceSearchOccurrence, WorkspaceSearchOccurrenceResult } from '../../shared/workspace-search-occurrence'
 import type { ResolveSyncedInlineInstanceInput, SyncedInlineInstanceResult } from '../../shared/workspace-search-occurrence'
 import { decodeMarkdownFormat, normalizeMarkdownFormat, type MarkdownBlockFormat } from '../../shared/markdownFormat'
@@ -375,6 +378,7 @@ export interface ExportWorkspaceSnapshot {
 }
 
 const canonicalRuntimeStartup = Symbol('KnowBook complete canonical runtime startup')
+const emptyReceiverStartup = Symbol('KnowBook initialize new synced receiver')
 
 function assertSupportedDatabase(db: SqliteDatabase, capability?: typeof canonicalRuntimeStartup): number {
   return db.transaction(() => {
@@ -422,7 +426,11 @@ export class KnowbookStore {
   static openCanonicalRuntime(databasePath: string): KnowbookStore {
     return new KnowbookStore(databasePath, canonicalRuntimeStartup)
   }
+  static createEmptySyncedReceiver(databasePath: string): KnowbookStore {
+    return new KnowbookStore(databasePath, emptyReceiverStartup)
+  }
   private readonly canonicalRuntime: boolean
+  private readonly emptyReceiver: boolean
   private readonly db: SqliteDatabase
   private readonly markdownLinks: MarkdownLinkIndex
   private syncedEditingSessions: SyncedEditingSessionRepository | null = null
@@ -439,18 +447,24 @@ export class KnowbookStore {
     replaced: Set<string>
   } | null = null
 
-  constructor(private readonly databasePath: string, capability?: typeof canonicalRuntimeStartup) {
-    if (capability !== undefined && capability !== canonicalRuntimeStartup) throw new Error('Invalid Store startup capability.')
-    this.canonicalRuntime = capability === canonicalRuntimeStartup
-    mkdirSync(dirname(databasePath), { recursive: true })
-    const databaseAlreadyExists = existsSync(databasePath)
-    if (databaseAlreadyExists) preflightJournaledDatabase(databasePath, capability)
+  constructor(private readonly databasePath: string, capability?: typeof canonicalRuntimeStartup | typeof emptyReceiverStartup) {
+    if (capability !== undefined && capability !== canonicalRuntimeStartup && capability !== emptyReceiverStartup) throw new Error('Invalid Store startup capability.')
+    this.emptyReceiver = capability === emptyReceiverStartup
+    this.canonicalRuntime = capability !== undefined
+    const runtime: typeof canonicalRuntimeStartup | undefined = this.canonicalRuntime ? canonicalRuntimeStartup : undefined
+    if (this.emptyReceiver) {
+      // Exclusive new storage. Never seed, delete or reopen an existing profile in this mode.
+      mkdirSync(dirname(databasePath))
+      closeSync(openSync(databasePath, 'wx', 0o600))
+    } else mkdirSync(dirname(databasePath), { recursive: true })
+    const databaseAlreadyExists = !this.emptyReceiver && existsSync(databasePath)
+    if (databaseAlreadyExists) preflightJournaledDatabase(databasePath, runtime)
     this.db = new Database(databasePath)
     this.markdownLinks = new MarkdownLinkIndex(this.db, (id) => {
       if (!this.restoringTrashedDocument) this.documentRecovery?.checkpoint(id)
     })
     try {
-      const schemaVersion = assertSupportedDatabase(this.db, capability)
+      const schemaVersion = assertSupportedDatabase(this.db, runtime)
       this.db.pragma('journal_mode = WAL')
       this.db.pragma('foreign_keys = ON')
       this.db.pragma('busy_timeout = 5000')
@@ -1528,18 +1542,11 @@ export class KnowbookStore {
       return [documentId]
     }
 
-    const markdownChanges: MarkdownIndexedPathChange[] = !internal.skipLinkMaintenance && this.deferredLinkResyncDepth === 0
+    const maintainMarkdown = !internal.skipLinkMaintenance && this.deferredLinkResyncDepth === 0
+    const nativeSectionEdit = blocksChanged && hasExistingNativeHeadingTextChange(existingBlocks, persistedBlocks)
+    const markdownChanges: MarkdownIndexedPathChange[] = maintainMarkdown
       ? pathChangedDocuments.map((entry) => ({ id: entry.id, before: entry.path, after: entry.nextPath }))
       : []
-    if (!internal.skipLinkMaintenance && this.deferredLinkResyncDepth === 0 && (blocksChanged || normalizedTitle !== document.title)) {
-      const oldBlocks = this.markdownLinks.readDocument(documentId)!.blocks
-      const headings = getMarkdownHeadingRewrites(getMarkdownHeadingTargets(oldBlocks, document.title), getMarkdownHeadingTargets(persistedBlocks, normalizedTitle))
-      if (headings.size) {
-        const changedPath = markdownChanges.find((entry) => entry.id === documentId)
-        if (changedPath) changedPath.headings = headings
-        else markdownChanges.push({ id: documentId, before: oldPath, after: newPath, headings })
-      }
-    }
     let rewrittenDocumentIds: string[] = []
 
     const updateDocumentMetadataStatement = this.db.prepare(`
@@ -1570,16 +1577,25 @@ export class KnowbookStore {
     `)
 
     const transaction = this.db.transaction(() => {
-      if (newPath !== oldPath) {
+      const oldBlocks = nativeSectionEdit || maintainMarkdown && (blocksChanged || normalizedTitle !== document.title)
+        ? this.markdownLinks.readDocument(documentId)!.blocks : null
+      const headings = oldBlocks && getMarkdownHeadingRewrites(getMarkdownHeadingTargets(oldBlocks, document.title), getMarkdownHeadingTargets(persistedBlocks, normalizedTitle))
+      if (newPath !== oldPath || nativeSectionEdit && headings && headings.size) {
         const actual = this.db.prepare('SELECT title,path,parent_id,updated_at FROM documents WHERE id=?').get(documentId) as
           { title: string; path: string; parent_id: string | null; updated_at: string } | undefined
         if (!actual || !current || actual.updated_at !== current.updated_at || actual.title !== document.title
           || actual.path !== oldPath || actual.parent_id !== document.parent_id) throw new Error('The actual document changed before its rename; the complete draft is retained.')
         // A previously false readonly hint confers no permission. Re-read every
         // actual affected typed binding before the first identity/checkpoint DML.
-        const admission = readDocumentRenameAdmissionOwned2(this.db, { documentId, expectedUpdatedAt: actual.updated_at })
+        const admission = readDocumentRenameAdmissionOwned2(this.db, { documentId, expectedUpdatedAt: actual.updated_at,
+          ...(newPath === oldPath && headings ? { headingSlugs: [...headings.keys()] } : {}) })
         if (admission.status !== 'ready') throw new Error('The actual document rename address became unavailable.')
         if (admission.requiresFencedTitle2) throw new OrdinaryRenameRequiresTitle2()
+      }
+      if (maintainMarkdown && headings && headings.size) {
+        const changedPath = markdownChanges.find((entry) => entry.id === documentId)
+        if (changedPath) changedPath.headings = headings
+        else markdownChanges.push({ id: documentId, before: oldPath, after: newPath, headings })
       }
       this.blockIdentities.assertDocumentWrite(documentId, persistedBlocks.map(block => block.id))
       const identities = this.blockIdentities.getMany(persistedBlocks.map(block => block.id))
@@ -1657,7 +1673,7 @@ export class KnowbookStore {
       }
     })
 
-    if (newPath !== oldPath) transaction.immediate()
+    if (newPath !== oldPath || nativeSectionEdit) transaction.immediate()
     else transaction()
     return [...new Set([...(newPath !== oldPath ? pathChangedDocuments.map(entry => entry.id) : [documentId]), ...rewrittenDocumentIds])]
   }
@@ -2482,6 +2498,10 @@ export class KnowbookStore {
     return resolveWorkspaceSearchOccurrence(this.db,input)
   }
 
+  resolveSyncedCanonicalBlockAddress(input: unknown) {
+    return resolveSyncedCanonicalBlockAddress(this.db, input)
+  }
+
   resolveSyncedInlineInstance(input: ResolveSyncedInlineInstanceInput): SyncedInlineInstanceResult {
     return resolveSyncedInlineInstance(this.db,input)
   }
@@ -2500,11 +2520,16 @@ export class KnowbookStore {
   reopenSyncedRecoveryBaseline(sender:object,input:import('./synced-binding-sources').SyncedRecoveryBaselineInput) {
     return this.editingSessions().reopenRecoveryBaseline(sender,input)
   }
+  readSyncedRecoveryGroup<T>(sender:object,input:{sessionId:string;groupId:string;instance:import('../../shared/synced-blocks').SyncedInstanceGuard},
+    read:(db:SqliteDatabase)=>T):T {
+    return this.editingSessions().readRecoveryGroup(sender,input,read)
+  }
   releaseSyncedEditingSession(sender:object,sessionId:string):void {
     this.editingSessions().release(sender,sessionId)
   }
   releaseSyncedEditingSessionsForSender(sender:object):void {this.syncedEditingSessions?.releaseSender(sender)}
   releaseAllSyncedEditingSessions():void {this.syncedEditingSessions?.releaseAll()}
+  getEditorRecoveryWorkspace() { return readEditorRecoveryWorkspace(this.db) }
 
   getSearchFacets(): WorkspaceSearchFacets {
     return new WorkspaceSearchRepository(this.db).facets()
@@ -4738,6 +4763,12 @@ export class KnowbookStore {
 
   private seed(): void {
     if (this.readSetting('workspace.initialized') === 'true') return
+    if (this.emptyReceiver) {
+      this.getDefaultDocumentDatabaseId()
+      this.saveSetting(SYNC_RECEIVER_PROFILE_KEY, 'true')
+      this.saveSetting('workspace.initialized', 'true')
+      return
+    }
     const documentCount = (this.db.prepare('SELECT COUNT(*) AS count FROM documents').get() as CountRow).count
     if (documentCount > 0) {
       return

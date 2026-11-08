@@ -1,21 +1,25 @@
 import { applySyncedHostHeadingTitle3, restoreSyncedHostHeadingTitle3 } from './synced-heading-title3'
 import { readHeadingTitle3OriginalOperationOwned } from './synced-heading-title3-read'
-import { HEADING_TITLE3_OPERATION_KIND, headingTitle3JournalKey } from './synced-heading-title3-codec'
+import { HEADING_TITLE3_OPERATION_KIND, headingTitle3GroupHeadKey, headingTitle3JournalKey } from './synced-heading-title3-codec'
+import { HEADING_CREATE_BIRTH2_OPERATION_KIND } from './synced-heading-create-birth-codec2'
 import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
 import type { SyncedGroupSnapshot, SyncedGroupWire, SyncedStructureApplied, SyncedStructureInput } from '../../shared/synced-blocks'
 import type { SyncedEditingHostResult } from '../../shared/synced-editing-session'
 import { validateSyncedStructureInput, validateSyncedRestoreHostInput } from '../../shared/syncedBlockInputs'
+import { isNativeSectionHeading } from '../../shared/document-rename-admission'
+import { getMarkdownHeadingRewrites, getMarkdownHeadingTargets } from '../../shared/markdownLinkMaintenance'
 import { getSyncedGroupSnapshots, getSyncedHostHistory } from './synced-blocks-read'
 import { getSyncedOperation } from './synced-blocks-content'
 import { validateSyncedOperationLookupInput } from './synced-group-operation-receipt'
 import { applySyncedHostFinal, applySyncedHostCommand, restoreSyncedHostOperation } from './synced-host-final'
 import { requireSyncedMetadataEditingFenceOwned2 } from './synced-editing-fence'
 import { hostEncode, hostHash, hostEqual, sameHostContent, encodeHostJournal, decodeHostJournal, hostReferencedGroups, type HostFinalInput, type HostJournal } from './synced-host-journal'
-import { hostJson, readStrictHostDocument, type HostContent } from './synced-host-document-read'
+import { hostJson, readStrictHostDocument, type HostContent, type StrictHostDocument } from './synced-host-document-read'
 import { planSyncedMetadataNamespacesOwned2, readSyncedMetadataWorkspaceOwned2, type SyncedMetadataWorkspaceView2 } from './synced-metadata-view2'
-import { projectSyncedHostHeadings2, planSyncedHeadingRewrites2 } from './synced-heading-projection2'
+import { projectSyncedHostHeadings2, planSyncedHeadingRewrites2, readSyncedHostHeadingsOwned2, type SyncedProjectedHeading2 } from './synced-heading-projection2'
 import { projectSyncedMetadataStoredGroupLinksOwned2 } from './synced-metadata-group-links2'
+import { continueTitle2Heading, title2BindingKey, title2HeadingLocations } from './synced-host-title2-heading'
 import { captureSyncedMetadataReadBaselineOwned2, readSyncedMetadataCaptureRecordOwned2, SYNCED_METADATA_BASELINE2_PREFIX } from './synced-metadata-capture-record2'
 import { readSyncedGroupLifecycles } from './synced-lifecycle-state'
 import { readHistoricalExactRows, readOriginalSqlTextRowsOwned2 } from './synced-history-evidence-support'
@@ -24,19 +28,23 @@ import { MarkdownLinkIndex } from './markdown-link-index'
 import { DocumentRecoveryRepository } from './document-recovery'
 import { readSyncedRecoveryHostCut } from './synced-recovery-boundary-read'
 import { readSyncedExchangeHostCut } from './synced-exchange-host-cut'
-import { title2Hash, title2RequestHash, title2CompanionKey, title2JournalKey, title2GroupHeadKey, makeTitle2Companion,
-  TITLE2_OPERATION_KIND, type Title2Group, type Title2Companion, type Title2Effect, type Title2Subtree } from './synced-host-title2-codec'
+import { title2Hash, title2RequestHash, title2CompanionKey, title2JournalKey, title2GroupHeadKey, makeTitle2Companion, TITLE2_SCOPE, TITLE2_HEADING_SCOPE, TITLE2_SECTION_SCOPE,
+  TITLE2_OPERATION_KIND, TITLE2_USER_HISTORY_SCOPE, TITLE2_MAX_HISTORY_ROWS, TITLE2_MAX_HISTORY_BYTES, type Title2Group, type Title2Companion, type Title2Effect, type Title2Subtree,
+  type Title2HistoryProjection, type Title2SectionEdit } from './synced-host-title2-codec'
 import { readTitle2OriginalOperationOwned, readTitle2JournalOriginalOwned, readTitle2GroupHeadOriginalOwned, type Title2GroupHead, type Title2JournalPointer } from './synced-host-title2-read'
+import { captureTitle2UserHistoryOwned } from './synced-title2-user-history'
 
 class Title2DomainRefusal extends Error{constructor(message:string){super('Metadata2 title requires-lineage: '+message+'; preserve the complete working draft.');this.name='Title2DomainRefusal'}}
 const fail=(message:string):never=>{throw new Title2DomainRefusal(message)}
 const wire=(group:SyncedGroupSnapshot):SyncedGroupWire=>({kind:'synced-group',id:group.groupId,creationId:group.creationId,createdAt:group.createdAt,origin:group.origin,blocks:group.blocks,bindings:group.bindings})
 const current=(db:Database.Database,id:string)=>readStrictHostDocument(db,id)??fail('actual host missing')
 type Plan=ReturnType<typeof planSyncedMetadataNamespacesOwned2>
+type Side='working'|'after'
+type HeadingPlan={destinations:Plan['workingDestinations'];headings:Map<string,SyncedProjectedHeading2[]>}
 type GroupPlan={snapshot:SyncedGroupSnapshot;working:ReturnType<typeof projectSyncedMetadataStoredGroupLinksOwned2>;after:ReturnType<typeof projectSyncedMetadataStoredGroupLinksOwned2>;
-  workingRevision:string;afterRevision:string}
+  workingRevision:string;afterRevision:string;headingMaintenance:boolean;userHistory?:Title2HistoryProjection}
 type Projection={host:ReturnType<typeof current>;effects:Title2Effect[]}
-type ApplyContext={plan:Plan;hostId:string;groups:GroupPlan[];subtree:Title2Subtree[];now:string}
+type ApplyContext={plan:Plan;hostId:string;groups:GroupPlan[];headingPlans:Record<Side,HeadingPlan>;subtree:Title2Subtree[];now:string;sectionEdit?:Title2SectionEdit}
 class ProjectionEnd extends Error{constructor(readonly value:Projection){super('metadata2 projection rollback')}}
 function own<T>(db:Database.Database,run:()=>T):T|{status:'unsupported';reason:string}{
   if(db.inTransaction)throw new Error('Metadata2 title writer requires its actual outer IMMEDIATE transaction.')
@@ -61,6 +69,17 @@ function samePhysicalAttributes(left:HostContent,right:HostContent):boolean{
   const attributes=(host:HostContent):HostContent=>({...host,blocks:host.blocks.map(block=>({...block,content:''}))})
   return samePhysicalForestAndSummary(attributes(left),attributes(right))
 }
+function existingHostSectionEdit(original:StrictHostDocument,working:HostContent,after:HostContent):Title2SectionEdit|undefined{
+  const before=original.content
+  if(before.title!==working.title||before.title!==after.title
+    ||!sameForestAndSummary(working,after)||!samePhysicalAttributes(before,working))return
+  const edited=working.blocks.filter((block,index)=>block.content!==before.blocks[index].content)
+  if(edited.length!==1||!isNativeSectionHeading(edited[0].type))return
+  const block=edited[0],createdAt=original.births.get(block.id)
+  if(!createdAt||!getMarkdownHeadingRewrites(getMarkdownHeadingTargets(before.blocks,before.title),
+    getMarkdownHeadingTargets(working.blocks,working.title)).size)return
+  return{blockId:block.id,createdAt,before:before.blocks.find(item=>item.id===block.id)!.content,after:block.content}
+}
 function subtreeFacts(base:SyncedMetadataWorkspaceView2,rootId:string):Title2Subtree[]{
   const result:Title2Subtree[]=[],queue=[rootId],seen=new Set<string>()
   for(let i=0;i<queue.length;i++){
@@ -71,28 +90,93 @@ function subtreeFacts(base:SyncedMetadataWorkspaceView2,rootId:string):Title2Sub
   }
   return result.sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0)
 }
-function groupPlans(db:Database.Database,plan:Plan):GroupPlan[]{
+function planHeadingMaintenance(plan:Plan,side:Side,sectionHostId?:string):HeadingPlan{
+  const namespace=side==='working'?plan.working:plan.final
+  const destinations=new Map(side==='working'?plan.workingDestinations:plan.finalDestinations)
+  const headings=new Map<string,SyncedProjectedHeading2[]>()
+  const originals=new Map<string,SyncedProjectedHeading2[]>()
+  for(const group of plan.base.groups.values())for(const {target} of group.bindings){
+    if(target.kind!=='heading')continue
+    const destination=destinations.get(target.documentId)
+    if(!destination)continue
+    const previous=plan.base.hosts.get(target.documentId)!
+    const selected=namespace.hosts.get(target.documentId)!,title=selected.host.content.title
+    if(target.documentId!==sectionHostId&&destination.beforePath===destination.afterPath&&previous.host.content.title===title&&!destination.headings.has(target.slug))continue
+    let original=originals.get(target.documentId),projected=headings.get(target.documentId)
+    if(!original||!projected){
+      original=projectSyncedHostHeadings2(previous.host,plan.base.groups,previous.instances)
+      projected=target.documentId===sectionHostId?projectSyncedHostHeadings2(selected.host,namespace.groups,selected.instances):title===previous.host.content.title?original:projectSyncedHostHeadings2({
+        ...previous.host,content:{...previous.host.content,title}
+      },plan.base.groups,previous.instances)
+      originals.set(target.documentId,original);headings.set(target.documentId,projected)
+      if(target.documentId===sectionHostId){
+        for(const [physical,expanded] of [[previous.host,original],[selected.host,projected]] as const){
+          const ordinary=getMarkdownHeadingTargets(physical.content.blocks,physical.content.title)
+          if(ordinary.some(heading=>!expanded.some(candidate=>candidate.slug===heading.slug&&(heading.blockId===null
+            ?candidate.location.kind==='document-title':candidate.location.kind==='ordinary'&&candidate.location.blockId===heading.blockId))))
+            return fail('the ordinary link index and expanded heading namespace disagree on a section occurrence')
+        }
+      }
+      destinations.set(target.documentId,{...destination,headings:planSyncedHeadingRewrites2(original,projected)})
+    }
+    const continuation=continueTitle2Heading(target.slug,original,projected)
+    if(target.state!=='live'||!continuation||continuation.destination.slug!==(destinations.get(target.documentId)!.headings.get(target.slug)??target.slug))
+      return fail('heading target lacks one continuous live occurrence')
+  }
+  return{destinations,headings}
+}
+function groupPlans(db:Database.Database,plan:Plan,headingPlans:Record<Side,HeadingPlan>):GroupPlan[]{
   const selected:GroupPlan[]=[]
+  const currentHeadings=new Map<string,SyncedProjectedHeading2[]>()
   for(const snapshot of plan.base.groups.values()){
-    const value=wire(snapshot),working=projectSyncedMetadataStoredGroupLinksOwned2(db,value,plan.workingDestinations),after=projectSyncedMetadataStoredGroupLinksOwned2(db,value,plan.finalDestinations)
+    const value=wire(snapshot),working=projectSyncedMetadataStoredGroupLinksOwned2(db,value,headingPlans.working.destinations),after=projectSyncedMetadataStoredGroupLinksOwned2(db,value,headingPlans.after.destinations)
     if(!working.changed&&!after.changed)continue
     const edits=[...working.edits,...after.edits]
-    for(const edit of edits){const binding=snapshot.bindings.find(binding=>hostEqual({blockId:binding.blockId,from:binding.from,to:binding.to,raw:binding.raw,syntax:binding.syntax},edit.key))
-      if(!binding||binding.target.kind!=='document'&&binding.target.kind!=='block'||binding.target.state!=='live')return fail('a missing/unresolved historical target cannot be activated by a new path')}
-    for(const binding of snapshot.bindings)if(binding.target.kind==='heading'){
-      const w=plan.workingDestinations.get(binding.target.documentId),a=plan.finalDestinations.get(binding.target.documentId)
-      if(w&&(w.beforePath!==w.afterPath||w.headings.size)||a&&(a.beforePath!==a.afterPath||a.headings.size))return fail('a canonical heading target lacks its original continuous birth/Key evidence')
-    }
+    for(const edit of edits){const binding=snapshot.bindings.find(binding=>hostEqual(title2BindingKey(binding),edit.key))
+      if(!binding||binding.target.kind==='unresolved-url'||binding.target.state!=='live')return fail('a missing/unresolved historical target cannot be activated by a new path')}
+    const headingMaintenance=snapshot.bindings.some(({target})=>target.kind==='heading'&&
+      (headingPlans.working.headings.has(target.documentId)||headingPlans.after.headings.has(target.documentId)))
     if([...working.edits,...after.edits].some(edit=>/^heading-[1-6]$/.test(snapshot.blocks.find(block=>block.id===edit.blockId)?.type??'')))return fail('canonical heading label maintenance needs full heading lineage')
-    if(snapshot.history.undoToken!==null||snapshot.history.redoToken!==null
-      ||db.prepare('SELECT 1 FROM synced_group_history WHERE group_id=? LIMIT 1').get(snapshot.groupId))return fail('canonical user-history effective-tail adapter is not yet closed')
+    const hasHistory=snapshot.history.undoToken!==null||snapshot.history.redoToken!==null
+      ||Boolean(db.prepare('SELECT 1 FROM synced_group_history WHERE group_id=? LIMIT 1').get(snapshot.groupId))
     const life=readSyncedGroupLifecycles(db,[snapshot.groupId]).get(snapshot.groupId)
     if(!life||life.state!=='active'||life.exposure==='never')return fail('unpublished create activation needs its own metadata-continuity adapter')
     const head=readTitle2GroupHeadOriginalOwned(db,snapshot.groupId)
-    if(head&&(head.head.creationId!==snapshot.creationId||head.head.groupCreatedAt!==snapshot.createdAt||head.head.revision!==snapshot.revision
+    if(head&&(head.head.creationId!==snapshot.creationId||head.head.groupCreatedAt!==snapshot.createdAt
+      ||head.workspaceScope!==plan.base.workspaceScope||head.recoveryEpoch!==plan.base.recoveryEpoch))
+      return fail('canonical metadata head is from another incarnation or recovery boundary')
+    let userHistory:Title2HistoryProjection|undefined
+    if(hasHistory){
+      if(headingMaintenance||plan.request.hostsWorkingBefore[0].workingBefore.title!==plan.request.finalAfter[0].title)
+        return fail('canonical user-history projection requires an ordinary title save without heading maintenance')
+      const wanted=new Set(value.bindings.flatMap(({target})=>target.kind==='block'?[target.id]:[]))
+      const owners=new Map<string,{documentId:string;createdAt:string}>()
+      for(const [documentId,host] of plan.base.hosts)for(const [blockId,createdAt] of host.host.births)if(wanted.has(blockId))owners.set(blockId,{documentId,createdAt})
+      const prior=head?.userHistory?{reference:{operationId:head.head.operationId,companionHash:head.head.companionHash},sides:head.userHistory,depth:head.userHistoryDepth}:undefined
+      userHistory=captureTitle2UserHistoryOwned(db,snapshot,value,after.after,headingPlans.after.destinations,owners,prior,
+        ()=>fail('canonical user-history projection cannot prove its exact original links, content or tail'))
+      if(!userHistory)return fail('canonical user-history actual branch missing')
+    }
+    if(head&&!userHistory&&(head.head.revision!==snapshot.revision
       ||head.head.topologyRevision!==snapshot.topologyRevision||head.head.historyCursor!==snapshot.history.cursor||head.head.wireHash!==hostHash(value)))return fail('later group edits changed the real last metadata tail')
-    selected.push({snapshot,working,after,workingRevision:working.changed?randomUUID():snapshot.revision,afterRevision:after.changed?randomUUID():snapshot.revision})
+    for(const witness of head?.headingWitnesses??[]){
+      const actual=plan.base.hosts.get(witness.documentId)
+      if(!actual||actual.host.createdAt!==witness.documentCreatedAt)return fail('heading target birth changed since its last persisted occurrence')
+      let headings=currentHeadings.get(witness.documentId)
+      if(!headings){
+        headings=projectSyncedHostHeadings2(actual.host,plan.base.groups,actual.instances)
+        currentHeadings.set(witness.documentId,headings)
+      }
+      const matches=headings.filter(heading=>heading.slug===witness.slug)
+      if(matches.length!==1||matches[0].key!==witness.heading.key||!hostEqual(matches[0].location,witness.heading.location))
+        return fail('heading target occurrence changed since its last persisted birth')
+    }
+    selected.push({snapshot,working,after,workingRevision:working.changed?randomUUID():snapshot.revision,afterRevision:after.changed?randomUUID():snapshot.revision,headingMaintenance,userHistory})
   }
+  if(selected.some(item=>item.userHistory)&&selected.some(item=>item.headingMaintenance))return fail('canonical user-history cannot mix with heading maintenance')
+  const histories=selected.flatMap(item=>item.userHistory?[item.userHistory]:[])
+  if(histories.reduce((count,item)=>count+item.rows.length,0)>TITLE2_MAX_HISTORY_ROWS
+    ||Buffer.byteLength(hostEncode(histories))>TITLE2_MAX_HISTORY_BYTES)return fail('canonical user-history aggregate exceeds its bounded projection')
   return selected
 }
 function prepare(db:Database.Database,input:HostFinalInput):ApplyContext{
@@ -102,13 +186,10 @@ function prepare(db:Database.Database,input:HostFinalInput):ApplyContext{
   const before=input.hostsWorkingBefore[0].workingBefore,after=input.finalAfter[0]
   if(!sameForestAndSummary(before,after)||!samePhysicalAttributes(original.content,before))return fail('body/summary/structure edits need the complete metadata writer')
   if(plan.working.hosts.get(hostId)!.host.content.title!==before.title||plan.final.hosts.get(hostId)!.host.content.title!==after.title)return fail('Main naming selection differs from the submitted raw title')
-  // Every heading-dependent binding is checked, even when the projector kept
-  // the same literal URI. A same-caption/current-slug lookup is not lineage.
-  for(const group of plan.base.groups.values())for(const binding of group.bindings)if(binding.target.kind==='heading'){
-    const w=plan.workingDestinations.get(binding.target.documentId),a=plan.finalDestinations.get(binding.target.documentId)
-    if(w&&(w.beforePath!==w.afterPath||w.headings.size)||a&&(a.beforePath!==a.afterPath||a.headings.size))return fail('heading-dependent title change lacks continuous target birth')
-  }
-  const groups=groupPlans(db,plan),subtree=subtreeFacts(plan.base,hostId)
+  const sectionEdit=existingHostSectionEdit(original,before,after)
+  const headingPlans={working:planHeadingMaintenance(plan,'working',sectionEdit?hostId:undefined),after:planHeadingMaintenance(plan,'after',sectionEdit?hostId:undefined)}
+  const groups=groupPlans(db,plan,headingPlans),subtree=subtreeFacts(plan.base,hostId)
+  if(sectionEdit&&!groups.some(group=>group.headingMaintenance))return fail('section heading save needs an affected canonical heading source point')
   const ancestors=new Set<string>();let ancestor:string|null=hostId
   while(ancestor!==null){
     if(ancestors.has(ancestor))return fail('actual ancestor cycle');ancestors.add(ancestor)
@@ -126,7 +207,7 @@ function prepare(db:Database.Database,input:HostFinalInput):ApplyContext{
     readOriginalSqlTextRowsOwned2(db,'synced_group_blocks',['id','group_id','parent_block_id','type','content','tags_json','language','markdown_format_json','highlight','created_at'],'group_id=?',[id])
   }
   const now=new Date(Math.max(Date.now(),...[...plan.base.hosts.values()].map(value=>Date.parse(value.host.detail.updatedAt)+1))).toISOString()
-  return{plan,hostId,groups,subtree,now}
+  return{plan,hostId,groups,headingPlans,subtree,now,sectionEdit}
 }
 function resyncOrdinaryLinks(db:Database.Database,now:string):void{
   const index=new MarkdownLinkIndex(db);index.rebuild()
@@ -150,15 +231,15 @@ function writeGroups(db:Database.Database,ctx:ApplyContext,side:'working'|'after
         .run(after.content,before.id,old.groupId,before.createdAt,before.content).changes!==1)return fail('canonical original content/CAS changed')
     }
     const revision=side==='working'?item.workingRevision:item.afterRevision
-    if(db.prepare('UPDATE synced_groups SET bindings_json=?,revision=? WHERE id=? AND creation_id=? AND revision=? AND topology_revision=? AND history_cursor=? AND history_position=0 AND bindings_json=?')
-      .run(hostEncode(projected.after.bindings),revision,old.groupId,old.creationId,old.revision,old.topologyRevision,old.history.cursor,raw.bindings_json).changes!==1)return fail('canonical actual revision/topology/history changed')
+    if(db.prepare('UPDATE synced_groups SET bindings_json=?,revision=? WHERE id=? AND creation_id=? AND revision=? AND topology_revision=? AND history_cursor=? AND history_position=? AND bindings_json=?')
+      .run(hostEncode(projected.after.bindings),revision,old.groupId,old.creationId,old.revision,old.topologyRevision,old.history.cursor,item.userHistory?.position??0,raw.bindings_json).changes!==1)return fail('canonical actual revision/topology/history changed')
   }
 }
 /** The production Main maintenance implementation is executed in this owned
  * transaction. Projection calls use a rollback savepoint; they publish no
  * owner/ticket/checkpoint/event and are explicitly labeled projections. */
-function applyPhysical(db:Database.Database,ctx:ApplyContext,side:'working'|'after',checkpoint:boolean):Projection{
-  const namespace=side==='working'?ctx.plan.working:ctx.plan.final,destinations=side==='working'?ctx.plan.workingDestinations:ctx.plan.finalDestinations
+function applyPhysical(db:Database.Database,ctx:ApplyContext,side:Side,checkpoint:boolean):Projection{
+  const namespace=side==='working'?ctx.plan.working:ctx.plan.final,destinations=ctx.headingPlans[side].destinations
   const original=ctx.plan.base.hosts.get(ctx.hostId)!.host,target=namespace.hosts.get(ctx.hostId)!.host
   const paths=[...destinations.values()].filter(item=>item.beforePath!==item.afterPath)
   const index=new MarkdownLinkIndex(db,checkpoint?id=>new DocumentRecoveryRepository(db).checkpoint(id):undefined)
@@ -171,6 +252,11 @@ function applyPhysical(db:Database.Database,ctx:ApplyContext,side:'working'|'aft
   writeGroups(db,ctx,side)
   if(db.prepare('UPDATE documents SET title=?,path=?,updated_at=? WHERE id=? AND created_at=? AND updated_at=?')
     .run(target.content.title,target.detail.path,ctx.now,ctx.hostId,original.createdAt,original.detail.updatedAt).changes!==1)return fail('host actual CAS changed')
+  if(ctx.sectionEdit){
+    const edit=ctx.sectionEdit,heading=original.content.blocks.find(block=>block.id===edit.blockId)!
+    if(db.prepare('UPDATE blocks SET content=?,updated_at=? WHERE id=? AND document_id=? AND created_at=? AND type=? AND content=?')
+      .run(edit.after,ctx.now,edit.blockId,ctx.hostId,edit.createdAt,heading.type,edit.before).changes!==1)return fail('section heading actual birth/content CAS changed')
+  }
   for(const path of paths)if(path.documentId!==ctx.hostId){
     const child=ctx.plan.base.hosts.get(path.documentId)!.host
     if(db.prepare('UPDATE documents SET path=? WHERE id=? AND created_at=? AND parent_id IS ? AND path=?').run(path.afterPath,path.documentId,child.createdAt,child.parentId,path.beforePath).changes!==1)return fail('descendant lineage/path changed')
@@ -179,12 +265,18 @@ function applyPhysical(db:Database.Database,ctx:ApplyContext,side:'working'|'aft
   const indexed=new Set<string>(),changed=index.maintain(changes,[],ctx.now,undefined,indexed)
   resyncOrdinaryLinks(db,ctx.now)
   const after=readSyncedMetadataWorkspaceOwned2(db)
+  const section=ctx.sectionEdit
+  if(section&&after.hosts.get(ctx.hostId)?.host.content.blocks.find(block=>block.id===section.blockId)?.content!==section.after)
+    return fail('ordinary maintenance changed the submitted section heading content')
   // Ordinary Wiki maintenance can alter a heading label and cascade. It must
   // not silently activate a canonical heading binding in that new namespace.
-  for(const [id,old]of ctx.plan.base.hosts){const next=after.hosts.get(id)!
-    if(old.host.content===next.host.content)continue
-    const headings=planSyncedHeadingRewrites2(projectSyncedHostHeadings2(old.host,ctx.plan.base.groups,old.instances),projectSyncedHostHeadings2(next.host,after.groups,next.instances))
-    if(headings.size)for(const group of ctx.plan.base.groups.values())if(group.bindings.some(binding=>binding.target.kind==='heading'&&binding.target.documentId===id))return fail('ordinary maintenance changed a canonical heading namespace without lineage')
+  const headingDocuments=new Set([...ctx.plan.base.groups.values()].flatMap(group=>group.bindings.flatMap(({target})=>target.kind==='heading'?[target.documentId]:[])))
+  for(const id of headingDocuments){
+    const old=ctx.plan.base.hosts.get(id),next=after.hosts.get(id)
+    if(!old||!next)continue
+    const expected=ctx.headingPlans[side].headings.get(id)??projectSyncedHostHeadings2(old.host,ctx.plan.base.groups,old.instances)
+    const actual=projectSyncedHostHeadings2(next.host,after.groups,next.instances)
+    if(!hostEqual(title2HeadingLocations(expected),title2HeadingLocations(actual)))return fail('ordinary maintenance changed a canonical heading namespace beyond the title projection')
   }
   const ids=new Set([ctx.hostId,...paths.map(item=>item.documentId),...changed]),effects:Title2Effect[]=[...ids].sort().map(id=>{const item=after.hosts.get(id)?.host??fail('maintenance result host missing')
     return{documentId:id,createdAt:item.createdAt,path:item.detail.path,contentHash:hostHash(item.content)}})
@@ -223,7 +315,8 @@ function groupRecords(db:Database.Database,ctx:ApplyContext):Title2Group[]{
     if(point.kind!=='synced-metadata2-read-baseline-record'||typeof point.pointHash!=='string'||point.sources[0].revision!==item.snapshot.revision||!hostEqual(point.sources[0].wire,wire(item.snapshot)))return fail('current original source point differs before business mutation')
     return{groupId:item.snapshot.groupId,creationId:item.snapshot.creationId,createdAt:item.snapshot.createdAt,sourcePointKey:SYNCED_METADATA_BASELINE2_PREFIX+point.pointHash,sourcePointHash:point.recordHash,
       sourceRevision:item.snapshot.revision,sourceTopologyRevision:item.snapshot.topologyRevision,sourceHistoryCursor:item.snapshot.history.cursor,
-      workingEdits:item.working.edits,afterEdits:item.after.edits,workingHash:hostHash(item.working.after),afterHash:hostHash(item.after.after),afterRevision:item.afterRevision}
+      workingEdits:item.working.edits,afterEdits:item.after.edits,workingHash:hostHash(item.working.after),afterHash:hostHash(item.after.after),afterRevision:item.afterRevision,
+      ...(item.userHistory?{userHistory:item.userHistory}:{})}
   })
 }
 function finish(db:Database.Database,ctx:ApplyContext,requestHash:string,token:string|null,working:Projection,after:Projection,groups:Title2Group[],
@@ -234,10 +327,11 @@ function finish(db:Database.Database,ctx:ApplyContext,requestHash:string,token:s
   const rawLogicalChange=intent.kind==='apply'?input.hostsWorkingBefore[0].workingBefore.title!==input.finalAfter[0].title:true
   const result:SyncedStructureApplied={status:'applied',operationId,historyToken:token,replayed:false,hosts:[{documentId:ctx.hostId,logicalBefore:rawBefore,logicalBeforeHash:hostHash(rawBefore),after:current(db,ctx.hostId).detail}],groups:snapshots,affectedInstanceIds:[],blockIdMap:[]}
   const original=ctx.plan.base.hosts.get(ctx.hostId)!.host,companion=makeTitle2Companion({kind:'synced-host-title-metadata2-companion',version:2,operationId,
-    workspaceScope:ctx.plan.base.workspaceScope,recoveryEpoch:ctx.plan.base.recoveryEpoch,createdAt:ctx.now,scope:'pure-title-existing-forest-no-heading-lineage-no-group-user-history',intent,requestHash,
+    workspaceScope:ctx.plan.base.workspaceScope,recoveryEpoch:ctx.plan.base.recoveryEpoch,createdAt:ctx.now,
+    scope:ctx.sectionEdit?TITLE2_SECTION_SCOPE:ctx.groups.some(group=>group.userHistory)?TITLE2_USER_HISTORY_SCOPE:ctx.groups.some(group=>group.headingMaintenance)?TITLE2_HEADING_SCOPE:TITLE2_SCOPE,intent,requestHash,
     hostId:ctx.hostId,hostCreatedAt:original.createdAt,hostParentId:original.parentId,subtree:ctx.subtree,historyToken:token,initialCompanion:initial,rawLogicalChange,
     persistedTitle:original.content.title,persistedPath:original.detail.path,workingPath:working.host.detail.path,afterPath:after.host.detail.path,workingContentHash:hostHash(working.host.content),afterContentHash:hostHash(after.host.content),
-    workingEffects:working.effects,afterEffects:after.effects,groups,projection:'owned-sql-savepoint-main-maintenance',businessOperationCommitted:true,writePermit:false})
+    workingEffects:working.effects,afterEffects:after.effects,groups,...(ctx.sectionEdit?{sectionEdit:ctx.sectionEdit}:{}),projection:'owned-sql-savepoint-main-maintenance',businessOperationCommitted:true,writePermit:false})
   saveSetting(db,title2CompanionKey(operationId),companion,ctx.now)
   if(intent.kind==='apply'&&token){
     const row=readHistoricalExactRows<Record<string,string>>(db,'synced_host_history',['id','action_json','before_json','after_json','before_hash','after_hash','created_at'],'id=?',[token])[0]
@@ -247,7 +341,7 @@ function finish(db:Database.Database,ctx:ApplyContext,requestHash:string,token:s
   db.prepare('INSERT INTO synced_operations(client_operation_id,request_hash,result_json,created_at) VALUES(?,?,?,?)').run(operationId,requestHash,
     hostEncode({kind:TITLE2_OPERATION_KIND,version:2,companionKey:title2CompanionKey(operationId),companionHash:companion.companionHash,result}),ctx.now)
   for(const group of groups){const head:Title2GroupHead={kind:'synced-host-title-metadata2-group-head',version:2,groupId:group.groupId,creationId:group.creationId,groupCreatedAt:group.createdAt,
-    operationId,companionHash:companion.companionHash,revision:group.afterRevision,topologyRevision:group.sourceTopologyRevision,wireHash:group.afterHash,historyCursor:group.sourceHistoryCursor,historyPosition:0}
+    operationId,companionHash:companion.companionHash,revision:group.afterRevision,topologyRevision:group.sourceTopologyRevision,wireHash:group.afterHash,historyCursor:group.sourceHistoryCursor,historyPosition:group.userHistory?.position??0}
     saveSetting(db,title2GroupHeadKey(group.groupId),head,ctx.now,true)}
   const readback=readTitle2OriginalOperationOwned(db,operationId)
   if(!readback||!hostEqual(readback.envelope.result,result))throw new Error('Metadata2 title original ACK did not independently read back.')
@@ -262,7 +356,7 @@ export function applySyncedHostTitleMetadata2(db:Database.Database,value:unknown
     if(db.prepare('SELECT 1 FROM synced_operations WHERE client_operation_id=?').get(request.clientOperationId))throw new Error('Metadata2 title idempotency namespace mismatch')
     const ctx=prepare(db,request),working=observe(db,ctx,'working')
     const rawWorking=request.hostsWorkingBefore[0].workingBefore,persisted=ctx.plan.base.hosts.get(ctx.hostId)!.host.content
-    if(!samePhysicalForestAndSummary(rawWorking,persisted)&&!samePhysicalForestAndSummary(rawWorking,working.host.content))return fail('raw W has body changes beyond the separately proved Main P→W navigation projection')
+    if(!ctx.sectionEdit&&!samePhysicalForestAndSummary(rawWorking,persisted)&&!samePhysicalForestAndSummary(rawWorking,working.host.content))return fail('raw W has body changes beyond the separately proved Main P→W navigation projection')
     const projectedAfter=observe(db,ctx,'after'),groups=groupRecords(db,ctx)
     ensureHostState(db,ctx.hostId);pruneSyncedHostRedoBranches(db,[ctx.hostId],row=>decodeHostJournal(row).before.map(side=>side.documentId))
     const after=applyPhysical(db,ctx,'after',true)
@@ -343,11 +437,32 @@ function routeHeadingTitle3Apply(db:Database.Database,input:SyncedStructureInput
     }
     const queue=[...affected]
     for(let index=0;index<queue.length;index++)for(const id of children.get(queue[index])??[])if(!affected.has(id)){affected.add(id);queue.push(id)}
+    let hasTitleAnchor=false
+    const headingGroups=new Set<string>()
+    const titleAnchors=new Map<string,string|undefined>()
     for(const row of db.prepare('SELECT id FROM synced_groups ORDER BY id').all() as Array<{id:string}>){
       const item=getSyncedGroupSnapshots(db,{groupIds:[row.id]}).items[0]
-      if(item?.status==='ready'&&item.snapshot.bindings.some(binding=>binding.target.kind==='heading'&&affected.has(binding.target.documentId)))return true
+      if(item?.status!=='ready')continue
+      for(const {target} of item.snapshot.bindings){
+        if(target.kind!=='heading'||!affected.has(target.documentId))continue
+        headingGroups.add(row.id)
+        if(!titleAnchors.has(target.documentId))titleAnchors.set(target.documentId,
+          readSyncedHostHeadingsOwned2(db,target.documentId)?.headings.find(heading=>heading.location.kind==='document-title')?.slug)
+        if(titleAnchors.get(target.documentId)===target.slug)hasTitleAnchor=true
+      }
     }
-    return false
+    if(!headingGroups.size)return false
+    const legacyAnchors=hasTitleAnchor||[...headingGroups].every(id=>
+      readTitle2GroupHeadOriginalOwned(db,id)?.headingWitnesses.some(witness=>affected.has(witness.documentId)))
+    if(!legacyAnchors)return true
+    // Title2 projects document-title anchors and continues its existing
+    // heading witnesses. Metadata3 lineage still goes through its own proof.
+    const head=db.prepare('SELECT 1 FROM app_settings WHERE key=?')
+    const birth=db.prepare(`SELECT 1 FROM synced_group_lifecycle AS life
+      JOIN synced_host_history AS journal ON journal.id=life.create_history_id
+      JOIN synced_operations AS operation ON operation.client_operation_id=json_extract(journal.action_json,'$.input.clientOperationId')
+      WHERE life.group_id=? AND json_extract(operation.result_json,'$.kind')=?`)
+    return [...headingGroups].some(id=>head.get(headingTitle3GroupHeadKey(id))||birth.get(id,HEADING_CREATE_BIRTH2_OPERATION_KIND))
   })()
 }
 function routeHeadingTitle3Restore(db:Database.Database,input:ReturnType<typeof validateSyncedRestoreHostInput>):boolean{
@@ -372,7 +487,15 @@ export function applySyncedHostStructureWithTitle2(db:Database.Database,value:un
     if(input.mode!=='host-final')return false
     return input.hostsWorkingBefore.some(item=>{const row=db.prepare('SELECT title,updated_at FROM documents WHERE id=?').get(item.documentId) as {title:string;updated_at:string}|undefined
       if(!row||row.updated_at!==item.expectedPersistedUpdatedAt)return false
-      return row.title!==item.workingBefore.title||input.mode==='host-final'&&input.finalAfter.find(after=>after.documentId===item.documentId)?.title!==row.title})
+      const after=input.mode==='host-final'?input.finalAfter.find(after=>after.documentId===item.documentId):undefined
+      if(!after)return false
+      if(row.title!==item.workingBefore.title||row.title!==after.title)return true
+      const oldHeadings=db.prepare("SELECT id,content FROM blocks WHERE document_id=? AND type IN ('heading-1','heading-2','heading-3','heading-4','heading-5','heading-6')")
+        .all(item.documentId) as Array<{id:string;content:string}>
+      const working=new Map(item.workingBefore.blocks.map(block=>[block.id,block]))
+      if(!oldHeadings.some(heading=>{const block=working.get(heading.id);return block&&isNativeSectionHeading(block.type)&&block.content!==heading.content}))return false
+      const original=readStrictHostDocument(db,item.documentId)
+      return Boolean(original&&existingHostSectionEdit(original,item.workingBefore,after))})
   })()
   return selected?applySyncedHostTitleMetadata2(db,input):input.mode==='command'?applySyncedHostCommand(db,input):applySyncedHostFinal(db,input)
 }

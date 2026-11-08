@@ -1,9 +1,13 @@
-import type Database from 'better-sqlite3'
+import Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
+import { closeSync, mkdtempSync, openSync, rmSync, rmdirSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { rawRestoreSqlCell as cell } from './restore-knowledge-sql-cell'
 import { publicationHash, publicationJson, publicationCompare } from '../sync/synced-publication-model'
 import { syncedBlockSchemaObjectNames } from './synced-schema'
 import { syncedLifecycleSchemaObjectNames } from './synced-lifecycle-schema-metadata'
+import { restoreSqliteFilename } from './restore-safety-sqlite-path'
 
 export interface RawSqlTableInventory { name: string; columnsHash: string; rows: number; rowSetHash: string }
 export interface RawSqlInventory { encoding: string; schemaHash: string; tables: readonly RawSqlTableInventory[]; inventoryHash: string }
@@ -30,6 +34,51 @@ function rawRows(db: Database.Database, table: string, columns: readonly string[
   })()
 }
 
+const rowHashMemoryLimit = 16_384
+const rowSetDigest = () => createHash('sha256').update('knowbook.raw-sql-row-set.v1\0')
+const rowHash = (row: unknown[]) => publicationHash(publicationJson(row))
+
+/** Keep the original hex sort and duplicates while spilling large tables to
+ * an independent temporary SQLite file with a bounded private page cache. */
+function hashSpilledRows(first: readonly string[], rest: IterableIterator<unknown[]>, overflow: string) {
+  const directory = mkdtempSync(join(tmpdir(), 'knowbook-restore-row-hashes-')), path = join(directory, 'row-hashes.db')
+  let sorter: Database.Database | undefined
+  try {
+    closeSync(openSync(path, 'wx', 0o600))
+    const db = sorter = new Database(restoreSqliteFilename(path), { fileMustExist: true })
+    db.pragma('journal_mode=OFF')
+    db.pragma('cache_size=-2048')
+    db.exec('CREATE TABLE hashes(digest BLOB NOT NULL, ordinal INTEGER NOT NULL, PRIMARY KEY(digest, ordinal)) WITHOUT ROWID')
+    const insert = db.prepare('INSERT INTO hashes(digest,ordinal) VALUES (?,?)')
+    let rows = 0
+    const save = (hash: string) => insert.run(Buffer.from(hash, 'hex'), ++rows)
+    db.transaction(() => {
+      for (const hash of first) save(hash)
+      save(overflow)
+      for (const row of rest) save(rowHash(row))
+    })()
+    const digest = rowSetDigest()
+    // BLOB byte order is identical to order of the lower-case hex preimages.
+    for (const hash of db.prepare('SELECT digest FROM hashes ORDER BY digest,ordinal').pluck().iterate() as IterableIterator<Buffer>)
+      digest.update(hash.toString('hex'))
+    return { rows, rowSetHash: digest.digest('hex') }
+  } finally {
+    try { sorter?.close() } finally { rmSync(path, { force: true }); rmdirSync(directory) }
+  }
+}
+
+function hashRows(rows: IterableIterator<unknown[]>) {
+  const hashes: string[] = []
+  for (const row of rows) {
+    const hash = rowHash(row)
+    if (hashes.length === rowHashMemoryLimit) return hashSpilledRows(hashes, rows, hash)
+    hashes.push(hash)
+  }
+  const digest = rowSetDigest()
+  for (const hash of hashes.sort(publicationCompare)) digest.update(hash)
+  return { rows: hashes.length, rowSetHash: digest.digest('hex') }
+}
+
 /** Exact typed SQL inventory, independently bound by the original DB/WAL/SHM
  * file inventory. It does not interpret an unknown metadata row as certified
  * history, load K, write SQL, or manufacture a capability. */
@@ -52,14 +101,8 @@ export function readRawRestoreSqlInventoryOwned(db: Database.Database): RawSqlIn
   const result: RawSqlTableInventory[] = []
   for (const name of tables) {
     const columns = db.prepare('SELECT * FROM ' + quoted(name) + ' LIMIT 0').columns().map(item => item.name)
-    const hashes: string[] = []
-    for (const row of rawRows(db, name, columns, textEncoding)) {
-      hashes.push(publicationHash(publicationJson(row)))
-    }
-    hashes.sort(publicationCompare)
-    const rowSet = createHash('sha256').update('knowbook.raw-sql-row-set.v1\0')
-    for (const hash of hashes) rowSet.update(hash)
-    result.push(Object.freeze({ name, columnsHash: publicationHash(publicationJson(columns)), rows: hashes.length, rowSetHash: rowSet.digest('hex') }))
+    const digest = hashRows(rawRows(db, name, columns, textEncoding))
+    result.push(Object.freeze({ name, columnsHash: publicationHash(publicationJson(columns)), ...digest }))
   }
   const schemaHash = publicationHash(publicationJson({ domain: 'knowbook.raw-sql-schema.v1', encoding: textEncoding, rows: schemaRows }))
   const summary = { encoding: textEncoding, schemaHash, tables: Object.freeze(result) }

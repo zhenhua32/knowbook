@@ -2,7 +2,7 @@ import type { SyncedStableBlockDraft, SyncedPlacement } from '@shared/synced-blo
 
 /** UI eligibility only. Main still validates the complete real P/W/A and parse scope. */
 export function syncedCreateSelection(blocks: readonly SyncedStableBlockDraft[], ids: readonly string[]):
-  { ok: true; rootIds: string[]; blockCount: number } | { ok: false; reason: 'selection' | 'heading' | 'nested-sync' } {
+  { ok: true; rootIds: string[]; blockCount: number } | { ok: false; reason: 'selection' | 'nested-sync' } {
   const positions = new Map(blocks.map((block, index) => [block.id, index]))
   if (!ids.length || ids.some(id => !positions.has(id))) return { ok: false, reason: 'selection' }
   const end = (index: number) => { let next = index + 1; while (next < blocks.length && blocks[next].depth > blocks[index].depth) next++; return next }
@@ -15,7 +15,6 @@ export function syncedCreateSelection(blocks: readonly SyncedStableBlockDraft[],
     || order > 0 && index !== end(roots[order - 1]))) return { ok: false, reason: 'selection' }
   const selected = blocks.slice(roots[0], end(roots.at(-1)!))
   if (selected.some(block => block.type === 'synced-block')) return { ok: false, reason: 'nested-sync' }
-  if (selected.some(block => /^heading-[1-6]$/.test(block.type))) return { ok: false, reason: 'heading' }
   return { ok: true, rootIds: roots.map(index => blocks[index].id), blockCount: selected.length }
 }
 

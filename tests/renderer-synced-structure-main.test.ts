@@ -7,12 +7,14 @@ import type { SyncedEditingMethod, SyncedEditingRequest, SyncedEditingResult } f
 import type { SyncedHostSourceCurrent } from '../src/renderer/src/features/synced-blocks/SyncedHostSourceDialog'
 import { SyncedStructureCommands } from '../src/renderer/src/features/synced-blocks/structureCommands'
 import { parseSyncedBlockPayload, validateSyncedHostForest } from '../src/shared/syncedBlockValidation'
+import { canonicalSyncedPortableJson } from '../src/shared/syncedBlockPortable'
 import { withCanonicalSearchFixture } from './helpers/canonical-search-fixture'
 
 test('real opaque Main sessions commit UI create/insert once, recover the actual lost ACK, keep complete W and real structure history, and reject stale openings',
   () => withCanonicalSearchFixture(async f => {
     const sender = Object.freeze({ renderer: randomUUID() }), requests: SyncedStructureInput[] = [], notices: string[] = []
     let sessionId: string | null = null, droppedReply = false, droppedLookup = false, adoptCount = 0
+    let protectedNonce: string | null = null, allowProtection = true, flushCalls = 0
     const original = f.store.getDocumentDetail(f.ordinaryDocumentId); assert.ok(original)
     let persisted: DocumentDetail = original
     const identity = Object.freeze({})
@@ -42,7 +44,7 @@ test('real opaque Main sessions commit UI create/insert once, recover the actual
           blocks: persisted.blocks.map(({ sortOrder: _sort, ...block }) => ({ ...block, parentBlockId: block.parentBlockId ?? null })) } } }
       return true
     }
-    const commands = new SyncedStructureCommands({ current: () => current, blocked: () => false, isZh: () => false,
+    const commands: SyncedStructureCommands = new SyncedStructureCommands({ current: () => current, blocked: () => false, isZh: () => false,
       openHost: documentId => open({ kind: 'host', hostDocumentId: documentId }), list: input => invoke('listSyncedGroups', input),
       guards: async (documentId, extra) => {
         const actual = f.store.getDocumentDetail(documentId); assert.ok(actual)
@@ -53,8 +55,17 @@ test('real opaque Main sessions commit UI create/insert once, recover the actual
         for (const item of instances) assert.equal(await open({ kind: 'instance', hostDocumentId: documentId, instanceId: item.instanceId, groupId: item.groupId }), true)
         return { groups: ready.map(snapshot => ({ groupId: snapshot.groupId, expectedRevision: snapshot.revision, expectedTopologyRevision: snapshot.topologyRevision })),
           expectedInstances: instances.map(({ instanceId, hostDocumentId, bindingVersion }) => ({ instanceId, hostDocumentId, bindingVersion })) }
-      }, flushGroups: async stillCurrent => stillCurrent(),
+      }, flushGroups: async stillCurrent => { flushCalls++; return stillCurrent() },
+      protectDetach: async (hostSession, nonce, stillCurrent): Promise<boolean> => {
+        assert.equal(hostSession, identity)
+        assert.equal(commands.pendingDetach(identity)?.clientOperationId, nonce)
+        assert.equal(commands.canJournalDetach(identity), false, 'The protection wait precedes Main dispatch')
+        if (!allowProtection) return false
+        protectedNonce = nonce
+        return stillCurrent()
+      },
       apply: async input => {
+        if (input.mode === 'command' && input.action.kind === 'detach') assert.equal(input.clientOperationId, protectedNonce)
         requests.push(structuredClone(input))
         const result = await invoke('applySyncedHostStructure', input)
         if (!droppedReply) { droppedReply = true; assert.equal(result.status, 'applied'); throw Error('Transparent transport loss after the real SQL commit') }
@@ -113,5 +124,58 @@ test('real opaque Main sessions commit UI create/insert once, recover the actual
       assert.equal(await commands.apply(), false); assert.equal(requests.length, 2)
       assert.deepEqual(current.host, retained); assert.equal(commands.cancel(), true)
       assert.deepEqual(notices, [])
+
+      const currentGroup = (await invoke('getSyncedGroupSnapshots', { groupIds: [createdAction.groupId] })).items[0]
+      if (currentGroup.status !== 'ready') throw Error('The actual group disappeared before detach')
+      const snapshot = currentGroup.snapshot, selectedInstance = snapshot.instances.find(row => row.instanceId !== createdAction.instanceId)
+      if (!selectedInstance) throw Error('No actual second instance')
+      let settled = true
+      const target = { instance: selectedInstance, group: { groupId: snapshot.groupId, expectedRevision: snapshot.revision, expectedTopologyRevision: snapshot.topologyRevision },
+        canonicalIds: snapshot.blocks.map(block => block.id), settled: () => settled }
+      const flushesBeforeDetach = flushCalls
+      assert.equal(await commands.openDetach(target, () => true, null), true)
+      settled = false
+      assert.equal(await commands.apply(), false)
+      assert.equal(requests.length, 2)
+      assert.equal(commands.cancel(), true)
+      assert.equal(flushCalls, flushesBeforeDetach, 'Detach does not flush a shared draft')
+
+      settled = true; allowProtection = false
+      assert.equal(await commands.openDetach(target, () => true, null), true)
+      assert.equal(await commands.apply(), false)
+      assert.equal(requests.length, 2, 'Main dispatch waits for exact recovery protection')
+      assert.equal(commands.pendingDetach(identity), null)
+      allowProtection = true; droppedReply = false; droppedLookup = false
+      assert.equal(await commands.apply(), false)
+      assert.equal(requests.length, 3)
+      const submittedDetach = requests[2]
+      assert.equal(commands.pendingDetach(identity)?.clientOperationId, submittedDetach.clientOperationId)
+      assert.equal(commands.canJournalDetach(identity), true)
+      assert.equal(commands.cancel(), false)
+      const detached = f.store.getDocumentDetail(persisted.id)
+      const changesAfterDetach = f.db.prepare('SELECT total_changes() AS n').get()
+      assert.ok(detached)
+      assert.equal(detached.blocks.filter(block => block.type === 'synced-block').length, 1)
+      assert.equal(detached.blocks.some(block => block.id === selectedInstance.instanceId), false)
+      settled = false
+      const originalHost = current
+      const later = structuredClone(current.host)
+      later.workingBefore.summary = 'Later C remains available for review'
+      current = { ...current, editSequence: current.editSequence + 1, host: later }
+      assert.equal(await commands.apply(), false, 'The acknowledged result cannot replace later editor input')
+      assert.equal(requests.length, 3)
+      assert.equal(adoptCount, 2)
+      assert.deepEqual(current.host, later)
+      current = originalHost
+      assert.equal(await commands.apply(), true, 'An exact original lookup can adopt after its selected binding is gone')
+      assert.equal(requests.length, 3)
+      assert.equal(adoptCount, 3)
+      assert.equal(commands.pendingDetach(identity), null)
+      assert.deepEqual(f.db.prepare('SELECT total_changes() AS n').get(), changesAfterDetach)
+      // The ordinary DTO omits empty tags while the strict stored ACK carries
+      // them explicitly. Compare every physical field with that one normalization.
+      const physical = (document: DocumentDetail) => canonicalSyncedPortableJson({ ...document,
+        blocks: document.blocks.map(block => ({ ...block, tags: block.tags ?? [] })) })
+      assert.equal(physical(persisted), physical(detached))
     } finally { if (sessionId) f.store.releaseSyncedEditingSession(sender, sessionId) }
   }))

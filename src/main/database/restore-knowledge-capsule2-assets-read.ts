@@ -12,6 +12,7 @@ import { readRawCapsule2WorkspaceHistorySourceWithHeadingTitle3Owned } from './r
 import { decodeHostJournal, hostJournalKind, validateHostSides } from './synced-host-journal'
 import type { SyncedHostHistoryBranchRow } from './synced-host-history-branch'
 import { decodeSyncedOperationAck } from './synced-host-operation-receipt'
+import { HOST_DETACH_OPERATION_KIND, decodeHostDetachOriginalOwned } from './synced-host-detach-original'
 import type { SyncedGroupOperationRow } from './synced-group-operation-receipt'
 import { readSyncedMetadataCaptureOriginalRowOwned2 } from './synced-metadata-capture-record2'
 import { TITLE2_OPERATION_KIND } from './synced-host-title2-codec'
@@ -116,6 +117,7 @@ export function readRawCapsule2AssetReferenceSourceOwned(db: Database.Database) 
         body(['synced_host_history', row.id, 'action_json', 'input', 'finalAfter', item.documentId], item)
       }
       if ('create' in journal) group(['synced_host_history', row.id, 'action_json', 'create', 'wire'], journal.create.wire)
+      if ('detach' in journal) group(['synced_host_history', row.id, 'action_json', 'detach', 'wire'], journal.detach.wire)
     }
   }
   for (const row of rows<SyncedGroupOperationRow & { created_at: string }>('synced_operations', 'client_operation_id')) {
@@ -153,8 +155,9 @@ export function readRawCapsule2AssetReferenceSourceOwned(db: Database.Database) 
       for (const item of capture.capture.namespaces) body([...source,'capture','namespaces',item.host.documentId,'host'],item.host)
       // Key.raw, headings/slug text and Origin are derived/opaque fields, not
       // additional Markdown authority or independent file grants.
-    } else if (value.kind === undefined || value.kind === 'synced-host-operation' || value.kind === 'synced-host-create-operation') {
-      const ack = decodeSyncedOperationAck(row)
+    } else if (value.kind === undefined || value.kind === 'synced-host-operation' || value.kind === 'synced-host-create-operation' || value.kind === HOST_DETACH_OPERATION_KIND) {
+      const ack = (value.kind === HOST_DETACH_OPERATION_KIND
+        ? decodeHostDetachOriginalOwned(db, row)?.result ?? bad('解除同步业务原件缺失') : decodeSyncedOperationAck(row)) as ReturnType<typeof decodeSyncedOperationAck>
       if ('snapshot' in ack) group([...source, 'snapshot'], ack.snapshot)
       else {
         for (const host of ack.hosts) {

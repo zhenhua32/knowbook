@@ -4,7 +4,12 @@ import { validateEditorRecoveryDraftInput } from '@shared/editor-recovery-drafts
 import { canonicalSyncedPortableJson } from '@shared/syncedBlockPortable'
 import { readRecoverySources, recoveryData, subscribeRecoverySources, type RecoverySourceAddress } from './sourceSnapshots'
 
-export type RecoveryContent = Omit<EditorRecoveryDraftInput, 'draftSessionId' | 'generation' | 'expectedPreviousGeneration' | 'sources'> & { rawPending?: RawRecoveryPending[] }
+export type RecoveryContent = Omit<EditorRecoveryDraftInput, 'draftSessionId' | 'generation' | 'expectedPreviousGeneration' | 'sources'> & {
+  rawPending?: RawRecoveryPending[]
+  /** Private producer fact. Equal W bytes can still carry real authored frames
+   * and copy intent. Never add this local accounting flag to the side DTO. */
+  authoredWork?: boolean
+}
 export interface RawRecoveryPending {
   method: EditorRecoveryPending['method']; input: { clientOperationId: string }; submittedWorking: EditorRecoveryWorking
 }
@@ -73,13 +78,13 @@ export class EditorRecoveryCoordinator {
     return entry.retained
   }
   private async capture(entry: Entry): Promise<Capture> {
-    const opened = await entry.opening(), { rawPending, ...content } = this.content(entry)
+    const opened = await entry.opening(), { rawPending, authoredWork, ...content } = this.content(entry)
     const pending = rawPending ? await recoveryPending(rawPending) : content.pending
     const body = recoveryData({ ...content, pending, sources: readRecoverySources(entry.address) }) as Omit<EditorRecoveryDraftInput, 'draftSessionId' | 'generation' | 'expectedPreviousGeneration'>
     const fingerprint = canonicalSyncedPortableJson(body), generation = fingerprint === entry.fingerprint ? entry.generation : entry.generation + 1
     const draft = validateEditorRecoveryDraftInput({ ...body, draftSessionId: opened.draftSessionId, generation,
       expectedPreviousGeneration: generation === entry.generation ? Math.max(0, generation - 1) : entry.generation })
-    return { entry, draft, fingerprint, unedited: !entry.head && !draft.sources.length && !draft.pending.length
+    return { entry, draft, fingerprint, unedited: !authoredWork && !entry.head && !draft.sources.length && !draft.pending.length
       && !draft.composing && !draft.importing && canonicalSyncedPortableJson(draft.working) === canonicalSyncedPortableJson(opened.base.persistedWorking) }
   }
   private committed(captures: Awaited<ReturnType<EditorRecoveryCoordinator['capture']>>[], receipt: EditorRecoveryReceipt): void {
@@ -120,7 +125,7 @@ export class EditorRecoveryCoordinator {
     const content = this.content(entry), sources = readRecoverySources(entry.address)
     if (!entry.detached || content.composing || content.importing || sources.some(source => source.composing || source.importing || source.applying)) return
     const opened = await entry.opening()
-    const accepted = !sources.length && !content.pending.length && !content.rawPending?.length
+    const accepted = !content.authoredWork && !sources.length && !content.pending.length && !content.rawPending?.length
       && await window.knowbook.retireCleanEditorRecoveryDraft({ draftSessionId: opened.draftSessionId, expectedHead: entry.head, working: content.working })
     if (accepted) { if (this.entries.get(entry.identity) === entry) this.entries.delete(entry.identity); return }
     if (!entry.head) throw new Error('An unresolved dormant owner has no durable complete head')
@@ -142,6 +147,21 @@ export class EditorRecoveryCoordinator {
       if (changed.length) await this.write(changed, { purpose: 'background' })
       for (const entry of [...this.entries.values()]) await this.retire(entry)
       this.lastError = null
+    })
+  }
+  checkpointPendingHost(identity: object, operationId: string, shouldContinue: () => boolean): Promise<boolean> {
+    return this.serial(async () => {
+      await this.settleOriginal()
+      const entry = this.entries.get(identity)
+      const current = () => !this.frozen && shouldContinue() && entry && !entry.detached && this.entries.get(identity) === entry
+      if (!entry || entry.address.kind !== 'host' || !current()) return false
+      const captured = await this.capture(entry)
+      if (!current() || captured.draft.composing || captured.draft.importing || captured.draft.sources.length
+        || captured.draft.pending.length !== 1 || captured.draft.pending[0].clientOperationId !== operationId
+        || captured.draft.pending[0].method !== 'applySyncedHostStructure') return false
+      if (captured.fingerprint !== entry.fingerprint) await this.write([captured], { purpose: 'background' })
+      if (!entry.head || !current()) return false
+      return (await this.capture(entry)).fingerprint === captured.fingerprint && Boolean(current())
     })
   }
   detach(identity: object): void {

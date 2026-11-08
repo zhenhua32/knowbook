@@ -6,7 +6,7 @@ import { syncedCreateSelection, syncedInsertionAfter } from '../src/renderer/src
 const block = (id: string, type = 'paragraph', depth = 0, parentBlockId: string | null = null): SyncedStableBlockDraft =>
   ({ id, type, content: id, depth, parentBlockId, checked: false })
 
-test('synced create intentions include complete consecutive sibling subtrees and refuse headings, nested references, gaps and unknown identities', () => {
+test('synced create intentions include headings in complete consecutive sibling subtrees and refuse nested references, gaps and unknown identities', () => {
   const blocks = [block('parent', 'toggle'), block('child', 'paragraph', 1, 'parent'), block('next'), block('tail')]
   assert.deepEqual(syncedCreateSelection(blocks, ['parent', 'child', 'next']), { ok: true, rootIds: ['parent', 'next'], blockCount: 3 })
   assert.deepEqual(syncedCreateSelection(blocks, ['parent']), { ok: true, rootIds: ['parent'], blockCount: 2 })
@@ -14,7 +14,7 @@ test('synced create intentions include complete consecutive sibling subtrees and
   assert.deepEqual(syncedCreateSelection(blocks, ['parent', 'tail']), { ok: false, reason: 'selection' })
   assert.deepEqual(syncedCreateSelection(blocks, ['absent']), { ok: false, reason: 'selection' })
   assert.deepEqual(syncedCreateSelection(blocks, []), { ok: false, reason: 'selection' })
-  assert.deepEqual(syncedCreateSelection([block('parent', 'toggle'), block('heading', 'heading-2', 1, 'parent')], ['parent']), { ok: false, reason: 'heading' })
+  assert.deepEqual(syncedCreateSelection([block('parent', 'toggle'), block('heading', 'heading-2', 1, 'parent')], ['parent']), { ok: true, rootIds: ['parent'], blockCount: 2 })
   assert.deepEqual(syncedCreateSelection([block('parent', 'toggle'), block('reference', 'synced-block', 1, 'parent')], ['parent']), { ok: false, reason: 'nested-sync' })
 })
 

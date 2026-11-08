@@ -41,7 +41,7 @@ import { bindSyncedPublicationCapture, captureSyncedPublicationSnapshot, claimSy
   currentSyncedPublicationMatches, readSyncedPublicationAttempt, readSyncedPublicationCapture, recoverSyncedPublicationClaim,
   syncedPublicationRequestHash, type SyncedPublicationClaim, type SyncedPublicationLocalSnapshot } from '../database/synced-publication'
 import { SyncedPublicationError, decodePublicationJson, frozenPublicationFacts, mapPublicationCatalog, publicationCompare,
-  publicationHash, publicationInvalid, publicationJson, publicationRecordKey, PUBLICATION_RECORD_MAX_BYTES,
+  protocol5HistoryLink, protocol5HistoryTarget, publicationHash, publicationInvalid, publicationJson, publicationRecordKey, PUBLICATION_RECORD_MAX_BYTES,
   validateInitialSnapshot, validateInitialRecord, validateInitialManifest5, validatePublicationDescriptor, type InitialPublicationRecord, type PublicationDescriptor,
   type PublicationAssetDescriptor, type SyncedInitialManifest5 } from './synced-publication-model'
 export { SyncedPublicationError } from './synced-publication-model'
@@ -144,7 +144,7 @@ async function portable(snapshot: SyncedPublicationLocalSnapshot, paths: Paths):
   } catch (cause) { throw new SyncedPublicationError('asset', '真实本机附件缺失、越界或原 bytes 校验失败。', cause) }
   return { records: recordAssets(records, uri => replacements.get(uri) ?? publicationInvalid('附件映射未闭合。')), assets }
 }
-function build(snapshot: SyncedPublicationLocalSnapshot, target: WebDavSyncConfig, attemptId: string, material: { records: InitialPublicationRecord[]; assets: Map<string, Buffer> }): LoadedSpool {
+function build(snapshot: SyncedPublicationLocalSnapshot, target: WebDavSyncConfig, attemptId: string, material: { records: InitialPublicationRecord[]; assets: Map<string, Buffer> }, history = false): LoadedSpool {
   const entries: Record<string, string> = {}, objects = new Map<string, Buffer>()
   const descriptors = material.records.map(record => {
     const key = publicationRecordKey(record), bytes = Buffer.from(publicationJson(record)), hash = publicationHash(bytes)
@@ -156,7 +156,8 @@ function build(snapshot: SyncedPublicationLocalSnapshot, target: WebDavSyncConfi
     const payload = parseSyncedBlockPayload(block.content)
     return [{ documentId: record.id, instanceId: block.id, groupId: payload.groupId, groupHash: entries['group:' + payload.groupId] }]
   })).sort((a, b) => publicationCompare(a.documentId, b.documentId) || publicationCompare(a.instanceId, b.instanceId))
-  const manifest: SyncedInitialManifest5 = { version: 5, workspaceId: snapshot.workspaceScope, entries, syncedInstances }
+  const manifest: SyncedInitialManifest5 = { version: 5, workspaceId: snapshot.workspaceScope, entries, syncedInstances,
+    ...(history ? { history: protocol5HistoryLink(protocol5HistoryTarget(target), attemptId, null) } : {}) }
   const validated = validateInitialSnapshot(manifest, material.records.map(record => ({ key: publicationRecordKey(record), record })))
   const manifestBytes = Buffer.from(publicationJson(validated.manifest))
   if (manifestBytes.length > PUBLICATION_RECORD_MAX_BYTES) return publicationInvalid('Manifest5超过原16MiB门槛。')
@@ -242,6 +243,8 @@ async function loadSpool(paths: Paths): Promise<LoadedSpool> {
     if (publicationJson(found.sort(publicationCompare)) !== publicationJson([...new Set(files)].sort(publicationCompare))) throw new Error('spool不是精确文件闭集。')
     const validated = validateInitialSnapshot(decodePublicationJson(manifest), descriptor.objects.map(item => ({ key: item.key, record: decodePublicationJson(objects.get(item.key)!) })))
     if (validated.manifest.workspaceId !== descriptor.workspaceScope) throw new Error('manifest workspace不符。')
+    if (validated.manifest.history && publicationJson(validated.manifest.history)
+      !== publicationJson(protocol5HistoryLink(protocol5HistoryTarget(state.target), state.attemptId, null))) throw new Error('初始历史根与原发布尝试不符。')
     const expectedAssets = [...validated.assetNames].map(([hash, names]) => ({ path: 'assets/' + hash, hash, bytes: assets.get(hash)?.length ?? -1,
       names: [...names].sort(publicationCompare) })).sort((a, b) => publicationCompare(a.path, b.path))
     if (publicationJson(expectedAssets) !== publicationJson(descriptor.assets)) throw new Error('实际资产名/bytes闭集不符。')
@@ -253,12 +256,12 @@ async function loadSpool(paths: Paths): Promise<LoadedSpool> {
   } catch (cause) { if (cause instanceof SyncedPublicationError && cause.code === 'spool') throw cause; throw new SyncedPublicationError('spool', '私有完整原bytes缺失、损坏或不是该原spool。', cause) }
 }
 function originalSpool(data: Prepared, loaded: LoadedSpool): void { if (publicationJson(data.state) !== publicationJson(loaded.state)) throw new SyncedPublicationError('spool', 'spool不是该真实handle的原状态。') }
-export async function prepareInitialSyncedPublication(db: Database.Database, input: SyncedPublicationPrepareInput): Promise<SyncedPublicationPrepareResult> {
+export async function prepareInitialSyncedPublication(db: Database.Database, input: SyncedPublicationPrepareInput, history = false): Promise<SyncedPublicationPrepareResult> {
   return publicBoundary(async () => {
     const { paths, target } = environment(db, input), capture = captureSyncedPublicationSnapshot(db)
     if (capture.status === 'unsupported') return capture
     const snapshot = readSyncedPublicationCapture(capture.capture) ?? unavailable('真实捕获缺失。')
-    const loaded = build(snapshot, target, input.attemptId, await portable(snapshot, paths)); loaded.state.databasePath = paths.databasePath
+    const loaded = build(snapshot, target, input.attemptId, await portable(snapshot, paths), history); loaded.state.databasePath = paths.databasePath
     try { await writeSpool(paths, loaded) } catch (cause) { if (cause instanceof SyncedPublicationError) throw cause; throw new SyncedPublicationError('spool', '私有spool未能完整持久完成。', cause) }
     const verified = await loadSpool(paths)
     if (publicationJson(verified.state) !== publicationJson(loaded.state)) throw new SyncedPublicationError('spool', '成品不是原准备bytes。')
@@ -275,7 +278,7 @@ export async function recoverInitialSyncedPublication(db: Database.Database, inp
     return mint({ db, paths, target, state: frozenPublicationFacts(loaded.state), claim, closed: false, busy: false })
   })
 }
-async function readPublishedSnapshot(client: WebDavClient, completed?: (remote: Remote) => void): Promise<{ status: 'missing' } | { status: 'ready'; plan: SyncedPublishedSnapshot } | { status: 'unsupported'; reason: 'initial-snapshot-only' }> {
+async function readPublishedSnapshot(client: WebDavClient, completed?: (remote: Remote) => void, target?: WebDavSyncConfig): Promise<{ status: 'missing' } | { status: 'ready'; plan: SyncedPublishedSnapshot } | { status: 'unsupported'; reason: 'initial-snapshot-only' }> {
   return publicBoundary(async () => {
     if (!(client instanceof WebDavClient) || Object.getPrototypeOf(client) !== WebDavClient.prototype) return publicationInvalid('readonly reader需要真实WebDavClient。')
     const response = await network(() => client.getVersioned('manifest.json', PUBLICATION_RECORD_MAX_BYTES))
@@ -284,6 +287,8 @@ async function readPublishedSnapshot(client: WebDavClient, completed?: (remote: 
     if (!rawManifest || typeof rawManifest !== 'object' || !('version' in rawManifest)) return publicationInvalid('Manifest版本缺失。')
     if (rawManifest.version !== 5) return { status: 'unsupported' as const, reason: 'initial-snapshot-only' as const }
     const manifest = validateInitialManifest5(decodePublicationJson(response.bytes)), records: Array<{ key: string; record: unknown }> = [], objects = new Map<string, Buffer>()
+    if (manifest.history && (manifest.history.previousHash !== null
+      || target && manifest.history.targetFingerprint !== protocol5HistoryTarget(target))) return { status: 'unsupported' as const, reason: 'initial-snapshot-only' as const }
     for (const [key, hash] of Object.entries(manifest.entries)) {
       const object = await network(() => client.get('objects/' + hash + '.json', PUBLICATION_RECORD_MAX_BYTES))
       if (!object || publicationHash(object.bytes) !== hash) return publicationInvalid('远端对象原bytes缺失或hash不符。')
@@ -313,7 +318,7 @@ function matches(data: Prepared, spool: LoadedSpool, remote: Remote): boolean {
   return remote.manifest.equals(spool.manifest) && publicationJson(objects) === publicationJson(descriptor.objects) && publicationJson(remote.facts.assets) === publicationJson(descriptor.assets)
 }
 async function query(data: Prepared, spool: LoadedSpool, client: WebDavClient): Promise<SyncedPublicationConfirmed | SyncedPublicationConflict | SyncedPublicationMissing> {
-  const result = await readSyncedPublishedSnapshot(client)
+  const result = await readPublishedSnapshot(client, undefined, data.target)
   if (result.status === 'missing') return { status: 'missing', ...identity(data) }
   if (result.status !== 'ready' || !matches(data, spool, remotes.get(result.plan)!)) return { status: 'conflict', ...identity(data) }
   const confirmed = confirmSyncedPublication(data.db, data.claim)
@@ -337,7 +342,8 @@ async function verifyCurrentAssets(data: Prepared, spool: LoadedSpool): Promise<
   const snapshot = readSyncedPublicationCapture(capture.capture)
   if (!snapshot || snapshot.localFingerprint !== data.state.descriptor.localFingerprint) return false
   // This proof is discarded; every HTTP payload still comes only from the original spool buffers.
-  const checked = build(snapshot, data.target, data.state.attemptId, await portable(snapshot, data.paths))
+  const history = Boolean(validateInitialManifest5(decodePublicationJson(spool.manifest)).history)
+  const checked = build(snapshot, data.target, data.state.attemptId, await portable(snapshot, data.paths), history)
   return publicationJson(checked.state.descriptor) === publicationJson(spool.state.descriptor)
 }
 export async function publishInitialSyncedPublication(db: Database.Database, prepared: PreparedSyncedPublication, options: SyncedPublicationRuntime): Promise<SyncedPublicationConfirmed | SyncedPublicationConflict | SyncedPublicationStale> {
@@ -896,7 +902,7 @@ export async function receiveInitialSyncedSnapshot(db: Database.Database, input:
     const received = await readPublishedSnapshot(client, remote => {
       // Same continuation: fully verified original bytes -> sticky proof -> durable observation. No abort can skip this.
       proof = completeObservedRemote(data, remote, known); original = remote
-    })
+    }, data.target)
     if (received.status !== 'ready') return Object.freeze(received)
     if (!original || !proof) return publicationInvalid('incoming 未经过同次真实闭包/观察完成点。')
     const remote = original, observed = proof

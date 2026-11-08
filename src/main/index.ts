@@ -15,6 +15,7 @@ import { randomUUID } from 'node:crypto'
 import { isWebClipBridgePort } from '@shared/web-clip-bridge-settings'
 import type { WorkspaceSearchOccurrence, WorkspaceSearchOccurrenceResult } from '../shared/workspace-search-occurrence'
 import type { ResolveSyncedInlineInstanceInput, SyncedInlineInstanceResult } from '../shared/workspace-search-occurrence'
+import { resolveSyncedHeadingAnchor } from './database/synced-heading-projection2'
 import type { OpenSyncedEditingSessionInput, OpenSyncedEditingSessionResult, SyncedEditingRequest } from '../shared/synced-editing-session'
 import type { SyncedBlocksChangedEvent, SyncedGroupSnapshot } from '../shared/synced-blocks'
 import { canAiEditBlockText } from '@shared/blockAiEligibility'
@@ -22,6 +23,7 @@ import electron from 'electron'
 import { AttachmentStore } from './attachments'
 import { registerAttachmentHandlers } from './attachment-ipc'
 import { WebDavSyncService } from './sync/service'
+import { requestsEmptySyncReceiver } from './sync/receiver-bootstrap'
 import type { IpcMainInvokeEvent, OpenDialogOptions } from 'electron'
 import type {
   AskAiInput,
@@ -322,6 +324,7 @@ const editorCloseBarrier = createEditorCloseBarrier({
 // remain available while saving; ACKed frames cannot start a new editor write.
 const editorMutationChannels = new Set([
   'knowbook:import-attachments', 'knowbook:restore-backup-version', 'knowbook:restore-backup-from-folder',
+  'knowbook:resolve-webdav-protocol5-conflict', 'knowbook:resolve-webdav-protocol5-deletion',
   'knowbook:save-document-template', 'knowbook:delete-document-template',
   'knowbook:create-document', 'knowbook:create-document-from-template', 'knowbook:create-quick-note',
   'knowbook:update-document', 'knowbook:delete-document', 'knowbook:restore-trashed-document',
@@ -452,7 +455,7 @@ function editorRecovery() {
     editorRecoverySide = side; editorRecoveryService = service
     editorRecoveryReceipts = new EditorRecoveryCloseReceipts(side, service, editorCloseBarrier)
   }
-  return { service: editorRecoveryService!, receipts: editorRecoveryReceipts! }
+  return { side: editorRecoverySide, service: editorRecoveryService!, receipts: editorRecoveryReceipts! }
 }
 let backupService: MarkdownBackupService
 let restoreService: MarkdownRestoreService
@@ -662,9 +665,9 @@ function getPluginUiDocumentRegistration(url: string): PluginUiDocumentRegistrat
   }
 }
 
-function initializeServices(): void {
-  store = KnowbookStore.openCanonicalRuntime(databasePath)
-  webdavSync = new WebDavSyncService(store, attachmentStore, aiCredentialStorage, notifyWorkspaceMutation, () => restoreWorkflowInProgress)
+function initializeServices(emptyReceiver: boolean): void {
+  store = emptyReceiver ? KnowbookStore.createEmptySyncedReceiver(databasePath) : KnowbookStore.openCanonicalRuntime(databasePath)
+  webdavSync = new WebDavSyncService(store, attachmentStore, aiCredentialStorage, notifyWorkspaceMutation, () => restoreWorkflowInProgress, userDataRoot)
   try {
     getDecryptedAiApiKey()
   } catch (error) {
@@ -1622,6 +1625,10 @@ function registerIpcHandlers(): void {
   ipcMain.handle('knowbook:cancel-webdav-sync', () => webdavSync.cancel())
   ipcMain.handle('knowbook:resolve-webdav-sync-conflict', (_event, input: import('../shared/webdav-sync').ResolveWebDavSyncConflict) => webdavSync.resolveConflict(input))
   ipcMain.handle('knowbook:get-webdav-sync-conflict-details', (_event, input: import('../shared/webdav-sync').WebDavSyncConflictDetailsInput) => webdavSync.getConflictDetails(input))
+  ipcMain.handle('knowbook:preview-webdav-protocol5-conflicts', () => webdavSync.previewProtocol5Conflicts())
+  ipcMain.handle('knowbook:resolve-webdav-protocol5-conflict', (_event, input: unknown) => webdavSync.resolveProtocol5Conflict(input))
+  ipcMain.handle('knowbook:preview-webdav-protocol5-deletions', () => webdavSync.previewProtocol5Deletions())
+  ipcMain.handle('knowbook:resolve-webdav-protocol5-deletion', (_event, input: unknown) => webdavSync.resolveProtocol5Deletion(input))
   ipcMain.handle('knowbook:get-home-data', () => {
     const homeData = store.getHomeDataPayload(backupRoot)
     const data: HomeDataIpcPayload = {
@@ -2437,9 +2444,11 @@ function registerIpcHandlers(): void {
   ipcMain.handle('knowbook:resolve-workspace-search-occurrence', (_event, input: WorkspaceSearchOccurrence): WorkspaceSearchOccurrenceResult => {
     return store.resolveWorkspaceSearchOccurrence(input)
   })
+  ipcMain.handle('knowbook:resolve-synced-canonical-block-address', (_event, input: unknown) => store.resolveSyncedCanonicalBlockAddress(input))
   ipcMain.handle('knowbook:resolve-synced-inline-instance', (_event, input: ResolveSyncedInlineInstanceInput): SyncedInlineInstanceResult => {
     return store.resolveSyncedInlineInstance(input)
   })
+  ipcMain.handle('knowbook:resolve-synced-heading-anchor', (_event, input: unknown) => resolveSyncedHeadingAnchor(store.getUnsafeDatabaseHandle(), input))
   ipcMain.handle(EDITOR_CLOSE_READY_CHANNEL, event => editorCloseBarrier.replayPending(event))
   ipcMain.handle(EDITOR_RELOAD_REQUEST_CHANNEL, event => editorCloseBarrier.requestReload(event) !== null)
   ipcMain.handle(EDITOR_CLOSE_ACKNOWLEDGE_CHANNEL, (event, input: unknown) => editorCloseBarrier.acknowledge(event, input))
@@ -2452,8 +2461,14 @@ function registerIpcHandlers(): void {
   })
   ipcMain.handle(EDITOR_RECOVERY_CHANNELS.list, (event, input: unknown) => editorRecovery().service.list(event, validateEditorRecoveryPageInput(input)))
   ipcMain.handle(EDITOR_RECOVERY_CHANNELS.read, (event, input: unknown) => editorRecovery().service.read(event, input))
+  ipcMain.handle(EDITOR_RECOVERY_CHANNELS.listLegacy, (_event, afterRecordId?: string) =>
+    editorRecovery().side.legacy?.list({ afterRecordId, limit: 20 }) ?? { records: [], next: null })
+  ipcMain.handle(EDITOR_RECOVERY_CHANNELS.readLegacy, (_event, input: unknown) =>
+    editorRecovery().side.legacy?.read(input)?.payload ?? null)
   ipcMain.handle(EDITOR_RECOVERY_CHANNELS.retire, (event, input: unknown) => editorRecovery().service.retireClean(event, input))
   ipcMain.handle(EDITOR_RECOVERY_CHANNELS.prepareGroup, (event, input: unknown) => editorRecovery().service.prepareGroup(event, input))
+  ipcMain.handle(EDITOR_RECOVERY_CHANNELS.prepareGroupFloor, (event, input: unknown) => editorRecovery().service.prepareGroupFloor(event, input))
+  ipcMain.handle(EDITOR_RECOVERY_CHANNELS.completeGroup, (event, input: unknown) => editorRecovery().service.completeGroup(event, input))
   ipcMain.handle(EDITOR_RECOVERY_CHANNELS.park, (event, input: unknown) => editorRecovery().service.park(event, input))
   ipcMain.handle(EDITOR_RECOVERY_CHANNELS.decide, (event, input: unknown) => {
     const request = validateEditorRecoveryDecisionInput(input)
@@ -3188,8 +3203,10 @@ if (hasSingleInstanceLock && (databaseRestoreRequested || maintenanceArgumentErr
   })
 
   app.whenReady().then(async () => {
-    const restoredDatabaseSafeMode = await recoverInterruptedDatabaseRestore(userDataRoot)
-    initializeServices()
+    const emptyReceiver = requestsEmptySyncReceiver(process.argv, userDataRoot)
+    const restoredDatabaseSafeMode = emptyReceiver ? false : await recoverInterruptedDatabaseRestore(userDataRoot)
+    if (editorCloseBarrier.isShuttingDown()) return
+    initializeServices(emptyReceiver)
     registerAssetPreviewProtocol()
     registerPluginUiProtocol()
     appUpdateManager.initialize()

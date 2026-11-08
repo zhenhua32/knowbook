@@ -16,6 +16,8 @@ import { deriveRootRestoreReferenceAllocation3, toReference3GraphInputs } from '
 import { collectSyncedBindingOccurrences } from '../sync/synced-binding-occurrences'
 import { captureSyncedCreateSourceFacts } from './synced-host-create-plan'
 import { transformCanonical3Cell, rewriteCanonical3OriginJson, type Canonical3TextEdit } from './restore-knowledge-canonical3-cells'
+import { applySelectedPendingLocalBody5 } from './restore-knowledge-pending-local-cell5'
+import type { SelectedPendingLocalBody5 } from './restore-knowledge-pending-local-selection5'
 
 type Allocation = ReturnType<typeof deriveRootRestoreReferenceAllocation3>
 type Side = 'source' | 'current'
@@ -56,9 +58,17 @@ function missingBlockUrl(url: string, syntax: 'markdown' | 'wiki', id: string) {
 /** Fixed pure pipeline; data and allocation are supplied by the new genuine
  * Main reference owner. Old identity3 manifests/DTOs are never mutated. */
 export function deriveRootRestoreCanonicalCandidate3(data: Graph3Inputs, allocation: Allocation, choices?: RootRestoreMergedContentChoices3) {
+  return deriveRootRestoreCanonicalCandidateWithCells3(data, allocation, choices).candidate
+}
+
+/** Runtime-only cell/range evidence from the same candidate derivation. */
+export function deriveRootRestoreCanonicalCandidateWithCells3(data: Graph3Inputs, allocation: Allocation,
+  choices?: RootRestoreMergedContentChoices3, pending?: SelectedPendingLocalBody5) {
   const derived = toReference3GraphInputs(data, allocation)
   const ordinary = deriveRootRestoreNavigationRewrite3(derived, choices)
-  const before = buildMerge3NavigationFinalIndex3(derived, ordinary.tables)
+  const ordinaryIndex = buildMerge3NavigationFinalIndex3(derived, ordinary.tables)
+  const selectedPending = pending && applySelectedPendingLocalBody5(derived, ordinary, ordinaryIndex, pending)
+  const before = selectedPending?.final ?? ordinaryIndex, ordinaryTables = selectedPending?.tables ?? ordinary.tables
   const originalRows = new Map<string, ReturnType<typeof graph3Rows>[number]>()
   const originalById = new Map<string, ReturnType<typeof graph3Rows>[number]>()
   for (const side of ['source', 'current'] as const) for (const name of ['synced_groups', 'synced_group_blocks'])
@@ -66,7 +76,7 @@ export function deriveRootRestoreCanonicalCandidate3(data: Graph3Inputs, allocat
       originalRows.set(graph3Key(side, name, row.original.sourceRowId), row)
       originalById.set(graph3Key(side, name, row.value.id), row)
     }
-  const selected = entries(ordinary.tables), groups = selected.filter(entry => entry.table.name === 'synced_groups')
+  const selected = entries(ordinaryTables), groups = selected.filter(entry => entry.table.name === 'synced_groups')
   const groupBlocks = new Map<string, Entry[]>()
   for (const entry of selected) if (entry.table.name === 'synced_group_blocks') {
     const id = string(entry.value.group_id), list = groupBlocks.get(id) ?? []; list.push(entry); groupBlocks.set(id, list)
@@ -196,7 +206,7 @@ export function deriveRootRestoreCanonicalCandidate3(data: Graph3Inputs, allocat
     })
     if (!same(bindings, JSON.parse(string(entry.value.bindings_json)))) changes.set(fieldKey('synced_groups', entry.row.key, 'bindings_json'), capsuleJson(bindings))
   }
-  const tables = ordinary.tables.map(table => ({ ...table, rows: table.rows.map(row => ({ ...row, cells: row.cells.map((cell, index) => {
+  const tables = ordinaryTables.map(table => ({ ...table, rows: table.rows.map(row => ({ ...row, cells: row.cells.map((cell, index) => {
     const changed = changes.get(fieldKey(table.name, row.key, table.columns[index]))
     return changed === undefined ? cell : graph3Encode(changed, table.encoding)
   }) })) }))
@@ -236,6 +246,7 @@ export function deriveRootRestoreCanonicalCandidate3(data: Graph3Inputs, allocat
     baseIdentityAllocationHash: allocation.baseIdentityAllocationHash, derivedReferenceAllocationHash: allocation.derivedReferenceAllocationHash,
     sourceMaterialHash: ordinary.sourceMaterialHash, currentMaterialHash: ordinary.currentMaterialHash,
     ordinaryNavigationRewriteHash: ordinary.navigationRewriteHash, tables, canonicalEdits: edits, originProjections, bindingProjections,
+    ...(selectedPending ? { pendingLocalBody: selectedPending.proof } : {}),
     activeGroupWires: wires, inactiveGroups: inactive, projectedBudgets, finalSyntaxIndexHash: final.indexHash,
     materialization: { reservationRows: allocation.materialization.reservationRows, ledgerOverlay,
       lifecycleIntents: allocation.materialization.lifecycleIntents, actualStageLedgerWritten: false as const, actualLifecycleRowsReady: false as const },
@@ -247,7 +258,8 @@ export function deriveRootRestoreCanonicalCandidate3(data: Graph3Inputs, allocat
     inactiveMaterializationComplete: inactive.every(item => item.side === 'current'), templateNavigationRewritten: false as const,
     referenceRewriteComplete: false as const, semanticValidationComplete: false as const, acceptedCoverage: false as const, effective: false as const, permit: false as const }
   assertMerge3JsonBudget(body)
-  return freezeCapsuleValue({ ...body, canonicalCandidateHash: capsuleBytesHash('knowbook.restore.canonical3.candidate.v1\0' + capsuleJson(body)) })
+  const candidate = freezeCapsuleValue({ ...body, canonicalCandidateHash: capsuleBytesHash('knowbook.restore.canonical3.candidate.v1\0' + capsuleJson(body)) })
+  return Object.freeze({ candidate, ordinaryEdits: ordinary.edits, physicalBlocks: final.physicalBlocks })
 }
 
 type Ledger = { id: string; last_owner_kind: 'document' | 'group' | 'reserved'; last_owner_id: string; state: 'live' | 'retained'; created_at: string | null }

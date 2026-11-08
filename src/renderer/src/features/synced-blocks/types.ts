@@ -50,6 +50,7 @@ export interface SyncedGroupDraftState {
   composingInstanceIds: string[]
   canUndo: boolean
   canRedo: boolean
+  recoveryReview?: boolean
 }
 
 export interface SyncedGroupApply {

@@ -10,9 +10,12 @@ import { assertRootRestoreIdentityOriginalBytes3, readRootRestoreIdentityGraphIn
   type RootRestoreIdentityPlan3 } from './restore-knowledge-identity3-read'
 import { deriveRootRestoreReferenceAllocation3, normalizeReference3Choices, validateReference3Kernel,
   type Reference3Allocation, type Reference3Choices, type Reference3Kernel } from './restore-knowledge-reference3-model'
-import { deriveRootRestoreCanonicalCandidate3 } from './restore-knowledge-canonical3-model'
+import { deriveRootRestoreCanonicalCandidateWithCells3 } from './restore-knowledge-canonical3-model'
 import { checkMerge3NativeStorage3 } from './restore-knowledge-merge3-native'
 import { assertMerge3JsonBudget } from './restore-knowledge-merge3-storage'
+import { deriveSelectedPendingLocalBody5, parsePendingLocalComponentLocator5,
+  type PendingLocalComponentLocator5, type SelectedPendingLocalBody5 } from './restore-knowledge-pending-local-selection5'
+import { assertPendingLocalCandidateCellOnly5 } from './restore-knowledge-pending-local-cell5'
 
 export interface RootRestoreReferencePlan3 { readonly kind: 'main-root-restore-reference-plan' }
 type BaseLocation = Awaited<ReturnType<typeof readRootRestoreIdentityPlanLocation3>>
@@ -21,6 +24,8 @@ type Data = Awaited<ReturnType<typeof readRootRestoreIdentityGraphInputs3>>
 type Candidate = ReturnType<typeof checkedCandidate>
 export interface Reference3Value { readonly allocation: Reference3Allocation; readonly candidate: Candidate }
 type Manifest = ReturnType<typeof manifestBody>
+type Pending = { choice: PendingLocalComponentLocator5; baseCandidateHash: string }
+type Captured = Pick<Awaited<ReturnType<typeof readRootRestoreIdentityInputsAndOriginals5>>, 'pair' | 'working'>
 interface Saved {
   readonly identity: RootRestoreIdentityPlan3
   readonly planId: string
@@ -34,11 +39,15 @@ const owners = new WeakMap<RootRestoreReferencePlan3, Saved>()
 const maxManifestBytes = 16 * 1024
 const invalid = (message: string): never => { throw new Error('完整恢复引用规划无效：' + message + '；未授安装、历史执行或coverage接受权。') }
 const same = (a: unknown, b: unknown): boolean => capsuleJson(a) === capsuleJson(b)
-const manifestHash = (value: Manifest) => capsuleBytesHash('knowbook.restore.reference3.manifest.v1\0' + capsuleJson(value))
+const manifestHash = (value: Manifest) => capsuleBytesHash('knowbook.restore.reference3.manifest.v' + value.version + '\0' + capsuleJson(value))
 const directory = (location: Location, planId: string) => join(location.profileRoot, 'backups', 'database-restore',
   location.operationId, 'restore-reference-plans-v3', planId)
 function checkedCandidate(data: Data, allocation: Reference3Allocation, choices: Reference3Choices) {
-  const model = deriveRootRestoreCanonicalCandidate3(data, allocation, { anonymousValues: choices.anonymousValues })
+  return checkedCandidateWithCells(data, allocation, choices).candidate
+}
+function checkedCandidateWithCells(data: Data, allocation: Reference3Allocation, choices: Reference3Choices, pending?: SelectedPendingLocalBody5) {
+  const cells = deriveRootRestoreCanonicalCandidateWithCells3(data, allocation, { anonymousValues: choices.anonymousValues }, pending)
+  const model = cells.candidate
   const nativeStorageChecks = checkMerge3NativeStorage3(model.tables), conflicts = [...model.conflicts, ...nativeStorageChecks.conflicts]
   const body = { ...model, nativeStorageChecks, conflicts, candidateConflictFree: conflicts.length === 0,
     catalogNameNativeCheckPending: false as const, finalCurrentRetainedCutComplete: false as const,
@@ -47,11 +56,20 @@ function checkedCandidate(data: Data, allocation: Reference3Allocation, choices:
   assertMerge3JsonBudget(body)
   const value = { ...body, checkedCanonicalCandidateHash: capsuleBytesHash('knowbook.restore.canonical3.checked-candidate.v1\0' + capsuleJson(body)) }
   assertMerge3JsonBudget(value)
-  return freezeCapsuleValue(value)
+  return Object.freeze({ ...cells, candidate: freezeCapsuleValue(value) })
+}
+function checkedPendingCandidateWithCells(captured: Captured, data: Data, allocation: Reference3Allocation, choices: Reference3Choices,
+  original: Candidate, choice: PendingLocalComponentLocator5) {
+  if (original.pendingLocalBody || !original.candidateConflictFree || !original.finalForestValidated) return invalid('原候选未通过整表校验')
+  const pending = deriveSelectedPendingLocalBody5(captured, choice)
+  const cells = checkedCandidateWithCells(data, allocation, choices, pending), { candidate } = cells
+  if (!candidate.pendingLocalBody || !candidate.candidateConflictFree || !candidate.finalForestValidated) return invalid('pending候选未通过整表校验')
+  assertPendingLocalCandidateCellOnly5(original.tables, candidate.tables, candidate.pendingLocalBody)
+  return cells
 }
 function manifestBody(base: BaseLocation, planId: string, data: Data, kernel: Reference3Kernel,
-  choices: Reference3Choices, value: Reference3Allocation, candidate: Candidate) {
-  return { kind: 'prepared-root-restore-reference-plan' as const, version: 1 as const, policyVersion: 1 as const, purposeVersion: 1 as const,
+  choices: Reference3Choices, value: Reference3Allocation, candidate: Candidate, pending?: Pending) {
+  const fields = { kind: 'prepared-root-restore-reference-plan' as const, policyVersion: 1 as const, purposeVersion: 1 as const,
     planId, baseIdentityPlanId: base.planId, baseIdentityManifestHash: base.manifestHash,
     baseIdentityAllocationHash: data.value.allocationHash, originalDescriptorHash: base.location.descriptorHash,
     conservationHash: data.inputs.knowledge.conservationHash, sourceMaterialHash: data.inputs.source.materialHash,
@@ -61,17 +79,26 @@ function manifestBody(base: BaseLocation, planId: string, data: Data, kernel: Re
     canonicalCandidateHash: candidate.canonicalCandidateHash, checkedCanonicalCandidateHash: candidate.checkedCanonicalCandidateHash,
     finalCurrentRetainedCutComplete: false as const, referenceRewriteComplete: false as const, semanticValidationComplete: false as const,
     acceptedCoverage: false as const, effective: false as const, permit: false as const }
+  if (pending) {
+    if (!candidate.pendingLocalBody) return invalid('pending 清单缺实际候选证明')
+    return { ...fields, version: 2 as const, pendingSelection: pending.choice, pendingBaseCandidateHash: pending.baseCandidateHash,
+      pendingCellProofHash: candidate.pendingLocalBody.proofHash }
+  }
+  return { ...fields, version: 1 as const }
 }
 async function readManifest(saved: Saved): Promise<Manifest> {
   const bytes = await readCapsule2AssetManifest(join(saved.directory, 'manifest.json'), saved.location.profileRoot, maxManifestBytes)
   let value: unknown
   try { value = JSON.parse(bytes) } catch { return invalid('引用kernel清单不是完整JSON') }
+  const version = value !== null && typeof value === 'object' && 'version' in value ? value.version : undefined
+  if (version !== 1 && version !== 2) return invalid('未知引用清单版本')
   const row = capsuleRecord(value, ['kind','version','policyVersion','purposeVersion','planId','baseIdentityPlanId',
     'baseIdentityManifestHash','baseIdentityAllocationHash','originalDescriptorHash','conservationHash','sourceMaterialHash',
     'currentMaterialHash','sourcePayload','currentPayload','sourceWitnessHash','currentWitnessHash','kernel','choices',
     'derivedReferenceAllocationHash','canonicalCandidateHash','checkedCanonicalCandidateHash','finalCurrentRetainedCutComplete',
-    'referenceRewriteComplete','semanticValidationComplete','acceptedCoverage','effective','permit'])
-  if (row.kind !== 'prepared-root-restore-reference-plan' || row.version !== 1 || row.policyVersion !== 1 || row.purposeVersion !== 1
+    'referenceRewriteComplete','semanticValidationComplete','acceptedCoverage','effective','permit',
+    ...(version === 2 ? ['pendingSelection','pendingBaseCandidateHash','pendingCellProofHash'] : [])])
+  if (row.kind !== 'prepared-root-restore-reference-plan' || row.version !== version || row.policyVersion !== 1 || row.purposeVersion !== 1
     || durableSqlDagUuid(row.planId) !== saved.planId || durableSqlDagUuid(row.baseIdentityPlanId) !== saved.basePlanId
     || row.baseIdentityManifestHash !== saved.baseManifestHash || row.originalDescriptorHash !== saved.location.descriptorHash
     || row.finalCurrentRetainedCutComplete !== false || row.referenceRewriteComplete !== false || row.semanticValidationComplete !== false
@@ -82,6 +109,11 @@ async function readManifest(saved: Saved): Promise<Manifest> {
   if (typeof row.sourcePayload !== 'string' || typeof row.currentPayload !== 'string') return invalid('清单角色来源不是原完整payload key')
   validateReference3Kernel(row.kernel as Reference3Kernel)
   normalizeReference3Choices(row.choices as Reference3Choices)
+  if (version === 2) {
+    parsePendingLocalComponentLocator5(row.pendingSelection)
+    durableSqlDagHash(row.pendingBaseCandidateHash)
+    durableSqlDagHash(row.pendingCellProofHash)
+  }
   const body = row as unknown as Manifest
   if (bytes !== capsuleJson(body) + '\n' || manifestHash(body) !== saved.manifestHash) return invalid('持久引用清单字节或hash变化')
   return body
@@ -94,6 +126,7 @@ async function readBaseLocation(saved: Saved): Promise<BaseLocation> {
 }
 async function reconstruct(saved: Saved) {
   const before = await readManifest(saved), base = await readBaseLocation(saved)
+  if (before.version === 2) return (await reconstructWithOriginals(saved, before, base)).actual
   // Exactly one fresh complete SQL/K read per fixed public call. Metadata and
   // tail-byte checks do not reread SQL or turn a DTO into an authority.
   const data = await readRootRestoreIdentityGraphInputs3(saved.identity)
@@ -125,8 +158,13 @@ export async function prepareRootRestoreReferencePlan3(identity: RootRestoreIden
   const planId = randomUUID(), allocation = deriveRootRestoreReferenceAllocation3(data, kernel, choices)
   if (allocation.purposes.some(purpose => purpose.targetId === planId)) return invalid('引用plan locator与新分配身份碰撞')
   const candidate = checkedCandidate(data, allocation, choices), value: Reference3Value = Object.freeze({ allocation, candidate })
+  return persistReference3(identity, base, planId, data, kernel, choices, value)
+}
+
+async function persistReference3(identity: RootRestoreIdentityPlan3, base: BaseLocation, planId: string, data: Data,
+  kernel: Reference3Kernel, choices: Reference3Choices, value: Reference3Value, pending?: Pending) {
   assertMerge3JsonBudget(value)
-  const body = manifestBody(base, planId, data, kernel, choices, allocation, candidate), location = base.location
+  const body = manifestBody(base, planId, data, kernel, choices, value.allocation, value.candidate, pending), location = base.location
   const target = directory(location, planId), collection = join(location.profileRoot, 'backups', 'database-restore',
     location.operationId, 'restore-reference-plans-v3')
   const bytes = capsuleJson(body) + '\n'
@@ -179,6 +217,7 @@ export async function readRootRestoreReferenceCopySource3(plan: RootRestoreRefer
     checkedCanonicalCandidateHash: before.checkedCanonicalCandidateHash,
     sourceMaterialHash: before.sourceMaterialHash, currentMaterialHash: before.currentMaterialHash,
     conservationHash: before.conservationHash, originalDescriptorHash: before.originalDescriptorHash,
+    ...(before.version === 2 ? { pendingCellProofHash: before.pendingCellProofHash } : {}),
     location: Object.freeze({ ...saved.location }) })
 }
 /** Reopening dispatches only the known policy/purpose version. It never mints
@@ -202,13 +241,21 @@ export async function readRootRestoreReferenceInputsAndOriginals5(plan: RootRest
   const saved = owners.get(plan)
   if (!saved) return invalid('不是实际Main持久引用规划句柄')
   const before = await readManifest(saved), base = await readBaseLocation(saved)
+  return reconstructWithOriginals(saved, before, base)
+}
+
+async function reconstructWithOriginals(saved: Saved, before: Manifest, base: BaseLocation) {
   // Exactly one fresh complete SQL/K read per fixed public call. Metadata and
   // tail-byte checks do not reread SQL or turn a DTO into an authority.
   const captured = await readRootRestoreIdentityInputsAndOriginals5(saved.identity), data = captured.actual
   const allocation = deriveRootRestoreReferenceAllocation3(data, before.kernel, before.choices)
   if (allocation.purposes.some(purpose => purpose.targetId === saved.planId)) return invalid('引用plan locator与新分配身份碰撞')
-  const candidate = checkedCandidate(data, allocation, before.choices)
-  const actual = manifestBody(base, saved.planId, data, before.kernel, before.choices, allocation, candidate)
+  const original = checkedCandidateWithCells(data, allocation, before.choices)
+  const pending = before.version === 2 ? { choice: before.pendingSelection, baseCandidateHash: before.pendingBaseCandidateHash } : undefined
+  if (pending && original.candidate.checkedCanonicalCandidateHash !== pending.baseCandidateHash) return invalid('pending基准候选变化')
+  const { candidate, ordinaryEdits, physicalBlocks } = pending
+    ? checkedPendingCandidateWithCells(captured, data, allocation, before.choices, original.candidate, pending.choice) : original
+  const actual = manifestBody(base, saved.planId, data, before.kernel, before.choices, allocation, candidate, pending)
   if (!same(actual, before)) return invalid('完整原件、base allocation或引用派生不等于持久清单')
   const value: Reference3Value = Object.freeze({ allocation, candidate })
   assertMerge3JsonBudget(value)
@@ -217,5 +264,33 @@ export async function readRootRestoreReferenceInputsAndOriginals5(plan: RootRest
   await readManifest(saved)
   const result = Object.freeze({ data, allocation, candidate, value, kernel: before.kernel, choices: before.choices,
     referencePlanId: saved.planId, referenceManifestHash: saved.manifestHash })
-  return Object.freeze({ actual: result, pair: captured.pair, original: captured.original })
+  return Object.freeze({ actual: result, pair: captured.pair, original: captured.original, working: captured.working,
+    cells: Object.freeze({ ordinaryEdits, physicalBlocks }) })
+}
+
+/** Checked preview bound to a genuine reference's originals and kernel. It
+ * returns values only. The preview never mints a Reference3 or stage owner. */
+export async function previewRootRestorePendingLocalBody5(plan: RootRestoreReferencePlan3, locator: unknown) {
+  const choice = parsePendingLocalComponentLocator5(locator)
+  const captured = await readRootRestoreReferenceInputsAndOriginals5(plan)
+  const { data, allocation, choices, candidate: original } = captured.actual
+  const { candidate } = checkedPendingCandidateWithCells(captured, data, allocation, choices, original, choice)
+  await assertRootRestoreReferenceOriginalBytes3(plan)
+  return freezeCapsuleValue({ referencePlanId: captured.actual.referencePlanId, referenceManifestHash: captured.actual.referenceManifestHash,
+    originalCandidateHash: original.checkedCanonicalCandidateHash, candidate })
+}
+
+/** Persist an explicit choice against the base plan's genuine original and
+ * unchanged kernel. The newly selected reference is still non-executable. */
+export async function prepareRootRestoreReferenceWithPendingLocal5(plan: RootRestoreReferencePlan3, locator: unknown) {
+  const choice = parsePendingLocalComponentLocator5(locator), saved = owners.get(plan)
+  if (!saved) return invalid('不是实际Main持久引用规划句柄')
+  const captured = await readRootRestoreReferenceInputsAndOriginals5(plan)
+  const { data, allocation, kernel, choices, candidate: original } = captured.actual
+  const { candidate } = checkedPendingCandidateWithCells(captured, data, allocation, choices, original, choice)
+  const base = await readBaseLocation(saved), planId = randomUUID()
+  if (allocation.purposes.some(purpose => purpose.targetId === planId)) return invalid('引用plan locator与新分配身份碰撞')
+  await assertRootRestoreReferenceOriginalBytes3(plan)
+  return persistReference3(saved.identity, base, planId, data, kernel, choices, Object.freeze({ allocation, candidate }),
+    { choice, baseCandidateHash: original.checkedCanonicalCandidateHash })
 }

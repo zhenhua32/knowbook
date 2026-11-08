@@ -9,15 +9,21 @@ import { hasSyncedInsertWorkingStructure, isHostInsertInput, planSyncedHostInser
 
 import { isHostMoveInput, planSyncedHostMove, assertSyncedHostMoveContext, type HostMoveInput } from './synced-host-move-plan'
 import { decodeHostCreateJournal, type HostCreateJournal } from './synced-host-create-codec'
+import { decodeHostDetachEvidence, type HostDetachEvidence } from './synced-host-detach-evidence'
+import { isHostDetachInput, type HostDetachInput } from './synced-host-detach-plan'
+import { planSyncedHostDetach, validateDetachSource, type DetachSource } from './synced-host-detach-legacy'
 
 export type HostFinalInput = Extract<SyncedStructureInput, { mode: 'host-final' }>
 export interface HostSide { documentId: string; content: HostContent }
 export interface HostBirth { documentId: string; blockId: string; createdAt: string }
 export interface HostGroupDependency { groupId: string; creationId: string; createdAt: string; origin: SyncedOriginV1 }
-export interface HostJournal {
-  input: HostFinalInput | HostInsertInput | HostMoveInput; persisted: Array<HostSide & { updatedAt: string }>; births: HostBirth[]; groups: HostGroupDependency[]
+interface HostJournalSides {
+  persisted: Array<HostSide & { updatedAt: string }>; births: HostBirth[]; groups: HostGroupDependency[]
   before: HostSide[]; after: HostSide[]
 }
+export interface HostJournal extends HostJournalSides { input: HostFinalInput | HostInsertInput | HostMoveInput }
+export interface HostDetachJournal extends HostJournalSides { input: HostDetachInput; detach: HostDetachEvidence }
+interface LegacyHostDetachJournal extends HostJournalSides { input: HostDetachInput; legacyDetach: DetachSource }
 export type HostFinalJournal = HostJournal & { input: HostFinalInput }
 export const hostEncode = canonicalSyncedPortableJson
 export const hostHash = (value: unknown): string => createHash('sha256').update(hostEncode(value)).digest('hex')
@@ -71,24 +77,33 @@ const matchingHosts = (left: readonly HostSide[], right: readonly HostSide[]) =>
 
 /** Finite executable branches share side/birth/incarnation validation. The
  * original bare-create lifecycle action remains a separate, unsupported format. */
-export function decodeHostJournal(row: Readonly<SyncedHostHistoryBranchRow>): HostJournal | HostCreateJournal {
+export function decodeHostJournal(row: Readonly<SyncedHostHistoryBranchRow>): HostJournal | HostCreateJournal | HostDetachJournal | LegacyHostDetachJournal {
   try {
     if (!isSyncedUuid(row.id)) return bad()
     hostTime(row.created_at)
     const action = hostJson(row.action_json)
     if (syncedPlainRecord(action) && action.kind === 'host-command' && action.version === 2) return decodeHostCreateJournal(row)
-    assertSyncedShape(action, ['kind', 'version', 'input', 'persisted', 'births', 'groups'])
-    if (action.version !== 1) return bad()
+    const detachVersion = syncedPlainRecord(action) && action.kind === 'host-command' && action.version === 3
+    const legacyDetachVersion = detachVersion && !Object.hasOwn(action, 'detachHash')
+    const fields = ['kind', 'version', 'input', 'persisted', 'births', 'groups']
+    assertSyncedShape(action, legacyDetachVersion ? [...fields, 'detach'] : detachVersion ? [...fields, 'detach', 'detachHash'] : fields)
+    if (!detachVersion && action.version !== 1) return bad()
     const parsed = validateSyncedStructureInput(action.input)
-    let input: HostFinalInput | HostInsertInput | HostMoveInput
-    if (action.kind === 'host-final' && parsed.mode === 'host-final') input = parsed
-    else if (action.kind === 'host-command' && (isHostInsertInput(parsed) || isHostMoveInput(parsed))) input = parsed
+    let input: HostJournal['input'] | HostDetachInput
+    if (detachVersion && isHostDetachInput(parsed) && parsed.hostsWorkingBefore.length === 1) input = parsed
+    else if (!detachVersion && action.kind === 'host-final' && parsed.mode === 'host-final') input = parsed
+    else if (!detachVersion && action.kind === 'host-command' && (isHostInsertInput(parsed) || isHostMoveInput(parsed))) input = parsed
     else return bad()
     const before = validateHostSides(hostJson(row.before_json)), after = validateHostSides(hostJson(row.after_json))
     if (!before.length || !matchingHosts(before, after) || !/^[a-f0-9]{64}$/.test(row.before_hash)
       || !/^[a-f0-9]{64}$/.test(row.after_hash) || hostHash(before) !== row.before_hash || hostHash(after) !== row.after_hash) return bad()
+    const legacyDetach = legacyDetachVersion ? validateDetachSource(action.detach) : null
+    const detached = isHostDetachInput(input) && !legacyDetach ? decodeHostDetachEvidence(action.detach, input, before[0].content) : null
+    if (detached && (hostHash(detached.evidence) !== action.detachHash || !hostEqual(detached.evidence, action.detach))) return bad()
     const plannedAfter = input.mode === 'host-final' ? input.finalAfter.map(({ documentId, ...content }) => ({ documentId, content }))
-      : [{ documentId: input.action.target.documentId, content: isHostInsertInput(input) ? planSyncedHostInsert(input) : planSyncedHostMove(input) }]
+      : isHostDetachInput(input) ? [{ documentId: input.hostsWorkingBefore[0].documentId,
+        content: legacyDetach ? planSyncedHostDetach(input, legacyDetach) : detached!.after }]
+        : [{ documentId: input.action.target.documentId, content: isHostInsertInput(input) ? planSyncedHostInsert(input) : planSyncedHostMove(input) }]
     if (!hostEqual(before, input.hostsWorkingBefore.map(host => ({ documentId: host.documentId, content: host.workingBefore })))
       || !hostEqual(after, plannedAfter)) return bad()
     const persisted = list(action.persisted, raw => {
@@ -116,6 +131,27 @@ export function decodeHostJournal(row: Readonly<SyncedHostHistoryBranchRow>): Ho
     }, item => item.groupId)
     const required = hostReferencedGroups([...before, ...after])
     if (groups.length !== required.size || groups.some(item => !required.has(item.groupId))) return bad()
+    if (legacyDetach && isHostDetachInput(input)) {
+      const group = groups.find(item => item.groupId === legacyDetach.source.id)
+      const newIds = new Set(legacyDetach.blockMap.map(item => item.to))
+      if (!group || group.createdAt !== legacyDetach.source.createdAt || group.creationId !== legacyDetach.source.creationId
+        || !hostEqual(group.origin, legacyDetach.source.origin) || persisted[0].content.blocks.some(block => newIds.has(block.id))
+        || births.some(birth => newIds.has(birth.blockId) && birth.createdAt !== row.created_at)) return bad()
+      return { input, persisted, births, groups, before, after, legacyDetach }
+    }
+    if (isHostDetachInput(input)) {
+      if (!detached) return bad()
+      const { wire, allocation, projection } = detached.evidence
+      const dependency = groups.find(item => item.groupId === wire.id)
+      const birthById = new Map(births.map(item => [item.blockId, item.createdAt]))
+      const freshIds = new Set(allocation.map(item => item.to))
+      const persistedIds = new Set(persisted[0].content.blocks.map(block => block.id))
+      if (!dependency || dependency.creationId !== wire.creationId || dependency.createdAt !== wire.createdAt || !hostEqual(dependency.origin, wire.origin)
+        || allocation.some(item => birthById.get(item.to) !== row.created_at || persistedIds.has(item.to))
+        || projection.links.some(link => link.resolved.target.kind === 'block' && freshIds.has(link.resolved.target.id)
+          && link.resolved.blockCreatedAt !== birthById.get(link.resolved.target.id))) return bad()
+      return { input, persisted, births, groups, before, after, detach: detached.evidence }
+    }
     return { input, persisted, births, groups, before, after }
   } catch (cause) { throw new Error('宿主结构日志损坏或是不受支持的日志格式，未执行或裁剪。', { cause }) }
 }
@@ -124,9 +160,12 @@ export function decodeHostFinalJournal(row: Readonly<SyncedHostHistoryBranchRow>
   if (journal.input.mode !== 'host-final') return bad()
   return { ...journal, input: journal.input }
 }
-export function encodeHostJournal(journal: HostJournal): { action: string; before: string; after: string; beforeHash: string; afterHash: string } {
-  return { action: hostEncode({ kind: journal.input.mode === 'host-final' ? 'host-final' : 'host-command', version: 1,
-    input: journal.input, persisted: journal.persisted, births: journal.births, groups: journal.groups }),
+export function encodeHostJournal(journal: HostJournal | HostDetachJournal | LegacyHostDetachJournal): { action: string; before: string; after: string; beforeHash: string; afterHash: string } {
+  const detach = 'detach' in journal ? journal.detach : null
+  const legacyDetach = 'legacyDetach' in journal ? journal.legacyDetach : null
+  return { action: hostEncode({ kind: journal.input.mode === 'host-final' ? 'host-final' : 'host-command', version: detach || legacyDetach ? 3 : 1,
+    input: journal.input, persisted: journal.persisted, births: journal.births, groups: journal.groups,
+    ...(detach ? { detach, detachHash: hostHash(detach) } : legacyDetach ? { detach: legacyDetach } : {}) }),
     before: hostEncode(journal.before), after: hostEncode(journal.after), beforeHash: hostHash(journal.before), afterHash: hostHash(journal.after) }
 }
 export function encodeHostFinalJournal(journal: HostFinalJournal): ReturnType<typeof encodeHostJournal> { return encodeHostJournal(journal) }

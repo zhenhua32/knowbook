@@ -231,6 +231,62 @@ async function followOriginalBlock(page: Page, seed: TitleRenameSeed, renamed: s
 // remain unchanged. This is an ordinary no-reference target, not Source UI.
 test.skip(!hasBuiltElectronApp(), 'Build the actual local Electron app before this ordinary target slice')
 
+test('ordinary body heading saves through the fenced editor and follows the original canonical anchor after cold restart @electron', async ({}, info) => {
+  await withSyncedTitleRenameApp(info, 'ordinary-section', async fixture => {
+    const { seed } = fixture, { page, app } = fixture.context(), slug = 'title-child-1'
+    const original = seed.original.blocks.find(block => block.id === seed.targetBlockId)!
+    const headingRow = (target: Page) => target.locator(`[data-block-id="${seed.targetBlockId}"]`)
+    const follow = async (target: Page) => {
+      await openTarget(target, seed)
+      await target.locator('.document-reading-content .inline-link', { hasText: 'Back to document title' }).click()
+      await expect(target.locator('.document-reading-summary')).toBeInViewport()
+      await expect(headingRow(target)).not.toBeInViewport()
+      await openDocument(target, seed.observerTitle)
+      await setInlineReading(target, true)
+      await inlineInstance(target, seed.observerInstanceId).getByRole('button', { name: 'Original section', exact: true }).click()
+      await expect(target.locator('.document-header-title')).toHaveText(seed.childTitle)
+      const bodyHeading = headingRow(target).getByRole('heading', { name: seed.childTitle, exact: true })
+      await expect(bodyHeading).toBeInViewport()
+      await expect(target.locator('.document-reading-summary')).not.toBeInViewport()
+    }
+
+    await openTarget(page, seed)
+    await setInlineReading(page, false)
+    const editor = headingRow(page).locator('textarea')
+    await expect(editor).toHaveValue(original.content)
+    await installProbe(app, seed.childId, false, info.outputPath('ordinary-section-main-observation.json'))
+    try {
+      await editor.fill(seed.childTitle)
+      await expect.poll(() => observation(app).rows[0]?.settled).toBe(true)
+      const { hints, rows, ordinaryTargetWrites } = observation(app)
+      expect(ordinaryTargetWrites).toEqual([])
+      expect(hints).toHaveLength(1)
+      expect(hints[0].input.headingSlugs).toEqual(['original-ordinary-section'])
+      expect(hints[0].result).toMatchObject({ status: 'ready', requiresFencedTitle2: true, writePermit: false })
+      expect(rows).toHaveLength(1)
+      expect(rows[0].result).toMatchObject({ status: 'applied', historyToken: null })
+      const work = rows[0].input.hostsWorkingBefore[0]
+      expect(work.workingBefore.blocks).toHaveLength(seed.original.blocks.filter(block => block.document_id === seed.childId).length)
+      expect(work.workingBefore.blocks.find(block => block.id === seed.targetBlockId))
+        .toMatchObject({ id: seed.targetBlockId, type: 'heading-2', content: seed.childTitle })
+      expect(rows[0].input.finalAfter).toEqual([{ documentId: seed.childId, ...work.workingBefore }])
+    } finally { await restoreProbe(app) }
+
+    await follow(page)
+    const cold = await fixture.restart()
+    expect(cold.originalOperations).toEqual(seed.original.originalOperations)
+    expect(cold.identities).toEqual(seed.original.identities)
+    expect(cold.blocks.find(block => block.id === seed.targetBlockId)).toEqual({ ...original, content: seed.childTitle })
+    expect(cold.titleOperations).toHaveLength(1)
+    expect(cold.titleOperations[0].companion.sectionEdit).toEqual({ blockId: original.id, createdAt: original.created_at,
+      before: original.content, after: seed.childTitle })
+    const binding = cold.group.bindings.find(item => item.blockId === seed.blockLinkId)
+    expect(binding?.target).toEqual({ kind: 'heading', documentId: seed.childId, slug, state: 'live' })
+    expect(cold.blocks.find(block => block.id === seed.hostOrdinaryLinkId)?.content).toContain('.md#' + slug)
+    await follow(fixture.context().page)
+  })
+})
+
 test('an ordinary no-reference target header rename uses the real readonly hint and fenced host final with empty caller guards, preserving canonical block targets through held ACK, old-path occupants and a stopped-profile restart @electron', async ({}, info) => {
   await withSyncedTitleRenameApp(info, 'published', async fixture => {
     const { seed } = fixture, renamed = 'Ordinary renamed target 中文🙂'
@@ -305,7 +361,7 @@ test('an ordinary no-reference target header rename uses the real readonly hint 
   })
 })
 
-test('a real canonical dependency with user history refuses an ordinary target rename while retaining complete W, with no ordinary fallback and usable navigation after Cancel @electron', async ({}, info) => {
+test('an asset-bearing canonical history refuses an ordinary target rename while retaining complete W and navigation after Cancel @electron', async ({}, info) => {
   await withSyncedTitleRenameApp(info, 'canonical-history', async fixture => {
     const { seed } = fixture, { page, app } = fixture.context(), retained = 'Retained ordinary target history draft 中文🙂'
     await openTarget(page, seed)

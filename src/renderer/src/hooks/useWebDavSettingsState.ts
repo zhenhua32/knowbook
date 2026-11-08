@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { DEFAULT_WEBDAV_SYNC_CONFIG, type ResolveWebDavSyncConflict, type WebDavSyncConfig, type WebDavSyncStatus } from '@shared/webdav-sync'
+import { DEFAULT_WEBDAV_SYNC_CONFIG, type ResolveWebDavProtocol5Conflict, type ResolveWebDavProtocol5Deletion, type ResolveWebDavSyncConflict, type WebDavSyncConfig, type WebDavSyncStatus } from '@shared/webdav-sync'
 import { getErrorMessage } from '../utils/errorMessage'
 
-type Draft = Omit<WebDavSyncConfig, 'intervalMinutes'> & { intervalDraft: string; password: string; clearPassword: boolean }
+type Draft = Omit<WebDavSyncConfig, 'intervalMinutes'> & { intervalDraft: string; password: string; clearPassword: boolean; protocol5: boolean }
 type ActionKind = 'save' | 'test' | 'sync' | 'resolve' | 'cancel'
 type ConflictActionTarget = Pick<ResolveWebDavSyncConflict, 'key' | 'localHash' | 'remoteHash'>
   & Pick<WebDavSyncConfig, 'url' | 'username' | 'directory'>
 type PendingAction = { kind: ActionKind; session: number }
 
-function createDraft(config: WebDavSyncConfig): Draft {
+function createDraft(config: WebDavSyncConfig, protocol5 = false): Draft {
   const { intervalMinutes, ...settings } = config
-  return { ...settings, intervalDraft: String(intervalMinutes), password: '', clearPassword: false }
+  return { ...settings, intervalDraft: String(intervalMinutes), password: '', clearPassword: false, protocol5 }
 }
 
 function parseInterval(value: string): number | null {
@@ -20,8 +20,8 @@ function parseInterval(value: string): number | null {
   return Number.isInteger(minutes) && minutes >= 1 && minutes <= 1440 ? minutes : null
 }
 
-function isDirty(draft: Draft, saved: WebDavSyncConfig): boolean {
-  return draft.enabled !== saved.enabled || draft.url !== saved.url || draft.username !== saved.username
+function isDirty(draft: Draft, saved: WebDavSyncConfig, protocol5: boolean): boolean {
+  return draft.protocol5 !== protocol5 || draft.enabled !== saved.enabled || draft.url !== saved.url || draft.username !== saved.username
     || draft.directory !== saved.directory || draft.allowInsecureHttp !== saved.allowInsecureHttp
     || parseInterval(draft.intervalDraft) !== saved.intervalMinutes || draft.password !== '' || draft.clearPassword
 }
@@ -40,7 +40,7 @@ export function useWebDavSettingsState(isZh: boolean) {
   const [actionTarget, setActionTarget] = useState<ConflictActionTarget | null>(null)
   const [actionKind, setActionKind] = useState<ActionKind | null>(null)
   const draftRef = useRef(draft), statusRef = useRef(status)
-  const savedRef = useRef(DEFAULT_WEBDAV_SYNC_CONFIG)
+  const savedRef = useRef(DEFAULT_WEBDAV_SYNC_CONFIG), savedProtocol5 = useRef(false)
   const mountedRef = useRef(false), sessionRef = useRef(0), readBarrierRef = useRef(0)
   const readingRef = useRef<object | null>(null), actionRef = useRef<PendingAction | null>(null)
   const languageRef = useRef(isZh)
@@ -48,7 +48,9 @@ export function useWebDavSettingsState(isZh: boolean) {
 
   const applyStatus = useCallback((value: WebDavSyncStatus, saved = false) => {
     const current = draftRef.current, previous = savedRef.current, config = value.config
-    const next: Draft = saved ? createDraft(config) : {
+    const mode = value.protocol5 === true
+    const next: Draft = saved ? createDraft(config, mode) : {
+      protocol5: current.protocol5 === savedProtocol5.current ? mode : current.protocol5,
       enabled: current.enabled === previous.enabled ? config.enabled : current.enabled,
       url: current.url === previous.url ? config.url : current.url,
       username: current.username === previous.username ? config.username : current.username,
@@ -60,6 +62,7 @@ export function useWebDavSettingsState(isZh: boolean) {
       clearPassword: current.clearPassword
     }
     savedRef.current = config
+    savedProtocol5.current = mode
     statusRef.current = value
     setStatus(value)
     setReadError('')
@@ -113,6 +116,7 @@ export function useWebDavSettingsState(isZh: boolean) {
     setDraft(next)
   }, [])
   const edit = useCallback((patch: Partial<Omit<WebDavSyncConfig, 'intervalMinutes'>>) => updateDraft(patch), [updateDraft])
+  const setProtocol5 = useCallback((protocol5: boolean) => updateDraft({ protocol5 }), [updateDraft])
   const setPassword = useCallback((password: string) => updateDraft({ password, clearPassword: false }), [updateDraft])
   const setClearPassword = useCallback((clearPassword: boolean) => updateDraft({ clearPassword, password: '' }), [updateDraft])
   const setIntervalDraft = useCallback((intervalDraft: string) => updateDraft({ intervalDraft }), [updateDraft])
@@ -124,7 +128,7 @@ export function useWebDavSettingsState(isZh: boolean) {
       if (!(currentAction?.kind === 'test' || currentAction?.kind === 'sync'
         || (!currentAction && isRunning(statusRef.current)))) return false
     } else if (currentAction || isRunning(statusRef.current)) return false
-    if ((kind === 'test' || kind === 'sync' || kind === 'resolve') && isDirty(draftRef.current, savedRef.current)) return false
+    if ((kind === 'test' || kind === 'sync' || kind === 'resolve') && isDirty(draftRef.current, savedRef.current, savedProtocol5.current)) return false
     if ((kind === 'test' || kind === 'sync') && !statusRef.current.hasPassword) return false
     const pending = { kind, session: sessionRef.current }
     const target = conflict ? { key: conflict.key, localHash: conflict.localHash, remoteHash: conflict.remoteHash,
@@ -164,24 +168,32 @@ export function useWebDavSettingsState(isZh: boolean) {
   const save = useCallback((): Promise<boolean> => {
     const current = draftRef.current, intervalMinutes = parseInterval(current.intervalDraft)
     if (intervalMinutes === null) return Promise.resolve(false)
-    const { intervalDraft: _intervalDraft, password, clearPassword, ...settings } = current
+    const { intervalDraft: _intervalDraft, password, clearPassword, protocol5, ...settings } = current
     return run('save', () => window.knowbook.saveWebDavSyncConfig({ ...settings, intervalMinutes,
+      ...(protocol5 || savedProtocol5.current ? { protocol5 } : {}),
       ...(clearPassword ? { password: '' } : password ? { password } : {}) }))
   }, [run])
   const testConnection = useCallback(() => run('test', () => window.knowbook.testWebDavConnection()), [run])
   const syncNow = useCallback(() => run('sync', () => window.knowbook.syncWebDavNow()), [run])
+  const previewProtocol5 = useCallback(() => run('sync', () => window.knowbook.previewWebDavProtocol5Conflicts()), [run])
+  const resolveProtocol5 = useCallback((input: ResolveWebDavProtocol5Conflict) =>
+    run('sync', () => window.knowbook.resolveWebDavProtocol5Conflict(input)), [run])
+  const previewProtocol5Deletions = useCallback(() => run('sync', () => window.knowbook.previewWebDavProtocol5Deletions()), [run])
+  const resolveProtocol5Deletion = useCallback((input: ResolveWebDavProtocol5Deletion) =>
+    run('sync', () => window.knowbook.resolveWebDavProtocol5Deletion(input)), [run])
   const resolve = useCallback((input: ResolveWebDavSyncConflict) => run('resolve', () => window.knowbook.resolveWebDavSyncConflict(input), input), [run])
   const cancel = useCallback(() => run('cancel', () => window.knowbook.cancelWebDavSync()), [run])
 
   const intervalMinutes = parseInterval(draft.intervalDraft)
   const intervalError = intervalMinutes === null
     ? (isZh ? '同步间隔应为 1–1440 分钟的整数。' : 'Sync interval must be a whole number from 1 to 1440 minutes.') : null
-  const { intervalDraft, password, clearPassword, ...settings } = draft
+  const { intervalDraft, password, clearPassword, protocol5, ...settings } = draft
   const config: WebDavSyncConfig = { ...settings, intervalMinutes: intervalMinutes ?? savedRef.current.intervalMinutes }
   const working = actionKind !== null || isRunning(status)
   const canStop = actionKind === 'test' || actionKind === 'sync' || (actionKind === null && isRunning(status))
 
   return { status, config, password, clearPassword, intervalDraft, intervalError,
-    dirty: isDirty(draft, savedRef.current), readLoading, readError, actionError, actionErrorTarget, actionTarget, actionKind, working, canStop,
-    edit, setPassword, setClearPassword, setIntervalDraft, refreshStatus, save, testConnection, syncNow, resolve, cancel }
+    dirty: isDirty(draft, savedRef.current, savedProtocol5.current), readLoading, readError, actionError, actionErrorTarget, actionTarget, actionKind, working, canStop,
+    edit, setProtocol5, protocol5, setPassword, setClearPassword, setIntervalDraft, refreshStatus, save, testConnection, syncNow,
+    previewProtocol5, resolveProtocol5, previewProtocol5Deletions, resolveProtocol5Deletion, resolve, cancel }
 }

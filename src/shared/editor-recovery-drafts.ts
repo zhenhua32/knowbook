@@ -1,7 +1,9 @@
 import type { DocumentBlockDraft } from './contracts'
-import type { SyncedCanonicalEdit } from './synced-blocks'
+import { validateSyncedInstanceGuard } from './syncedBlockInputs'
+import type { SyncedCanonicalEdit, SyncedInstanceGuard, SyncedInstancePosition } from './synced-blocks'
 import type { MarkdownBlockFormat } from './markdownFormat'
 import type { SyncedEditingBaselineResult } from './synced-editing-session'
+import type { AttestedCanonicalRecoveryFloor, CanonicalRecoveryAcceptedFrame } from './editor-recovery-canonical'
 
 /** Local uncommitted data only. No value in this module grants a business write. */
 export type EditorRecoveryOwner =
@@ -27,6 +29,7 @@ export interface EditorRecoveryDraftInput {
   selection: { blockId: string | null; anchor: number; head: number } | null
   composing: boolean; importing: boolean
   replayJson?: string
+  canonicalReadOwnerId?: string
 }
 /** Main derives these actual four columns from the live original owner.
  * A renderer never submits this packet as authority. */
@@ -34,17 +37,27 @@ export interface EditorRecoveryOriginal {
   kind: 'metadata2-baseline' | 'synced-operation'
   key: string; requestHash: string; resultJson: string; createdAt: string
 }
+/** Captured from Main's actual SQL opening. This is a read-only dependency
+ * fence, separate from a synced_operations receipt or a Source write owner. */
+export interface EditorRecoveryHostSourcePins {
+  groups: Array<{
+    groupId: string; creationId: string; createdAt: string; revision: string; topologyRevision: string; historyCursor: string
+    instances: Array<SyncedInstancePosition & { createdAt: string }>
+  }>
+}
 export interface EditorRecoveryBase {
   workspaceScope: string; recoveryEpoch: string; owner: EditorRecoveryOwner
   persistedWorking: EditorRecoveryWorking
   originals: EditorRecoveryOriginal[]
+  hostSourcePins?: EditorRecoveryHostSourcePins
 }
-export type OpenEditorRecoveryDraftInput = ({ kind: 'host'; documentId: string; expectedUpdatedAt: string }
+export type OpenEditorRecoveryDraftInput = ({ kind: 'host'; documentId: string; expectedUpdatedAt: string; source?: true }
   | { kind: 'group'; groupId: string; sessionId: string; readOwnerId: string }) & { openRequestId: string }
 export interface EditorRecoveryRecord {
   kind: 'knowbook-editor-recovery-draft'; version: 1
   recordId: string; capturedAt: string; base: EditorRecoveryBase; draft: EditorRecoveryDraftInput
   writePermit: false; businessOperationCommitted: false
+  canonicalOriginalAliasHash?: string
 }
 export interface EditorRecoveryReceipt {
   kind: 'knowbook-editor-recovery-receipt'; version: 1
@@ -58,12 +71,19 @@ export interface EditorRecoveryRecordSummary {
 }
 export type EditorRecoveryDecision = 'restore-draft' | 'keep' | 'discard'
 export interface EditorRecoveryExpected { recordId: string; generation: number; hash: string }
+export interface LegacyEditorRecoverySummary extends EditorRecoveryExpected {
+  kind: 'document' | 'group' | 'source'; targetId: string; updatedAt: string
+}
+export interface LegacyEditorRecoveryPage { records: LegacyEditorRecoverySummary[]; next: string | null }
 export interface EditorRecoveryOpened { draftSessionId: string; generation: 0; base: EditorRecoveryBase; writePermit: false }
 export interface EditorRecoveryCandidate {
   status: 'candidate'; recoveryOwnerId: string; record: EditorRecoveryRecord
   mode: 'editable-ordinary-draft' | 'editable-source-draft' | 'view-only'; reasons: string[]
+  canonicalFollowupAvailable?: true
+  canonicalHostDocumentId?: string
   pending: Array<{ clientOperationId: string; status: 'unknown' | 'committed-attested' | 'idempotency-mismatch' | 'unverifiable' }>
   writePermit: false; historicalKeyLineageComplete: false
+  hostSourcePins?: 'unchanged' | 'changed' | 'unverifiable'
 }
 export interface EditorRecoveryPageInput { afterSessionId?: string; limit: number }
 export interface EditorRecoveryPage { records: EditorRecoveryRecordSummary[]; next: string | null }
@@ -73,12 +93,20 @@ export interface DecideEditorRecoveryDraftInput { recoveryOwnerId: string; decis
 export interface RetireEditorRecoveryDraftInput { draftSessionId: string; expectedHead: EditorRecoveryExpected | null; working: EditorRecoveryWorking }
 export interface ParkEditorRecoveryDraftInput { draftSessionId: string; expectedHead: EditorRecoveryExpected }
 export interface PrepareEditorRecoveryGroupInput { recoveryOwnerId: string; sessionId: string }
-export interface PreparedEditorRecoveryGroup { record: EditorRecoveryRecord; baseline: SyncedEditingBaselineResult; writePermit: false; historicalKeyLineageComplete: false }
+export interface PreparedEditorRecoveryGroup { record: EditorRecoveryRecord; baseline: SyncedEditingBaselineResult; writePermit: false; historicalKeyLineageComplete: false; canonicalOriginalAliasVerified?: true }
+export interface PrepareEditorRecoveryGroupFloorInput extends PrepareEditorRecoveryGroupInput { instance: SyncedInstanceGuard }
+export interface PreparedEditorRecoveryGroupFloor { record: EditorRecoveryRecord; floor: AttestedCanonicalRecoveryFloor; writePermit: false; historicalKeyLineageComplete: false }
+export interface CompleteEditorRecoveryGroupInput extends PrepareEditorRecoveryGroupInput {
+  readOwnerId?: string
+  accepted: CanonicalRecoveryAcceptedFrame[]
+}
 
 export const EDITOR_RECOVERY_CHANNELS = Object.freeze({
   open: 'knowbook:open-editor-recovery-draft', write: 'knowbook:write-editor-recovery-drafts',
   list: 'knowbook:list-editor-recovery-drafts', read: 'knowbook:read-editor-recovery-draft', decide: 'knowbook:decide-editor-recovery-draft',
-  retire: 'knowbook:retire-clean-editor-recovery-draft', prepareGroup: 'knowbook:prepare-editor-recovery-group', park: 'knowbook:park-editor-recovery-draft'
+  listLegacy: 'knowbook:list-legacy-editor-recovery-drafts', readLegacy: 'knowbook:read-legacy-editor-recovery-draft',
+  retire: 'knowbook:retire-clean-editor-recovery-draft', prepareGroup: 'knowbook:prepare-editor-recovery-group',
+  prepareGroupFloor: 'knowbook:prepare-editor-recovery-group-floor', completeGroup: 'knowbook:complete-editor-recovery-group', park: 'knowbook:park-editor-recovery-draft'
 })
 
 const uuidPattern = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i
@@ -178,20 +206,28 @@ function pending(value: unknown): EditorRecoveryPending {
   return { method: row.method as EditorRecoveryPending['method'], clientOperationId: uuid(row.clientOperationId), requestHash: hash(row.requestHash), inputJson: text(row.inputJson), submittedWorking: working(row.submittedWorking) }
 }
 export function validateEditorRecoveryDraftInput(value: unknown): EditorRecoveryDraftInput {
-  const row = object(value, ['draftSessionId', 'generation', 'expectedPreviousGeneration', 'working', 'sources', 'pending', 'selection', 'composing', 'importing'], ['replayJson'])
+  const row = object(value, ['draftSessionId', 'generation', 'expectedPreviousGeneration', 'working', 'sources', 'pending', 'selection', 'composing', 'importing'], ['replayJson', 'canonicalReadOwnerId'])
   let selection: EditorRecoveryDraftInput['selection'] = null
   if (row.selection !== null) { const item = object(row.selection, ['blockId', 'anchor', 'head']); selection = {
     blockId: item.blockId === null ? null : opaque(item.blockId), anchor: integer(item.anchor), head: integer(item.head) } }
   const generation = integer(row.generation, 1), expectedPreviousGeneration = integer(row.expectedPreviousGeneration)
   if (generation !== expectedPreviousGeneration + 1) return editorRecoveryInvalid('generation is not the exact next capture')
-  return { draftSessionId: uuid(row.draftSessionId), generation, expectedPreviousGeneration, working: working(row.working),
+  const work = working(row.working), hasAlias = Object.hasOwn(row, 'canonicalReadOwnerId')
+  if (hasAlias && work.kind !== 'group') return editorRecoveryInvalid('canonical source owner hint has a foreign draft domain')
+  return { draftSessionId: uuid(row.draftSessionId), generation, expectedPreviousGeneration, working: work,
     sources: unique(list(row.sources, source), item => item.sourceId), pending: unique(list(row.pending, pending), item => item.clientOperationId), selection,
-    composing: bool(row.composing), importing: bool(row.importing), ...(Object.hasOwn(row, 'replayJson') ? { replayJson: text(row.replayJson) } : {}) }
+    composing: bool(row.composing), importing: bool(row.importing), ...(Object.hasOwn(row, 'replayJson') ? { replayJson: text(row.replayJson) } : {}),
+    ...(hasAlias ? { canonicalReadOwnerId: uuid(row.canonicalReadOwnerId) } : {}) }
 }
 export function validateOpenEditorRecoveryDraftInput(value: unknown): OpenEditorRecoveryDraftInput {
-  const row = object(value, ['kind', 'openRequestId'], ['documentId', 'expectedUpdatedAt', 'groupId', 'sessionId', 'readOwnerId'])
+  const row = object(value, ['kind', 'openRequestId'], ['documentId', 'expectedUpdatedAt', 'source', 'groupId', 'sessionId', 'readOwnerId'])
   const request = { openRequestId: uuid(row.openRequestId) }
-  if (row.kind === 'host') { object(row, ['kind', 'documentId', 'expectedUpdatedAt', 'openRequestId']); return { kind: 'host', documentId: opaque(row.documentId), expectedUpdatedAt: time(row.expectedUpdatedAt), ...request } }
+  if (row.kind === 'host') {
+    object(row, ['kind', 'documentId', 'expectedUpdatedAt', 'openRequestId'], ['source'])
+    if (Object.hasOwn(row, 'source') && row.source !== true) return editorRecoveryInvalid('host Source opening marker invalid')
+    return { kind: 'host', documentId: opaque(row.documentId), expectedUpdatedAt: time(row.expectedUpdatedAt),
+      ...(row.source === true ? { source: true as const } : {}), ...request }
+  }
   object(row, ['kind', 'groupId', 'sessionId', 'readOwnerId', 'openRequestId'])
   if (row.kind !== 'group') return editorRecoveryInvalid('unknown draft owner kind')
   return { kind: 'group', groupId: uuid(row.groupId), sessionId: uuid(row.sessionId), readOwnerId: uuid(row.readOwnerId), ...request }
@@ -230,12 +266,41 @@ export function validatePrepareEditorRecoveryGroupInput(value: unknown): Prepare
   const row = object(value, ['recoveryOwnerId', 'sessionId'])
   return { recoveryOwnerId: uuid(row.recoveryOwnerId), sessionId: uuid(row.sessionId) }
 }
+export function validatePrepareEditorRecoveryGroupFloorInput(value: unknown): PrepareEditorRecoveryGroupFloorInput {
+  const row = object(value, ['recoveryOwnerId', 'sessionId', 'instance'])
+  return { recoveryOwnerId: uuid(row.recoveryOwnerId), sessionId: uuid(row.sessionId), instance: validateSyncedInstanceGuard(row.instance) }
+}
+export function validateCompleteEditorRecoveryGroupInput(value: unknown): Omit<CompleteEditorRecoveryGroupInput, 'accepted'> & { accepted: unknown[] } {
+  const row = object(value, ['recoveryOwnerId', 'sessionId', 'accepted'], ['readOwnerId'])
+  return { recoveryOwnerId: uuid(row.recoveryOwnerId), sessionId: uuid(row.sessionId), accepted: list(row.accepted, item => item),
+    ...('readOwnerId' in row ? { readOwnerId: uuid(row.readOwnerId) } : {}) }
+}
 export function validateParkEditorRecoveryDraftInput(value: unknown): ParkEditorRecoveryDraftInput {
   const row = object(value, ['draftSessionId', 'expectedHead'])
   return { draftSessionId: uuid(row.draftSessionId), expectedHead: validateEditorRecoveryExpected(row.expectedHead) }
 }
+function readHostSourcePins(value: unknown, documentId: string): EditorRecoveryHostSourcePins {
+  const row = object(value, ['groups'])
+  const groups = unique(list(row.groups, value => {
+    const group = object(value, ['groupId', 'creationId', 'createdAt', 'revision', 'topologyRevision', 'historyCursor', 'instances'])
+    const instances = list(group.instances, value => {
+      const item = object(value, ['instanceId', 'hostDocumentId', 'bindingVersion', 'parentBlockId', 'depth', 'parentType', 'createdAt'])
+      if (item.hostDocumentId !== documentId) return editorRecoveryInvalid('host Source instance belongs to another host')
+      return { instanceId: uuid(item.instanceId), hostDocumentId: documentId, bindingVersion: uuid(item.bindingVersion),
+        parentBlockId: item.parentBlockId === null ? null : opaque(item.parentBlockId), depth: integer(item.depth),
+        parentType: item.parentType === null ? null : opaque(item.parentType), createdAt: time(item.createdAt) }
+    })
+    if (!instances.length) return editorRecoveryInvalid('host Source group has no original host instance')
+    return { groupId: uuid(group.groupId), creationId: uuid(group.creationId), createdAt: time(group.createdAt), revision: uuid(group.revision),
+      topologyRevision: uuid(group.topologyRevision), historyCursor: uuid(group.historyCursor), instances }
+  }), item => item.groupId)
+  if (!groups.length) return editorRecoveryInvalid('host Source pins have no original group')
+  unique(groups.flatMap(group => group.instances), instance => instance.instanceId)
+  return { groups }
+}
 export function validateEditorRecoveryBase(value: unknown): EditorRecoveryBase {
-  const row = object(value, ['workspaceScope', 'recoveryEpoch', 'owner', 'persistedWorking', 'originals']), rawOwner = object(row.owner, ['kind'], ['documentId', 'groupId', 'creationId', 'createdAt', 'updatedAt', 'revision', 'topologyRevision', 'historyCursor'])
+  const row = object(value, ['workspaceScope', 'recoveryEpoch', 'owner', 'persistedWorking', 'originals'], ['hostSourcePins'])
+  const rawOwner = object(row.owner, ['kind'], ['documentId', 'groupId', 'creationId', 'createdAt', 'updatedAt', 'revision', 'topologyRevision', 'historyCursor'])
   let owner: EditorRecoveryOwner
   if (rawOwner.kind === 'host') { const item = object(rawOwner, ['kind', 'documentId', 'createdAt', 'updatedAt']); owner = {
     kind: 'host', documentId: opaque(item.documentId), createdAt: time(item.createdAt), updatedAt: time(item.updatedAt) }
@@ -249,14 +314,20 @@ export function validateEditorRecoveryBase(value: unknown): EditorRecoveryBase {
   }), item => item.key)
   const persistedWorking = working(row.persistedWorking)
   if (persistedWorking.kind !== owner.kind) return editorRecoveryInvalid('persisted base working domain differs')
-  return { workspaceScope: uuid(row.workspaceScope), recoveryEpoch: uuid(row.recoveryEpoch), owner, persistedWorking, originals }
+  const base = { workspaceScope: uuid(row.workspaceScope), recoveryEpoch: uuid(row.recoveryEpoch), owner, persistedWorking, originals }
+  if (!Object.hasOwn(row, 'hostSourcePins')) return base
+  if (owner.kind !== 'host') return editorRecoveryInvalid('host Source pins require a host opening')
+  return { ...base, hostSourcePins: readHostSourcePins(row.hostSourcePins, owner.documentId) }
 }
 export function validateEditorRecoveryRecord(value: unknown): EditorRecoveryRecord {
-  const row = object(value, ['kind', 'version', 'recordId', 'capturedAt', 'base', 'draft', 'writePermit', 'businessOperationCommitted'])
+  const row = object(value, ['kind', 'version', 'recordId', 'capturedAt', 'base', 'draft', 'writePermit', 'businessOperationCommitted'], ['canonicalOriginalAliasHash'])
   if (row.kind !== 'knowbook-editor-recovery-draft' || row.version !== 1 || row.writePermit !== false || row.businessOperationCommitted !== false) return editorRecoveryInvalid('record version/permissions invalid')
   const base = validateEditorRecoveryBase(row.base), draft = validateEditorRecoveryDraftInput(row.draft)
   if (base.owner.kind !== draft.working.kind) return editorRecoveryInvalid('working/base owner domain differs')
-  return { kind: row.kind, version: 1, recordId: uuid(row.recordId), capturedAt: time(row.capturedAt), base, draft, writePermit: false, businessOperationCommitted: false }
+  const hasAlias = Object.hasOwn(row, 'canonicalOriginalAliasHash')
+  if (hasAlias && (base.owner.kind !== 'group' || !draft.canonicalReadOwnerId)) return editorRecoveryInvalid('canonical original alias proof has no actual source hint')
+  return { kind: row.kind, version: 1, recordId: uuid(row.recordId), capturedAt: time(row.capturedAt), base, draft, writePermit: false, businessOperationCommitted: false,
+    ...(hasAlias ? { canonicalOriginalAliasHash: hash(row.canonicalOriginalAliasHash) } : {}) }
 }
 export function validateEditorRecoveryReceipt(value: unknown): EditorRecoveryReceipt {
   const row = object(value, ['kind', 'version', 'receiptId', 'purpose', 'requestId', 'closeGeneration', 'records'])

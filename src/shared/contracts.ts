@@ -2,8 +2,9 @@ import type { DocumentRenameAdmissionInput, DocumentRenameAdmissionResult } from
 import type { OpenEditorRecoveryDraftInput, EditorRecoveryOpened, WriteEditorRecoveryDraftsInput, EditorRecoveryReceipt,
   EditorRecoveryPageInput, EditorRecoveryPage, EditorRecoveryExpected, EditorRecoveryCandidate,
   DecideEditorRecoveryDraftInput, EditorRecoveryRecord, RetireEditorRecoveryDraftInput,
-  PrepareEditorRecoveryGroupInput, PreparedEditorRecoveryGroup } from './editor-recovery-drafts'
-import type { ParkEditorRecoveryDraftInput } from './editor-recovery-drafts'
+  CompleteEditorRecoveryGroupInput, PrepareEditorRecoveryGroupInput, PreparedEditorRecoveryGroup,
+  PrepareEditorRecoveryGroupFloorInput, PreparedEditorRecoveryGroupFloor } from './editor-recovery-drafts'
+import type { LegacyEditorRecoveryPage, ParkEditorRecoveryDraftInput } from './editor-recovery-drafts'
 import type { EditorCloseRequest, EditorCloseCancelled, EditorCloseAcknowledgement } from './editor-close'
 export type { EditorCloseRequest, EditorCloseCancelled, EditorCloseAcknowledgement, EditorCloseReason } from './editor-close'
 import type {
@@ -46,11 +47,12 @@ import type {
 } from './system-plugin'
 import type { SystemPluginServiceRpcJson } from '../main/system-plugin/service-rpc'
 import type { WorkspaceSearchOccurrence, WorkspaceSearchOccurrenceResult } from './workspace-search-occurrence'
+import type { SyncedCanonicalBlockNavigationResult } from './synced-canonical-block-address'
 import type { SyncedBlocksChangedEvent } from './synced-blocks'
 import type { OpenSyncedEditingSessionInput, OpenSyncedEditingSessionResult, SyncedEditingMethod, SyncedEditingRequest, SyncedEditingResult } from './synced-editing-session'
 export type { SyncedEditingSession, OpenSyncedEditingSessionInput, OpenSyncedEditingSessionResult, SyncedEditingMethod, SyncedEditingRequest, SyncedEditingResult } from './synced-editing-session'
 export type { WorkspaceSearchOccurrence, WorkspaceSearchOccurrenceResult } from './workspace-search-occurrence'
-import type { ResolveSyncedInlineInstanceInput, SyncedInlineInstanceResult } from './workspace-search-occurrence'
+import type { ResolveSyncedHeadingAnchorInput, ResolveSyncedInlineInstanceInput, SyncedHeadingAnchorResult, SyncedInlineInstanceResult } from './workspace-search-occurrence'
 export type { ResolveSyncedInlineInstanceInput, SyncedInlineInstanceResult, SyncedInlineInstanceAddress } from './workspace-search-occurrence'
 import type {
   SaveWorkspaceSearchInput,
@@ -974,9 +976,13 @@ export interface ElectronApi {
   writeEditorRecoveryDrafts: (input: WriteEditorRecoveryDraftsInput) => Promise<EditorRecoveryReceipt>
   listEditorRecoveryDrafts: (input: EditorRecoveryPageInput) => Promise<EditorRecoveryPage>
   readEditorRecoveryDraft: (input: EditorRecoveryExpected) => Promise<EditorRecoveryCandidate>
+  listLegacyEditorRecoveryDrafts: (afterRecordId?: string) => Promise<LegacyEditorRecoveryPage>
+  readLegacyEditorRecoveryDraft: (input: EditorRecoveryExpected) => Promise<string | null>
   decideEditorRecoveryDraft: (input: DecideEditorRecoveryDraftInput) => Promise<EditorRecoveryRecord | null>
   retireCleanEditorRecoveryDraft: (input: RetireEditorRecoveryDraftInput) => Promise<boolean>
   prepareEditorRecoveryGroup: (input: PrepareEditorRecoveryGroupInput) => Promise<PreparedEditorRecoveryGroup>
+  prepareEditorRecoveryGroupFloor: (input: PrepareEditorRecoveryGroupFloorInput) => Promise<PreparedEditorRecoveryGroupFloor>
+  completeEditorRecoveryGroup: (input: CompleteEditorRecoveryGroupInput) => Promise<boolean>
   parkEditorRecoveryDraft: (input: ParkEditorRecoveryDraftInput) => Promise<void>
   onEditorCloseCancelled: (listener: (request: EditorCloseCancelled) => void) => () => void
   acknowledgeEditorClose: (input: EditorCloseAcknowledgement) => Promise<boolean>
@@ -1085,6 +1091,10 @@ export interface ElectronApi {
   cancelWebDavSync: () => Promise<import('./webdav-sync').WebDavSyncStatus>
   resolveWebDavSyncConflict: (input: import('./webdav-sync').ResolveWebDavSyncConflict) => Promise<import('./webdav-sync').WebDavSyncStatus>
   getWebDavSyncConflictDetails: (input: import('./webdav-sync').WebDavSyncConflictDetailsInput) => Promise<import('./webdav-sync').WebDavSyncConflictDetails>
+  previewWebDavProtocol5Conflicts: () => Promise<import('./webdav-sync').WebDavSyncStatus>
+  resolveWebDavProtocol5Conflict: (input: import('./webdav-sync').ResolveWebDavProtocol5Conflict) => Promise<import('./webdav-sync').WebDavSyncStatus>
+  previewWebDavProtocol5Deletions: () => Promise<import('./webdav-sync').WebDavSyncStatus>
+  resolveWebDavProtocol5Deletion: (input: import('./webdav-sync').ResolveWebDavProtocol5Deletion) => Promise<import('./webdav-sync').WebDavSyncStatus>
   getBackupHealth: () => Promise<import('./backup-health').BackupHealth>
   onBackupHealth: (listener: (state: import('./backup-health').BackupHealth) => void) => () => void
   restoreBackupFromFolder: () => Promise<BackupRestoreResult | null>
@@ -1118,7 +1128,9 @@ export interface ElectronApi {
   searchDocuments: (query: string) => Promise<GlobalSearchResult[]>
   searchWorkspace: (input: WorkspaceSearchInput) => Promise<WorkspaceSearchPage>
   resolveWorkspaceSearchOccurrence: (input: WorkspaceSearchOccurrence) => Promise<WorkspaceSearchOccurrenceResult>
+  resolveSyncedCanonicalBlockAddress: (input: string) => Promise<SyncedCanonicalBlockNavigationResult>
   resolveSyncedInlineInstance: (input: ResolveSyncedInlineInstanceInput) => Promise<SyncedInlineInstanceResult>
+  resolveSyncedHeadingAnchor: (input: ResolveSyncedHeadingAnchorInput) => Promise<SyncedHeadingAnchorResult>
   openSyncedEditingSession: (input: OpenSyncedEditingSessionInput) => Promise<OpenSyncedEditingSessionResult>
   invokeSyncedEditingSession: <M extends SyncedEditingMethod>(input: SyncedEditingRequest<M>) => Promise<SyncedEditingResult<M>>
   releaseSyncedEditingSession: (sessionId: string) => Promise<void>

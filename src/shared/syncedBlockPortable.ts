@@ -193,6 +193,11 @@ function rewriteText(source: string, map: SyncedAssetMapper, validateOutput: Ass
   return { text, edits }
 }
 
+/** Data-only original ranges from the actual publication rewrite. */
+export function projectSyncedPortableMarkdownAssetEdits(source: string, map: SyncedAssetMapper): RewrittenText {
+  return rewriteText(source, map)
+}
+
 const markdownTypes = new Set(['paragraph', 'html', 'quote', 'todo', 'numbered-todo', 'bulleted-list', 'numbered-list', 'table', 'callout', 'toggle'])
 const opaqueTypes = new Set(['code', 'code-block', 'math', 'frontmatter', 'divider', 'columns', 'column', 'database-view', 'synced-block'])
 function rewriteBlock<T extends SyncedStableBlockDraft>(block: T, map: SyncedAssetMapper, validateOutput: AssetOutputValidator = validatePortableOutput): { block: T; edits: ContentEdit[] } {

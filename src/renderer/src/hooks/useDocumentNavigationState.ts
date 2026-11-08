@@ -6,6 +6,7 @@ export type PendingBlockNavigationTarget = {
   documentId: string
   blockId?: string
   anchor?: string
+  wiki?: boolean
 }
 
 type UseDocumentNavigationStateParams = {
@@ -70,10 +71,10 @@ export function useDocumentNavigationState({ onActivePageChange, onBeforeOpenDoc
     })
   }, [onActivePageChange, prepareNavigation])
 
-  const openDocumentAnchorInDocumentsPage = useCallback((documentId: string, anchor: string) => {
+  const openDocumentAnchorInDocumentsPage = useCallback((documentId: string, anchor: string, wiki?: boolean) => {
     void prepareNavigation(documentId).then((allowed) => {
       if (!allowed) return
-      setPendingBlockNavigationTarget({ documentId, anchor })
+      setPendingBlockNavigationTarget({ documentId, anchor, wiki })
       setSelectedDocumentId(documentId)
       onActivePageChange('documents')
     })

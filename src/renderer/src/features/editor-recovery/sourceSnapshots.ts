@@ -4,12 +4,12 @@ export type RecoverySourceAddress = { kind: 'host'; documentId: string } | { kin
 export interface RecoverySourceSnapshot {
   openingSource: string; acceptedSource: string; source: string
   selection: { anchor: number; head: number }; composing: boolean; applying: boolean; importing: boolean
-  /** The real draft objects, including original block anchors and reference
-   * anchors. This is preserved data; it never creates Source write authority. */
-  replayJson: string
+  /** Serialize the reported drafts and their anchors only for a checkpoint. */
+  serializeReplay: () => string
   dirty: boolean
 }
-type Entry = { address: RecoverySourceAddress; value: EditorRecoverySourceBuffer | null }
+type StoredSnapshot = RecoverySourceSnapshot & Pick<EditorRecoverySourceBuffer, 'sourceId' | 'kind'>
+type Entry = { address: RecoverySourceAddress; value: StoredSnapshot | null }
 const entries = new Map<object, Entry>(), listeners = new Set<() => void>()
 const changed = () => { for (const listener of listeners) listener() }
 
@@ -35,7 +35,10 @@ export function readRecoverySources(address: RecoverySourceAddress): EditorRecov
     : other.kind === 'group' && address.groupId === other.groupId
   return [...entries.values()].filter(entry => same(entry.address) && entry.value
     && (entry.value.dirty || entry.value.source !== entry.value.acceptedSource || entry.value.composing || entry.value.applying || entry.value.importing))
-    .map(entry => structuredClone(entry.value!))
+    .map(entry => {
+      const { serializeReplay, ...snapshot } = entry.value!
+      return { ...structuredClone(snapshot), replayJson: serializeReplay() }
+    })
 }
 export function subscribeRecoverySources(listener: () => void): () => void { listeners.add(listener); return () => { listeners.delete(listener) } }
 

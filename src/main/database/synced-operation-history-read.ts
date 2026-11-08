@@ -12,6 +12,7 @@ import { initialIncomingRequestHash, validateInitialIncomingReceipt } from '../s
 import { publicationCompare, publicationHash, publicationJson } from '../sync/synced-publication-model'
 import { LOGICAL_DELETION_CHANNEL } from '../sync/synced-logical-deletion-model'
 import { decodeSyncedOperationAck } from './synced-host-operation-receipt'
+import { HOST_DETACH_OPERATION_KIND, decodeHostDetachOriginalOwned } from './synced-host-detach-original'
 import { readSyncedExchangeDenialEvidenceById } from './synced-exchange-receipt'
 import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-read'
 import { assertSyncedRemoteObservationRecords } from './synced-remote-observation-read'
@@ -123,11 +124,17 @@ export function assertRawSyncedHistoricalEvidenceOwned(db: Database.Database): R
       if(schema!==27)return historicalEvidenceInvalid('schema26不接受metadata2 title业务记录。')
       const {supports}=title2OriginalSupportsOwned(db,row.client_operation_id)
       facts.push(historicalFact('metadata2-title-operation',2,historicalOperationLocator(row),supports))
+    } else if (kind === HOST_DETACH_OPERATION_KIND) {
+      const original = schema === 27 ? decodeHostDetachOriginalOwned(db, row) : null
+      if (!original) return historicalEvidenceInvalid('解除同步缺少实际操作与宿主历史原件。')
+      facts.push(historicalFact('host-detach-ack', 1, historicalOperationLocator(row),
+        [historicalRowLocator('synced_host_history', [original.row.id], { ...original.row }), ...original.headingSupports, ...original.canonicalSupports]))
     } else if (kind === null || kind === 'synced-host-operation' || kind === 'synced-host-create-operation') {
       decodeSyncedOperationAck(row)
-      if (schema === 26 && kind === 'synced-host-create-operation') return historicalEvidenceInvalid('schema26不支持create lifecycle ACK。')
+      const version = kind === null ? null : (value as { version: number }).version
+      if (schema === 26 && (kind === 'synced-host-create-operation' || version === 2)) return historicalEvidenceInvalid('schema26不支持create lifecycle或detach ACK。')
       facts.push(historicalFact(kind === null ? 'group-ack' : kind === 'synced-host-operation' ? 'host-ack' : 'host-create-ack',
-        kind === null ? null : 1, historicalOperationLocator(row)))
+        version, historicalOperationLocator(row)))
     } else if (kind === 'synced-initial-incoming-operation') {
       if (schema !== 27) return historicalEvidenceInvalid('schema26不支持initial incoming receipt。')
       const receipt = validateInitialIncomingReceipt(value)

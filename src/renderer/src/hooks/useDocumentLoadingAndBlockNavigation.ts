@@ -3,6 +3,7 @@ import type { DocumentBlockDraft, DocumentDetail } from '@shared/contracts'
 import type { PendingBlockNavigationTarget } from './useDocumentNavigationState'
 import { collectMarkdownAnchors } from '@shared/markdownAnchors'
 import { getErrorMessage } from '../utils/errorMessage'
+import { getCanonicalHeadingAction } from '../features/synced-blocks/inlineBridge'
 
 type UseDocumentLoadingAndBlockNavigationParams = {
   selectedDocumentId: string | null
@@ -104,6 +105,8 @@ export function useDocumentLoadingAndBlockNavigation({
     }
 
     if (pendingBlockNavigationTarget.anchor !== undefined) {
+      const stop = getCanonicalHeadingAction()?.(pendingBlockNavigationTarget, draftBlocks, callbackRef.current, clearPendingTarget)
+      if (stop) return stop
       const anchor = pendingBlockNavigationTarget.anchor === '' ? { blockIndex: -1, blockId: '', headingIndex: 0 }
         : collectMarkdownAnchors(draftTitle ?? selectedDocument.title, draftBlocks).find((entry) => entry.slug === pendingBlockNavigationTarget.anchor)
       if (anchor) callbackRef.current.onPendingTargetResolved(anchor.blockIndex, anchor.blockId ?? '', anchor.headingIndex)

@@ -5,7 +5,7 @@ import { restoreDirectory, syncRestoreDirectory } from './restore-safety-files'
 import { capsuleBytesHash, capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { durableSqlDagUuid } from './restore-knowledge-dag-model'
 import { assertCapsule2AssetDirectory, readCapsule2AssetManifest, readCapsule2AssetCopy, writeCapsule2AssetCopy } from './restore-knowledge-capsule2-assets-files'
-import { readSealedCapsule2SourceInputs, readSealedCapsule2SourceInputsWithWorking5, tryAssertSealedCapsule2Working5OriginalBytes5, readSealedCapsule2SourceWorkingOriginals5, assertSealedCapsule2SourceOriginalBytes, captureReopenedSealedCapsule2Source, type SealedCapsule2Source } from './restore-knowledge-capsule2-source-seal'
+import { readSealedCapsule2SourceInputs, readSealedCapsule2SourceInputsWithWorking5, tryAssertSealedCapsule2Working5OriginalBytes5, readSealedCapsule2SourceWorkingOriginals5, assertSealedCapsule2SourceOriginalBytes, captureReopenedSealedCapsule2SourceWithWorking5, type SealedCapsule2Source } from './restore-knowledge-capsule2-source-seal'
 import { CAPSULE2_READER } from './restore-knowledge-capsule2-raw-model'
 import { CAPSULE2_SOURCE_CERTIFICATE_MAX_BYTES, capsule2NoPriorSourceCertificateHash, parseCapsule2NoPriorSourceCertificate,
   sourceCertificateInvalid as bad, type Capsule2NoPriorSourceCertificate } from './restore-knowledge-capsule2-source-certificate-model'
@@ -68,6 +68,11 @@ export async function reopenCertifiedCapsule2Source(input: Parameters<typeof cap
  * Certificate bytes and closure bracket that actual factory; callers cannot
  * provide a source handle, cached packet, selector or verification callback. */
 export async function captureReopenedCertifiedCapsule2Source(input: { profileRoot: string; operationId: string; capsuleId: string; expectedCertificateHash: string }) {
+  const { working: _working, ...captured } = await captureReopenedCertifiedCapsule2SourceWithWorking5(input)
+  return Object.freeze(captured)
+}
+/** The actual cold certification and its Working5 result are one observation. */
+export async function captureReopenedCertifiedCapsule2SourceWithWorking5(input: { profileRoot: string; operationId: string; capsuleId: string; expectedCertificateHash: string }) {
   const row = capsuleRecord(input, ['profileRoot','operationId','capsuleId','expectedCertificateHash']), root = await canonicalRequiredSqlDagRoot(row.profileRoot)
   const operationId = durableSqlDagUuid(row.operationId), capsuleId = durableSqlDagUuid(row.capsuleId)
   const directory = join(root, 'backups', 'database-restore', operationId, 'knowledge-source-certificates-v2', capsuleId)
@@ -80,11 +85,11 @@ export async function captureReopenedCertifiedCapsule2Source(input: { profileRoo
   const certificate = parseCapsule2NoPriorSourceCertificate(text, operationId, capsuleId, row.expectedCertificateHash)
   const bytes = Buffer.from(text), path = join(directory, 'certificate.json')
   await readCapsule2AssetCopy(path, root, bytes.length, capsuleBytesHash(bytes), CAPSULE2_SOURCE_CERTIFICATE_MAX_BYTES)
-  const captured = await captureReopenedSealedCapsule2Source({ profileRoot: root, operationId, capsuleId, expectedManifestHash: certificate.sourceManifestHash })
+  const captured = await captureReopenedSealedCapsule2SourceWithWorking5({ profileRoot: root, operationId, capsuleId, expectedManifestHash: certificate.sourceManifestHash })
   if (capsuleJson(certificateFor(captured)) !== capsuleJson(certificate)) return bad('证书与完整实际来源不符')
   await closure(); await readCapsule2AssetCopy(path, root, bytes.length, capsuleBytesHash(bytes), CAPSULE2_SOURCE_CERTIFICATE_MAX_BYTES)
   const entry: Saved = { source: captured.source, root, directory, certificate, certificateHash: capsule2NoPriorSourceCertificateHash(certificate), bytes }
-  return Object.freeze({ source: mint(entry), value: captured.value, profileRoot: root,
+  return Object.freeze({ source: mint(entry), value: captured.value, working: captured.working, profileRoot: root,
     info: freezeCapsuleValue({ certificate, certificateHash: entry.certificateHash, directory }) })
 }
 export async function readCertifiedCapsule2Source(handle: CertifiedCapsule2NoPriorSource): Promise<Info> {

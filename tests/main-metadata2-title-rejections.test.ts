@@ -12,7 +12,7 @@ function assertUnsupported(result:SyncedEditingHostResult,pattern:RegExp){
   assert.match(result.reason,pattern)
 }
 
-test('actual unpublished activation, existing canonical user history, and missing canonical heading lineage preserve every SQL row and the original title draft', async()=>{
+test('actual unpublished activation, existing canonical user history, and a removed heading preserve every SQL row and the original title draft', async()=>{
   await withTitle2Fixture(t=>{
     const db=t.store.getUnsafeDatabaseHandle(),input=t.titleInput('V3 Host','Retained Draft'),before=allTables(db)
     assertUnsupported(t.store.invokeSyncedEditingSession(t.sender,{sessionId:t.sessionId,method:'applySyncedHostStructure',input}),/requires-lineage.*activation/)
@@ -28,7 +28,10 @@ test('actual unpublished activation, existing canonical user history, and missin
     assert.deepEqual(allTables(db),before)
   })
   await withTitle2Fixture(t=>{
-    const db=t.store.getUnsafeDatabaseHandle(),opened=t.store.openSyncedEditingSession(t.sender,{kind:'host',hostDocumentId:t.f.targetId})
+    const db=t.store.getUnsafeDatabaseHandle(),target=t.store.getDocumentDetail(t.f.targetId)!
+    t.store.updateDocument(target.id,{title:target.title,summary:target.summary,
+      blocks:target.blocks.map(({sortOrder:_sortOrder,...block})=>({...block,type:'paragraph'}))})
+    const opened=t.store.openSyncedEditingSession(t.sender,{kind:'host',hostDocumentId:t.f.targetId})
     assert.equal(opened.status,'ready');if(opened.status!=='ready')throw new Error('Actual heading target host must open')
     const input=request(db,[t.f.targetId],after=>{after[0].title='Target Title Draft'}),before=allTables(db)
     assertUnsupported(t.store.invokeSyncedEditingSession(t.sender,{sessionId:opened.session.sessionId,method:'applySyncedHostStructure',input}),/requires-lineage.*heading/)

@@ -2,11 +2,12 @@ import type Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
 import type { SyncedGroupSnapshot, SyncedGroupWire, SyncedStableBlockDraft } from '../../shared/synced-blocks'
 import type { MarkdownRenderableBlock } from '../../shared/markdown'
-import type { SyncedInlineInstanceAddress } from '../../shared/workspace-search-occurrence'
+import type { SyncedHeadingAnchorResult, SyncedInlineInstanceAddress } from '../../shared/workspace-search-occurrence'
 import { validateSyncedWorkspaceGraph, expandSyncedGraphDocument, type SyncedExpandedBlock } from '../../shared/syncedBlockGraph'
-import { parseSyncedBlockPayload, validatePersistedHostForest, validateSyncedGroupWire } from '../../shared/syncedBlockValidation'
+import { assertSyncedShape, isSyncedBlockId, parseSyncedBlockPayload, validatePersistedHostForest, validateSyncedGroupWire } from '../../shared/syncedBlockValidation'
 import { projectSyncedHostBudget } from '../../shared/syncedBlockPortable'
 import { getMarkdownHeadingTargets, getMarkdownHeadingRewrites, type MarkdownHeadingTarget } from '../../shared/markdownLinkMaintenance'
+import { findWikiHeading } from '../../shared/markdownWiki'
 import { readStrictHostDocument, type StrictHostDocument } from './synced-host-document-read'
 import { assertCanonicalSearchSnapshotOwned, resolveSyncedInlineInstance } from './workspace-search-occurrences'
 
@@ -102,4 +103,34 @@ export function readSyncedHostHeadingsOwned2(db:Database.Database,documentId:str
  * carry a heading identity. The existing missing-heading token rules remain. */
 export function planSyncedHeadingRewrites2(before:readonly SyncedProjectedHeading2[],after:readonly SyncedProjectedHeading2[]){
   return getMarkdownHeadingRewrites([...before],[...after],false)
+}
+
+/** Resolve in one committed host/group snapshot. A duplicate slug, stale host
+ * or disappeared occurrence never falls back to another copy of the heading. */
+export function resolveSyncedHeadingAnchor(db: Database.Database, input: unknown): SyncedHeadingAnchorResult {
+  assertSyncedShape(input, ['documentId', 'expectedUpdatedAt', 'anchor', 'matchText'])
+  const { documentId, expectedUpdatedAt, anchor, matchText } = input
+  if (!isSyncedBlockId(documentId) || typeof expectedUpdatedAt !== 'string' || typeof anchor !== 'string'
+    || !anchor || anchor.length > 16_384 || typeof matchText !== 'boolean') return { status: 'missing' }
+  return db.transaction((): SyncedHeadingAnchorResult => {
+    const host = readStrictHostDocument(db, documentId)
+    if (!host || host.detail.updatedAt !== expectedUpdatedAt) return { status: 'stale' }
+    const source = readSyncedHostHeadingsOwned2(db, host.detail.id)
+    if (!source) return { status: 'missing' }
+    const exact = source.headings.filter(heading => heading.slug === anchor)
+    if (exact.length > 1) return { status: 'missing' }
+    const heading = matchText ? findWikiHeading(anchor, source.headings) : exact[0]
+    if (!heading) return { status: 'missing' }
+    const { location } = heading
+    if (location.kind === 'document-title') return { status: 'ready', kind: 'title' }
+    if (location.kind === 'ordinary') {
+      const ordinal = /(:html)?:([0-9]+)$/.exec(heading.key)
+      if (!ordinal) return { status: 'missing' }
+      return { status: 'ready', kind: 'ordinary', blockId: location.blockId, headingIndex: Number(ordinal[2]) * (ordinal[1] ? -1 : 1) }
+    }
+    const occurrence = resolveSyncedInlineInstance(db, { hostDocumentId: host.detail.id, instanceId: location.instance.instanceId, groupId: location.instance.groupId })
+    if (occurrence.status !== 'ready' || occurrence.instance.instanceCreatedAt !== location.instance.instanceCreatedAt) return { status: 'stale' }
+    return { status: 'ready', kind: 'canonical', occurrence: { ...occurrence.instance,
+      canonicalBlockId: location.canonicalBlockId, canonicalCreatedAt: location.canonicalCreatedAt } }
+  })()
 }

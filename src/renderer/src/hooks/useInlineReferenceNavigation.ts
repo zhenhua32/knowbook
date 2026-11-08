@@ -11,6 +11,7 @@ export function useInlineReferenceNavigation({
   draftTitle,
   selectedDocumentId,
   notify,
+  isZh,
   uiBlockReferenceNotFound
 }: UseInlineReferenceNavigationParams) {
   const activeDocument = useRef(selectedDocumentId), request = useRef(0)
@@ -23,7 +24,7 @@ export function useInlineReferenceNavigation({
       const { navigateInlineReference } = await import("../utils/inlineReferenceTargets")
       if (!isCurrent()) return
       return navigateInlineReference(content, cursorPosition, { documentTree, draftBlocks, onOpenDocument, onOpenDocumentBlock,
-        onOpenAnchor, draftTitle, selectedDocumentId, notify, uiBlockReferenceNotFound, isCurrent })
+        onOpenAnchor, draftTitle, selectedDocumentId, notify, isZh, uiBlockReferenceNotFound, isCurrent })
     } catch (error) {
       if (isCurrent()) notify(error instanceof Error ? error.message : uiBlockReferenceNotFound, "error")
     }
@@ -36,6 +37,7 @@ export function useInlineReferenceNavigation({
     draftTitle,
     selectedDocumentId,
     notify,
+    isZh,
     uiBlockReferenceNotFound
   ])
 }

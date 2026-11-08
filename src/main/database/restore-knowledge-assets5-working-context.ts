@@ -1,5 +1,7 @@
 import { HEADING_TITLE3_OPERATION_KIND } from './synced-heading-title3-codec'
 import { headingTitle3OriginalsFromRaw } from './restore-knowledge-heading-title3-original'
+import { hostDetachOriginalsFromRaw } from './restore-knowledge-host-detach-original'
+import { HOST_DETACH_OPERATION_KIND } from './synced-host-detach-original'
 // Explicit automatic-working domain5; old custom observers are unchanged.
 // Pure values never mint file, selection, accepted coverage or install rights.
 import { TextDecoder } from 'node:util'
@@ -52,6 +54,7 @@ export function deriveRoot5SettledWorkingEvidence5(raw: Capsule2RawContent, proj
   const settings = graph3Rows(raw, 'app_settings'), operations = graph3Rows(raw, 'synced_operations')
   let headingOriginals: ReturnType<typeof headingCreateBirthOriginalsFromRaw2> | undefined
   let titleOriginals: ReturnType<typeof headingTitle3OriginalsFromRaw> | undefined
+  let detachOriginals: ReturnType<typeof hostDetachOriginalsFromRaw> | undefined
   const receipts = new Map<string, { row: typeof operations[number]; receipt: M.ExchangeReceipt }>()
   const jobs = new Map<string, { row: typeof settings[number]; job: M.ExchangeJob }>()
   const wanted = new Set<string>()
@@ -111,6 +114,10 @@ export function deriveRoot5SettledWorkingEvidence5(raw: Capsule2RawContent, proj
     if (value.kind === 'synced-logical-deletion-proof') {
       const proof = value.version === 2 ? validateSyncedLogicalDeletionChoiceProof(value) : validateSyncedLogicalDeletionProof(value)
       add(proof.before, [...source, 'before'], [row]); if ('base' in proof) add(proof.base, [...source, 'base'], [row])
+    } else if (value.kind === HOST_DETACH_OPERATION_KIND) {
+      const original = (detachOriginals ??= hostDetachOriginalsFromRaw(raw))(row.value)
+      for (const group of original.result.groups)
+        add(wire(group), [...source, 'result', 'groups', group.groupId], [row, original.journalSource, ...original.headingSources, ...original.canonicalSources])
     } else if (value.kind === HEADING_TITLE3_OPERATION_KIND) {
       const original = (titleOriginals ??= headingTitle3OriginalsFromRaw(raw))(String(row.value.client_operation_id))
       if (original.primarySource.original !== row.original) return fail('title3 envelope is not this exact original packet row')
@@ -299,13 +306,23 @@ function replayAutomaticContext5(raw: Capsule2RawContent, locator: Root5WorkingM
   const expectedAliases = [...plan.nextRemote.assetNames].map(([hash, names]) => ({ hash, names: [...names].sort() })).sort((a,b)=>a.hash<b.hash?-1:1)
   if (!same(expectedAliases, job.descriptor.next.assets.map(asset => ({ hash: asset.hash, names: asset.names })))) return fail('descriptor assets do not exactly cover the replayed whole next snapshot')
   const base = new Map(baseRecords.map(row => [row.key, row])), left = new Map((job.version===4||job.version===7?localPhysical:local).records.map(row => [row.key, row])), right = new Map(remote.records.map(row => [row.key, row]))
+  const localFinalRows = new Map(plan.localFinal.records.map(row => [row.key, row]))
+  const localWrites = new Set(plan.incoming), remoteWrites = new Set(plan.writes)
+  const components = new Map(plan.components.flatMap(component => component.keys.map(key => [key, component] as const)))
   const merged = (job.merges ?? []).map(provenance => {
     const before=base.get(provenance.key),a=left.get(provenance.key),b=right.get(provenance.key)
     if(!before||!a||!b||before.hash!==provenance.baseHash||a.hash!==provenance.localHash||b.hash!==provenance.remoteHash) return fail('automatic B/L/R provenance mismatch')
     const selected=nextRows.get(provenance.key)
     if(!selected||selected.hash!==provenance.resultHash||publicationHash(publicationJson(selected.record))!==provenance.resultHash)return fail('whole selected W differs from original merge result')
+    // The production replay authenticated localFinal and both write sets from
+    // the sealed inputs. A publication-only result can already equal the local
+    // record. Only incoming identifies an actual local mutation in this plan.
+    const localApply = localWrites.has(provenance.key)
+    const replayedLocalFinal = { planHash: plan.planHash, component: components.get(provenance.key) ?? null,
+      entry: localFinalRows.get(provenance.key) ?? null, localApply, remoteOnly: remoteWrites.has(provenance.key) && !localApply }
     return {recordKey:provenance.key,record:selected.record,parts:[] as readonly {id:string;text:string}[],provenance,
-      family:job.version,selectionKind:job.request.method==='resolveSyncedExchangeConflicts'?'conflict-selection' as const:'automatic-component' as const}
+      family:job.version,selectionKind:job.request.method==='resolveSyncedExchangeConflicts'?'conflict-selection' as const:'automatic-component' as const,
+      replayedLocalFinal }
 
   })
   const byteInventory = { inputHash: publicationHash(bytes.inputBytes), jobBytesHash: publicationHash(bytes.jobBytes), readyBytesHash: publicationHash(bytes.readyBytes),

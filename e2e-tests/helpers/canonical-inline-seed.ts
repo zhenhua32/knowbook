@@ -17,6 +17,8 @@ export type CanonicalInlineSeed = {
 // A stopped, new profile only. This process is Electron-as-Node so SQLite uses
 // the same native ABI as the real app. No BrowserWindow or test IPC is created.
 const profile = process.argv[2]
+const bodyBlocks = Number(process.argv[3] ?? 2)
+if (!Number.isSafeInteger(bodyBlocks) || bodyBlocks < 2 || bodyBlocks > 4000) throw new Error('Invalid canonical fixture size')
 if (!profile || !isAbsolute(profile) || resolve(profile) !== profile || !existsSync(profile)
   || lstatSync(profile).isSymbolicLink()) {
   throw new Error('An existing, absolute, independent profile directory is required')
@@ -68,12 +70,15 @@ try {
     return result
   }
   const first = logical(hostIds[0])
-  first.workingBefore.blocks.push(
+  const canonical: SyncedStableBlockDraft[] = [
     { id: primaryId, type: 'paragraph', content: primaryText, checked: false, depth: 0, parentBlockId: null, tags: [] },
+    ...Array.from({ length: bodyBlocks - 2 }, (_, index) => ({ id: randomUUID(), type: 'paragraph',
+      content: `Canonical body ${index} · 源码编辑 ${'Markdown '.repeat(5)}Markdown`, checked: false, depth: 0, parentBlockId: null, tags: [] })),
     { id: secondaryId, type: 'paragraph', content: secondaryText, checked: false, depth: 0, parentBlockId: null, tags: [] }
-  )
+  ]
+  first.workingBefore.blocks.push(...canonical)
   apply(open(hostIds[0]), { clientOperationId: randomUUID(), mode: 'command', hostsWorkingBefore: [first], groups: [], expectedInstances: [],
-    action: { kind: 'create', documentId: hostIds[0], selectedRootIds: [primaryId, secondaryId], groupId, instanceId: instanceIds[0] } })
+    action: { kind: 'create', documentId: hostIds[0], selectedRootIds: canonical.map(block => block.id), groupId, instanceId: instanceIds[0] } })
   for (const [documentId, instanceId] of [[hostIds[0], instanceIds[1]], [hostIds[1], instanceIds[2]]] as const) {
     // Reopen captures actual post-command bindings. An ACK is never used to
     // manufacture a mount proof for the next command.
@@ -85,7 +90,7 @@ try {
       expectedInstances: snapshot.instances.filter(item => item.hostDocumentId === documentId).map(({ instanceId, hostDocumentId, bindingVersion }) => ({ instanceId, hostDocumentId, bindingVersion })) })
   }
   const actual = read(open(hostIds[0]))
-  assert.deepEqual(actual.blocks.map(block => [block.id, block.content]), [[primaryId, primaryText], [secondaryId, secondaryText]])
+  assert.deepEqual(actual.blocks.map(block => [block.id, block.content]), canonical.map(block => [block.id, block.content]))
   assert.deepEqual(actual.instances.map(item => item.instanceId).sort(), [...instanceIds].sort())
   const bodies = hostIds.map(id => {
     const host = store.getDocumentDetail(id)!

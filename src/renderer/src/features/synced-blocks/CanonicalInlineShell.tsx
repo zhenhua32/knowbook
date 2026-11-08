@@ -57,11 +57,14 @@ export default function CanonicalInlineShell({ documents, isZh, notify, workspac
     const request = window.knowbook.onEditorCloseRequest(input => {
       // Freeze synchronously before awaiting any writer. No unload cleanup,
       // timer, stale callback or failed IPC is interpreted as a successful save.
-      runtime.freeze(input.requestId); lock()
+      const composing = runtime.hasComposition()
+      runtime.freeze(input.requestId)
+      // Keep the native input candidate attached until Main cancels the close.
+      if (!composing) lock()
       void (async () => {
         let flushed = false
         try {
-          flushed = runtime.closeReady() && !latest.current.documents.isSyncedHostComposing()
+          flushed = !composing && runtime.closeReady()
             && await runtime.flush({ shouldContinue: () => runtime.ownsClose(input.requestId) })
             && await latest.current.documents.flushPendingChanges()
             && await runtime.flush({ shouldContinue: () => runtime.ownsClose(input.requestId) }) && runtime.closeReady()
@@ -76,7 +79,7 @@ export default function CanonicalInlineShell({ documents, isZh, notify, workspac
           }
         }
         try {
-          if (!flushed && input.reason !== 'reload') {
+          if (!flushed && !composing && input.reason !== 'reload') {
             try {
               const receipt = await runtime.journalClose(input.requestId)
               if (!runtime.ownsClose(input.requestId) || receipt.closeGeneration === null) return

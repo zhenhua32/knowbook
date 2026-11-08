@@ -12,7 +12,11 @@ import { EditorRecoveryDraftService } from '../src/main/editor-recovery/draft-se
 import { EditorRecoveryDraftStore } from '../src/main/editor-recovery/draft-store'
 import { EDITOR_CLOSE_REQUEST_CHANNEL, type EditorCloseRequest } from '../src/shared/editor-close'
 import type { EditorRecoveryReceipt, ParkEditorRecoveryDraftInput, RetireEditorRecoveryDraftInput, WriteEditorRecoveryDraftsInput } from '../src/shared/editor-recovery-drafts'
-import { EditorRecoveryCoordinator, type RecoveryContent } from '../src/renderer/src/features/editor-recovery/coordinator'
+import { EditorRecoveryCoordinator, type RawRecoveryPending, type RecoveryContent } from '../src/renderer/src/features/editor-recovery/coordinator'
+import { attestEditorRecoveryPendingOwned } from '../src/main/editor-recovery/pending-original'
+import type { SyncedStructureInput } from '../src/shared/synced-blocks'
+import { createRequest } from './helpers/synced-host-command-create-fixture'
+import { request } from './helpers/synced-host-final-fixture'
 
 // Only the window/frame and IPC delivery are structural test transports. The
 // coordinator, Main service, close barrier, side SQLite COMMIT and receipts are
@@ -148,6 +152,68 @@ test('a genuine close settles an uncertain original side batch before capturing 
     assert.equal(receipt.purpose, 'close'); assert.equal(receipt.requestId, request.requestId)
     assert.ok(receipt.closeGeneration !== null)
     assert.equal(f.barrier.acknowledge(f.event, { requestId: request.requestId, status: 'draft-journaled', closeGeneration: receipt.closeGeneration, receiptId: receipt.receiptId }), true)
+    assert.equal(f.window.closed, true)
+  } finally { f.close() }
+})
+
+test('the exact detach nonce is durable before the actual Main writer, and close retains later C when the business reply is unavailable', async () => {
+  const f = fixture()
+  try {
+    const documentId = f.main.createDocument(null), db = f.main.getUnsafeDatabaseHandle(), sender = f.event.sender
+    const canonicalId = randomUUID()
+    f.main.updateDocument(documentId, { title: 'Detach pending original', summary: '', blocks: [
+      { id: canonicalId, type: 'paragraph', content: 'Actual canonical paragraph', checked: false, depth: 0, parentBlockId: null }
+    ] })
+    const openHost = () => {
+      const opened = f.main.openSyncedEditingSession(sender, { kind: 'host', hostDocumentId: documentId })
+      if (opened.status !== 'ready') throw Error('Actual detach host session unavailable')
+      return opened.session.sessionId
+    }
+    const create = createRequest(db, { documentId, selectedRootIds: [canonicalId] })
+    const created = f.main.invokeSyncedEditingSession(sender, { sessionId: openHost(), method: 'applySyncedHostStructure', input: create })
+    assert.equal(created.status, 'applied')
+    const stored = f.main.getDocumentDetail(documentId)!, sessionId = openHost(), identity = Object.freeze({ detachHost: documentId })
+    const opened = f.service.open(f.event, { kind: 'host', openRequestId: randomUUID(), documentId, expectedUpdatedAt: stored.updatedAt })
+    const { hostsWorkingBefore, groups, expectedInstances } = request(db, [documentId])
+    hostsWorkingBefore[0].workingBefore.summary = 'Complete W before original detach'
+    const input: SyncedStructureInput = { clientOperationId: randomUUID(), mode: 'command', hostsWorkingBefore, groups, expectedInstances,
+      action: { kind: 'detach', groupId: create.action.groupId, instanceId: create.action.instanceId } }
+    const submitted = { kind: 'host' as const, ...input.hostsWorkingBefore[0].workingBefore }
+    let working = structuredClone(submitted)
+    const rawPending: RawRecoveryPending[] = [{ method: 'applySyncedHostStructure', input, submittedWorking: submitted }]
+    f.coordinator.register(identity, { kind: 'host', documentId }, async () => opened,
+      () => ({ working, rawPending, pending: [], selection: null, composing: false, importing: false }))
+    const protect = () => f.coordinator.checkpointPendingHost(identity, input.clientOperationId, () => true)
+    const noOriginal = () => f.main.invokeSyncedEditingSession(sender, { sessionId, method: 'getSyncedOperation', input: { clientOperationId: input.clientOperationId } })
+    await assert.rejects(protect(), /Injected transport loss after the actual side COMMIT/)
+    assert.deepEqual(noOriginal(), { status: 'unknown' })
+    const cold = new EditorRecoveryDraftStore(f.directory, { readonly: true })
+    try {
+      const head = cold.head(opened.draftSessionId)!
+      assert.equal(head.record.draft.pending[0].clientOperationId, input.clientOperationId)
+      assert.deepEqual(JSON.parse(head.record.draft.pending[0].inputJson), JSON.parse(JSON.stringify(input)))
+      assert.deepEqual(head.record.draft.working, submitted)
+    } finally { cold.close() }
+    assert.equal(await protect(), true)
+    assert.deepEqual(f.calls[1].input, f.calls[0].input)
+    assert.deepEqual(noOriginal(), { status: 'unknown' })
+    const ack = f.main.invokeSyncedEditingSession(sender, { sessionId, method: 'applySyncedHostStructure', input })
+    assert.equal(ack.status, 'applied')
+
+    working = { ...structuredClone(submitted), summary: 'Later C while the original ACK is unavailable' }
+    f.coordinator.freeze(); f.window.close()
+    const close = f.request()
+    const receipt = await f.coordinator.journalClose(close.requestId, () => !f.window.closed && f.request().requestId === close.requestId)
+    const side = f.side.head(opened.draftSessionId)!
+    assert.deepEqual(side.record.draft.working, working)
+    assert.equal(side.record.draft.pending[0].clientOperationId, input.clientOperationId)
+    const attested = db.transaction(() => attestEditorRecoveryPendingOwned(db, side.record))()[0]
+    assert.equal(attested.status, 'committed-attested')
+    if (attested.status !== 'committed-attested') throw Error('Detach must attest the original business ACK')
+    assert.deepEqual(attested.result, ack)
+    assert.equal(attested.sourceReplayComplete, false)
+    assert.equal(f.main.getDocumentDetail(documentId)!.summary, submitted.summary)
+    assert.equal(f.barrier.acknowledge(f.event, { requestId: close.requestId, status: 'draft-journaled', closeGeneration: receipt.closeGeneration!, receiptId: receipt.receiptId }), true)
     assert.equal(f.window.closed, true)
   } finally { f.close() }
 })

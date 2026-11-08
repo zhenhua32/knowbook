@@ -8,6 +8,8 @@ import { MarkdownBlockNodesContext, MarkdownDocumentProvider } from '../../compo
 import { MarkdownNodes, MarkdownReferencesContext } from '../../components/MarkdownContent'
 import { serializeBlocksToMarkdown } from '@shared/markdown'
 import { collectDocumentMarkdownLinks } from '@shared/markdownLinkMaintenance'
+import { parseWikiReference } from '@shared/markdownWiki'
+import { SYNCED_CANONICAL_BLOCK_ADDRESS_PREFIX } from '@shared/synced-canonical-block-address'
 import { isSameWorkspaceSearchOccurrence } from '@shared/workspace-search-occurrence'
 import { areDocumentDraftBlocksEqual } from '../../utils/documentDraftComparison'
 import { MarkdownNavigationContext } from '../../components/MarkdownNavigationContext'
@@ -17,6 +19,7 @@ import { useInlineHostView, type InlineHostView } from './InlineSyncedContext'
 import type { InlineOpening } from './inlineRuntime'
 import { syncedSnapshotGuard } from './types'
 import { focusExactCanonicalSearchOccurrence } from './inlineFocus'
+import { acceptSyncedCanonicalRecoveryReview } from './controller'
 
 const SyncedRichTextEditor = lazy(() => import('../../rich-text/SyncedRichTextEditor').then(module => ({ default: module.SyncedRichTextEditor })))
 type Props = { block: DocumentBlockDraft; mode: 'reading' | 'edit'; isZh: boolean; ui?: UiText }
@@ -128,6 +131,16 @@ function BoundInlineBody({ host, opening, mode, root, onReopen }: {
     const links = collectDocumentMarkdownLinks(snapshot.blocks).filter(link => link.blockId === blockId && link.kind !== 'image'
       && (link.kind === 'wiki') === wiki && link.url === destination)
     if (links.length !== 1) { setMessage(isZh ? '这一链接的原始位置不唯一，已保留当前位置。' : 'The original link position is ambiguous.'); return }
+    const address = wiki ? parseWikiReference(destination).target : destination
+    if (address.startsWith(SYNCED_CANONICAL_BLOCK_ADDRESS_PREFIX)) {
+      try {
+        const { navigateCanonicalBlockLink } = await import('./canonicalBlockLinkNavigation')
+        await navigateCanonicalBlockLink(address, still, message => setMessage(message ?? ''), isZh)
+      } catch (error) {
+        if (still()) setMessage(error instanceof Error ? error.message : String(error))
+      }
+      return
+    }
     const link = links[0], row = snapshot.blocks[link.blockIndex]
     const bindings = snapshot.bindings.filter(item => item.blockId === blockId && item.from === link.start && item.to === link.end
       && item.raw === row.content.slice(link.start, link.end) && item.syntax === (wiki ? 'wiki' : 'markdown'))
@@ -176,10 +189,14 @@ function BoundInlineBody({ host, opening, mode, root, onReopen }: {
         <button type="button" disabled={stale || runtimeState.locked || !state.canUndo} onClick={() => { void binding.undo() }}>{isZh ? '撤销' : 'Undo'}</button>
         <button type="button" disabled={stale || runtimeState.locked || !state.canRedo} onClick={() => { void binding.redo() }}>{isZh ? '重做' : 'Redo'}</button>
         <button type="button" disabled={stale || runtimeState.locked} onClick={event => runtime.openCanonicalSource(binding, event.currentTarget)}>{isZh ? '编辑源码' : 'Edit source'}</button>
-        <button type="button" disabled={runtimeState.locked || stale} onClick={() => { void binding.flush().then(saved => { if (!saved) setMessage(isZh ? '草稿仍保留，请处理保存阻断。' : 'The retained draft could not be saved.') }) }}>{isZh ? '保存／重试' : 'Save / retry'}</button>
+        <button type="button" disabled={runtimeState.locked || stale} onClick={() => { if (acceptSyncedCanonicalRecoveryReview(binding)) void binding.flush().then(saved => { if (!saved) setMessage(isZh ? '草稿仍保留，请处理保存阻断。' : 'The retained draft could not be saved.') }) }}>{isZh ? '保存／重试' : 'Save / retry'}</button>
+        <button type="button" disabled={runtimeState.locked || Boolean(runtimeState.command) || stale || state.recoveryReview
+          || state.phase !== 'clean' || Boolean(state.pending) || Boolean(state.composingInstanceIds.length)}
+          onClick={event => { void runtime.openDetach(opening, event.currentTarget) }}>{isZh ? '解除同步…' : 'Detach synced block…'}</button>
         {stale && <button type="button" disabled={runtimeState.locked || state.dirty || Boolean(state.pending) || Boolean(state.composingInstanceIds.length)} onClick={onReopen}>{isZh ? '重开这个真实引用' : 'Reopen this exact reference'}</button>}
         <button type="button" onClick={() => { void window.knowbook.writeClipboardText(serializeBlocksToMarkdown(state.working)) }}>{isZh ? '复制保留正文' : 'Copy retained body'}</button>
       </div>
+      {state.recoveryReview && <p role="status">{isZh ? '恢复的共享正文及撤销记录已载入，请检查后点击这一组的保存按钮。' : 'The restored shared body and undo history are loaded. Review them before saving this group.'}</p>}
       {state.error || state.failure || message ? <p role="alert">{message || state.error || (isZh ? '共享正文存在冲突，当前完整草稿已保留。' : 'The shared body has a conflict; the complete draft is retained.')}</p> : null}
       {mode === 'reading' ? visibleIndices.map(index => {
         const block = state.working[index]
