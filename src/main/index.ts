@@ -2,7 +2,8 @@ import { createEditorCloseBarrier } from './editor-close-barrier'
 import { EditorRecoveryDraftStore } from './editor-recovery/draft-store'
 import { EditorRecoveryDraftService } from './editor-recovery/draft-service'
 import { EditorRecoveryCloseReceipts } from './editor-recovery/close-receipts'
-import { EDITOR_RECOVERY_CHANNELS, validateEditorRecoveryWriteInput, validateEditorRecoveryPageInput,
+import { EDITOR_RECOVERY_CHANNELS } from '../shared/editor-recovery-channels'
+import { validateEditorRecoveryWriteInput, validateEditorRecoveryPageInput,
   validateEditorRecoveryDecisionInput } from '../shared/editor-recovery-drafts'
 import { runSyncedEditingSessionWithAdmission } from './synced-editing-session-admission'
 import { editorReloadKey, guardEditorReloadMenu } from './editor-reload-entrypoints'

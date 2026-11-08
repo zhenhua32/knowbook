@@ -1,5 +1,5 @@
 import { createEditorCloseDelivery } from './editor-close-delivery'
-import { EDITOR_RECOVERY_CHANNELS } from '../shared/editor-recovery-drafts'
+import { EDITOR_RECOVERY_CHANNELS } from '../shared/editor-recovery-channels'
 import { EDITOR_CLOSE_REQUEST_CHANNEL, EDITOR_CLOSE_CANCELLED_CHANNEL, EDITOR_CLOSE_ACKNOWLEDGE_CHANNEL, EDITOR_CLOSE_READY_CHANNEL,
   EDITOR_RELOAD_REQUEST_CHANNEL,
   type EditorCloseRequest, type EditorCloseCancelled } from '../shared/editor-close'
