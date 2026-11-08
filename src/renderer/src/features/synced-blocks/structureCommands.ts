@@ -4,6 +4,7 @@ import type { SyncedEditingHostResult } from '@shared/synced-editing-session'
 import type { SyncedHostSourceCurrent } from './SyncedHostSourceDialog'
 import { areDocumentDraftBlocksEqual } from '../../utils/documentDraftComparison'
 import { syncedCreateSelection, syncedInsertionAfter } from './structureIntent'
+import { type SyncedGroupBinding, syncedScopeInstanceGuard, syncedSnapshotGuard } from './types'
 
 type Guards = { groups: SyncedGroupGuard[]; expectedInstances: SyncedInstanceGuard[] }
 type Item = SyncedGroupListResult['items'][number]
@@ -22,13 +23,14 @@ export interface StructureCommandPort {
   isZh: () => boolean
 }
 export interface StructureCommandView {
-  id: object; kind: 'create' | 'insert'; documentId: string; blockCount: number; opener: HTMLElement | null
+  id: object; kind: 'create' | 'insert' | 'detach'; documentId: string; blockCount: number; opener: HTMLElement | null
   busy: boolean; loading: boolean; error: string; uncertain: boolean; hasRequest: boolean
   query: string; offset: number; total: number; items: readonly Item[]; selectedGroupId: string | null
   canReturnFocus: () => boolean
 }
 type Opening = { before: SyncedHostSourceCurrent; view: StructureCommandView; operationId: string; instanceId: string;
-  action: { kind: 'create'; rootIds: string[]; groupId: string } | { kind: 'insert'; target: SyncedPlacement };
+  action: { kind: 'create'; rootIds: string[]; groupId: string } | { kind: 'insert'; target: SyncedPlacement }
+    | { kind: 'detach'; binding: SyncedGroupBinding };
   input: SyncedStructureInput | null; listing: number; shouldContinue: () => boolean }
 
 /** Renderer intentions only. The enclosing runtime supplies its genuine opaque
@@ -38,6 +40,7 @@ export class SyncedStructureCommands {
   constructor(private readonly port: StructureCommandPort) {}
   getSnapshot = (): Readonly<StructureCommandView> | null => this.opening?.view ?? null
   pending = () => this.opening !== null
+  recoveryInput = () => this.opening?.input ?? null
   private update(opening: Opening, changes: Partial<StructureCommandView>) {
     if (this.opening !== opening) return
     opening.view = Object.freeze({ ...opening.view, ...changes }); this.port.changed()
@@ -56,10 +59,8 @@ export class SyncedStructureCommands {
     const before = this.port.current(); if (!before) return false
     const selection = syncedCreateSelection(before.host.workingBefore.blocks, ids)
     if (!selection.ok) {
-      this.port.notify(selection.reason === 'heading' ? '当前不能将含标题的选区转为同步块，原正文已保留。'
-        : selection.reason === 'nested-sync' ? '选区内已有同步引用，不能再嵌套创建。' : '请选择连续同级的完整内容块；子块会一起纳入。',
-      selection.reason === 'heading' ? 'Creating from a heading selection is not supported; the original body is retained.'
-        : selection.reason === 'nested-sync' ? 'An existing synced reference cannot be nested inside a new group.' : 'Select consecutive sibling blocks; their complete children are included.')
+      this.port.notify(selection.reason === 'nested-sync' ? '选区内已有同步引用，不能再嵌套创建。' : '请选择连续同级的完整内容块；子块会一起纳入。',
+        selection.reason === 'nested-sync' ? 'An existing synced reference cannot be nested inside a new group.' : 'Select consecutive sibling blocks; their complete children are included.')
       return false
     }
     const opening = await this.begin(before, { kind: 'create', rootIds: selection.rootIds, groupId: crypto.randomUUID() }, selection.blockCount, shouldContinue, opener)
@@ -71,6 +72,14 @@ export class SyncedStructureCommands {
     const before = this.port.current(); if (!before) return false
     const target = syncedInsertionAfter(before.host.documentId, before.host.workingBefore.blocks, anchorId); if (!target) return false
     const opening = await this.begin(before, { kind: 'insert', target }, 0, shouldContinue, opener)
+    return this.getSnapshot()?.id === opening.view.id && !opening.view.error
+  }
+  async openDetach(binding: SyncedGroupBinding, opener: HTMLElement | null): Promise<boolean> {
+    if (this.opening || !binding.isCurrent()) return false
+    if (this.port.blocked()) { this.port.notify('请先完成当前保存、附件插入或输入组合，再解除同步。', 'Finish the current save, attachment insertion, or composition before unsyncing this reference.'); return false }
+    const before = this.port.current(), scope = binding.scope
+    if (!before || before.hostSession !== scope.hostSession || before.host.documentId !== scope.hostDocumentId) return false
+    const opening = await this.begin(before, { kind: 'detach', binding }, 0, scope.isCurrent, opener)
     return this.getSnapshot()?.id === opening.view.id && !opening.view.error
   }
   private async begin(before: SyncedHostSourceCurrent, action: Opening['action'], blockCount: number, shouldContinue: () => boolean, opener: HTMLElement | null): Promise<Opening> {
@@ -89,7 +98,7 @@ export class SyncedStructureCommands {
     this.update(opening, { query, offset, loading: true, error: '', selectedGroupId: null, items: [] })
     try {
       if (!await this.port.openHost(opening.before.host.documentId) || !this.current(opening)) throw new Error('The original host or complete working body changed; cancel and reopen.')
-      if (opening.action.kind === 'create') { this.update(opening, { loading: false }); return }
+      if (opening.action.kind !== 'insert') { this.update(opening, { loading: false }); return }
       const result = await this.port.list({ query, offset, limit: 20 })
       if (serial !== opening.listing || this.opening !== opening) return
       if (!this.current(opening)) { this.update(opening, { loading: false, error: this.port.isZh() ? '原宿主或完整草稿已变化，请取消后重新打开。' : 'The original host or complete draft changed. Cancel and reopen.' }); return }
@@ -124,16 +133,22 @@ export class SyncedStructureCommands {
     this.update(opening, { busy: true, error: '' })
     try {
       if (!opening.input) {
-        if (!await this.port.flushGroups(() => this.current(opening)) || !this.current(opening)) {
+        const action = opening.action, shouldContinue = () => this.current(opening)
+        const flushed = action.kind === 'detach' ? await action.binding.flush({ shouldContinue }) : await this.port.flushGroups(shouldContinue)
+        if (!flushed || !shouldContinue()) {
           this.update(opening, { error: this.port.isZh() ? '共享正文保存尚未完成，请先处理原草稿。' : 'The shared body has not finished saving. Resolve its original draft first.' }); return false
         }
-        const groupId = opening.action.kind === 'insert' ? opening.view.selectedGroupId! : null
+        const groupId = action.kind === 'insert' ? opening.view.selectedGroupId : null
         const guards = await this.port.guards(opening.before.host.documentId, groupId ? [groupId] : [])
-        if (!guards || !this.current(opening)) throw new Error('The original host/group guards changed; the complete draft is retained.')
+        if (!guards || !shouldContinue()) throw new Error('The original host/group guards changed; the complete draft is retained.')
+        if (action.kind === 'detach' && !this.matchesDetachGuards(action.binding, guards)) {
+          this.update(opening, { error: this.port.isZh() ? '原引用或共享正文版本已变化，请取消后核对。' : 'The original reference or shared body version changed. Cancel and review it.' }); return false
+        }
         opening.input = { clientOperationId: opening.operationId, mode: 'command', hostsWorkingBefore: [structuredClone(opening.before.host)], ...guards,
-          action: opening.action.kind === 'create' ? { kind: 'create', documentId: opening.before.host.documentId,
-            selectedRootIds: [...opening.action.rootIds], groupId: opening.action.groupId, instanceId: opening.instanceId }
-            : { kind: 'insert', groupId: groupId!, instanceId: opening.instanceId, target: { ...opening.action.target } } }
+          action: action.kind === 'create' ? { kind: 'create', documentId: opening.before.host.documentId,
+            selectedRootIds: [...action.rootIds], groupId: action.groupId, instanceId: opening.instanceId }
+            : action.kind === 'insert' ? { kind: 'insert', groupId: groupId!, instanceId: opening.instanceId, target: { ...action.target } }
+            : { kind: 'detach', groupId: action.binding.scope.owner.groupId, instanceId: action.binding.scope.instanceId } }
         this.update(opening, { hasRequest: true })
       }
       const input = opening.input
@@ -173,5 +188,14 @@ export class SyncedStructureCommands {
       this.opening = null; this.port.changed(); return true
     } catch (error) { this.update(opening, { error: String(error) }); return false }
     finally { this.update(opening, { busy: false }) }
+  }
+
+  private matchesDetachGuards(binding: SyncedGroupBinding, guards: Guards) {
+    const state = binding.getCurrent(), instance = syncedScopeInstanceGuard(binding.scope), group = syncedSnapshotGuard(state.snapshot)
+    return binding.isCurrent() && state.phase === 'clean' && !state.pending && !state.composingInstanceIds.length
+      && guards.expectedInstances.some(guard => guard.hostDocumentId === instance.hostDocumentId
+        && guard.instanceId === instance.instanceId && guard.bindingVersion === instance.bindingVersion)
+      && guards.groups.some(guard => guard.groupId === group.groupId && guard.expectedRevision === group.expectedRevision
+        && guard.expectedTopologyRevision === group.expectedTopologyRevision)
   }
 }

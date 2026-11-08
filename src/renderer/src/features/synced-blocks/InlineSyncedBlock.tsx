@@ -176,6 +176,8 @@ function BoundInlineBody({ host, opening, mode, root, onReopen }: {
         <button type="button" disabled={stale || runtimeState.locked || !state.canUndo} onClick={() => { void binding.undo() }}>{isZh ? '撤销' : 'Undo'}</button>
         <button type="button" disabled={stale || runtimeState.locked || !state.canRedo} onClick={() => { void binding.redo() }}>{isZh ? '重做' : 'Redo'}</button>
         <button type="button" disabled={stale || runtimeState.locked} onClick={event => runtime.openCanonicalSource(binding, event.currentTarget)}>{isZh ? '编辑源码' : 'Edit source'}</button>
+        {mode === 'edit' && <button type="button" disabled={stale || runtimeState.locked || Boolean(state.composingInstanceIds.length)}
+          onClick={event => { void runtime.commands.openDetach(binding, event.currentTarget) }}>{isZh ? '解除同步…' : 'Unsync…'}</button>}
         <button type="button" disabled={runtimeState.locked || stale} onClick={() => { void binding.flush().then(saved => { if (!saved) setMessage(isZh ? '草稿仍保留，请处理保存阻断。' : 'The retained draft could not be saved.') }) }}>{isZh ? '保存／重试' : 'Save / retry'}</button>
         {stale && <button type="button" disabled={runtimeState.locked || state.dirty || Boolean(state.pending) || Boolean(state.composingInstanceIds.length)} onClick={onReopen}>{isZh ? '重开这个真实引用' : 'Reopen this exact reference'}</button>}
         <button type="button" onClick={() => { void window.knowbook.writeClipboardText(serializeBlocksToMarkdown(state.working)) }}>{isZh ? '复制保留正文' : 'Copy retained body'}</button>

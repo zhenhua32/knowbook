@@ -258,7 +258,27 @@ test('normal editor rename preserves the real W=A receipt, canonical targets and
   })
 })
 
-test('a genuine canonical-history title refusal keeps the rename candidate and complete original host draft without an ordinary fallback, and Cancel leaves normal navigation usable @electron', async ({}, info) => {
+test('canonical user Undo and Redo retain the maintained document destination after a real title save @electron', async ({}, info) => {
+  await withSyncedTitleRenameApp(info, 'canonical-history-supported', async fixture => {
+    const { seed } = fixture, { page } = fixture.context(), renamed = 'Canonical history renamed host'
+    await openHost(page, seed.hostTitle); await setInlineReading(page, true)
+    const before = await actual(page, seed)
+    expect(before.instance.snapshot.history.undoToken).not.toBeNull()
+    await renameHost(page, renamed)
+    await expect(renameDialog(page)).toHaveCount(0)
+    await expect(page.locator('.document-header-title')).toHaveText(renamed)
+    const reference = inlineInstance(page, seed.hostInstanceId)
+    const content = async () => (await actual(page, seed)).instance.snapshot.blocks.find(block => block.id === seed.documentLinkId)?.content
+    const text = '[Original document](' + encodeURIComponent(renamed) + '.md)'
+    await expect.poll(content).toBe(text + ' retained canonical edit')
+    await reference.getByRole('button', { name: uiText('Undo', '撤销'), exact: true }).click()
+    await expect.poll(content).toBe(text)
+    await reference.getByRole('button', { name: uiText('Redo', '重做'), exact: true }).click()
+    await expect.poll(content).toBe(text + ' retained canonical edit')
+  })
+})
+
+test('a genuine asset-bearing canonical-history refusal keeps the rename candidate and original draft while Cancel leaves navigation usable @electron', async ({}, info) => {
   await withSyncedTitleRenameApp(info, 'canonical-history', async fixture => {
     const { seed } = fixture, { page, app } = fixture.context(), retained = 'Retained history title draft 中文🙂'
     await openHost(page, seed.hostTitle); await setInlineReading(page, true)

@@ -1,4 +1,6 @@
 import { createEditorCloseBarrier } from './editor-close-barrier'
+import { EditorRecoveryDraftRepository, parseEditorRecoveryDraftWrite, sameEditorRecoveryWorkspace } from './editor-recovery-drafts'
+import { EDITOR_RECOVERY_CHANNELS } from '../shared/editor-recovery-drafts'
 import { runSyncedEditingSessionWithAdmission } from './synced-editing-session-admission'
 import { editorReloadKey, guardEditorReloadMenu } from './editor-reload-entrypoints'
 import { EDITOR_CLOSE_ACKNOWLEDGE_CHANNEL, EDITOR_CLOSE_READY_CHANNEL, EDITOR_RELOAD_REQUEST_CHANNEL } from '../shared/editor-close'
@@ -10,6 +12,7 @@ import { randomUUID } from 'node:crypto'
 import { isWebClipBridgePort } from '@shared/web-clip-bridge-settings'
 import type { WorkspaceSearchOccurrence, WorkspaceSearchOccurrenceResult } from '../shared/workspace-search-occurrence'
 import type { ResolveSyncedInlineInstanceInput, SyncedInlineInstanceResult } from '../shared/workspace-search-occurrence'
+import { resolveSyncedHeadingAnchor } from './database/synced-heading-projection2'
 import type { OpenSyncedEditingSessionInput, OpenSyncedEditingSessionResult, SyncedEditingRequest } from '../shared/synced-editing-session'
 import type { SyncedBlocksChangedEvent, SyncedGroupSnapshot } from '../shared/synced-blocks'
 import { canAiEditBlockText } from '@shared/blockAiEligibility'
@@ -17,6 +20,7 @@ import electron from 'electron'
 import { AttachmentStore } from './attachments'
 import { registerAttachmentHandlers } from './attachment-ipc'
 import { WebDavSyncService } from './sync/service'
+import { requestsEmptySyncReceiver } from './sync/receiver-bootstrap'
 import type { IpcMainInvokeEvent, OpenDialogOptions } from 'electron'
 import type {
   AskAiInput,
@@ -292,6 +296,9 @@ const backupHealth = new BackupHealthTracker((state) => {
 let shutdownComplete = false
 let shutdownPromise: Promise<void> | null = null
 const editorCloseBarrier = createEditorCloseBarrier({
+  readRecoveryWorkspace: () => store.getEditorRecoveryWorkspace(),
+  confirmRecoveryReceipt: (workspace, receipt) => sameEditorRecoveryWorkspace(workspace, store.getEditorRecoveryWorkspace())
+    && editorRecoveryDrafts.confirm(workspace, receipt.records),
   reloadEditor: (window, ignoreCache) => {
     if (window !== mainWindow || mainWindow.isDestroyed()) throw new Error('The original registered editor is unavailable')
     if (ignoreCache) mainWindow.webContents.reloadIgnoringCache()
@@ -316,6 +323,7 @@ const editorCloseBarrier = createEditorCloseBarrier({
 // remain available while saving; ACKed frames cannot start a new editor write.
 const editorMutationChannels = new Set([
   'knowbook:import-attachments', 'knowbook:restore-backup-version', 'knowbook:restore-backup-from-folder',
+  'knowbook:resolve-webdav-protocol5-deletion',
   'knowbook:save-document-template', 'knowbook:delete-document-template',
   'knowbook:create-document', 'knowbook:create-document-from-template', 'knowbook:create-quick-note',
   'knowbook:update-document', 'knowbook:delete-document', 'knowbook:restore-trashed-document',
@@ -421,6 +429,7 @@ const earlyWebClipExtractionWorker = hasSingleInstanceLock && !maintenanceReques
 
 const userDataRoot = app.getPath('userData')
 const databasePath = join(userDataRoot, 'storage', 'knowbook.db')
+const editorRecoveryDrafts = new EditorRecoveryDraftRepository(dirname(databasePath))
 const backupRoot = join(userDataRoot, 'backups', 'markdown')
 const restoreSafetyBackupRoot = join(userDataRoot, 'backups', 'restore-safety')
 const webClipAssetRoot = join(userDataRoot, 'storage', 'assets')
@@ -641,9 +650,9 @@ function getPluginUiDocumentRegistration(url: string): PluginUiDocumentRegistrat
   }
 }
 
-function initializeServices(): void {
-  store = KnowbookStore.openCanonicalRuntime(databasePath)
-  webdavSync = new WebDavSyncService(store, attachmentStore, aiCredentialStorage, notifyWorkspaceMutation, () => restoreWorkflowInProgress)
+function initializeServices(emptyReceiver: boolean): void {
+  store = emptyReceiver ? KnowbookStore.createEmptySyncedReceiver(databasePath) : KnowbookStore.openCanonicalRuntime(databasePath)
+  webdavSync = new WebDavSyncService(store, attachmentStore, aiCredentialStorage, notifyWorkspaceMutation, () => restoreWorkflowInProgress, userDataRoot)
   try {
     getDecryptedAiApiKey()
   } catch (error) {
@@ -1592,6 +1601,10 @@ function registerIpcHandlers(): void {
   ipcMain.handle('knowbook:cancel-webdav-sync', () => webdavSync.cancel())
   ipcMain.handle('knowbook:resolve-webdav-sync-conflict', (_event, input: import('../shared/webdav-sync').ResolveWebDavSyncConflict) => webdavSync.resolveConflict(input))
   ipcMain.handle('knowbook:get-webdav-sync-conflict-details', (_event, input: import('../shared/webdav-sync').WebDavSyncConflictDetailsInput) => webdavSync.getConflictDetails(input))
+  ipcMain.handle('knowbook:preview-webdav-protocol5-conflicts', () => webdavSync.previewProtocol5Conflicts())
+  ipcMain.handle('knowbook:resolve-webdav-protocol5-conflict', (_event, input: unknown) => webdavSync.resolveProtocol5Conflict(input))
+  ipcMain.handle('knowbook:preview-webdav-protocol5-deletions', () => webdavSync.previewProtocol5Deletions())
+  ipcMain.handle('knowbook:resolve-webdav-protocol5-deletion', (_event, input: unknown) => webdavSync.resolveProtocol5Deletion(input))
   ipcMain.handle('knowbook:get-home-data', () => {
     const homeData = store.getHomeDataPayload(backupRoot)
     const data: HomeDataIpcPayload = {
@@ -2410,9 +2423,23 @@ function registerIpcHandlers(): void {
   ipcMain.handle('knowbook:resolve-synced-inline-instance', (_event, input: ResolveSyncedInlineInstanceInput): SyncedInlineInstanceResult => {
     return store.resolveSyncedInlineInstance(input)
   })
+  ipcMain.handle('knowbook:resolve-synced-heading-anchor', (_event, input: unknown) => resolveSyncedHeadingAnchor(store.getUnsafeDatabaseHandle(), input))
   ipcMain.handle(EDITOR_CLOSE_READY_CHANNEL, event => editorCloseBarrier.replayPending(event))
   ipcMain.handle(EDITOR_RELOAD_REQUEST_CHANNEL, event => editorCloseBarrier.requestReload(event) !== null)
   ipcMain.handle(EDITOR_CLOSE_ACKNOWLEDGE_CHANNEL, (event, input: unknown) => editorCloseBarrier.acknowledge(event, input))
+  ipcMain.handle(EDITOR_RECOVERY_CHANNELS.workspace, () => store.getEditorRecoveryWorkspace())
+  ipcMain.handle(EDITOR_RECOVERY_CHANNELS.write, (event, value: unknown) => {
+    editorCloseBarrier.assertEditorMutationAllowed(event)
+    const input = parseEditorRecoveryDraftWrite(value)
+    const write = () => editorRecoveryDrafts.write(input, store.getEditorRecoveryWorkspace())
+    return input.close ? editorCloseBarrier.journalRecoveryDrafts(event, input, write) : write()
+  })
+  ipcMain.handle(EDITOR_RECOVERY_CHANNELS.list, () => editorRecoveryDrafts.list())
+  ipcMain.handle(EDITOR_RECOVERY_CHANNELS.read, (_event, recordId: unknown) => editorRecoveryDrafts.read(recordId))
+  ipcMain.handle(EDITOR_RECOVERY_CHANNELS.discard, (event, input: unknown) => {
+    editorCloseBarrier.assertEditorMutationAllowed(event)
+    return editorRecoveryDrafts.discard(input)
+  })
   ipcMain.handle('knowbook:open-synced-editing-session', (event, input: OpenSyncedEditingSessionInput): OpenSyncedEditingSessionResult => {
     return store.openSyncedEditingSession(event.senderFrame!,input)
   })
@@ -2996,6 +3023,7 @@ async function shutdownServices(): Promise<void> {
   rejectPendingPluginUiPreparations('Plugin iframe UI preparation was cancelled during shutdown.')
   pluginUiDocuments.clear()
   activePluginUiDocumentTokens.clear()
+  editorRecoveryDrafts.close()
   store.destroy()
 }
 
@@ -3139,8 +3167,10 @@ if (hasSingleInstanceLock && (databaseRestoreRequested || maintenanceArgumentErr
   })
 
   app.whenReady().then(async () => {
-    const restoredDatabaseSafeMode = await recoverInterruptedDatabaseRestore(userDataRoot)
-    initializeServices()
+    const emptyReceiver = requestsEmptySyncReceiver(process.argv, userDataRoot)
+    const restoredDatabaseSafeMode = emptyReceiver ? false : await recoverInterruptedDatabaseRestore(userDataRoot)
+    if (editorCloseBarrier.isShuttingDown()) return
+    initializeServices(emptyReceiver)
     registerAssetPreviewProtocol()
     registerPluginUiProtocol()
     appUpdateManager.initialize()

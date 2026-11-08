@@ -109,9 +109,10 @@ export function assertRawSyncedHistoricalEvidenceOwned(db: Database.Database): R
       facts.push(historicalFact('metadata2-title-operation',2,historicalOperationLocator(row),supports))
     } else if (kind === null || kind === 'synced-host-operation' || kind === 'synced-host-create-operation') {
       decodeSyncedOperationAck(row)
-      if (schema === 26 && kind === 'synced-host-create-operation') return historicalEvidenceInvalid('schema26不支持create lifecycle ACK。')
+      const version = kind === null ? null : (value as { version: number }).version
+      if (schema === 26 && (kind === 'synced-host-create-operation' || version === 2)) return historicalEvidenceInvalid('schema26不支持create lifecycle或detach ACK。')
       facts.push(historicalFact(kind === null ? 'group-ack' : kind === 'synced-host-operation' ? 'host-ack' : 'host-create-ack',
-        kind === null ? null : 1, historicalOperationLocator(row)))
+        version, historicalOperationLocator(row)))
     } else if (kind === 'synced-initial-incoming-operation') {
       if (schema !== 27) return historicalEvidenceInvalid('schema26不支持initial incoming receipt。')
       const receipt = validateInitialIncomingReceipt(value)

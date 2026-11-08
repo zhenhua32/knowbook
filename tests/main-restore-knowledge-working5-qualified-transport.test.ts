@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { randomUUID } from 'node:crypto'
 import { captureQualifiedOriginalBundle, prepareQualifiedOriginalImport, captureReopenedQualifiedOriginalBundle,
-  readCompleteOriginalContentPair3 } from '../src/main/database/restore-knowledge-qualified-originals'
+  readCompleteOriginalContentAndWorkingPair5 } from '../src/main/database/restore-knowledge-qualified-originals'
 import { withWorkingTransport5, assertWorkingTransportOperation5, assertWorkingTransportFiles5, assertWorkingTransportInventory5,
   retireWorkingTransportSource5, assertWorkingTransportContent5, assertWorkingTransportChild5 } from './helpers/working5-transport-fixture'
 
@@ -23,8 +23,15 @@ test('genuine qualified copy and independent cold readers carry pending automati
     // The copy-only metadata never supplies a content handle. Mint a new real
     // owner from the independently copied originals after the old root is gone.
     const reopened = await captureReopenedQualifiedOriginalBundle(qualifiedLocator)
-    const content = await readCompleteOriginalContentPair3(reopened.bundle)
+    const { pair: content, working } = await readCompleteOriginalContentAndWorkingPair5(reopened.bundle)
     await assertWorkingTransportInventory5(f, content.originalPackage)
     assertWorkingTransportContent5(f, content)
+    assert.ok(working.source, 'The verified content read also returns its own reconstructed Working5')
+    assert.equal(working.source.manifestHash, f.working.manifestHash)
+    assert.deepEqual(working.source.records, f.working.records)
+    assert.deepEqual(working.source.observation, f.working.observation)
+    assert.equal('directory' in working.source || 'files' in working.source, false, 'Verification scratch paths cannot be used as asset originals')
+    assert.equal(working.current, undefined, 'The old-format current role cannot borrow source Working5')
+    assert.equal('working' in content || 'working' in content.source, false, 'Runtime W never enters the original packet')
     await assertWorkingTransportChild5(f, 'qualified', qualifiedLocator)
   }))

@@ -5,11 +5,11 @@ import { readManagedAssetSourceSync as readAlias, type ManagedAssetSource } from
 import { assertSyncedShape, isSyncedUuid, validateSyncedHostForest } from '../../shared/syncedBlockValidation'
 import { buildSyncedPortableAssetUri, rewriteSyncedGroupAssets, rewriteSyncedPortableHostAssets,
   syncedManagedAssetBudgetUri, syncedPortableAssetBackupPath, measureSyncedPortableGroup, measureSyncedPortableHost } from '../../shared/syncedBlockPortable'
-import { buildBackupV3Files, parseBackupV3Files, type ArchiveV3Snapshot, type BackupV3File } from './v3-format'
-import { readBackupV3Files } from './v3-reader'
+import { backupV3FileDigest, backupV3InventoryHash, buildBackupV3Files, type ArchiveV3Snapshot, type BackupV3File } from './v3-format'
+import { verifyBackupV3Archive } from './v3-reader'
 import { captureSyncedBackupV3, readSyncedBackupV3Capture, claimSyncedBackupV3, confirmSyncedBackupV3,
   type SyncedBackupV3Snapshot } from '../database/synced-backup-v3'
-import { SyncedPublicationError, publicationHash, publicationJson, publicationCompare, publicationInvalid } from '../sync/synced-publication-model'
+import { SyncedPublicationError, publicationCompare, publicationInvalid } from '../sync/synced-publication-model'
 
 export interface WriteSyncedBackupV3Input { userDataRoot: string; destination: string; snapshotId: string }
 export interface WriteSyncedBackupV3Result { snapshotId: string; documents: number; groups: number }
@@ -110,10 +110,6 @@ function outputPath(root: string, file: BackupV3File): string {
   if (!within(path, root) || spelling(path) === spelling(root)) return publicationInvalid('V3 输出越过新目录。')
   return path
 }
-function digest(files: BackupV3File[]): string {
-  return publicationHash(publicationJson(files.map(file => ({ relativePath: file.relativePath, hash: publicationHash(file.bytes), bytes: file.bytes.byteLength }))
-    .sort((a, b) => publicationCompare(a.relativePath, b.relativePath))))
-}
 function syncFile(path: string, bytes: Uint8Array): void {
   const fd = openSync(path, 'wx')
   try {
@@ -149,9 +145,9 @@ export function writeSyncedBackupV3(db: Database.Database, input: WriteSyncedBac
   try {
     const paths = environment(db, input), capture = captureSyncedBackupV3(db), source = readSyncedBackupV3Capture(capture)
     if (!source) return error('unavailable', 'V3 原 capture 不存在。')
+    // The builder completes strict whole-archive preflight before it returns.
     const material = portable(source, paths), files = buildBackupV3Files(material.snapshot, input.snapshotId)
-    parseBackupV3Files(files) // Strict whole-archive preflight before any exposure/output.
-    const archiveHash = digest(files), pathsSeen = new Set<string>()
+    const archiveHash = backupV3InventoryHash(files.map(backupV3FileDigest)), pathsSeen = new Set<string>()
     for (const file of files) { const path = spelling(outputPath(paths.destination, file)); if (pathsSeen.has(path)) return publicationInvalid('V3 输出路径在本机碰撞。'); pathsSeen.add(path) }
     verifyAliases(material.aliases, paths)
     environment(db, input) // Recheck the exact root/new destination immediately before the owned claim.
@@ -172,10 +168,9 @@ export function writeSyncedBackupV3(db: Database.Database, input: WriteSyncedBac
         syncFile(path, file.bytes)
       }
       for (const directory of [...directories].sort((a, b) => b.split(sep).length - a.split(sep).length || publicationCompare(a, b))) syncDirectory(directory)
-      const actual = readBackupV3Files(paths.destination)
-      if (digest(actual) !== archiveHash) throw new Error('V3 实际文件集合/字节不等于原 preflight。')
-      const parsed = parseBackupV3Files(actual)
-      if (parsed.manifest.snapshotId !== input.snapshotId) throw new Error('V3 实际 snapshotId 不等于原请求。')
+      const actual = verifyBackupV3Archive(paths.destination)
+      if (backupV3InventoryHash(actual.files) !== archiveHash) throw new Error('V3 实际文件集合/字节不等于原 preflight。')
+      if (actual.manifest.snapshotId !== input.snapshotId) throw new Error('V3 实际 snapshotId 不等于原请求。')
     } catch (cause) { return error('spool', 'V3 写出/真实回读失败；partial 和 durable possible 保留，不覆盖或自动清理。', { cause, destination: paths.destination, snapshotId: input.snapshotId }) }
     confirmSyncedBackupV3(db, capture)
     return Object.freeze({ snapshotId: input.snapshotId, documents: source.documents.length, groups: source.groups.length })

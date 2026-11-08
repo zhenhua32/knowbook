@@ -4,15 +4,18 @@ import { useWebDavSettingsState } from '../hooks/useWebDavSettingsState'
 import { useAsyncActionFocus } from '../hooks/useAsyncActionFocus'
 import WebDavSyncProgress from './WebDavSyncProgress'
 import WebDavSyncConflictCard from './WebDavSyncConflictCard'
+import WebDavProtocol5DeletionReview from './WebDavProtocol5DeletionReview'
 
 export default function WebDavSyncSettings({ isZh }: { isZh: boolean }) {
   const { status, config, password, clearPassword, intervalDraft, intervalError, dirty,
     readLoading, readError, actionError, actionErrorTarget, actionTarget, actionKind, working, canStop,
-    edit, setPassword, setClearPassword, setIntervalDraft, refreshStatus, save, testConnection, syncNow, resolve, cancel
+    edit, setProtocol5, protocol5, setPassword, setClearPassword, setIntervalDraft, refreshStatus, save, testConnection, syncNow,
+    previewProtocol5, resolveProtocol5, previewProtocol5Deletions, resolveProtocol5Deletion, resolve, cancel
   } = useWebDavSettingsState(isZh)
   const intervalErrorId = useId()
   const sectionRef = useRef<HTMLElement>(null)
   const urlRef = useRef<HTMLInputElement>(null)
+  const previewRef = useRef<HTMLButtonElement>(null)
   const runAction = useAsyncActionFocus(sectionRef)
   const t = (zh: string, en: string) => isZh ? zh : en
   const operationText = actionKind === 'save' ? t('正在保存同步设置…', 'Saving sync settings…')
@@ -20,6 +23,7 @@ export default function WebDavSyncSettings({ isZh }: { isZh: boolean }) {
     : actionKind === 'test' ? t('正在测试连接…', 'Testing connection…')
     : actionKind === 'sync' ? t('正在启动同步…', 'Starting sync…') : ''
   const primaryError = actionErrorTarget ? '' : actionError
+  const protocol5Preview = status?.protocol5Preview
   const matchesConflict = (target: typeof actionErrorTarget, conflict: WebDavSyncConflict) => Boolean(status && target
     && target.url === status.config.url && target.username === status.config.username && target.directory === status.config.directory
     && target.key === conflict.key && target.localHash === conflict.localHash && target.remoteHash === conflict.remoteHash)
@@ -56,6 +60,10 @@ export default function WebDavSyncSettings({ isZh }: { isZh: boolean }) {
         <input className="editor-input" value={config.directory} onChange={event => edit({ directory: event.target.value })} />
       </label>
       <p className="mini-hint">{t('同一工作区的设备填写相同地址、账号和目录。请使用 KnowBook 专用目录。', 'Use the same URL, account and folder on each device. Choose a folder dedicated to KnowBook.')}</p>
+      <label className="toggle-row"><input type="checkbox" checked={protocol5} onChange={event => setProtocol5(event.target.checked)} />
+        <span>{t('在此目录启用同步块协议', 'Enable synced-block protocol for this folder')}</span>
+      </label>
+      {protocol5 && <p className="mini-hint">{t('首次发布请选择独立空目录；加入已有同步块工作区须从新的空接收端开始。', 'Use an empty dedicated folder for the first publish. Joining requires a new empty receiving profile.')}</p>}
       <label className="toggle-row"><input type="checkbox" checked={config.enabled} onChange={event => edit({ enabled: event.target.checked })} />
         <span>{t('启用自动同步（应用运行时）', 'Automatic sync while the app is running')}</span>
       </label>
@@ -85,6 +93,33 @@ export default function WebDavSyncSettings({ isZh }: { isZh: boolean }) {
     </div>
     {status?.lastSyncAt ? <p className="mini-hint">{t('上次同步：', 'Last sync: ')}{new Date(status.lastSyncAt).toLocaleString()}</p> : null}
     <p className="mini-hint">{t('密码由系统加密保存。AI 密钥、插件和本机设置不上传；历史与回收站保留在各设备。云端内容目前不提供端到端加密。', 'Passwords are protected by the OS. AI keys, plugins and device settings stay local; history and Trash remain on each device. Cloud content is not end-to-end encrypted.')}</p>
+    {status?.protocol5 && status.lastSyncAt && <section aria-label={t('同步块冲突', 'Synced block conflicts')}>
+      <h4>{t('同步块冲突', 'Synced block conflicts')}</h4>
+      <button ref={previewRef} className="secondary-button" type="button" disabled={working || dirty || !status.hasPassword}
+        onClick={event => runAction(event.currentTarget, previewProtocol5)}>{t('读取最新冲突', 'Read latest conflicts')}</button>
+      {protocol5Preview?.components.map((component, index) => <details open key={component.componentId} className="webdav-conflict-card">
+        <summary>{t('冲突组', 'Conflict group')} {index + 1}</summary>
+        <div className="webdav-conflict-body">
+        {component.records.map(record => <div key={record.key}>
+          <p className="mini-hint">{record.key}</p>
+          {record.parts.map(part => <dl key={part.id}>
+            <dt>{t('共同版本', 'Common version')}</dt><dd><pre>{part.basePreview}</pre></dd>
+            <dt>{t('本机版本', 'Local version')}</dt><dd><pre>{part.localPreview}</pre></dd>
+            <dt>{t('远端版本', 'Remote version')}</dt><dd><pre>{part.remotePreview}</pre></dd>
+          </dl>)}
+        </div>)}
+        {component.choices.length ? <>
+          <p className="mini-hint">{t('选择将应用到整组相互关联的记录。', 'Your choice applies to the full group of related records.')}</p>
+          <div className="settings-actions">{component.choices.map(choice => <button key={choice} className="secondary-button" type="button"
+            disabled={working || dirty || !status.hasPassword} onClick={event => runAction(event.currentTarget, () => resolveProtocol5({
+              previewId: protocol5Preview.previewId, previewHash: protocol5Preview.previewHash, componentId: component.componentId, choice
+            }), () => previewRef.current)}>{choice === 'local' ? t('应用本机整组', 'Apply entire local group') : t('应用远端整组', 'Apply entire remote group')}</button>)}</div>
+        </> : <p className="mini-hint">{t('此组暂不能整组选择，双方版本继续保留。', 'Both versions remain available while this group requires further review.')}</p>}
+        </div>
+      </details>)}
+    </section>}
+    {status?.protocol5 && status.lastSyncAt && <WebDavProtocol5DeletionReview preview={status.protocol5DeletionPreview}
+      disabled={working || dirty || !status.hasPassword} isZh={isZh} onPreview={previewProtocol5Deletions} onResolve={resolveProtocol5Deletion} />}
     {status?.conflicts.length ? <div>
       <h4>{t('待处理冲突', 'Conflicts to resolve')} ({status.conflicts.filter(conflict => !conflict.resolution).length}) · {t('待同步应用', 'Pending sync')} ({status.conflicts.filter(conflict => conflict.resolution).length})</h4>
       {status.conflicts.map(conflict => <WebDavSyncConflictCard

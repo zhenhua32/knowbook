@@ -2,12 +2,13 @@ import type Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
 import type { SyncedGroupWire, SyncedGroupSnapshot } from '../../shared/synced-blocks'
 import { validateSyncedUpdateGroupInput } from '../../shared/syncedBlockInputs'
-import { isSyncedUuid, validateSyncedGroupWire } from '../../shared/syncedBlockValidation'
+import { isSyncedUuid } from '../../shared/syncedBlockValidation'
 import { hostEncode, hostEqual, hostHash } from './synced-host-journal'
-import { hostJson, hostTime } from './synced-host-document-read'
+import { hostJson } from './synced-host-document-read'
 import { planSyncedMetadataNamespacesOwned2, readSyncedMetadataWorkspaceOwned2, readSyncedMetadataTargetSourceOwned2, type SyncedMetadataWorkspaceView2 } from './synced-metadata-view2'
 import { projectSyncedMetadataStoredGroupLinksOwned2 } from './synced-metadata-group-links2'
 import { captureSyncedMetadataCurrentTargets2, captureSyncedMetadataCurrentTargetBatch2 } from './synced-metadata-capture2'
+import { readSyncedGroupHistoryOriginalOwned } from './synced-group-history-original'
 
 declare const prepared:unique symbol
 /** Read/planning owner only. No writer, history cursor or IPC session authority. */
@@ -109,15 +110,9 @@ function historyAnchors(db:Database.Database,groups:readonly SyncedGroupSnapshot
     const currentPosition:number=position
     const originalSide=(token:string|null,side:'before'|'after')=>{
       if(token===null)return null
-      const row=db.prepare('SELECT id,group_id,position,before_json,after_json,before_hash,after_hash,created_at FROM synced_group_history WHERE id=? AND group_id=?')
-        .get(token,groupId) as {id:string;group_id:string;position:number;before_json:string;after_json:string;before_hash:string;after_hash:string;created_at:string}|undefined
-      if(!row||!Number.isSafeInteger(row.position)||row.position!==currentPosition+(side==='after'?0:1))return fail('captured actual history side/position missing')
-      hostTime(row.created_at)
-      for(const direction of ['before','after'] as const){
-        const value=validateSyncedGroupWire(hostJson(direction==='before'?row.before_json:row.after_json)),hash=direction==='before'?row.before_hash:row.after_hash
-        if(!/^[a-f0-9]{64}$/.test(hash)||hostHash(value)!==hash||value.id!==groupId||value.creationId!==group.creationId||value.createdAt!==group.createdAt
-          ||!hostEqual(value.origin,group.origin))return fail('captured actual history side/hash/incarnation invalid')
-      }
+      const original=readSyncedGroupHistoryOriginalOwned(db,group,token,currentPosition+(side==='after'?0:1))
+      if(!original)return fail('captured actual history side/position missing')
+      const {row}=original
       return{id:row.id,position:row.position,beforeHash:row.before_hash,afterHash:row.after_hash,rowHash:hostHash({kind:'metadata2-original-group-history-row',row}),
         matchesCurrentWire:(side==='after'?row.after_hash:row.before_hash)===hostHash(wire(group))}
     }
@@ -184,14 +179,10 @@ export function readSyncedMetadataExactHistorySideOwned2(db:Database.Database,ow
   input:{groupId:string;historyToken:string;side:'before'|'after';projection:'working'|'final'}){
   if(!isSyncedUuid(input.historyToken)||input.side!=='before'&&input.side!=='after')return fail('closed actual history side required')
   const transition=readSyncedMetadataGroupTransitionOwned2(db,owner,input.groupId,input.projection)
-  const row=db.prepare('SELECT id,group_id,position,before_json,after_json,before_hash,after_hash FROM synced_group_history WHERE id=? AND group_id=?')
-    .get(input.historyToken,input.groupId) as {id:string;group_id:string;position:number;before_json:string;after_json:string;before_hash:string;after_hash:string}|undefined
-  if(!row)return{status:'missing' as const}
-  const text=input.side==='before'?row.before_json:row.after_json,rawHash=input.side==='before'?row.before_hash:row.after_hash
-  const original=validateSyncedGroupWire(hostJson(text))
-  if(!/^[a-f0-9]{64}$/.test(rawHash)||hostHash(original)!==rawHash||original.id!==transition.groupId||original.creationId!==transition.creationId
-    ||original.createdAt!==transition.groupCreatedAt||!hostEqual(original.origin,transition.before.origin))return fail('actual historical wire/hash/incarnation invalid')
   const actual=entries.get(owner)!.plan.base.groups.get(input.groupId)!,token=input.side==='after'?actual.history.undoToken:actual.history.redoToken
+  const originalSide=readSyncedGroupHistoryOriginalOwned(db,actual,input.historyToken)
+  if(!originalSide)return{status:'missing' as const}
+  const {row}=originalSide,original=originalSide[input.side],rawHash=input.side==='before'?row.before_hash:row.after_hash
   const position=(db.prepare('SELECT history_position FROM synced_groups WHERE id=?').get(input.groupId) as {history_position:number}).history_position
   const adjacent=row.id===token&&Number.isSafeInteger(position)&&row.position===position+(input.side==='after'?0:1)
   if(!adjacent||!hostEqual(original,transition.before))return{status:'requires-history-lineage' as const,historyToken:row.id,rawHash,

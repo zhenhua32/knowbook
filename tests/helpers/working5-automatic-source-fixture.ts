@@ -17,28 +17,40 @@ import { captureAssetOriginal } from './capsule2-assets-fixture'
 import { withoutSettledSpoolProbes4 } from './settled-context4-fixture'
 import { withTombstones, deleteDocument, assertAbsentKnowledge, count, request, applySyncedHostFinal, completed, randomUUID, readStrictHostDocument, allTables } from './synced-exchange-tombstone-fixture'
 type Fixture=Parameters<Parameters<typeof withTombstones>[0]>[0]
-async function setup(f:Fixture){
+type WorkingSourceOptions = { duplicateSummaryAlias?: boolean; prefixBodyNavigation?: boolean; includeRemoteOnlyMerge?: boolean;
+  singleDocumentComponent?: boolean }
+async function setup(f:Fixture,options: WorkingSourceOptions = {}){
   const documentId=f.islands[0],deletedId=f.islands[2],definitionId=randomUUID(),opaque='knowbook-asset://'+'f'.repeat(64)+'/opaque-automatic-config.png'
+  const remoteOnlyDocumentId = options.includeRemoteOnlyMerge ? f.islands[1] : undefined
   // withTombstones has an independent A receiver; its inherited assets object
   // belongs to sender S. All new definition/summary bytes must live in A.
   const assets=new AttachmentStore(join(f.A.root,'storage','assets'))
-  const[summary]=await assets.import([{name:'automatic whole W summary.png',bytes:Buffer.from('genuine automatic common summary '+randomUUID())}])
+  const summaryBytes=Buffer.from('genuine automatic common summary '+randomUUID())
+  const[summary,summaryAlias]=await assets.import([{name:'automatic whole W summary.png',bytes:summaryBytes},
+    ...(options.duplicateSummaryAlias?[{name:'同一 W 摘要的第二名称.png',bytes:summaryBytes}]:[])])
   const summaryUri=buildSyncedPortableAssetUri({hash:publicationHash(await readFile(fileURLToPath(summary.url))),name:summary.name})
+  const summaryAliasUri=summaryAlias?buildSyncedPortableAssetUri({hash:publicationHash(summaryBytes),name:summaryAlias.name}):undefined
   const config=createDefaultDatabaseViewConfig();config.query='opaque '+opaque
   const common=request(f.A.db,[documentId],sides=>{
     const use=sides[0].blocks.find(block=>block.type==='paragraph');assert.ok(use);use.content='Neutral common use text'
-    sides[0].summary='Complete automatic summary ![common](<'+summary.url+'>)'
-    sides[0].blocks.push({id:definitionId,type:'paragraph',content:'Neutral common definition text',checked:false,depth:0,parentBlockId:null},
-      {id:randomUUID(),type:'database-view',content:serializeDatabaseViewPayload({version:1,databaseId:f.A.defaultId,viewId:null,config}),checked:false,depth:0,parentBlockId:null},
-      {id:randomUUID(),type:'code',content:'![opaque](<'+opaque+'>)',checked:false,depth:0,parentBlockId:null})
+    sides[0].summary='Complete automatic summary ![common](<'+summary.url+'>)'+(summaryAlias?' ![second alias](<'+summaryAlias.url+'>)':'')
+    sides[0].blocks.push({id:definitionId,type:'paragraph',content:'Neutral common definition text',checked:false,depth:0,parentBlockId:null})
+    if (!options.singleDocumentComponent) sides[0].blocks.push({id:randomUUID(),type:'database-view',
+      content:serializeDatabaseViewPayload({version:1,databaseId:f.A.defaultId,viewId:null,config}),checked:false,depth:0,parentBlockId:null})
+    sides[0].blocks.push({id:randomUUID(),type:'code',content:'![opaque](<'+opaque+'>)',checked:false,depth:0,parentBlockId:null})
   })
   assert.equal(applySyncedHostFinal(f.A.db,common).status,'applied');completed(await f.exchange(f.A),'applied');completed(await f.exchange(f.B),'applied')
   const bytes=Buffer.from('genuine remote-only automatic definition bytes '+randomUUID()),digest=publicationHash(bytes)
   const[remoteAsset]=await assets.import([{name:'automatic remote-only definition.png',bytes}]),portable=buildSyncedPortableAssetUri({hash:digest,name:remoteAsset.name})
   const remote=request(f.A.db,[documentId],sides=>{const definition=sides[0].blocks.find(block=>block.id===definitionId);assert.ok(definition)
-    definition.content='[auto-def]: <'+remoteAsset.url+'>\n\n[^auto-note]: ![nested](<'+remoteAsset.url+'>)'
+    definition.content=(options.prefixBodyNavigation?'[Stage target](./Target.md)\n\n':'')
+      +'[auto-def]: <'+remoteAsset.url+'>\n\n[^auto-note]: ![nested](<'+remoteAsset.url+'>)'
   })
   assert.equal(applySyncedHostFinal(f.A.db,remote).status,'applied')
+  if (remoteOnlyDocumentId) {
+    const edit = request(f.A.db, [remoteOnlyDocumentId], sides => { sides[0].summary = 'Independent summary changed the same way on both peers' })
+    assert.equal(applySyncedHostFinal(f.A.db, edit).status, 'applied')
+  }
   assert.ok(collectStoredMarkdownAssetDestinations('[auto-def]: <'+portable+'>').some(item=>item.kind==='definition'&&item.url===portable),
     'An unused definition already contributes its physical destination; the missing source is the remote body, not unused-definition parsing')
   completed(await f.exchange(f.A),'applied')
@@ -53,6 +65,13 @@ async function setup(f:Fixture){
     use.content='Genuine automatic use ![cross][auto-def] and footnote[^auto-note]'
   })
   assert.equal(applySyncedHostFinal(f.B.db,local).status,'applied')
+  if (remoteOnlyDocumentId) {
+    const edit = request(f.B.db, [remoteOnlyDocumentId], sides => {
+      sides[0].summary = 'Independent summary changed the same way on both peers'
+      sides[0].blocks[0].content = 'Additional ordinary body changed only on the publishing peer'
+    })
+    assert.equal(applySyncedHostFinal(f.B.db, edit).status, 'applied')
+  }
   const operationId=randomUUID(),gate=f.gate(value=>value.method==='PUT'&&value.path.endsWith('/manifest.json')&&Boolean(value.ifMatch)),resolving=f.exchange(f.B,operationId)
   try {
   await gate.wait(resolving)
@@ -69,7 +88,7 @@ async function setup(f:Fixture){
   await assert.rejects(lstat(managed),{code:'ENOENT'})
   assert.equal(f.B.db.prepare('SELECT 1 FROM synced_operations WHERE client_operation_id=?').get(operationId),undefined)
   assert.equal(readStrictHostDocument(f.B.db,documentId).content.blocks.some(block=>block.content.includes(digest)),false)
-  return{f,documentId,deletedId,definitionId,summaryUri,opaque,bytes,digest,remoteAsset,portable,operationId,row,job,spool,managed,gate,resolving}
+  return{f,documentId,deletedId,definitionId,remoteOnlyDocumentId,summaryUri,summaryAliasUri,opaque,bytes,digest,remoteAsset,portable,operationId,row,job,spool,managed,gate,resolving}
   } catch(error) { gate.release(); await Promise.allSettled([resolving]); throw error }
 }
 
@@ -99,22 +118,23 @@ async function packaged(original: Awaited<ReturnType<typeof captureAssetOriginal
  * later material/seal reads use those immutable bytes after Main has completed,
  * and cannot substitute its later receipt for the captured pending SQL. */
 export function withPendingWorkingSource5(run: (value: Setup & Awaited<ReturnType<typeof packaged>> & {
-  oracle: Awaited<ReturnType<typeof oracle>>; spools: string[]; spoolProbeAttempts: Array<{method:string;path:string}>
-}) => Promise<void>) {
+  oracle: Awaited<ReturnType<typeof oracle>>; applied: ReturnType<typeof completed>
+  spools: string[]; spoolProbeAttempts: Array<{method:string;path:string}>
+}) => Promise<void>, options?: WorkingSourceOptions) {
   return withTombstones(async fixture => {
-    const f = await setup(fixture)
+    const f = await setup(fixture, options)
     try {
       const before = allTables(f.f.B.db), original = await captureAssetOriginal({ userDataRoot: f.f.B.root, db: f.f.B.db })
       const roots = await proveContext4NativeSpoolRoots(f.f.B.root, original.info.profileRoot), spools = roots.spools(f.operationId, f.job.attemptId).aliases
       const observed = await withoutSettledSpoolProbes4([], () => prepareCapsule2AssetArchiveWithWorkingProvenance5(original.original), spools)
       assert.deepEqual(allTables(f.f.B.db), before)
       assert.equal(f.f.B.db.prepare('SELECT 1 FROM synced_operations WHERE client_operation_id=?').get(f.operationId), undefined)
-      f.gate.release(); completed(await f.resolving, 'applied')
+      f.gate.release(); const applied = completed(await f.resolving, 'applied')
       const actual = await oracle(f), saved = await packaged(original, await captureSealedCapsule2SourceFromArchiveWithWorking5(observed.value))
       assert.equal(saved.working.baseCommitment.referenceUris.includes(f.portable), false)
       assert.equal(saved.working.baseCommitment.tree.files.some(file => file.hash === f.digest), false)
       assert.ok(observed.observations.some(item => item.method === 'open'), 'Pending originals must actually open the genuine spool')
-      await run({ ...f, ...saved, oracle: actual, spools, spoolProbeAttempts: observed.attempts })
+      await run({ ...f, ...saved, oracle: actual, applied, spools, spoolProbeAttempts: observed.attempts })
     } finally { f.gate.release(); await Promise.allSettled([f.resolving]) }
   }, { assets: true, notes: true, catalog: true })
 }
@@ -122,9 +142,9 @@ export function withPendingWorkingSource5(run: (value: Setup & Awaited<ReturnTyp
  * simultaneously opened DB descriptors have proved the same full dev/ino. */
 export function withSettledWorkingSource5(run: (value: Setup & Awaited<ReturnType<typeof packaged>> & {
   oracle: Awaited<ReturnType<typeof oracle>>; spools: string[]; spoolProbeAttempts: Array<{method:string;path:string}>
-}) => Promise<void>) {
+}) => Promise<void>, options?: WorkingSourceOptions) {
   return withTombstones(async fixture => {
-    const f = await setup(fixture)
+    const f = await setup(fixture, options)
     try {
       f.gate.release(); completed(await f.resolving, 'applied'); const actual = await oracle(f)
       const original = await captureAssetOriginal({ userDataRoot: f.f.B.root, db: f.f.B.db })

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { EDITOR_CLOSE_REQUEST_CHANNEL, EDITOR_CLOSE_CANCELLED_CHANNEL,
   type EditorCloseReason, type EditorCloseAcknowledgement } from '../shared/editor-close'
+import type { EditorRecoveryDraftWrite, EditorRecoveryReceipt, EditorRecoveryWorkspace } from '../shared/editor-recovery-drafts'
 
 // Structural Electron ports keep this state machine testable without opening
 // a BrowserWindow. Main alone registers actual editor windows and IPC senders.
@@ -30,9 +31,13 @@ interface Registered {
   lifecycle: number; writes: number; approvedClose: string | null
   approvedReload: string | null; afterReload: 'window' | 'quit' | null
 }
-interface Target { readonly registered: Registered; readonly frame: FrameIdentity; state: 'waiting' | 'flushed' | 'closed' }
+interface Target {
+  readonly registered: Registered; readonly frame: FrameIdentity; state: 'waiting' | 'flushed' | 'closed'
+  receipt?: EditorRecoveryReceipt
+}
 interface Attempt {
   readonly requestId: string; readonly reason: EditorCloseReason; readonly targets: Map<Registered, Target>
+  readonly workspace: EditorRecoveryWorkspace | null
   phase: 'waiting' | 'closing' | 'reloading'; timer: unknown; dispatching: number
   reloadIgnoringCache: boolean
 }
@@ -43,6 +48,8 @@ export interface EditorCloseBarrierOptions {
   /** Main's actual registered editor only, after its real complete drain ACK.
    * This must synchronously call webContents.reload[IgnoringCache], not await. */
   reloadEditor?: (window: EditorCloseWindow, ignoreCache: boolean) => void
+  readRecoveryWorkspace?: () => EditorRecoveryWorkspace
+  confirmRecoveryReceipt?: (workspace: EditorRecoveryWorkspace, receipt: EditorRecoveryReceipt) => boolean
   onShutdownError?: (error: unknown) => void
   timeoutMs?: number
   setTimer?: (callback: () => void, milliseconds: number) => unknown
@@ -54,6 +61,7 @@ export interface EditorCloseBarrier {
   requestQuit(): string | null
   requestReload(event: EditorCloseIpcEvent, ignoreCache?: boolean): string | null
   acknowledge(event: EditorCloseIpcEvent, input: unknown): boolean
+  journalRecoveryDrafts(event: EditorCloseIpcEvent, input: EditorRecoveryDraftWrite, write: () => EditorRecoveryReceipt): EditorRecoveryReceipt
   assertEditorMutationAllowed(event: EditorCloseIpcEvent): void
   runEditorMutation<T>(event: EditorCloseIpcEvent, operation: () => T | Promise<T>): Promise<T>
   isShuttingDown(): boolean
@@ -63,15 +71,22 @@ function acknowledgement(value: unknown): EditorCloseAcknowledgement | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)
     || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) return null
   const descriptors = Object.getOwnPropertyDescriptors(value), keys = Reflect.ownKeys(descriptors)
-  if (keys.some(key => typeof key !== 'string' || !['requestId','status','message'].includes(key))
+  if (keys.some(key => typeof key !== 'string' || !['requestId','status','message','receiptId','closeGeneration'].includes(key))
     || !Object.hasOwn(descriptors, 'requestId') || !Object.hasOwn(descriptors, 'status')) return null
   for (const key of keys) {
     const descriptor = descriptors[key as string]
     if (!descriptor.enumerable || !('value' in descriptor)) return null
   }
   const requestId = descriptors.requestId.value, status = descriptors.status.value, message = descriptors.message?.value
-  if (typeof requestId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(requestId)
-    || status !== 'flushed' && status !== 'blocked' || message !== undefined && (typeof message !== 'string' || message.length > 2048)) return null
+  const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/
+  if (typeof requestId !== 'string' || !uuid.test(requestId)) return null
+  if (status === 'draft-journaled') {
+    const receiptId = descriptors.receiptId?.value, closeGeneration = descriptors.closeGeneration?.value
+    if (keys.length !== 4 || typeof receiptId !== 'string' || !uuid.test(receiptId) || !Number.isSafeInteger(closeGeneration) || closeGeneration < 1) return null
+    return { requestId, status, receiptId, closeGeneration }
+  }
+  if ((status !== 'flushed' && status !== 'blocked') || Object.hasOwn(descriptors, 'receiptId') || Object.hasOwn(descriptors, 'closeGeneration')
+    || message !== undefined && (typeof message !== 'string' || message.length > 2048)) return null
   return { requestId, status, ...(message === undefined ? {} : { message }) }
 }
 
@@ -187,7 +202,9 @@ export function createEditorCloseBarrier(options: EditorCloseBarrierOptions): Ed
     return attempt === current
   }
   const start = (reason: EditorCloseReason, entries: readonly Registered[], reloadIgnoringCache = false) => {
-    const current: Attempt = { requestId: randomUUID(), reason, targets: new Map(), phase: 'waiting', timer: null, dispatching: 1, reloadIgnoringCache }
+    let workspace: EditorRecoveryWorkspace | null = null
+    try { if (reason !== 'reload') workspace = options.readRecoveryWorkspace?.() ?? null } catch { /* A failed boundary read cannot authorize a recovery journal. */ }
+    const current: Attempt = { requestId: randomUUID(), reason, targets: new Map(), workspace, phase: 'waiting', timer: null, dispatching: 1, reloadIgnoringCache }
     attempt = current
     current.timer = setTimer(() => {
       if (attempt === current && (current.reason !== 'reload' || current.phase === 'waiting')) cancel('Saving the editor did not finish before the close timeout.')
@@ -323,7 +340,27 @@ export function createEditorCloseBarrier(options: EditorCloseBarrierOptions): Ed
       if (!target || target.state !== 'waiting' || !sameFrame(entry, target.frame)) return false
       if (value.status === 'blocked') { cancel(value.message || 'The editor has changes that could not be saved.'); return true }
       if (entry.writes) { cancel('Editor writes are still running; finish them before closing.'); return false }
+      if (value.status === 'draft-journaled') {
+        const receipt = target.receipt
+        if (!current.workspace || !receipt || receipt.receiptId !== value.receiptId || receipt.closeGeneration !== value.closeGeneration) return false
+        try {
+          if (!options.confirmRecoveryReceipt?.(current.workspace, receipt)) {
+            cancel('Editor recovery changed before close admission completed.'); return false
+          }
+        } catch { cancel('The editor recovery journal could not be verified.'); return false }
+      }
       target.state = 'flushed'; complete(); return true
+    },
+    journalRecoveryDrafts(event, input, write) {
+      const current = attempt, entry = currentEntry(event), close = input.close
+      const target = entry ? current?.targets.get(entry) : undefined
+      if (!current?.workspace || !entry || shuttingDown || current.phase !== 'waiting' || !target || target.state !== 'waiting'
+        || !sameFrame(entry, target.frame) || close?.requestId !== current.requestId
+        || input.workspace.workspaceScope !== current.workspace.workspaceScope || input.workspace.recoveryEpoch !== current.workspace.recoveryEpoch
+        || close.closeGeneration <= (target.receipt?.closeGeneration ?? 0)) throw new Error('The editor recovery close token is stale or unavailable.')
+      const receipt = write()
+      target.receipt = receipt
+      return receipt
     },
     assertEditorMutationAllowed,
     async runEditorMutation(event, operation) {

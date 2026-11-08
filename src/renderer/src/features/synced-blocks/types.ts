@@ -82,6 +82,8 @@ export interface SyncedGroupBinding {
 
 export interface SyncedGroupController {
   getSnapshot: () => SyncedGroupDraftState
+  recoveryInput?: () => object | null
+  recoveryClaims?: () => SyncedBindingClaim[] | 'legacy' | null
   subscribe: (notify: () => void) => () => void
   bind: (scope: SyncedGroupScope) => SyncedGroupBinding
   apply: (input: SyncedGroupApply) => boolean

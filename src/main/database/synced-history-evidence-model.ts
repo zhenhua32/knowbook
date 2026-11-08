@@ -1,7 +1,7 @@
 /** Finite original SQL evidence formats. These values describe historical
  * records only; neither a serializable fact nor its locator grants authority. */
 const formats = {
-  'group-ack': [null], 'host-ack': [1], 'host-create-ack': [1], 'initial-incoming': [1],
+  'group-ack': [null], 'host-ack': [1, 2], 'host-create-ack': [1], 'initial-incoming': [1],
   'exchange-receipt': [1, 2, 3, 4, 5, 6, 7], 'remote-observation': [1],
   'logical-deletion-proof': [1, 2], 'recovery-epoch': [1], 'initial-baseline': [1],
   'exchange-state': [1, 2], 'exchange-job': [1, 2, 3, 4, 5, 6, 7], 'exchange-job-head': [1],

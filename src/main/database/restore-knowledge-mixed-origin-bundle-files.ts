@@ -15,7 +15,7 @@ import { mixedOriginBundleFiles, mixedOriginBundleDirectories, mixedOriginBundle
   MIXED_ORIGIN_BUNDLE_MAX_DESCRIPTOR_BYTES, type MixedOriginBundleDescriptor } from './restore-knowledge-mixed-origin-bundle-model'
 import { readActualFirstMixedOriginSource, type ActualFirstRequiredSqlDag } from './restore-knowledge-mixed-required-dag-read'
 
-export interface MixedOriginBundleOriginal { readonly directory:string; readonly descriptor:MixedOriginBundleDescriptor; readonly descriptorHash:string; readonly workingTexts:TransportWorkingTexts5 }
+export interface MixedOriginBundleOriginal { readonly directory:string; readonly descriptor:MixedOriginBundleDescriptor; readonly descriptorHash:string; readonly descriptorText:string; readonly workingTexts:TransportWorkingTexts5 }
 async function exactTree(root:string,descriptor:MixedOriginBundleDescriptor,workingTexts:TransportWorkingTexts5) {
   const files=mixedOriginBundleFiles(descriptor,workingTexts),dirs=mixedOriginBundleDirectories(descriptor,workingTexts)
   const plans=['',...dirs].map(key=>({key,path:key?local(root,key):root,depth:key?key.split('/').length:0,children:new Map<string,'file'|'directory'>()}))
@@ -46,7 +46,7 @@ export async function readMixedOriginBundleOriginal(input:string,expectedHash?:s
   if(expectedHash!==undefined&&descriptorHash!==expectedHash)return bad('mixed原descriptor准确hash变化')
   await exactTree(root,descriptor,workingTexts)
   if(first!==await readCapsule2AssetManifest(path,root,MIXED_ORIGIN_BUNDLE_MAX_DESCRIPTOR_BYTES))return bad('mixed descriptor读取期间变化')
-  return freezeCapsuleValue({directory:root,descriptor,descriptorHash,workingTexts})
+  return freezeCapsuleValue({directory:root,descriptor,descriptorHash,descriptorText:first,workingTexts})
 }
 async function makeTree(root:string,descriptor:MixedOriginBundleDescriptor,workingTexts:TransportWorkingTexts5){for(const path of mixedOriginBundleDirectories(descriptor,workingTexts))await restoreDirectory(local(root,path),root)}
 async function finish(root:string,descriptor:MixedOriginBundleDescriptor,workingTexts:TransportWorkingTexts5){

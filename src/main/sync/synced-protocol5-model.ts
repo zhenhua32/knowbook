@@ -2,7 +2,7 @@ import type { SyncedGroupDeletedWire } from '../../shared/synced-blocks'
 import { assertSyncedShape, isSyncedBlockId, isSyncedUuid, SYNCED_MAX_BLOCKS } from '../../shared/syncedBlockValidation'
 import type { SyncDeletion } from './model'
 import {
-  PUBLICATION_RECORD_MAX_BYTES, publicationCompare, publicationHash, publicationInvalid, publicationJson,
+  PUBLICATION_RECORD_MAX_BYTES, protocol5HistoryLink, publicationCompare, publicationHash, publicationInvalid, publicationJson,
   validateInitialManifest5, validateInitialRecord, validateInitialSnapshot,
   type InitialPublicationRecord, type SyncedInitialManifest5
 } from './synced-publication-model'
@@ -14,6 +14,22 @@ export interface SyncedProtocol5Snapshot {
   manifest: SyncedProtocol5Manifest
   records: Array<{ key: string; hash: string; record: SyncedProtocol5Record }>
   assetNames: Map<string, Set<string>>
+}
+
+/** A retry of the same operation against the same parent has exactly the same wire generation. */
+export function withProtocol5Successor(next: SyncedProtocol5Snapshot, previous: SyncedProtocol5Manifest, operationId: string,
+  hasWrites: boolean): SyncedProtocol5Snapshot {
+  if (!previous.history) return next
+  if (next.manifest.workspaceId !== previous.workspaceId) return publicationInvalid('历史后继不能替换原工作区。')
+  if (!hasWrites) {
+    if (publicationJson(next.manifest.entries) !== publicationJson(previous.entries)
+      || publicationJson(next.manifest.syncedInstances) !== publicationJson(previous.syncedInstances)) return publicationInvalid('只读 exchange 意外改变历史清单。')
+    return { ...next, manifest: previous }
+  }
+  const history = protocol5HistoryLink(previous.history.targetFingerprint, operationId, publicationHash(publicationJson(previous)))
+  const manifest = { ...next.manifest, history }
+  withinRecordBudget(manifest, '协议5历史清单')
+  return { ...next, manifest }
 }
 
 function opaque(value: unknown): string {

@@ -8,7 +8,7 @@ import { deriveSyncedExchangeDependencyFacts } from './synced-exchange-plan'
 import { mergeSyncedProtocol5Record, type SyncedRecordMergeChoice, type SyncedRecordMergeResult } from './synced-merge'
 import { validateConflictPreviewComponent, type ConflictPreviewComponent, type ConflictPreviewRecord, type ExchangeMergeProvenance } from './synced-exchange-conflict-model'
 import { publicationCompare, publicationHash, publicationInvalid, publicationJson, SyncedPublicationError } from './synced-publication-model'
-import { validateSyncedProtocol5Snapshot, validateSyncedProtocol5Record, type SyncedProtocol5Snapshot, type SyncedProtocol5Record } from './synced-protocol5-model'
+import { validateSyncedProtocol5Snapshot, validateSyncedProtocol5Record, withProtocol5Successor, type SyncedProtocol5Snapshot, type SyncedProtocol5Record } from './synced-protocol5-model'
 import type { ExchangeComponent, ExchangeDeferredReason, ExchangeTransfer } from './synced-exchange-model'
 import type { SyncedBothOwnerSourceLinks, SyncedBothForkProof, SyncedBothLinkProjection } from './synced-exchange-both-types'
 import { knowledgeSourceHash, validateKnowledgeSource, validateKnowledgeComponentFence,
@@ -306,8 +306,9 @@ function run(input: KnowledgePlanInput, forkInput: KnowledgeForkPlanInput | null
     for (const key of usedMerge) { const l = local.get(key), r = remote.get(key), b = original.get(key), result = choices.get(key); if (l && r && b && result) mergeProvenance.push({ key, baseHash: b.hash, localHash: l.hash, remoteHash: r.hash, resultHash: result.hash }) }
   }
   if (consumedConflicts.size !== conflictSelections.length || consumedBoth.size !== bothSelections.length) return publicationInvalid('knowledge selector没有对应完整原组件。')
-  const known = snapshot(finalLocal, input.localKnowledge.manifest.workspaceId), next = snapshot(nextRemote, input.remote.manifest.workspaceId), physicalFinal = snapshot(liveView(finalLocal), input.localPhysical.manifest.workspaceId)
   const acceptedKeys = sort(accepted), writes = acceptedKeys.filter(key => remote.get(key)?.hash !== nextRemote.get(key)?.hash), incoming = acceptedKeys.filter(key => local.get(key)?.hash !== finalLocal.get(key)?.hash)
+  const known = snapshot(finalLocal, input.localKnowledge.manifest.workspaceId), physicalFinal = snapshot(liveView(finalLocal), input.localPhysical.manifest.workspaceId)
+  const next = withProtocol5Successor(snapshot(nextRemote, input.remote.manifest.workspaceId), input.remote.manifest, input.operationId, writes.length > 0)
   const facts = new Map(deriveSyncedExchangeDependencyFacts(known).map(row => [row.key, row])), sides: KnowledgeLiveAcceptedSide[] = []
   const detailByKey = new Map(details.flatMap(row => row.component.keys.map(key => [key, row] as const))), detailById = new Map(details.map(row => [row.component.componentId, row]))
   for (const fork of forks) { const detail = detailById.get(fork.componentId); if (detail) for (const result of fork.results) detailByKey.set(result.key, detail) }

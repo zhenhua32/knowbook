@@ -1,4 +1,5 @@
 import { createEditorCloseDelivery } from './editor-close-delivery'
+import { EDITOR_RECOVERY_CHANNELS } from '../shared/editor-recovery-drafts'
 import { EDITOR_CLOSE_REQUEST_CHANNEL, EDITOR_CLOSE_CANCELLED_CHANNEL, EDITOR_CLOSE_ACKNOWLEDGE_CHANNEL, EDITOR_CLOSE_READY_CHANNEL,
   EDITOR_RELOAD_REQUEST_CHANNEL,
   type EditorCloseRequest, type EditorCloseCancelled } from '../shared/editor-close'
@@ -6,7 +7,7 @@ import electron from 'electron'
 import type { WorkspaceSearchOccurrence, WorkspaceSearchOccurrenceResult } from '../shared/workspace-search-occurrence'
 import type { SyncedBlocksChangedEvent } from '../shared/synced-blocks'
 import type { OpenSyncedEditingSessionInput, OpenSyncedEditingSessionResult, SyncedEditingMethod, SyncedEditingRequest, SyncedEditingResult } from '../shared/synced-editing-session'
-import type { ResolveSyncedInlineInstanceInput, SyncedInlineInstanceResult } from '../shared/workspace-search-occurrence'
+import type { ResolveSyncedHeadingAnchorInput, ResolveSyncedInlineInstanceInput, SyncedHeadingAnchorResult, SyncedInlineInstanceResult } from '../shared/workspace-search-occurrence'
 import { BACKUP_HEALTH_CHANNEL, GET_BACKUP_HEALTH_CHANNEL, type BackupHealth } from '../shared/backup-health'
 import type {
   AiConfig,
@@ -143,6 +144,11 @@ const api: ElectronApi = {
   onEditorCloseRequest: listener => editorCloseDelivery.onRequest(listener),
   onEditorCloseCancelled: listener => editorCloseDelivery.onCancelled(listener),
   acknowledgeEditorClose: (input) => ipcRenderer.invoke(EDITOR_CLOSE_ACKNOWLEDGE_CHANNEL, input) as Promise<boolean>,
+  getEditorRecoveryWorkspace: () => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.workspace),
+  writeEditorRecoveryDrafts: (input) => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.write, input),
+  listEditorRecoveryDrafts: () => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.list),
+  readEditorRecoveryDraft: (recordId) => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.read, recordId),
+  discardEditorRecoveryDraft: (input) => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.discard, input),
   requestEditorReload: () => ipcRenderer.invoke(EDITOR_RELOAD_REQUEST_CHANNEL) as Promise<boolean>,
   getWebDavSyncStatus: () => ipcRenderer.invoke('knowbook:get-webdav-sync-status'),
   saveWebDavSyncConfig: (input) => ipcRenderer.invoke('knowbook:save-webdav-sync-config', input),
@@ -151,6 +157,10 @@ const api: ElectronApi = {
   cancelWebDavSync: () => ipcRenderer.invoke('knowbook:cancel-webdav-sync'),
   resolveWebDavSyncConflict: (input) => ipcRenderer.invoke('knowbook:resolve-webdav-sync-conflict', input),
   getWebDavSyncConflictDetails: (input) => ipcRenderer.invoke('knowbook:get-webdav-sync-conflict-details', input),
+  previewWebDavProtocol5Conflicts: () => ipcRenderer.invoke('knowbook:preview-webdav-protocol5-conflicts'),
+  resolveWebDavProtocol5Conflict: (input) => ipcRenderer.invoke('knowbook:resolve-webdav-protocol5-conflict', input),
+  previewWebDavProtocol5Deletions: () => ipcRenderer.invoke('knowbook:preview-webdav-protocol5-deletions'),
+  resolveWebDavProtocol5Deletion: (input) => ipcRenderer.invoke('knowbook:resolve-webdav-protocol5-deletion', input),
   getHomeData: async () => {
     const data = await ipcRenderer.invoke('knowbook:get-home-data') as HomeDataIpcPayload
     const documentCatalog = data.documentCatalog.map(decodeDocumentIndexEntry)
@@ -313,6 +323,7 @@ const api: ElectronApi = {
   searchWorkspace: (input: WorkspaceSearchInput) => ipcRenderer.invoke('knowbook:search-workspace', input) as Promise<WorkspaceSearchPage>,
   resolveWorkspaceSearchOccurrence: (input: WorkspaceSearchOccurrence) => ipcRenderer.invoke('knowbook:resolve-workspace-search-occurrence', input) as Promise<WorkspaceSearchOccurrenceResult>,
   resolveSyncedInlineInstance: (input: ResolveSyncedInlineInstanceInput) => ipcRenderer.invoke('knowbook:resolve-synced-inline-instance', input) as Promise<SyncedInlineInstanceResult>,
+  resolveSyncedHeadingAnchor: (input: ResolveSyncedHeadingAnchorInput) => ipcRenderer.invoke('knowbook:resolve-synced-heading-anchor', input) as Promise<SyncedHeadingAnchorResult>,
   openSyncedEditingSession: (input: OpenSyncedEditingSessionInput) => ipcRenderer.invoke('knowbook:open-synced-editing-session', input) as Promise<OpenSyncedEditingSessionResult>,
   invokeSyncedEditingSession: <M extends SyncedEditingMethod>(input: SyncedEditingRequest<M>) => ipcRenderer.invoke('knowbook:invoke-synced-editing-session', input) as Promise<SyncedEditingResult<M>>,
   releaseSyncedEditingSession: (sessionId: string) => ipcRenderer.invoke('knowbook:release-synced-editing-session', sessionId) as Promise<void>,

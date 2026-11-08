@@ -3,6 +3,14 @@ import type { SyncedStructureApplied } from '@shared/synced-blocks'
 import type { SyncedHostSourceCurrent } from './SyncedHostSourceDialog'
 import type { DocumentBlockDraft } from '@shared/contracts'
 import type { SyncedHostHistoryTransition } from './hostHistoryTypes'
+import type { PendingBlockNavigationTarget } from '../../hooks/useDocumentNavigationState'
+
+type HeadingCallbacks = {
+  onPendingTargetResolved: (index: number, id: string, headingIndex?: number) => void
+  onPendingTargetMissing: () => void
+}
+export type CanonicalHeadingAction = (target: PendingBlockNavigationTarget, blocks: readonly DocumentBlockDraft[], callbacks: HeadingCallbacks,
+  clear: () => void) => (() => void) | undefined
 
 // Thin lazy-chunk bridge only. These callbacks block local transitions; they
 // never create a Main session, a binding, a file claim or mutation permission.
@@ -21,6 +29,7 @@ interface InlineTransitionPort {
   ownsHistory?: (transition: SyncedHostHistoryTransition) => boolean
   adoptHostResult?: (context: DocumentHostAdoptContext, before: SyncedHostSourceCurrent, result: SyncedStructureApplied, history: boolean) => boolean
   runHostHistory?: (context: DocumentHostHistoryContext) => Promise<boolean>
+  openHeading?: CanonicalHeadingAction
 }
 let port: InlineTransitionPort | null = null, owner: object | null = null
 const asynchronousEdits = new Set<object>(), unlockWaiters = new Set<() => void>()
@@ -56,6 +65,7 @@ export const restoreCanonicalHostHistory = (transition: SyncedHostHistoryTransit
 export const adoptCanonicalHostResult = (context: DocumentHostAdoptContext, before: SyncedHostSourceCurrent,
   result: SyncedStructureApplied, history: boolean): boolean => port?.adoptHostResult?.(context, before, result, history) ?? false
 export const getCanonicalHostHistoryAction = () => port?.runHostHistory ?? null
+export const getCanonicalHeadingAction = () => port?.openHeading
 export const hasCanonicalInlinePendingChanges = () => asynchronousEdits.size > 0 || (port?.pending() ?? false)
 export async function flushCanonicalInlinePendingChanges(options?: CanonicalInlineFlushOptions): Promise<boolean> {
   // Document navigation may retire the original attachment view. Its real

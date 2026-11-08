@@ -2,12 +2,16 @@ import { randomUUID } from 'node:crypto'
 import type { KnowbookStore } from '../database/store'
 import type { AttachmentStore } from '../attachments'
 import { protectCredential, revealCredential, type SecureStringStorage } from '../credential-storage'
-import { DEFAULT_WEBDAV_SYNC_CONFIG, type ResolveWebDavSyncConflict, type SaveWebDavSyncConfig, type WebDavSyncConfig, type WebDavSyncStatus, type WebDavSyncProgress, type WebDavSyncConflictDetails, type WebDavSyncConflictVersion, type WebDavSyncConflictDetailsInput, type WebDavSyncMergeChoice } from '../../shared/webdav-sync'
+import { DEFAULT_WEBDAV_SYNC_CONFIG, type ResolveWebDavSyncConflict, type SaveWebDavSyncConfig, type WebDavSyncConfig, type WebDavSyncStatus, type WebDavSyncProgress, type WebDavSyncConflictDetails, type WebDavSyncConflictVersion, type WebDavSyncConflictDetailsInput, type WebDavSyncMergeChoice, type WebDavProtocol5ConflictPreview } from '../../shared/webdav-sync'
 import { SyncAssets, syncAssetReferences, type SyncAssetProgress } from './assets'
 import { canonicalJson, conflictPreview, emptySyncState, hashBytes, parseManifest, recordHash, recordKey, requiresStructureEditingProtocol, requiresPageCompositionProtocol, requiresDatabaseViewProtocol, validateRecord, validHash, type SyncManifest, type SyncRecord, type SyncState, type SyncDocument, type StoredConflict } from './model'
 import { mergeSyncDocument } from './merge'
 import { preflightSyncBlockTransfers, preflightSyncPublishedBlockOwnership, preflightSyncCatalogReferences, SyncBlockOwnershipError } from './repository'
 import { normalizeWebDavConfig, WebDavClient, WebDavHttpError, type WebDavCapabilities } from './webdav-client'
+import { peekProtocol5Remote, previewProtocol5WebDavConflicts, protocol5LastSyncAt, protocol5ModeKey, readProtocol5Selection, resolveProtocol5WebDavConflict, runProtocol5WebDav } from './protocol5-service'
+import { previewProtocol5WebDavDeletions, readProtocol5DeletionSelection, resolveProtocol5WebDavDeletion } from './protocol5-service'
+import type { WebDavProtocol5DeletionPreview } from '../../shared/webdav-sync'
+import { SYNC_RECEIVER_PROFILE_KEY } from './receiver-bootstrap'
 
 const CONFIG_KEY = 'sync.webdav.config'
 const PASSWORD_KEY = 'sync.webdav.password'
@@ -45,6 +49,8 @@ export class WebDavSyncService {
   private stopped = false
   private verifiedTarget: string | null = null
   private capabilities: WebDavCapabilities | undefined
+  private protocol5Preview: WebDavProtocol5ConflictPreview | null = null
+  private protocol5DeletionPreview: WebDavProtocol5DeletionPreview | null = null
   private readonly assets: SyncAssets
   private readonly uploadedObjects = new Set<string>()
   private readonly uploadedAssets = new Set<string>()
@@ -53,7 +59,7 @@ export class WebDavSyncService {
 
   constructor(private readonly store: KnowbookStore, attachments: AttachmentStore,
     private readonly credentials: SecureStringStorage, private readonly onChanged: () => void = () => {},
-    private readonly workspaceBusy: () => boolean = () => false) {
+    private readonly workspaceBusy: () => boolean = () => false, private readonly profile?: string) {
     this.config = { ...DEFAULT_WEBDAV_SYNC_CONFIG }
     const stored = store.getSettingPublic(CONFIG_KEY)
     if (stored) { try { this.config = normalizeWebDavConfig(JSON.parse(stored)) } catch { this.message = '保存的同步设置无效，请重新配置。' } }
@@ -86,10 +92,18 @@ export class WebDavSyncService {
     if (changed) this.saveState(preserved)
   }
 
+  private protocol5Enabled(): boolean {
+    if (!this.profile) return false
+    const mode = this.store.getSettingPublic(protocol5ModeKey(this.config))
+    return mode === 'true' || mode === null && this.store.getSettingPublic(SYNC_RECEIVER_PROFILE_KEY) === 'true'
+  }
+
   getStatus(): WebDavSyncStatus {
-    const state = this.state()
+    const protocol5 = this.protocol5Enabled(), state = protocol5 ? emptySyncState() : this.state()
     return { config: { ...this.config }, hasPassword: Boolean(this.store.getSettingPublic(PASSWORD_KEY)), phase: this.phase,
-      lastSyncAt: state.lastSyncAt, message: this.message, uploaded: this.uploaded, downloaded: this.downloaded, merged: this.merged,
+      ...(protocol5 ? { protocol5: true as const, ...(this.protocol5Preview ? { protocol5Preview: this.protocol5Preview } : {}),
+        ...(this.protocol5DeletionPreview ? { protocol5DeletionPreview: this.protocol5DeletionPreview } : {}) } : {}),
+      lastSyncAt: protocol5 ? protocol5LastSyncAt(this.store, this.config) : state.lastSyncAt, message: this.message, uploaded: this.uploaded, downloaded: this.downloaded, merged: this.merged,
       progress: this.progress ? { ...this.progress } : null,
       conflicts: Object.entries(state.conflicts).map(([key, conflict]) => ({ key,
         title: conflict.local.kind === 'document' ? conflict.local.content.title : conflict.remote.kind === 'document' ? conflict.remote.content.title : '数据库、属性和视图',
@@ -126,6 +140,7 @@ export class WebDavSyncService {
   saveConfig(input: SaveWebDavSyncConfig): WebDavSyncStatus {
     if (this.busy) throw new Error('请等待当前同步或连接测试结束后修改设置。')
     const next = normalizeWebDavConfig(input)
+    if (input.protocol5 !== undefined && (typeof input.protocol5 !== 'boolean' || input.protocol5 && !this.profile)) throw new Error('同步块协议设置无效。')
     if (input.password !== undefined && (typeof input.password !== 'string' || input.password.length > 4096)) throw new Error('应用密码无效。')
     const targetChanged = targetKey(next) !== targetKey(this.config)
     if (targetChanged && !input.password) throw new Error('更换同步地址、目录或账号时，请重新填写应用密码。')
@@ -136,14 +151,20 @@ export class WebDavSyncService {
     if (next.enabled && !encrypted && !this.store.getSettingPublic(PASSWORD_KEY)) throw new Error('启用同步前请填写应用密码。')
     this.store.runInTransaction(() => {
       this.store.saveSetting(CONFIG_KEY, JSON.stringify(next))
+      if (input.protocol5 === true || input.protocol5 === false && this.store.getSettingPublic(SYNC_RECEIVER_PROFILE_KEY) === 'true') {
+        this.store.saveSetting(protocol5ModeKey(next), String(input.protocol5))
+      } else if (input.protocol5 === false && this.store.getSettingPublic(protocol5ModeKey(next)) !== null) {
+        this.store.deleteSetting(protocol5ModeKey(next))
+      }
       if (encrypted) this.store.saveSetting(PASSWORD_KEY, encrypted)
       else if (input.password === '') this.store.deleteSetting(PASSWORD_KEY)
     })
     this.config = next
+    this.clearProtocol5Previews()
     if (targetChanged) { this.uploadedObjects.clear(); this.uploadedAssets.clear(); this.remoteObjects.clear(); this.remoteObjectBytes = 0 }
     this.verifiedTarget = null
     this.capabilities = undefined
-    this.message = '设置已保存。首次同步会合并两端已有内容。'
+    this.message = this.protocol5Enabled() ? '设置已保存。同步块首次发布使用独立空目录。' : '设置已保存。首次同步会合并两端已有内容。'
     this.phase = 'idle'
     this.schedule()
     return this.getStatus()
@@ -159,13 +180,15 @@ export class WebDavSyncService {
     }
   }
 
-  private client(): WebDavClient {
+  private password(): string {
     const stored = this.store.getSettingPublic(PASSWORD_KEY)
     if (!stored) throw new Error('请先保存 WebDAV 地址、用户名和应用密码。')
-    let password: string
-    try { password = revealCredential(stored, this.credentials).value }
+    try { return revealCredential(stored, this.credentials).value }
     catch { throw new Error('无法解密 WebDAV 应用密码，请重新填写并保存。') }
-    return new WebDavClient(normalizeWebDavConfig(this.config), password, this.abort?.signal, this.capabilities, activity => {
+  }
+
+  private client(): WebDavClient {
+    return new WebDavClient(normalizeWebDavConfig(this.config), this.password(), this.abort?.signal, this.capabilities, activity => {
       if (!this.progress) return
       this.progress.waitingUntil = activity.waitingUntil
       if (activity.completed) this.progress.requestsCompleted++
@@ -197,7 +220,9 @@ export class WebDavSyncService {
     return this.operation('testing', async () => {
       this.verifiedTarget = null
       this.capabilities = undefined
-      this.capabilities = await this.client().test()
+      const client = this.client()
+      if (this.protocol5Enabled()) await peekProtocol5Remote(client)
+      this.capabilities = await client.test()
       this.verifiedTarget = targetKey(this.config)
       this.message = '连接成功，读写与并发保护检查通过。'
     })
@@ -205,6 +230,13 @@ export class WebDavSyncService {
 
   sync(): Promise<WebDavSyncStatus> {
     return this.operation('syncing', async () => {
+      if (this.profile && this.protocol5Enabled()) {
+        this.clearProtocol5Previews()
+        this.stage('comparing')
+        this.applyProtocol5Outcome(await runProtocol5WebDav(this.store, this.profile, normalizeWebDavConfig(this.config),
+          { password: this.password(), signal: this.abort?.signal }, Boolean(this.state().workspaceId)))
+        return
+      }
       this.store.assertOrdinarySyncAllowed()
       const client = this.client()
       if (this.verifiedTarget !== targetKey(this.config)) {
@@ -216,6 +248,75 @@ export class WebDavSyncService {
         try { await this.exchange(client); return }
         catch (error) { if (!(error instanceof WebDavHttpError && error.status === 412) || attempt === 2) throw error }
       }
+    })
+  }
+
+  private applyProtocol5Outcome(result: Awaited<ReturnType<typeof runProtocol5WebDav>>): void {
+    this.uploaded = result.uploaded
+    this.downloaded = result.downloaded
+    this.message = result.message
+    if (this.downloaded) this.onChanged()
+  }
+  private clearProtocol5Previews(): void {
+    this.protocol5Preview = null
+    this.protocol5DeletionPreview = null
+  }
+
+  previewProtocol5Conflicts(): Promise<WebDavSyncStatus> {
+    const profile = this.profile
+    if (!profile || !this.protocol5Enabled()) throw new Error('当前目录未启用同步块协议。')
+    return this.operation('syncing', async () => {
+      this.clearProtocol5Previews()
+      this.stage('comparing')
+      this.protocol5Preview = await previewProtocol5WebDavConflicts(this.store, profile, normalizeWebDavConfig(this.config),
+        { password: this.password(), signal: this.abort?.signal })
+      const count = this.protocol5Preview.components.length
+      this.message = count ? `已读取 ${count} 组同步块冲突。` : '当前没有待处理的同步块冲突。'
+    })
+  }
+
+  resolveProtocol5Conflict(value: unknown): Promise<WebDavSyncStatus> {
+    const profile = this.profile
+    if (!profile || !this.protocol5Enabled()) throw new Error('当前目录未启用同步块协议。')
+    const input = readProtocol5Selection(value), preview = this.protocol5Preview
+    if (!preview || preview.previewId !== input.previewId || preview.previewHash !== input.previewHash
+      || !preview.components.some(component => component.componentId === input.componentId && component.choices.includes(input.choice))) {
+      throw new Error('冲突预览已失效，请重新读取后再选择。')
+    }
+    return this.operation('syncing', async () => {
+      this.clearProtocol5Previews()
+      this.stage('comparing')
+      this.applyProtocol5Outcome(await resolveProtocol5WebDavConflict(this.store, profile, normalizeWebDavConfig(this.config), input,
+        { password: this.password(), signal: this.abort?.signal }))
+    })
+  }
+
+  previewProtocol5Deletions(): Promise<WebDavSyncStatus> {
+    const profile = this.profile
+    if (!profile || !this.protocol5Enabled()) throw new Error('当前目录未启用同步块协议。')
+    return this.operation('syncing', async () => {
+      this.clearProtocol5Previews()
+      this.stage('comparing')
+      this.protocol5DeletionPreview = await previewProtocol5WebDavDeletions(this.store, profile, normalizeWebDavConfig(this.config),
+        { password: this.password(), signal: this.abort?.signal })
+      const count = this.protocol5DeletionPreview.components.length
+      this.message = count ? `已读取 ${count} 组删除冲突。` : '当前没有待处理的同步块删除冲突。'
+    })
+  }
+
+  resolveProtocol5Deletion(value: unknown): Promise<WebDavSyncStatus> {
+    const profile = this.profile
+    if (!profile || !this.protocol5Enabled()) throw new Error('当前目录未启用同步块协议。')
+    const input = readProtocol5DeletionSelection(value), preview = this.protocol5DeletionPreview
+    if (!preview || preview.previewId !== input.previewId || preview.previewHash !== input.previewHash
+      || !preview.components.some(component => component.componentId === input.componentId && component.choices.includes(input.choice))) {
+      throw new Error('删除冲突预览已失效，请重新读取后再选择。')
+    }
+    return this.operation('syncing', async () => {
+      this.clearProtocol5Previews()
+      this.stage('comparing')
+      this.applyProtocol5Outcome(await resolveProtocol5WebDavDeletion(this.store, profile, normalizeWebDavConfig(this.config), input,
+        { password: this.password(), signal: this.abort?.signal }))
     })
   }
 
@@ -539,6 +640,7 @@ export class WebDavSyncService {
   }
 
   getConflictDetails(input: WebDavSyncConflictDetailsInput): WebDavSyncConflictDetails {
+    if (this.protocol5Enabled()) throw new Error('此工作区使用同步块冲突处理，旧版文档冲突保持原样。')
     if (this.busy) throw new Error('请等待同步结束后查看冲突。')
     const { state, conflict } = this.boundConflict(input)
     const canMerge = conflict.base && conflict.local.kind === 'document' && conflict.remote.kind === 'document'
@@ -554,6 +656,7 @@ export class WebDavSyncService {
   }
 
   resolveConflict(input: ResolveWebDavSyncConflict): WebDavSyncStatus {
+    if (this.protocol5Enabled()) throw new Error('此工作区使用同步块冲突处理，旧版文档冲突保持原样。')
     if (this.busy) throw new Error('请等待同步结束后处理冲突。')
     if (!input || !['local', 'remote', 'both', 'merge', 'clear'].includes(input.choice)) throw new Error('冲突处理参数无效。')
     const { state, conflict } = this.boundConflict(input, input.choice !== 'clear')

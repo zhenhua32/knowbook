@@ -47,6 +47,7 @@ export class SyncedHostStructureHistory {
   private busy = false
   constructor(private readonly port: HostStructureHistoryPort) {}
   pending = () => this.original !== null
+  recoveryInput = () => this.original?.input ?? null
   isBusy = () => this.busy
   owns(transition: SyncedHostHistoryTransition) { return this.original !== null && key(this.original.transition) === key(transition) }
   remember(before: SyncedHostSourceCurrent, result: SyncedStructureApplied) {

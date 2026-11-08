@@ -8,6 +8,8 @@ export interface WebDavSyncConfig {
 }
 
 export interface SaveWebDavSyncConfig extends WebDavSyncConfig {
+  /** An explicit, local per-target choice. It never enters a wire manifest. */
+  protocol5?: boolean
   /** Omit to retain the saved password; empty string clears it. */
   password?: string
 }
@@ -80,6 +82,9 @@ export interface WebDavSyncProgress {
 }
 
 export interface WebDavSyncStatus {
+  protocol5?: true
+  protocol5Preview?: WebDavProtocol5ConflictPreview
+  protocol5DeletionPreview?: WebDavProtocol5DeletionPreview
   config: WebDavSyncConfig
   hasPassword: boolean
   phase: 'idle' | 'testing' | 'syncing' | 'error'
@@ -91,6 +96,46 @@ export interface WebDavSyncStatus {
   progress: WebDavSyncProgress | null
   conflicts: WebDavSyncConflict[]
 }
+
+export interface WebDavProtocol5ConflictPreview {
+  previewId: string
+  previewHash: string
+  components: Array<{
+    componentId: string
+    choices: Array<'local' | 'remote'>
+    records: Array<{ key: string; baseHash: string | null; localHash: string | null; remoteHash: string | null; parts: WebDavSyncMergePart[] }>
+  }>
+}
+
+export interface ResolveWebDavProtocol5Conflict {
+  previewId: string
+  previewHash: string
+  componentId: string
+  choice: 'local' | 'remote'
+}
+
+export type WebDavProtocol5DeletionChoice = 'keep-live' | 'keep-delete'
+export type WebDavProtocol5DeletionSide =
+  | { kind: 'missing'; hash: null }
+  | { kind: 'unavailable'; hash: string }
+  | { kind: 'deleted'; hash: string; deletedAt?: string }
+  | { kind: 'live'; hash: string; title?: string; text: string; truncated: boolean }
+
+export interface WebDavProtocol5DeletionPreview {
+  previewId: string
+  previewHash: string
+  components: Array<{
+    componentId: string
+    choices: WebDavProtocol5DeletionChoice[]
+    keepLiveReason: string | null
+    keepDeleteReason: string | null
+    completeText: boolean
+    records: Array<{ key: string; base: WebDavProtocol5DeletionSide; local: WebDavProtocol5DeletionSide; remote: WebDavProtocol5DeletionSide }>
+  }>
+}
+
+export type ResolveWebDavProtocol5Deletion = Omit<ResolveWebDavProtocol5Conflict, 'choice'>
+  & { choice: WebDavProtocol5DeletionChoice }
 
 export interface ResolveWebDavSyncConflict extends WebDavSyncConflictVersion {
   choice: WebDavSyncResolutionChoice | 'clear'

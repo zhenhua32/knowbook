@@ -22,6 +22,13 @@ export function SyncedStructureDialog({ commands, view, isZh }: {
   const close = () => { if (!composing.current) commands.cancel() }
   const busy = view.busy || view.loading
   const searchGroups = () => { if (!composing.current && !view.hasRequest) commands.query(query) }
+  const title = view.kind === 'create' ? (isZh ? '创建同步块' : 'Create synced block')
+    : view.kind === 'insert' ? (isZh ? '插入同步块' : 'Insert synced block') : (isZh ? '解除同步' : 'Unsync this reference')
+  const description = view.kind === 'create'
+    ? (isZh ? `将所选 ${view.blockCount} 个完整内容块转为同一份共享正文，宿主保留真实引用。` : `Turn the selected ${view.blockCount} complete blocks into one shared body; the host keeps its reference.`)
+    : view.kind === 'insert'
+      ? (isZh ? '选择已有共享正文，在原位置插入引用；不会复制共享正文到宿主。' : 'Choose an existing shared body and insert its reference at the original position.')
+      : (isZh ? '将这处引用转为可单独编辑的普通内容块，其他引用继续共享原正文。' : 'Turn this reference into independently editable blocks. Other references keep sharing the original body.')
   return createPortal(<dialog ref={dialog} className="document-capture-dialog document-block-move-dialog synced-structure-dialog"
     data-block-shortcuts aria-labelledby={titleId} aria-describedby={hintId} aria-busy={busy} tabIndex={-1}
     onCancel={event => { event.preventDefault(); close() }}
@@ -32,11 +39,8 @@ export function SyncedStructureDialog({ commands, view, isZh }: {
       if (event.key === 'Escape') { event.preventDefault(); close() }
       trapFocusWithinDialog(event.nativeEvent, event.currentTarget)
     }}>
-    <header className="document-capture-header"><div><h2 id={titleId}>{view.kind === 'create'
-      ? isZh ? '创建同步块' : 'Create synced block' : isZh ? '插入同步块' : 'Insert synced block'}</h2>
-      <p id={hintId}>{view.kind === 'create'
-        ? isZh ? `将所选 ${view.blockCount} 个完整内容块转为同一份共享正文，宿主保留真实引用。` : `Turn the selected ${view.blockCount} complete blocks into one shared body; the host keeps its reference.`
-        : isZh ? '选择已有共享正文，在原位置插入引用；不会复制共享正文到宿主。' : 'Choose an existing shared body and insert its reference at the original position.'}</p>
+    <header className="document-capture-header"><div><h2 id={titleId}>{title}</h2>
+      <p id={hintId}>{description}</p>
     </div></header>
     <div className="document-capture-body">
       {view.kind === 'insert' && <>
@@ -68,8 +72,7 @@ export function SyncedStructureDialog({ commands, view, isZh }: {
       <button type="button" className="secondary-button" disabled={view.busy || view.uncertain} onClick={close}>{isZh ? '取消' : 'Cancel'}</button>
       <button type="button" className="primary-button" disabled={busy || view.kind === 'insert' && !view.selectedGroupId}
         onClick={() => { if (!composing.current && current.current.id === view.id) void commands.apply() }}>{view.hasRequest
-          ? isZh ? '重试原操作' : 'Retry original operation' : view.kind === 'create' ? isZh ? '创建同步块' : 'Create synced block'
-            : isZh ? '插入引用' : 'Insert reference'}</button>
+          ? (isZh ? '重试原操作' : 'Retry original operation') : view.kind === 'insert' ? (isZh ? '插入引用' : 'Insert reference') : title}</button>
     </footer>
   </dialog>, document.body)
 }

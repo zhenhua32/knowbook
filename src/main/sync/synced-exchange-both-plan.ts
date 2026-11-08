@@ -6,7 +6,7 @@ import type { ExchangeComponent, ExchangeTransfer, ExchangeDeferredReason } from
 import type * as T from './synced-exchange-both-types'
 import type { BothPrivateSelection } from './synced-exchange-both-model'
 import { publicationCompare, publicationHash, publicationInvalid, publicationJson, SyncedPublicationError } from './synced-publication-model'
-import { validateSyncedProtocol5Snapshot, type SyncedProtocol5Snapshot } from './synced-protocol5-model'
+import { validateSyncedProtocol5Snapshot, withProtocol5Successor, type SyncedProtocol5Snapshot } from './synced-protocol5-model'
 
 type Entry = SyncedProtocol5Snapshot['records'][number]
 type Entries = Map<string, Entry>
@@ -160,6 +160,7 @@ export function planSyncedBothExchange(input: ExchangePlanInput, selections: Bot
   }
   const l = entries(input.local), r = entries(input.remote), afterL = entries(localFinal), afterR = entries(nextRemote)
   const acceptedKeys = sort(accepted), writes = acceptedKeys.filter(key => r.get(key)?.hash !== afterR.get(key)?.hash), incoming = acceptedKeys.filter(key => l.get(key)?.hash !== afterL.get(key)?.hash)
+  nextRemote = withProtocol5Successor(nextRemote, input.remote.manifest, input.operationId, writes.length > 0)
   const dependencyFacts = new Map(deriveSyncedExchangeDependencyFacts(nextRemote).map(row => [row.key, row])), finalOwners = physical(nextRemote)
   const edges = new Map([...dependencyFacts].map(([key, row]) => [key, new Set(row.dependencyKeys)]))
   const identities = new Map(input.authority.identities.map(row => [row.id, row]))

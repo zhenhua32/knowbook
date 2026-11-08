@@ -1,10 +1,11 @@
 import { useMemo, useRef, useState } from 'react'
 import type { SyncedHostWorkingBefore } from '@shared/synced-blocks'
-import { MarkdownSourceDialog, type MarkdownSourceLocalState } from '../../components/DocumentMarkdownSourceDialog'
+import { MarkdownSourceDialog, type MarkdownSourceLocalState, type MarkdownSourceRecoveryOpening, type MarkdownSourceRecoverySnapshot } from '../../components/DocumentMarkdownSourceDialog'
 import { areDocumentDraftBlocksEqual } from '../../utils/documentDraftComparison'
 import { applySyncedHostSourceChanges, createSyncedHostSourceDraft, prepareSyncedHostSourceApply,
   captureSyncedHostSourceSubmission, readSyncedHostSourceCheckpoint,
-  type PreparedSyncedHostSource, type SyncedHostSourceSubmission, type SyncedHostSourceApplyOutcome, type SyncedHostSourceCheckpoint } from './hostSource'
+  captureHostRecoveryAnchors, type SyncedHostSourceDraft, type PreparedSyncedHostSource, type SyncedHostSourceSubmission,
+  type SyncedHostSourceApplyOutcome, type SyncedHostSourceCheckpoint } from './hostSource'
 
 export type SyncedHostSourceCurrent = {
   hostSession: object
@@ -21,6 +22,8 @@ export type SyncedHostSourceDialogProps = {
   onCompositionChange?: (composing: boolean) => void
   isZh: boolean
   onLocalStateChange?: (state: Readonly<MarkdownSourceLocalState>) => void
+  onRecoverySnapshot?: (snapshot: Readonly<MarkdownSourceRecoverySnapshot> | null) => void
+  initialRecovery?: MarkdownSourceRecoveryOpening<SyncedHostSourceDraft>
   onClose: () => void
 }
 
@@ -39,7 +42,7 @@ function HostSourceOpening(props: SyncedHostSourceDialogProps & { ownsOpening: (
     const state = props.getCurrent()
     if (!state || !state.hostSession || typeof state.hostSession !== 'object' || !Number.isSafeInteger(state.editSequence)
       || state.editSequence < 0) throw new Error('The host Source opening is unavailable')
-    const draft = createSyncedHostSourceDraft(state.host)
+    const draft = props.initialRecovery?.base ?? createSyncedHostSourceDraft(state.host)
     return { sessionKey: {}, draft, hostSession: state.hostSession, editSequence: state.editSequence,
       hasSyncedReferences: state.host.workingBefore.blocks.some(block => block.type === 'synced-block'),
       checkpoint: null as SyncedHostSourceCheckpoint | null,
@@ -52,6 +55,7 @@ function HostSourceOpening(props: SyncedHostSourceDialogProps & { ownsOpening: (
     return current !== null && current.hostSession === opening.hostSession && current.host.documentId === opening.draft.opening.documentId
   }
   return <MarkdownSourceDialog sessionKey={opening.sessionKey} isZh={props.isZh} onClose={props.onClose} onLocalStateChange={props.onLocalStateChange}
+    onRecoverySnapshot={props.onRecoverySnapshot} captureRecoveryAnchors={captureHostRecoveryAnchors} initialRecovery={props.initialRecovery}
     createDraft={() => opening.draft} replaceChanges={applySyncedHostSourceChanges}
     isCurrent={isCurrent} getReturnFocus={() => opening.opener} onCompositionChange={opening.onCompositionChange}
     readApplyCheckpoint={() => {

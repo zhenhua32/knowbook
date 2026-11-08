@@ -1,8 +1,7 @@
 import Database from 'better-sqlite3'
 import { writeSyncedBackupV3 } from './v3-export'
-import { readBackupV3Files } from './v3-reader'
-import { parseBackupV3Files, type BackupV3File } from './v3-format'
-import { publicationHash, publicationJson, publicationCompare } from '../sync/synced-publication-model'
+import { readBackupV3FileDigests, verifyBackupV3Archive } from './v3-reader'
+import { backupV3InventoryHash } from './v3-format'
 import { assertSyncedShape, isSyncedUuid } from '../../shared/syncedBlockValidation'
 import {
   copyFileSync,
@@ -195,27 +194,28 @@ export class MarkdownBackupService {
     const attemptRoot = mkdtempSync(join(parent, '.knowbook-synced-v3-')), destination = join(attemptRoot, 'snapshot'), snapshotId = randomUUID()
     const job: BackupV3DatabaseExportJob = { kind: 'synced-v3', databasePath: source.databasePath, userDataRoot: source.userDataRoot, destination, snapshotId }
     let published = false
-    const digest = (files: BackupV3File[]) => publicationHash(publicationJson(files.map(file => ({ relativePath: file.relativePath,
-      hash: publicationHash(file.bytes), bytes: file.bytes.byteLength })).sort((a, b) => publicationCompare(a.relativePath, b.relativePath))))
     try {
       await this.runExport(job)
       // Worker reply counts/packets are not proof. Capture the actual bounded
       // files afresh and parse their complete graph, including strict extras.
-      const files = readBackupV3Files(destination), archive = parseBackupV3Files(files), actualHash = digest(files)
+      const archive = verifyBackupV3Archive(destination), actualHash = backupV3InventoryHash(archive.files)
       if (archive.manifest.snapshotId !== snapshotId) throw new Error('The actual V3 archive has another snapshot identity')
       const confirmed = this.store.readConfirmedCanonicalBackup(snapshotId, destination)
       if (confirmed !== actualHash) throw new Error('The cold V3 bytes differ from the real confirmed Main publication')
       // Recheck the complete file/directory tails after the private SQL claim
       // read. No caller archive DTO or source-path guess can authorize publish.
-      if (digest(readBackupV3Files(destination)) !== confirmed) throw new Error('The V3 archive changed after its confirmed publication read')
-      publishBackupSnapshot(backupRoot, destination)
+      const verifyConfirmedFiles = () => {
+        if (backupV3InventoryHash(readBackupV3FileDigests(destination)) !== confirmed) throw new Error('The V3 archive changed after its confirmed publication read')
+      }
+      verifyConfirmedFiles()
+      publishBackupSnapshot(backupRoot, destination, verifyConfirmedFiles)
       published = true
       // Only an empty, successful attempt parent is removed. A partial or a
       // confirmed-but-unpublished attempt is always preserved with its claim.
       try { rmdirSync(attemptRoot) } catch (error) { console.warn('V3 backup published, but its empty attempt parent could not be removed.', error) }
       const at = new Date().toISOString()
       this.store.saveSetting('backup.lastRunAt', at)
-      return { exported: archive.documents.length, root: this.backupRoot, at }
+      return { exported: archive.manifest.documentIds.length, root: this.backupRoot, at }
     } catch (cause) {
       throw new Error(published ? 'V3 backup was published, but completion metadata failed; the complete version and durable publication are retained.'
         : 'V3 backup was not replaced by a fallback; previous version and attempt evidence are retained at ' + attemptRoot, { cause })

@@ -6,6 +6,7 @@ import { replaceMarkdownSourceChanges, type MarkdownSourceChange, type MarkdownS
 import { reconcileMarkdownSourceDraft, type MarkdownSourceReconciliationPort } from './canonicalSource'
 import type { SyncedHostSourceCurrent } from './SyncedHostSourceDialog'
 import { areDocumentDraftBlocksEqual } from '../../utils/documentDraftComparison'
+import { captureRecoveryAnchors, restoreRecoveryAnchors } from './recoverySourceAnchors'
 import { applySyncedSourceChanges, copySyncedSourceRange, createSyncedSourceSnapshot, insertSyncedSourceReference,
   moveSyncedSourceRange, type SyncedSourceIdFactory, type SyncedSourceRangeOperation, type SyncedSourceSnapshot } from './sourceAnchors'
 
@@ -108,6 +109,24 @@ export function applySyncedHostSourceChanges(draft: SyncedHostSourceDraft,
   if (trackedChanges.has(draft)) trackedChanges.set(next, { previous: draft,
     changes: Object.freeze(changes.map(change => Object.freeze({ ...change }))) })
   return next
+}
+
+export function captureHostRecoveryAnchors(draft: SyncedHostSourceDraft) {
+  return { ordinary: captureRecoveryAnchors(draft.ordinary), references: draft.references.anchors.map(anchor => ({
+    key: anchor.key, instanceId: anchor.instanceId, groupId: anchor.groupId, from: anchor.from, to: anchor.to, newRefSource: anchor.newRefSource
+  })) }
+}
+
+export function restoreHostRecoverySource(opening: SyncedHostSourceDraft, source: string, value: unknown): SyncedHostSourceDraft {
+  assertSyncedShape(value, ['ordinary', 'references'])
+  if (!Array.isArray(value.references)) invalid('The retained references have an invalid shape.')
+  const ordinary = sealOrdinary(restoreRecoveryAnchors(opening.ordinary, source, value.ordinary))
+  const references = createSyncedSourceSnapshot({ ...opening.references, source, anchors: value.references })
+  const original = new Map(opening.references.anchors.map(anchor => [anchor.instanceId, anchor.groupId]))
+  if (references.anchors.some(anchor => anchor.newRefSource === null && original.get(anchor.instanceId) !== anchor.groupId))
+    invalid('A retained reference is missing from the original host.')
+  assertNewReferenceIdentities(opening, references)
+  return seal({ ...opening, source, ordinary, references })
 }
 
 /** An explicit move carries complete ordinary anchors and reference provenance.

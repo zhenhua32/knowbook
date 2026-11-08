@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import Database from 'better-sqlite3'
 import { KnowbookStore } from '../src/main/database/store'
 import { assertSyncedBlockSchema } from '../src/main/database/synced-schema'
-import { withV3Fixture, allTables, snapshot, oldChildId } from './helpers/synced-backup-v3-fixture'
+import { withV3Fixture, allTables, snapshot, oldChildId, freshBlock, randomUUID } from './helpers/synced-backup-v3-fixture'
 
 const originalFiles = (file: string) => ['','-wal','-shm','-journal'].map(suffix => {
   const path = file + suffix
@@ -42,16 +42,15 @@ test('the explicit complete Store reopens a real canonical profile twice while t
 
 test('a complete reader does not impose a portable group text limit on an unrelated persisted ordinary document', async () => {
   await withV3Fixture(f => {
-    const detail = f.store.getDocumentDetail(f.targetId)!
+    const unrelatedId = f.store.createDocument(null), detail = f.store.getDocumentDetail(unrelatedId)!
     const large = '普通原文🙂'.repeat(22_000)
     assert.ok(large.length > 100_000)
-    f.store.updateDocument(f.targetId, { title: detail.title, summary: detail.summary,
-      blocks: detail.blocks.map(block => ({ ...block, content: large })) })
+    f.store.updateDocument(unrelatedId, { title: detail.title, summary: detail.summary, blocks: [freshBlock(randomUUID(), large)] })
     const before = allTables(f.db)
     f.close()
     const current = KnowbookStore.openCanonicalRuntime(f.file)
     try {
-      assert.equal(current.getDocumentDetail(f.targetId)!.blocks[0].content, large)
+      assert.equal(current.getDocumentDetail(unrelatedId)!.blocks[0].content, large)
       assert.deepEqual(allTables(current.getUnsafeDatabaseHandle()), before)
     } finally { current.destroy() }
   })

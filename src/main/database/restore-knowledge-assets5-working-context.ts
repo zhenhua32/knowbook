@@ -279,13 +279,23 @@ function replayAutomaticContext5(raw: Capsule2RawContent, locator: Root5WorkingM
   const expectedAliases = [...plan.nextRemote.assetNames].map(([hash, names]) => ({ hash, names: [...names].sort() })).sort((a,b)=>a.hash<b.hash?-1:1)
   if (!same(expectedAliases, job.descriptor.next.assets.map(asset => ({ hash: asset.hash, names: asset.names })))) return fail('descriptor assets do not exactly cover the replayed whole next snapshot')
   const base = new Map(baseRecords.map(row => [row.key, row])), left = new Map((job.version===4||job.version===7?localPhysical:local).records.map(row => [row.key, row])), right = new Map(remote.records.map(row => [row.key, row]))
+  const localFinalRows = new Map(plan.localFinal.records.map(row => [row.key, row]))
+  const localWrites = new Set(plan.incoming), remoteWrites = new Set(plan.writes)
+  const components = new Map(plan.components.flatMap(component => component.keys.map(key => [key, component] as const)))
   const merged = (job.merges ?? []).map(provenance => {
     const before=base.get(provenance.key),a=left.get(provenance.key),b=right.get(provenance.key)
     if(!before||!a||!b||before.hash!==provenance.baseHash||a.hash!==provenance.localHash||b.hash!==provenance.remoteHash) return fail('automatic B/L/R provenance mismatch')
     const selected=nextRows.get(provenance.key)
     if(!selected||selected.hash!==provenance.resultHash||publicationHash(publicationJson(selected.record))!==provenance.resultHash)return fail('whole selected W differs from original merge result')
+    // The production replay authenticated localFinal and both write sets from
+    // the sealed inputs. A publication-only result can already equal the local
+    // record. Only incoming identifies an actual local mutation in this plan.
+    const localApply = localWrites.has(provenance.key)
+    const replayedLocalFinal = { planHash: plan.planHash, component: components.get(provenance.key) ?? null,
+      entry: localFinalRows.get(provenance.key) ?? null, localApply, remoteOnly: remoteWrites.has(provenance.key) && !localApply }
     return {recordKey:provenance.key,record:selected.record,parts:[] as readonly {id:string;text:string}[],provenance,
-      family:job.version,selectionKind:job.request.method==='resolveSyncedExchangeConflicts'?'conflict-selection' as const:'automatic-component' as const}
+      family:job.version,selectionKind:job.request.method==='resolveSyncedExchangeConflicts'?'conflict-selection' as const:'automatic-component' as const,
+      replayedLocalFinal }
 
   })
   const byteInventory = { inputHash: publicationHash(bytes.inputBytes), jobBytesHash: publicationHash(bytes.jobBytes), readyBytesHash: publicationHash(bytes.readyBytes),

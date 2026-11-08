@@ -2,7 +2,7 @@ import type { SyncedCanonicalWire, SyncedGroupWire } from '../../shared/synced-b
 import { parseSyncedBlockPayload, SyncedValidationError } from '../../shared/syncedBlockValidation'
 import { parseDatabaseViewPayload } from '../../shared/databaseViewBlock'
 import { publicationCompare, publicationHash, publicationInvalid, publicationJson, SyncedPublicationError } from './synced-publication-model'
-import { validateSyncedProtocol5Snapshot, type SyncedProtocol5Snapshot, type SyncedProtocol5Record } from './synced-protocol5-model'
+import { validateSyncedProtocol5Snapshot, withProtocol5Successor, type SyncedProtocol5Snapshot, type SyncedProtocol5Record } from './synced-protocol5-model'
 import { planSyncedTombstoneExchange } from './synced-exchange-tombstone-plan'
 import { assertConflictData } from './synced-exchange-conflict-model'
 import { deriveSyncedExchangeDependencyFacts } from './synced-exchange-plan'
@@ -205,8 +205,9 @@ export function planSyncedDeletionChoices(input:DeletionChoicePlanInput):Deletio
     for(const intent of chosen.intents){deletions.push(intent);intentByKey.set(intent.key,intent)}
   }
   if([...selections.keys()].some(id=>!consumed.has(id)))return publicationInvalid('删除决定来自未知原组件。')
-  const next=snapshot(nextRemote,input.state.remoteWorkspaceId),known=snapshot(finalLocal,input.state.workspaceScope),physicalFinal=snapshot(new Map([...finalLocal].filter(([,row])=>!deleted(row.record))),input.state.workspaceScope)
   const acceptedKeys=sort(accepted),writes=acceptedKeys.filter(key=>remote.get(key)?.hash!==nextRemote.get(key)?.hash),incoming=acceptedKeys.filter(key=>physicalLocal.get(key)?.hash!==(deleted(finalLocal.get(key)!.record)?undefined:finalLocal.get(key)?.hash))
+  const next=withProtocol5Successor(snapshot(nextRemote,input.state.remoteWorkspaceId),input.remote.manifest,input.operationId,writes.length>0)
+  const known=snapshot(finalLocal,input.state.workspaceScope),physicalFinal=snapshot(new Map([...finalLocal].filter(([,row])=>!deleted(row.record))),input.state.workspaceScope)
   const dependencies=new Map(deriveSyncedExchangeDependencyFacts(known).map(row=>[row.key,row.dependencyKeys])),sides:TombstoneAcceptedSide[]=[]
   for(const key of acceptedKeys){const row=finalLocal.get(key)!,intent=intentByKey.get(key);let outcome:TombstoneLocalOutcome
     if(!deleted(row.record))outcome={kind:'live',hash:row.hash}

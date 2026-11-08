@@ -158,7 +158,6 @@ function selection(input: HostCreateInput): { from: number; to: number; ids: str
   for (let i = 0; i < roots.length; i++) if (blocks[roots[i]].parentBlockId !== blocks[first].parentBlockId || blocks[roots[i]].depth !== blocks[first].depth || i > 0 && roots[i] !== ends[roots[i - 1]]) throw new UnsupportedSyncedHostCreate('create-selection')
   const to = ends[roots[roots.length - 1]], selected = blocks.slice(first, to)
   if (selected.some(block => block.type === 'synced-block')) throw new SyncedValidationError('nested-sync', 'create 不允许所选子树含已有同步引用。')
-  if (selected.some(block => /^heading-[1-6]$/.test(block.type))) throw new UnsupportedSyncedHostCreate('heading-rewrite')
   return { from: first, to, ids: selected.map(block => block.id) }
 }
 export function planSyncedHostCreate(input: HostCreateInput, allocate: (facts: Omit<CreateAuxiliary, 'id' | 'createdAt'>) => Pick<CreateAuxiliary, 'id' | 'createdAt'>): CreateShape {

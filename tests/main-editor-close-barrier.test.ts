@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
+import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import test from 'node:test'
-import { createEditorCloseBarrier, type EditorCloseBarrier, type EditorCloseIpcEvent } from '../src/main/editor-close-barrier'
+import { createEditorCloseBarrier, type EditorCloseBarrier, type EditorCloseBarrierOptions, type EditorCloseIpcEvent } from '../src/main/editor-close-barrier'
 import { EDITOR_CLOSE_REQUEST_CHANNEL, EDITOR_CLOSE_CANCELLED_CHANNEL, type EditorCloseRequest,
   type EditorCloseCancelled } from '../src/shared/editor-close'
 
@@ -48,10 +49,11 @@ class FakeWindow extends EventEmitter {
     this.emit('closed')
   }
 }
-function harness(options: { beginShutdown?: () => void | Promise<void>; onShutdownError?: (error: unknown) => void } = {}) {
+function harness(options: Partial<Pick<EditorCloseBarrierOptions, 'beginShutdown' | 'onShutdownError' | 'readRecoveryWorkspace' | 'confirmRecoveryReceipt'>> = {}) {
   let shutdownCalls = 0, timerId = 0
   const timers = new Map<number, () => void>(), budgets: number[] = []
   const barrier = createEditorCloseBarrier({
+    ...options,
     beginShutdown() { shutdownCalls++; return options.beginShutdown?.() },
     onShutdownError: options.onShutdownError,
     setTimer(callback, budget) { budgets.push(budget); const id = ++timerId; timers.set(id, callback); return id },
@@ -88,6 +90,42 @@ test('editor X waits for its real frame ACK, deduplicates repeated X, and preser
   assert.equal(h.timers.size, 0)
   assert.equal(h.barrier.requestQuit() !== null, true)
   assert.equal(h.shutdownCalls, 1, 'normal final-window app quit may now begin shutdown')
+})
+
+test('draft close receipt requires the original frame, workspace, token and durable generation', () => {
+  const workspace = { workspaceScope: randomUUID(), recoveryEpoch: randomUUID() }
+  const receiptId = randomUUID(), draftSessionId = randomUUID()
+  let durable = true, confirmations = 0
+  const h = harness({ readRecoveryWorkspace: () => workspace, confirmRecoveryReceipt: (actual, receipt) => {
+    assert.deepEqual(actual, workspace)
+    assert.deepEqual(receipt.records, [{ recordId: receiptId, draftSessionId, generation: 7, hash: 'a'.repeat(64) }])
+    confirmations++
+    return durable
+  } })
+  const window = h.window(), requestId = h.barrier.requestQuit()!
+  const close = { requestId, closeGeneration: 2 }
+  const input = { workspace, records: [], close }
+  const reply = { ...close, status: 'draft-journaled', receiptId }
+  const write = () => ({ ...close, receiptId, records: [{ recordId: receiptId, draftSessionId, generation: 7, hash: 'a'.repeat(64) }] })
+  assert.equal(h.barrier.acknowledge(event(window), reply), false)
+  assert.throws(() => h.barrier.journalRecoveryDrafts({ ...event(window), senderFrame: null }, input, write), /token is stale/)
+  assert.throws(() => h.barrier.journalRecoveryDrafts(event(window), { ...input, workspace: { ...workspace, recoveryEpoch: randomUUID() } }, write), /token is stale/)
+  assert.deepEqual(h.barrier.journalRecoveryDrafts(event(window), input, write), write())
+  assert.throws(() => h.barrier.journalRecoveryDrafts(event(window), input, write), /token is stale/)
+  assert.equal(h.barrier.acknowledge(event(window), { ...reply, closeGeneration: 3 }), false)
+  assert.equal(confirmations, 0)
+  durable = false
+  assert.equal(h.barrier.acknowledge(event(window), reply), false)
+  assert.equal(h.shutdownCalls, 0)
+  assert.equal(window.webContents.cancellations().length, 1)
+  const fresh = { requestId: h.barrier.requestQuit()!, closeGeneration: 1 }
+  assert.notEqual(fresh.requestId, close.requestId)
+  assert.equal(h.barrier.acknowledge(event(window), reply), false)
+  h.barrier.journalRecoveryDrafts(event(window), { ...input, close: fresh }, () => ({ ...write(), ...fresh }))
+  durable = true
+  assert.equal(h.barrier.acknowledge(event(window), { ...reply, ...fresh }), true)
+  assert.equal(confirmations, 2)
+  assert.equal(h.shutdownCalls, 1)
 })
 
 test('app quit waits all current editor windows; blocked ACK cancels and unfreezes every peer', async () => {

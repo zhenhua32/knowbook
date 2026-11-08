@@ -245,6 +245,18 @@ class GroupController implements SyncedGroupController {
   private serverRedo: ServerRedo[] = []
   private cutServerRedo = false
   private pending: Pending | null = null
+  recoveryInput = () => this.pending && { kind: this.pending.kind, input: this.pending.input }
+  recoveryClaims = () => {
+    if (this.frames.every(frame => frame.bindingClaims === undefined)) return 'legacy' as const
+    let claims: SyncedBindingClaim[] | undefined
+    try {
+      for (const frame of this.frames) {
+        if (!frame.bindingClaims || frame.copyLease) return null
+        claims = claims ? composeSyncedBindingClaims(claims, frame.bindingClaims) : frame.bindingClaims
+      }
+    } catch { return null }
+    return claims?.some(claim => claim.kind === 'copy' && claim.source.kind === 'ticket') ? null : claims ?? null
+  }
   private queue: Promise<void> = Promise.resolve()
   private historyBusy = false
   private workspaceInvalid = false

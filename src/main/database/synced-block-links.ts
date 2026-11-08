@@ -135,9 +135,18 @@ export function captureSyncedGroupBindings(db: Database.Database, origin: Synced
  * inverse) preflight. No shared input supplies this prospective target space.
  * Whole strict host source keeps other reference leaves opaque. */
 export function captureSyncedCreateBindings(db: Database.Database, origin: SyncedOriginV1,
-  blocks: readonly SyncedStableBlockDraft[]): CreateCapturedBinding[] {
+  blocks: readonly SyncedStableBlockDraft[], projectedHeadings?: readonly { slug: string; text: string }[]): CreateCapturedBinding[] {
   const checked = validateSyncedOrigin(origin), ids = new Set(blocks.filter(block => block.type !== 'synced-block').map(block => block.id))
   const prospective: ProspectiveHost = { ids, blocks }
+  if (projectedHeadings) {
+    const slug = new Map<string, { slug: string; text: string }>(), text = new Map<string, { slug: string; text: string }>()
+    for (const heading of projectedHeadings) {
+      if (!slug.has(heading.slug)) slug.set(heading.slug, heading)
+      const key = prospectiveHeadingTextKey(heading.text)
+      if (!text.has(key)) text.set(key, heading)
+    }
+    prospective.headings = { slug, text }
+  }
   return captureSyncedCreateSourceFacts(blocks).links.filter(item => !item.image && (item.key.syntax === 'wiki' || resolveMarkdownDocumentPath(checked.pathAtCreation, item.url))).map(item => ({ key: item.key, url: item.url,
     target: targetFor(db, checked, { ...item.key, url: item.url }, undefined, prospective) }))
 }

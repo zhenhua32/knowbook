@@ -16,9 +16,10 @@ import { getSyncedGroupSnapshots } from './synced-blocks-read'
 import { assertSyncedStoredBindings, maintainSyncedGroupBindings } from './synced-block-links'
 import { resolveSyncedBindingSource } from './synced-binding-sources'
 import { decodeSyncedGroupOperationAck, readSyncedGroupOperationRow, validateSyncedOperationLookupInput } from './synced-group-operation-receipt'
+import { readSyncedGroupHistoryOriginalOwned } from './synced-group-history-original'
+import { readTitle2EffectiveGroupHistoryOwned } from './synced-host-title2-read'
 
 type Input = SyncedUpdateGroupInput | SyncedRestoreGroupInput
-type HistoryRow = { before_json: string; after_json: string; before_hash: string; after_hash: string }
 type PhysicalRow = { id: string; kind: 'document' | 'group'; owner_id: string; created_at: string }
 const hashPattern = /^[a-f0-9]{64}$/
 const encode = canonicalSyncedPortableJson
@@ -194,17 +195,25 @@ function advance(db: Database.Database, before: SyncedGroupSnapshot, input: Inpu
       instance.instanceId, instance.hostDocumentId, instance.bindingVersion).changes
   if (changed !== 1) conflict(before, 'topology')
 }
-function assertHistoryTailSide(db: Database.Database, before: SyncedGroupSnapshot): void {
+function assertHistoryTailSide(db: Database.Database, before: SyncedGroupSnapshot, currentPosition: number): void {
   // A fresh local edit cannot accidentally attach to a journal branch left
   // executable by an external replacement. Both adjacent sides must be exact.
+  if (before.history.undoToken === null && before.history.redoToken === null) return
+  const projected = readTitle2EffectiveGroupHistoryOwned(db, before)
   for (const [token, side] of [[before.history.undoToken, 'after'], [before.history.redoToken, 'before']] as const) {
     if (token === null) continue
-    const row = db.prepare('SELECT before_json,after_json,before_hash,after_hash FROM synced_group_history WHERE id=? AND group_id=?')
-      .get(token, before.groupId) as HistoryRow | undefined
-    if (!row) throw new Error('同步块历史尾记录缺失。')
-    const recorded = side === 'after' ? historySide(row.after_json, row.after_hash, before) : historySide(row.before_json, row.before_hash, before)
-    if (encode(recorded) !== encode(wire(before))) conflict(before, 'history')
+    const original = readSyncedGroupHistoryOriginalOwned(db, before, token, currentPosition + (side === 'before' ? 1 : 0))
+    if (!original) throw new Error('同步块历史尾记录缺失。')
+    if (encode(effectiveHistorySide(original, projected)[side]) !== encode(wire(before))) conflict(before, 'history')
   }
+}
+
+function effectiveHistorySide(original: NonNullable<ReturnType<typeof readSyncedGroupHistoryOriginalOwned>>,
+  projected: ReturnType<typeof readTitle2EffectiveGroupHistoryOwned>) {
+  const side = projected.get(original.row.id)
+  if (!side) return original
+  if (encode(side.row) !== encode(original.row)) throw new Error('同步块历史原行在标题维护后发生变化，未恢复。')
+  return side
 }
 
 export function updateSyncedBlockGroup(db: Database.Database, value: unknown): SyncedGroupMutationResult {
@@ -215,7 +224,8 @@ export function updateSyncedBlockGroup(db: Database.Database, value: unknown): S
     const requestHash = hash({ method: 'updateSyncedBlockGroup', input }), previous = replay(db, input, requestHash)
     if (previous) return previous
     const before = guarded(db, input), now = new Date().toISOString()
-    assertHistoryTailSide(db, before)
+    const current = position(db, before.groupId)
+    assertHistoryTailSide(db, before, current)
     const blocks = births(db, before.groupId, input.blocks, now)
     const candidate = validateSyncedGroupWire({ ...wire(before), blocks,
       bindings: maintainSyncedGroupBindings(db, before, blocks, input.bindingClaims,
@@ -223,7 +233,6 @@ export function updateSyncedBlockGroup(db: Database.Database, value: unknown): S
     finalBudget(db, before, candidate)
     if (encode(candidate) === encode(wire(before))) return receipt(db, input, requestHash,
       { status: 'noop', operationId: input.clientOperationId, snapshot: before, replayed: false }, now)
-    const current = position(db, before.groupId)
     if (!Number.isSafeInteger(current + 1)) invalid('forest', '同步块历史位置超过安全整数范围。')
     db.prepare('DELETE FROM synced_group_history WHERE group_id=? AND position>?').run(before.groupId, current)
     replaceBlocks(db, candidate)
@@ -235,14 +244,6 @@ export function updateSyncedBlockGroup(db: Database.Database, value: unknown): S
   })
 }
 
-function historySide(source: string, expectedHash: string, before: SyncedGroupSnapshot): SyncedGroupWire {
-  try {
-    const side = validateSyncedGroupWire(json(source))
-    if (!hashPattern.test(expectedHash) || hash(side) !== expectedHash || side.id !== before.groupId || side.creationId !== before.creationId
-      || side.createdAt !== before.createdAt || encode(side.origin) !== encode(before.origin)) throw new Error('History semantic identity/hash mismatch')
-    return side
-  } catch (cause) { throw new Error('同步块历史内容或校验值损坏，未恢复。', { cause }) }
-}
 export function restoreSyncedGroupOperation(db: Database.Database, value: unknown): SyncedGroupMutationResult {
   let input: SyncedRestoreGroupInput
   try { input = validateSyncedRestoreGroupInput(value) }
@@ -254,10 +255,9 @@ export function restoreSyncedGroupOperation(db: Database.Database, value: unknow
     if (input.expectedHistoryCursor !== before.history.cursor || input.historyToken !== (undo ? before.history.undoToken : before.history.redoToken)) {
       conflict(before, 'history')
     }
-    const row = db.prepare(`SELECT before_json,after_json,before_hash,after_hash FROM synced_group_history WHERE id=? AND group_id=? AND position=?`)
-      .get(input.historyToken, before.groupId, undo ? current : current + 1) as HistoryRow | undefined
-    if (!row) throw new Error('同步块历史尾记录缺失，未恢复。')
-    const left = historySide(row.before_json, row.before_hash, before), right = historySide(row.after_json, row.after_hash, before)
+    const original = readSyncedGroupHistoryOriginalOwned(db, before, input.historyToken, undo ? current : current + 1)
+    if (!original) throw new Error('同步块历史尾记录缺失，未恢复。')
+    const { before: left, after: right } = effectiveHistorySide(original, readTitle2EffectiveGroupHistoryOwned(db, before))
     if (encode(wire(before)) !== encode(undo ? right : left)) conflict(before, 'history')
     const candidate = undo ? left : right, now = new Date().toISOString()
     births(db, before.groupId, candidate.blocks, now, new Map(candidate.blocks.map(block => [block.id, block.createdAt])))

@@ -15,6 +15,9 @@ function workspaceOwned(db:Database.Database){
   if(!state||!isSyncedUuid(state.workspace_scope)||!isSyncedUuid(state.recovery_epoch))return fail('actual workspace boundary missing')
   return{workspaceScope:state.workspace_scope,recoveryEpoch:state.recovery_epoch}
 }
+export function readEditorRecoveryWorkspace(db:Database.Database){
+  return db.transaction(()=>workspaceOwned(db))()
+}
 /** Called only in the Main session factory's actual SQL snapshot. All host
  * births and persisted instance bindings come from SQL, never a caller DTO. */
 export function captureSyncedEditingFenceOwned(db:Database.Database,hostId:string,previous?:SyncedEditingFence){

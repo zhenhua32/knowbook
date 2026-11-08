@@ -1,12 +1,16 @@
 import { useMemo, useRef, useState } from 'react'
-import { MarkdownSourceDialog, type MarkdownSourceLocalState } from '../../components/DocumentMarkdownSourceDialog'
+import { MarkdownSourceDialog, type MarkdownSourceLocalState, type MarkdownSourceRecoveryOpening, type MarkdownSourceRecoverySnapshot } from '../../components/DocumentMarkdownSourceDialog'
 import { areDocumentDraftBlocksEqual } from '../../utils/documentDraftComparison'
-import { replaceMarkdownSourceChanges } from '../../utils/markdownSourceDraft'
+import { replaceMarkdownSourceChanges, type MarkdownSourceDraft } from '../../utils/markdownSourceDraft'
 import { canonicalSourceDraftToBlocks, createCanonicalSourceDraft } from './canonicalSource'
 import type { SyncedGroupBinding } from './types'
 import { syncedSnapshotGuard } from './types'
+import { captureRecoveryAnchors } from './recoverySourceAnchors'
 
-type Props = { binding: SyncedGroupBinding; isZh: boolean; opener: HTMLElement | null; onClose: () => void; onLocalStateChange?: (state: Readonly<MarkdownSourceLocalState>) => void }
+type Props = { binding: SyncedGroupBinding; isZh: boolean; opener: HTMLElement | null; onClose: () => void;
+  onLocalStateChange?: (state: Readonly<MarkdownSourceLocalState>) => void
+  onRecoverySnapshot?: (snapshot: Readonly<MarkdownSourceRecoverySnapshot> | null) => void
+  initialRecovery?: MarkdownSourceRecoveryOpening<MarkdownSourceDraft> }
 
 /** The instance shell supplies the real binding/opener. This dialog has no
  * second writer or history and never routes canonical content through a host. */
@@ -17,14 +21,15 @@ export function SyncedCanonicalSourceDialog(props: Props) {
   return <CanonicalSourceOpening key={openingKey} {...props} isOwnerCurrent={() => latestBinding.current === props.binding} />
 }
 
-function CanonicalSourceOpening({ binding, isZh, opener, onClose, onLocalStateChange, isOwnerCurrent }: Props & { isOwnerCurrent: () => boolean }) {
+function CanonicalSourceOpening({ binding, isZh, opener, onClose, onLocalStateChange, onRecoverySnapshot, initialRecovery, isOwnerCurrent }: Props & { isOwnerCurrent: () => boolean }) {
   const [opening] = useState(() => {
     const state = binding.getCurrent()
     return { sessionKey: {}, editSequence: state.editSequence, guards: syncedSnapshotGuard(state.snapshot),
-      working: structuredClone(state.working), draft: createCanonicalSourceDraft(state.working), bookmark: binding.getBookmark(), opener }
+      working: structuredClone(state.working), draft: initialRecovery?.base ?? createCanonicalSourceDraft(state.working), bookmark: binding.getBookmark(), opener }
   })
   const isCurrent = () => isOwnerCurrent() && binding.isCurrent()
   return <MarkdownSourceDialog sessionKey={opening.sessionKey} isZh={isZh} onClose={onClose} onLocalStateChange={onLocalStateChange}
+    onRecoverySnapshot={onRecoverySnapshot} captureRecoveryAnchors={captureRecoveryAnchors} initialRecovery={initialRecovery}
     createDraft={() => opening.draft} replaceChanges={(draft, changes) => replaceMarkdownSourceChanges(draft, [...changes])}
     isCurrent={isCurrent} getReturnFocus={() => opening.opener} onCompositionChange={binding.setComposing}
     text={{ title: isZh ? '编辑共享正文源码' : 'Edit shared body source',

@@ -74,6 +74,11 @@ export async function reopenSealedCapsule2Source(input: Parameters<typeof captur
 /** Cold reopen only: the real SQL capture is bracketed by the same complete
  * original/manifest checks as verify. No old handle or supplied packet enters. */
 export async function captureReopenedSealedCapsule2Source(input: { profileRoot: string; operationId: string; capsuleId: string; expectedManifestHash: string }) {
+  const { working: _working, ...captured } = await captureReopenedSealedCapsule2SourceWithWorking5(input)
+  return Object.freeze(captured)
+}
+/** Fixed cold seam for consumers of the same complete original observation. */
+export async function captureReopenedSealedCapsule2SourceWithWorking5(input: { profileRoot: string; operationId: string; capsuleId: string; expectedManifestHash: string }) {
   const row = capsuleRecord(input, ['profileRoot','operationId','capsuleId','expectedManifestHash'])
   if (typeof row.profileRoot !== 'string' || !isAbsolute(row.profileRoot) || row.profileRoot.includes('\0')
     || (process.platform === 'win32' ? resolve(row.profileRoot).toLowerCase() !== row.profileRoot.toLowerCase() : resolve(row.profileRoot) !== row.profileRoot)) return bad('profile不是准确绝对路径')
@@ -91,12 +96,12 @@ export async function captureReopenedSealedCapsule2Source(input: { profileRoot: 
   const path = join(output, 'manifest.json')
   await assertOwnedRawCapsuleOriginal(original); await closure()
   await readExact(path, root, bytes.length, capsuleBytesHash(bytes), CAPSULE2_RAW_MAX_JSON_BYTES)
-  const { material, value } = await captureCapsule2SourceMaterial(archive)
+  const { material, value, working } = await captureCapsule2SourceMaterialWithWorking5(archive)
   if (capsuleJson(manifestFor(value)) !== capsuleJson(manifest)) return bad('完整实际SQL/K/政策/附件/原要求与来源清单不一致')
   await closure(); await readExact(path, root, bytes.length, capsuleBytesHash(bytes), CAPSULE2_RAW_MAX_JSON_BYTES)
   await assertOwnedRawCapsuleOriginal(original)
   const entry: Saved = { original, material, root, directory: output, manifest, manifestHash: capsule2SourceManifestHash(manifest), bytes }
-  return Object.freeze({ source: register(entry), value, profileRoot: root,
+  return Object.freeze({ source: register(entry), value, working, profileRoot: root,
     info: freezeCapsuleValue({ directory: output, manifest, manifestHash: entry.manifestHash }) })
 }
 export async function readSealedCapsule2Source(handle: SealedCapsule2Source): Promise<SealedCapsule2SourceInfo> {

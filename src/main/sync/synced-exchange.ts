@@ -20,8 +20,10 @@ import { readSyncedPersistentPublicationSnapshot } from '../database/synced-publ
 import { observationDatabasePath } from '../database/synced-remote-observation-pending'
 import { readSyncedExchangeCutJournal } from '../database/synced-exchange-host-cut'
 import { readSyncedExchangeLocal, readSyncedExchangeReceipt, type SyncedExchangeLocal } from '../database/synced-exchange-read'
+import { readSyncedExchangeReceiptById } from '../database/synced-exchange-receipt'
 import { readSyncedExchangeConflictPreviewIndex } from '../database/synced-exchange-conflict-read'
 import { WebDavClient, WebDavHttpError, normalizeWebDavConfig } from './webdav-client'
+import { assertProtocol5ManifestLineage, preserveProtocol5Predecessor } from './synced-manifest-history'
 import { SYNC_TABLE_COLUMNS, SYNC_TABLES, type SyncDatabases } from './model'
 import { initialIncomingTargetFingerprint, inverseInitialIncomingCatalog, initialIncomingPortableDigest } from './synced-initial-incoming-model'
 import { PUBLICATION_RECORD_MAX_BYTES, publicationCompare, publicationHash, publicationJson, publicationInvalid,
@@ -40,6 +42,7 @@ import * as DC from './synced-exchange-deletion-choice-model'
 import { planSyncedDeletionChoices, planSyncedDeletionChoicesFromSource } from './synced-exchange-deletion-choice-plan'
 import { validateSyncedLogicalDeletionChoiceProof, logicalDeletionChoiceRequestHash, logicalDeletionChoiceProofReference, type DeletionChoiceIntent } from './synced-logical-deletion-choice-model'
 import { readDeletionChoicePreviewIndex, validateDeletionChoicePreviewIndex, deletionChoicePreviewKey, type DeletionChoicePreviewIndex } from '../database/synced-exchange-deletion-choice-read'
+import { projectDeletionPreview } from './synced-exchange-deletion-presentation'
 import { planSyncedKnowledgeConflicts, planSyncedKnowledgeForks, deriveKnowledgeBothComponents } from './synced-exchange-knowledge-plan'
 import { readKnowledgePreviewIndex, validateKnowledgePreviewIndex, knowledgePreviewKey, type KnowledgePreviewIndex, type KnowledgePreviewMode } from '../database/synced-exchange-knowledge-read'
 import { planSyncedExchange, planSyncedExchangeV1, deriveSyncedExchangeDependencyFacts, type ExchangePlan, type ExchangePlanInput } from './synced-exchange-plan'
@@ -72,7 +75,8 @@ type BothSource = { resolution: B.BothResolution; selections: B.BothPrivateSelec
 type Context = { root: string; databasePath: string; target: WebDavSyncConfig; request: M.ExchangeRequest;
   workspaceScope: string; recoveryEpoch: string; initialTargetFingerprint: string;
   resolution: C.ExchangeResolutionBinding | null; selections: NonNullable<ExchangePlanInput['conflictSelections']>; both: BothSource | null; knowledgeMode: 5 | 6 | null;
-  deletionChoice: {resolution:DC.DeletionChoiceResolution;selections:NonNullable<DC.DeletionChoicePlanInput['selections']>} | null }
+  deletionChoice: {resolution:DC.DeletionChoiceResolution;selections:NonNullable<DC.DeletionChoicePlanInput['selections']>} | null
+  expectedDeletionPreviewHash?: string }
 type Prepared = { context: Context; local: SyncedExchangeLocal; localMaterial: SyncedExchangeLocalMaterial;
   localWire: SyncedProtocol5Snapshot; source: SyncedExchangeRemoteSource; remote: SyncedExchangeRemoteFacts;
   state: M.AnyExchangeState; baseRecords: SyncedProtocol5Snapshot['records']; plan: RuntimePlan; planningAuthority: ReturnType<typeof authority> | ReturnType<typeof knowledgeAuthority>; engine: Engine; bothLinks: T.SyncedBothOwnerSourceLinks[];
@@ -249,6 +253,7 @@ async function initialState(c: Context, local: SyncedExchangeLocal, localWire: S
     return { state: seedState(c, { kind: 'confirmed-publication', operationId: selected.operationId,
       manifestHash: publicationHash(publicationJson(selected.manifest)), portableDigest: initialIncomingPortableDigest(selected.manifest.entries, selected.manifest.syncedInstances) }, original), original }
   }
+  if (remote.manifest.history) return unavailable('缺少原首发或接收回执，不能按当前历史清单重新加入。')
   if (same(localWire.manifest.entries, remote.manifest.entries) && same(localWire.manifest.syncedInstances, remote.manifest.syncedInstances))
     return { state: seedState(c, { kind: 'current-equality', operationId: null, manifestHash: publicationHash(publicationJson(remote.manifest)),
       portableDigest: initialIncomingPortableDigest(remote.manifest.entries, remote.manifest.syncedInstances) }, remote), original: remote }
@@ -257,6 +262,18 @@ async function initialState(c: Context, local: SyncedExchangeLocal, localWire: S
 // The connection never enters a persisted object/DTO. Only live invocation contexts are registered.
 const connections = new WeakMap<Context, Database.Database>()
 function captureConnection(c: Context): Database.Database { return connections.get(c) ?? unavailable('exchange原connection不可用。') }
+
+async function assertKnownRemoteLineage(db: Database.Database, c: Context, client: WebDavClient, state: M.AnyExchangeState,
+  origin: SyncedInitialManifest5 | undefined, remote: SyncedInitialManifest5): Promise<void> {
+  if (!origin?.history && !remote.history) return
+  if (!origin?.history || !remote.history || origin.history.previousHash !== null
+    || publicationHash(publicationJson(origin)) !== state.source.manifestHash) return unavailable('远端历史方言与原工作区首发不同，已暂停同步。')
+  const latest = state.currentOperationId ? db.transaction(() => readSyncedExchangeReceiptById(db, state.currentOperationId!))() : null
+  if (state.currentOperationId && (!latest || latest.request.targetFingerprint !== c.request.targetFingerprint
+    || latest.result.workspaceScope !== c.workspaceScope || latest.result.recoveryEpoch !== c.recoveryEpoch
+    || latest.result.remoteWorkspaceId !== remote.workspaceId)) return publicationInvalid('原历史链的本机接受回执不符。')
+  await network(() => assertProtocol5ManifestLineage(client, c.target, remote, latest?.result.afterManifestHash ?? state.source.manifestHash))
+}
 
 function authority(local: SyncedExchangeLocal, missingBaseKeys: string[], deferredKeys: string[] = []) {
   return { catalogId: local.snapshot.catalogId, identities: local.identities, occupiedDocumentIds: local.occupiedDocumentIds,
@@ -290,6 +307,7 @@ async function prepare(db: Database.Database, c: Context, runtime: SyncedExchang
   const localWire = wire(material.records, c.workspaceScope), remoteWire = fromRemote(remote)
   const initialized = await initialState(c, local, localWire, remoteWire)
   const client = new WebDavClient(c.target, runtime.password, runtime.signal)
+  let origin = initialized.original?.manifest ?? local.initialBaseline?.manifest
   const common = await bases(c, initialized.state, localWire, remoteWire, client, initialized.original)
   let state = initialized.state
   if (!local.state && state.source.kind === 'initial-receipt') {
@@ -311,6 +329,7 @@ async function prepare(db: Database.Database, c: Context, runtime: SyncedExchang
       const seeds = await readConfirmedSyncedPublicationSeeds(db, { userDataRoot: c.root, target: c.target })
       const seed = seeds.find(row => row.operationId === state.source.operationId)
       if (!seed || publicationHash(publicationJson(seed.manifest)) !== state.source.manifestHash) return publicationInvalid('exchange seed原confirmed spool缺失/变更。')
+      origin = seed.manifest
       original = validateSyncedProtocol5Snapshot(seed.manifest, seed.records.map(row => ({ key: row.key, record: row.record })))
     } else if (!local.initialBaseline || local.initialBaseline.result.operationId !== state.source.operationId
       || local.initialBaseline.result.manifestHash !== state.source.manifestHash) return publicationInvalid('exchange seed原initial receipt缺失/不符。')
@@ -326,6 +345,7 @@ async function prepare(db: Database.Database, c: Context, runtime: SyncedExchang
       common.missing.push(...state.baseline.map(row => row.key))
     }
   }
+  await assertKnownRemoteLineage(db, c, client, state, origin, remote.manifest)
   const now = capture(db, c)
   if (now.fingerprint !== local.fingerprint) return { status: 'stale', side: 'local' }
   const planningAuthority = authority(local, sort(common.missing), deferredKeys)
@@ -351,7 +371,9 @@ async function prepareTombstone(db: Database.Database, c: Context, runtime: Sync
   if (selectLegacyLive && !needsTombstones) return prepare(db,c,runtime,deferredKeys,2,{source,localMaterial,local})
   const initialized = local.state ? { state: local.state, original: undefined } : await initialState(c, local, localPhysical, remoteWire)
   let state = initialized.state.version === 2 ? initialized.state : M.liftTombstoneExchangeState(initialized.state)
-  const common = await bases(c, state, localWire, remoteWire, new WebDavClient(c.target, runtime.password, runtime.signal), initialized.original)
+  const client = new WebDavClient(c.target, runtime.password, runtime.signal)
+  let origin = initialized.original?.manifest ?? local.initialBaseline?.manifest
+  const common = await bases(c, state, localWire, remoteWire, client, initialized.original)
   if (!local.state && state.source.kind === 'initial-receipt') {
     if (common.missing.length) { const all = state.baseline.map(row => row.key)
       state = M.validateTombstoneExchangeState({ ...state, baseline: state.baseline.map(row => ({ ...row, dependencyKeys: all.filter(key => key !== row.key),
@@ -366,6 +388,7 @@ async function prepareTombstone(db: Database.Database, c: Context, runtime: Sync
     if (state.source.kind === 'confirmed-publication') {
       const seeds = await readConfirmedSyncedPublicationSeeds(db, { userDataRoot: c.root, target: c.target }), seed = seeds.find(row => row.operationId === state.source.operationId)
       if (!seed || publicationHash(publicationJson(seed.manifest)) !== state.source.manifestHash) return publicationInvalid('删除planner原confirmed seed缺失/被改。')
+      origin = seed.manifest
       original = validateSyncedProtocol5Snapshot(seed.manifest, seed.records.map(row => ({ key: row.key, record: row.record })))
     } else if (!local.initialBaseline || local.initialBaseline.result.operationId !== state.source.operationId || local.initialBaseline.result.manifestHash !== state.source.manifestHash)
       return publicationInvalid('删除planner原initial seed缺失/被改。')
@@ -378,6 +401,7 @@ async function prepareTombstone(db: Database.Database, c: Context, runtime: Sync
       for (const row of state.baseline) if (row.acceptedOperationId === state.source.operationId && !same(row, expected.get(row.key))) return publicationInvalid('删除baseline冒借/修改原seed事实。')
     } else if (state.baseline.some(row => row.acceptedOperationId === state.source.operationId)) common.missing.push(...state.baseline.map(row => row.key))
   }
+  await assertKnownRemoteLineage(db, c, client, state, origin, remote.manifest)
   if (capture(db, c).fingerprint !== local.fingerprint) return { status: 'stale', side: 'local' }
   const planningAuthority = deletionAuthority(local, sort(common.missing), deferredKeys)
   const plan = makeTombstonePlan({ operationId: c.request.operationId, localPhysical, localKnowledge: localWire, remote: remoteWire, baseRecords: common.records,
@@ -664,17 +688,33 @@ async function verifyLocalMaterial(db: Database.Database, c: Context, saved: Spo
   if (!value) return false
   return capture(db, c).fingerprint === saved.localFingerprint && value.snapshot.localFingerprint === capture(db, c).snapshot.localFingerprint
 }
+async function verifyPublishedPredecessor(client: WebDavClient, c: Context, saved: Spool): Promise<void> {
+  const { manifest } = saved.plan.nextRemote, parentHash = saved.job.descriptor.expectedRemote.manifestHash
+  if (!manifest.history || !saved.plan.writes.length) return
+  if (manifest.history.previousHash !== parentHash) return publicationInvalid('后继与原 CAS 的前驱不一致。')
+  await network(() => assertProtocol5ManifestLineage(client, c.target, manifest, parentHash))
+}
 async function publish(db: Database.Database, c: Context, saved: Spool, runtime: SyncedExchangeRuntime): Promise<{ status: 'confirmed'; etag: string } | { status: 'retry' } | { status: 'stale' }> {
   const client = new WebDavClient(c.target, runtime.password, runtime.signal), original = await network(() => client.getVersioned('manifest.json', PUBLICATION_RECORD_MAX_BYTES))
+  const confirmReadback = async (etag: string) => {
+    await verifyPublishedPredecessor(client, c, saved)
+    confirm(db, c, saved, etag)
+    return { status: 'confirmed' as const, etag }
+  }
   if (original && publicationHash(original.bytes) === saved.job.descriptor.next.manifestHash) {
     // GET-only historical confirmation never becomes permission to send old bytes against new local state.
     const last = db.transaction(() => { current(db, c); return phases(db, saved.job).at(-1)! })()
-    if (last.phase !== 'prepared') { confirm(db, c, saved, original.etag); return { status: 'confirmed', etag: original.etag } }
+    if (last.phase !== 'prepared') return confirmReadback(original.etag)
   }
   if (!original || publicationHash(original.bytes) !== saved.job.descriptor.expectedRemote.manifestHash || original.etag !== saved.job.descriptor.expectedRemote.etag) return { status: 'retry' }
   await network(() => client.test())
   if (!await verifyLocalMaterial(db, c, saved) || !claim(db, c, saved)) return { status: 'stale' }
   // A committed possible transition precedes every content HEAD/PUT, including temporary manifest paths.
+  const history = saved.plan.nextRemote.manifest.history
+  if (history) {
+    if (history.previousHash !== saved.job.descriptor.expectedRemote.manifestHash) return publicationInvalid('后继与原 CAS 的前驱不一致。')
+    await network(() => preserveProtocol5Predecessor(client, original.bytes, history.previousHash!))
+  }
   for (const asset of saved.job.descriptor.next.assets) {
     if (await network(() => client.exists(asset.path))) { const old = await network(() => client.get(asset.path, ATTACHMENT_MAX_FILE_BYTES))
       if (!old || old.bytes.length !== asset.bytes || publicationHash(old.bytes) !== asset.hash) return publicationInvalid('exchange远端asset缓存坏hash。') }
@@ -692,13 +732,13 @@ async function publish(db: Database.Database, c: Context, saved: Spool, runtime:
     if (cause instanceof WebDavHttpError && cause.status === 412) return { status: 'retry' }
     try {
       const original = await network(() => client.getVersioned('manifest.json', PUBLICATION_RECORD_MAX_BYTES))
-      if (original && publicationHash(original.bytes) === saved.job.descriptor.next.manifestHash) { confirm(db, c, saved, original.etag); return { status: 'confirmed', etag: original.etag } }
+      if (original && publicationHash(original.bytes) === saved.job.descriptor.next.manifestHash) return await confirmReadback(original.etag)
     } catch (queryFailure) { throw new SyncedPublicationError('transport', 'exchange落盘响应和原bytes只读确认都失败；原possible保留。', { cause, queryFailure }) }
     throw new SyncedPublicationError('transport', 'exchange Manifest响应不确定；原possible/job/spool保持，可原operation GET确认。', cause)
   }
   const readback = await network(() => client.getVersioned('manifest.json', PUBLICATION_RECORD_MAX_BYTES))
   if (!readback || publicationHash(readback.bytes) !== saved.job.descriptor.next.manifestHash) return { status: 'retry' }
-  confirm(db, c, saved, readback.etag); return { status: 'confirmed', etag: readback.etag }
+  return confirmReadback(readback.etag)
 }
 function documentPaths(records: readonly SyncedProtocol5Record[]): Map<string, string> {
   const docs = new Map(records.flatMap(record => record.kind === 'document' ? [[record.id, record] as const] : [])), result = new Map<string, string>(), used = new Set<string>(), siblings = new Set<string>()
@@ -1539,7 +1579,7 @@ async function historicalBothPublication(db:Database.Database,c:Context,saved:Sp
   if(confirmed)return {etag:confirmed.remoteEtag!,blocked:confirmed.phase==='blocked'?confirmed.blocked??null:null}
   if(facts.at(-1)!.phase==='prepared')return null
   const client=new WebDavClient(c.target,runtime.password,runtime.signal),actual=await network(()=>client.getVersioned('manifest.json',PUBLICATION_RECORD_MAX_BYTES))
-  if(actual&&publicationHash(actual.bytes)===saved.job.descriptor.next.manifestHash){confirm(db,c,saved,actual.etag);return {etag:actual.etag,blocked:null}}
+  if(actual&&publicationHash(actual.bytes)===saved.job.descriptor.next.manifestHash){await verifyPublishedPredecessor(client,c,saved);confirm(db,c,saved,actual.etag);return {etag:actual.etag,blocked:null}}
   return null
 }
 async function runBoth(db:Database.Database,c:Context,runtime:SyncedExchangeRuntime):Promise<T.SyncedExchangeBothResult> {
@@ -1777,7 +1817,7 @@ function deletionPreviewFacts(c:Context,index:DeletionChoicePreviewIndex,source:
     recoveryEpoch:index.recoveryEpoch,remoteWorkspaceId:source.remoteWorkspaceId,targetFingerprint:c.request.targetFingerprint,stateGeneration:source.state.generation,
     remoteManifestHash:source.remoteSource.manifestHash,createdAt:index.createdAt,components})
 }
-async function loadDeletionPreview(db:Database.Database,c:Context,id:string):Promise<{index:DeletionChoicePreviewIndex;facts:DC.SyncedExchangeDeletionPreview}|null> {
+async function loadDeletionPreview(db:Database.Database,c:Context,id:string):Promise<{index:DeletionChoicePreviewIndex;facts:DC.SyncedExchangeDeletionPreview;source:DC.DeletionDecisionSource}|null> {
   const index=db.transaction(()=>{current(db,c);return readDeletionChoicePreviewIndex(db,id,c.request)})()
   if(!index)return null
   if(index.workspaceScope!==c.workspaceScope||index.recoveryEpoch!==c.recoveryEpoch)return unavailable('删除预览属于其它scope/epoch。')
@@ -1797,22 +1837,30 @@ async function loadDeletionPreview(db:Database.Database,c:Context,id:string):Pro
     ||value.stateRaw!==null&&typeof value.stateRaw!=='string')return publicationInvalid('删除预览原全图展示/guards不可重现。')
   const final=db.transaction(()=>{current(db,c);return readDeletionChoicePreviewIndex(db,id,c.request)})()
   if(!same(final,index))return publicationInvalid('读取删除预览期间原index变化。')
-  return {index,facts:deletionPreviewFacts(c,index,source,plan.deletionPreviews)}
+  return {index,facts:deletionPreviewFacts(c,index,source,plan.deletionPreviews),source}
+}
+function assertExpectedDeletionPreview(c: Context, actual: string): void {
+  if (c.expectedDeletionPreviewHash !== undefined && c.expectedDeletionPreviewHash !== actual) {
+    return publicationInvalid('删除冲突预览已变化，请重新读取。')
+  }
 }
 async function attachDeletionPreview(db:Database.Database,c:Context,request:M.ExchangeDeletionRequest):Promise<void> {
   const loaded=await loadDeletionPreview(db,c,request.previewId)
   if(!loaded)return unavailable('删除resolve缺真实Main原preview。')
+  assertExpectedDeletionPreview(c, loaded.index.previewHash)
   const byId=new Map(loaded.facts.components.map(row=>[row.componentId,row]))
   const selections=request.decisions.map(decision=>{const preview=byId.get(decision.componentId)
     if(!preview||!preview.choices.includes(decision.choice))return publicationInvalid('删除决定不属于原可执行preview。')
     return {preview,decision}})
   c.deletionChoice={resolution:{previewId:request.previewId,previewHash:loaded.index.previewHash,decisionsHash:DC.deletionDecisionsHash(request.decisions)},selections}
 }
-async function createDeletionPreview(db:Database.Database,c:Context,id:string,runtime:SyncedExchangeRuntime):Promise<DC.SyncedExchangeDeletionPreviewResult> {
+type DeletionPreviewWithSource = Exclude<DC.SyncedExchangeDeletionPreviewResult, {status:'ready'}>
+  | { status:'ready'; preview:DC.SyncedExchangeDeletionPreview; source:DC.DeletionDecisionSource }
+async function createDeletionPreview(db:Database.Database,c:Context,id:string,runtime:SyncedExchangeRuntime):Promise<DeletionPreviewWithSource> {
   if(db.pragma('user_version',{simple:true})===26)return Object.freeze({status:'unsupported',reason:'schema-27-required'})
   if(db.pragma('user_version',{simple:true})!==27)return publicationInvalid('删除预览不接受未知schema。')
   const existing=await loadDeletionPreview(db,c,id)
-  if(existing)return frozenPublicationFacts({status:'ready',preview:existing.facts})
+  if(existing)return {status:'ready',preview:existing.facts,source:existing.source}
   const prepared=await prepareDeletionChoices(db,c,runtime,[])
   if(!('plan'in prepared)){if(prepared.status==='missing'||prepared.status==='unsupported'||prepared.status==='stale')return frozenPublicationFacts(prepared);return publicationInvalid('删除预览不接受写入结果冒充source。')}
   if(!('decisionSource'in prepared.plan))return publicationInvalid('删除预览缺真实source。')
@@ -1825,24 +1873,26 @@ async function createDeletionPreview(db:Database.Database,c:Context,id:string,ru
   await durable(join(dir,'preview.json'),bytes);await syncDirectory(dir)
   const installed=db.transaction(()=>{current(db,c);if(capture(db,c).fingerprint!==prepared.local.fingerprint)return false
     putImmutable(db,deletionChoicePreviewKey(id),index,now);return true}).immediate()
-  return installed?frozenPublicationFacts({status:'ready',preview:deletionPreviewFacts(c,index,plan.decisionSource,plan.deletionPreviews)}):Object.freeze({status:'stale',side:'local'})
+  return installed?{status:'ready',preview:deletionPreviewFacts(c,index,plan.decisionSource,plan.deletionPreviews),source:plan.decisionSource}:Object.freeze({status:'stale',side:'local'})
 }
 async function historicalDeletionPublication(db:Database.Database,c:Context,saved:Spool,runtime:SyncedExchangeRuntime):Promise<{etag:string}|null> {
   const facts=db.transaction(()=>{current(db,c);return phases(db,saved.job)})(),confirmed=[...facts].reverse().find(row=>['remote-confirmed','published-local-deferred','settled'].includes(row.phase)&&row.remoteEtag!==null)
   if(confirmed)return {etag:confirmed.remoteEtag!}
   if(facts.at(-1)!.phase==='prepared')return null
   const client=new WebDavClient(c.target,runtime.password,runtime.signal),actual=await network(()=>client.getVersioned('manifest.json',PUBLICATION_RECORD_MAX_BYTES))
-  if(actual&&publicationHash(actual.bytes)===saved.job.descriptor.next.manifestHash){confirm(db,c,saved,actual.etag);return {etag:actual.etag}}
+  if(actual&&publicationHash(actual.bytes)===saved.job.descriptor.next.manifestHash){await verifyPublishedPredecessor(client,c,saved);confirm(db,c,saved,actual.etag);return {etag:actual.etag}}
   return null
 }
 async function runDeletionChoices(db:Database.Database,c:Context,runtime:SyncedExchangeRuntime):Promise<M.SyncedExchangeResult> {
   const replay=db.transaction(()=>readSyncedExchangeReceipt(db,c.request))()
-  if(replay){if(replay.version!==7)return publicationInvalid('删除选择不能继承其它版本ACK。');return frozenPublicationFacts({...replay.result,replayed:true})}
+  if(replay){if(replay.version!==7)return publicationInvalid('删除选择不能继承其它版本ACK。')
+    assertExpectedDeletionPreview(c,replay.provenance.resolution.previewHash);return frozenPublicationFacts({...replay.result,replayed:true})}
   if(db.pragma('user_version',{simple:true})===26)return Object.freeze({status:'unsupported',reason:'schema-27-required'})
   if(db.pragma('user_version',{simple:true})!==27)return publicationInvalid('删除选择未知schema。')
   const first=capture(db,c),originalGuards=first.keyGuards
   let head=db.transaction(()=>readHead(db,c))(),saved=head?await loadSpool(db,c,head):null,deferredKeys:string[]=[]
-  if(saved){if(saved.job.version!==7)return publicationInvalid('删除选择不能重解释旧job。');c.deletionChoice={resolution:saved.job.resolution,selections:saved.planning.deletionSelections??[]}}
+  if(saved){if(saved.job.version!==7)return publicationInvalid('删除选择不能重解释旧job。')
+    assertExpectedDeletionPreview(c,saved.job.resolution.previewHash);c.deletionChoice={resolution:saved.job.resolution,selections:saved.planning.deletionSelections??[]}}
   else {if(c.request.method!=='resolveSyncedExchangeDeletions')return publicationInvalid('删除选择方法不符。');await attachDeletionPreview(db,c,c.request)}
   for(let turn=0;turn<8;turn++){
     aborted(runtime.signal)
@@ -1880,7 +1930,7 @@ async function runDeletionChoices(db:Database.Database,c:Context,runtime:SyncedE
   return Object.freeze({status:'stale',side:'remote'})
 }
 /** Main-only explicit deletion choices. Callers provide selectors, never records, pins or raw authority. */
-export async function previewSyncedExchangeDeletions(db:Database.Database,input:DC.SyncedExchangeDeletionPreviewInput,options:SyncedExchangeRuntime):Promise<DC.SyncedExchangeDeletionPreviewResult> {
+async function readDeletionPreview(db:Database.Database,input:DC.SyncedExchangeDeletionPreviewInput,options:SyncedExchangeRuntime):Promise<DeletionPreviewWithSource> {
   let c:Context|null=null,key:string|null=null,owns=false
   try{M.assertExchangeData(input);assertSyncedShape(input,['previewId','userDataRoot','target']);if(!isSyncedUuid(input.previewId))return publicationInvalid('删除previewId无效。')
     c=context(db,{operationId:input.previewId,userDataRoot:input.userDataRoot,target:input.target});const runtime=credentials(options);connections.set(c,db)
@@ -1889,10 +1939,20 @@ export async function previewSyncedExchangeDeletions(db:Database.Database,input:
   }catch(cause){if(cause instanceof SyncedPublicationError)throw cause;throw new SyncedPublicationError(cause instanceof Error&&/SQLITE|sqlite|database|constraint|trigger/i.test(cause.message)?'database':'invalid','真实删除预览失败；原事实保持。',cause)}
   finally{if(key&&owns)running.delete(key);if(c)connections.delete(c)}
 }
+export async function previewSyncedExchangeDeletions(db:Database.Database,input:DC.SyncedExchangeDeletionPreviewInput,options:SyncedExchangeRuntime):Promise<DC.SyncedExchangeDeletionPreviewResult> {
+  const result=await readDeletionPreview(db,input,options)
+  return result.status==='ready'?frozenPublicationFacts({status:'ready',preview:result.preview}):result
+}
+export async function previewSyncedExchangeDeletionDetails(db:Database.Database,input:DC.SyncedExchangeDeletionPreviewInput,options:SyncedExchangeRuntime) {
+  const result=await readDeletionPreview(db,input,options)
+  return result.status==='ready'?frozenPublicationFacts({status:'ready' as const,preview:projectDeletionPreview(result.preview,result.source)}):result
+}
 export async function resolveSyncedExchangeDeletions(db:Database.Database,input:DC.SyncedExchangeDeletionResolveInput,options:SyncedExchangeRuntime):Promise<M.SyncedExchangeResult> {
   let c:Context|null=null,key:string|null=null,owns=false
-  try{M.assertExchangeData(input);assertSyncedShape(input,['operationId','userDataRoot','target','previewId','decisions']);const decisions=DC.validateDeletionDecisions(input.decisions)
+  try{M.assertExchangeData(input);assertSyncedShape(input,['operationId','userDataRoot','target','previewId','decisions'],['expectedPreviewHash']);const decisions=DC.validateDeletionDecisions(input.decisions)
+    if(input.expectedPreviewHash!==undefined&&(typeof input.expectedPreviewHash!=='string'||!/^[a-f0-9]{64}$/.test(input.expectedPreviewHash)))return publicationInvalid('预期删除预览哈希无效。')
     c=context(db,{operationId:input.operationId,userDataRoot:input.userDataRoot,target:input.target});c.request=M.validateExchangeRequest({...c.request,method:'resolveSyncedExchangeDeletions',previewId:input.previewId,decisions})
+    c.expectedDeletionPreviewHash=input.expectedPreviewHash
     const runtime=credentials(options);connections.set(c,db);key=publicationJson([c.databasePath,c.workspaceScope,c.recoveryEpoch,c.request.targetFingerprint]);if(running.has(key))return unavailable('同一真实target已有exchange在途。');running.add(key);owns=true
     return await runDeletionChoices(db,c,runtime)
   }catch(cause){if(cause instanceof SyncedPublicationError)throw cause;throw new SyncedPublicationError(cause instanceof Error&&/SQLITE|sqlite|database|constraint|trigger|exchange exact late receipt/i.test(cause.message)?'database':'invalid','真实删除选择失败；原job/possible保持。',cause)}

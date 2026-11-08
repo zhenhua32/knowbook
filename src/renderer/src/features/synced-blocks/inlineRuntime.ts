@@ -2,21 +2,29 @@ import { adoptDocumentHostResult, restoreDocumentHostHistory } from '../../utils
 import type { DocumentDetail } from '@shared/contracts'
 import { SyncedStructureCommands, type StructureCommandView } from './structureCommands'
 import { SyncedHostStructureHistory } from './hostStructureHistory'
-import type { SyncedGroupBinding, SyncedGroupController } from './types'
-import type { SyncedBlocksApi as MainSyncedApi, SyncedStructureApplied, SyncedStructureInput } from '@shared/synced-blocks'
+import { syncedSnapshotGuard, type SyncedGroupBinding, type SyncedGroupController } from './types'
+import type { SyncedBlocksApi as MainSyncedApi, SyncedGroupSnapshot, SyncedHostWorkingBefore, SyncedStructureApplied, SyncedStructureInput } from '@shared/synced-blocks'
 import type { SyncedEditingMethod, SyncedEditingMethods, SyncedEditingRequest, SyncedEditingSession } from '@shared/synced-editing-session'
 import type { SyncedInlineInstanceAddress, WorkspaceSearchOccurrence } from '@shared/workspace-search-occurrence'
+import type { EditorRecoveryDraft, EditorRecoveryWorkspace } from '@shared/editor-recovery-drafts'
 import { isSameWorkspaceSearchOccurrence } from '@shared/workspace-search-occurrence'
-import { parseSyncedBlockPayload } from '@shared/syncedBlockValidation'
+import { isSyncedUuid, parseSyncedBlockPayload, validateSyncedCanonicalEdit, validateSyncedGroupSnapshot } from '@shared/syncedBlockValidation'
 import { getSyncedWorkspaceController, flushSyncedWorkspacePendingChanges } from './controller'
 import type { SyncedReadSourcesPort } from './sourceReadOwner'
 import type { SyncedHostSourceCurrent } from './SyncedHostSourceDialog'
 import type { PreparedSyncedHostSource } from './hostSource'
-import { readSyncedHostSourceSubmission, acceptSyncedHostSourceCheckpoint,
+import { readSyncedHostSourceSubmission, acceptSyncedHostSourceCheckpoint, createSyncedHostSourceDraft, restoreHostRecoverySource, type SyncedHostSourceDraft,
   type SyncedHostSourceSubmission, type SyncedHostSourceApplyOutcome } from './hostSource'
-import type { MarkdownSourceLocalState } from '../../components/DocumentMarkdownSourceDialog'
-import { areDocumentDraftBlocksEqual } from '../../utils/documentDraftComparison'
-import { installCanonicalInlineTransitions, hasCanonicalInlineAsyncEdits, signalCanonicalInlineUnlock, type CanonicalInlineFlushOptions } from './inlineBridge'
+import type { MarkdownSourceLocalState, MarkdownSourceRecoveryOpening, MarkdownSourceRecoverySnapshot } from '../../components/DocumentMarkdownSourceDialog'
+import type { MarkdownSourceDraft } from '../../utils/markdownSourceDraft'
+import { createCanonicalSourceDraft } from './canonicalSource'
+import { areDocumentDraftBlocksEqual, normalizeComparableDocumentTitle } from '../../utils/documentDraftComparison'
+import { installCanonicalInlineTransitions, hasCanonicalInlineAsyncEdits, signalCanonicalInlineUnlock, type CanonicalInlineFlushOptions,
+  type CanonicalHeadingAction } from './inlineBridge'
+import { EditorRecoveryJournal, type EditorRecoveryCapture } from './editorRecoveryJournal'
+import { isDirectlyRecoverable, readRecoveryHost, readRecoveryHostAddress, readRecoveryPayload, readRecoverySource,
+  recoveryDocumentHash, sameRecoveryDocument, unchangedRecoveryBindings } from './editorRecoveryPayload'
+import { restoreRecoveryAnchors } from './recoverySourceAnchors'
 
 export interface InlineHostPort {
   getCurrent: () => SyncedHostSourceCurrent | null
@@ -26,6 +34,8 @@ export interface InlineHostPort {
   applyOrdinarySource?: (before: SyncedHostSourceCurrent, after: PreparedSyncedHostSource['finalAfter'][number]) => boolean
   flushHost: () => Promise<boolean>
   navigateHost: (documentId: string, instanceId: string, shouldContinue: () => boolean) => Promise<boolean>
+  navigateDocument?: (documentId: string, shouldContinue: () => boolean) => Promise<boolean>
+  stageRecovery?: (working: SyncedHostWorkingBefore['workingBefore']) => boolean
   notify: (message: string) => void
   isReady?: () => boolean
   isComposing?: () => boolean
@@ -39,9 +49,13 @@ export interface InlineMount {
   mountEpoch: object; root: () => HTMLElement | null; isCurrent: () => boolean
 }
 export interface InlineOpening { address: SyncedInlineInstanceAddress; binding: SyncedGroupBinding; group: SyncedGroupController }
-type SourceState = { id: object; local: Readonly<MarkdownSourceLocalState>; report: (state: Readonly<MarkdownSourceLocalState>) => void; close: () => void }
-export type InlineDialog = ({ kind: 'canonical'; binding: SyncedGroupBinding; opener: HTMLElement | null }
-  | { kind: 'host'; opening: SyncedHostSourceCurrent; opener: HTMLElement | null; operationId: string }) & SourceState
+type SourceState = { id: object; local: Readonly<MarkdownSourceLocalState>; recovery: Readonly<MarkdownSourceRecoverySnapshot> | null;
+  report: (state: Readonly<MarkdownSourceLocalState>) => void;
+  reportRecovery: (snapshot: Readonly<MarkdownSourceRecoverySnapshot> | null) => void; close: () => void }
+export type InlineDialog = ({ kind: 'canonical'; binding: SyncedGroupBinding; opener: HTMLElement | null;
+  baseline: ReturnType<SyncedGroupBinding['getCurrent']>; initialRecovery?: MarkdownSourceRecoveryOpening<MarkdownSourceDraft> }
+  | { kind: 'host'; opening: SyncedHostSourceCurrent; opener: HTMLElement | null; operationId: string;
+    initialRecovery?: MarkdownSourceRecoveryOpening<SyncedHostSourceDraft> }) & SourceState
 export interface InlineNavigation {
   sequence: number; occurrence: WorkspaceSearchOccurrence; shouldContinue: () => boolean
   finish: (success: boolean) => void
@@ -57,6 +71,7 @@ const clean = (state: ReturnType<SyncedGroupController['getSnapshot']>) => !stat
 class InlineRuntime {
   readonly commands: SyncedStructureCommands
   readonly history: SyncedHostStructureHistory
+  readonly recovery = new EditorRecoveryJournal(() => this.captureRecovery(), error => this.report(String(error)))
   private session: SyncedEditingSession | null = null
   private invalid = false
   private groups = new Set<string>()
@@ -148,6 +163,7 @@ class InlineRuntime {
       restoreHistory: (transition, direction) => this.history.restore(transition, direction), ownsHistory: transition => this.history.owns(transition),
       adoptHostResult: adoptDocumentHostResult,
       runHostHistory: restoreDocumentHostHistory,
+      openHeading: (...input) => this.openHeading(...input),
       notifyBlocked: () => this.notify('请先完成共享正文或源码的保存。', 'Finish saving the shared body or source first.') })
   }
   /** A shell page change keeps the shared host editor hook and its ordinary W.
@@ -163,6 +179,160 @@ class InlineRuntime {
   private emit() {
     this.ui = Object.freeze({ revision: ++this.revision, locked: this.isLocked(), dialog: this.dialog, navigation: this.navigation, command: this.commands.getSnapshot() })
     for (const listener of [...this.listeners, ...this.idle]) { try { listener() } catch (error) { console.error('Synced view observer failed', error) } }
+    if (!this.locked) this.recovery.schedule()
+  }
+
+  private captureRecovery(): EditorRecoveryCapture[] {
+    const captured: EditorRecoveryCapture[] = [], current = this.sourceCurrent(), persisted = this.host?.getPersisted()
+    if (current && persisted?.id === current.host.documentId) {
+      const { host, hostSession } = current, working = host.workingBefore
+      const pending = this.hostWrites.get(hostSession)?.input ?? this.history.recoveryInput() ?? this.commands.recoveryInput()
+      if (this.host?.isComposing?.()) captured.push({ owner: hostSession })
+      else if (pending || normalizeComparableDocumentTitle(working.title) !== normalizeComparableDocumentTitle(persisted.title)
+        || working.summary.trim() !== persisted.summary.trim() || !areDocumentDraftBlocksEqual(working.blocks, persisted.blocks)) {
+        captured.push({ owner: hostSession, draft: { kind: 'document', targetId: host.documentId,
+          data: recoveryDocumentHash(persisted).then(persistedHash => ({ version: 1, host, persistedHash, pending })) } })
+      }
+    }
+    for (const id of this.groups) {
+      const group = this.workspace.getGroup(id)
+      if (!group) continue
+      const state = group.getSnapshot()
+      if (state.composingInstanceIds.length) captured.push({ owner: group })
+      else if (!clean(state)) captured.push({ owner: group, draft: { kind: 'group', targetId: id, data: {
+        version: 1, snapshot: state.snapshot, working: state.working, incoming: state.incoming,
+        bindingClaims: group.recoveryClaims?.(), pending: group.recoveryInput?.() ?? state.pending
+      } } })
+    }
+    const dialog = this.dialog
+    if (dialog?.local.composing) captured.push({ owner: dialog.id })
+    else if (dialog) {
+      const pending = this.sourceWrites.get(dialog.id)?.input
+      if (dialog.recovery || pending) {
+        const targetId = dialog.kind === 'host' ? dialog.opening.host.documentId : dialog.binding.scope.owner.groupId
+        const { captureAnchors, ...text } = dialog.recovery ?? {}
+        const working = dialog.recovery && { ...text, anchors: captureAnchors?.() }
+        const data = { version: 1, sourceKind: dialog.kind, working, pending }
+        if (dialog.kind === 'host') {
+          const { workingBefore, ...host } = dialog.opening.host
+          captured.push({ owner: dialog.id, draft: { kind: 'source', targetId,
+            data: recoveryDocumentHash(workingBefore).then(hostHash => ({ ...data, base: { host, hostHash } })) } })
+        } else {
+          const base = { snapshot: dialog.baseline.snapshot, working: dialog.baseline.working, instanceId: dialog.binding.scope.instanceId }
+          captured.push({ owner: dialog.id, draft: { kind: 'source', targetId, data: { ...data, base } } })
+        }
+      }
+    }
+    return captured
+  }
+
+  journalClose(requestId: string) {
+    const canJournal = () => this.ownsClose(requestId) && this.closeReady() && !this.rpc.size
+      && !hasCanonicalInlineAsyncEdits() && !this.host?.isComposing?.() && !this.dialog?.local.applying && !this.dialog?.local.importing
+    return this.recovery.close(requestId, canJournal)
+  }
+
+  hasComposition() {
+    return Boolean(this.host?.isComposing?.() || this.dialog?.local.composing
+      || [...this.groups].some(id => this.workspace.getGroup(id)?.getSnapshot().composingInstanceIds.length))
+  }
+
+  async readRecoveryOperation(workspace: EditorRecoveryWorkspace, documentId: string, operationId: string) {
+    if (this.isLocked() || !isSyncedUuid(operationId)) return 'unavailable' as const
+    const live = await window.knowbook.getEditorRecoveryWorkspace()
+    if (this.isLocked() || live.workspaceScope !== workspace.workspaceScope || live.recoveryEpoch !== workspace.recoveryEpoch) return 'unavailable' as const
+    const opened = await this.open({ kind: 'host', hostDocumentId: documentId })
+    if (!opened || this.isLocked() || opened.session.workspaceScope !== workspace.workspaceScope
+      || opened.session.recoveryEpoch !== workspace.recoveryEpoch) return 'unavailable' as const
+    return (await this.invoke('getSyncedOperation', { clientOperationId: operationId })).status
+  }
+
+  async recoverDraft(record: EditorRecoveryDraft) {
+    const payload = readRecoveryPayload(record), host = this.host, attention = this.attention
+    const current = () => this.host !== null && this.attention === attention && !this.isLocked() && !this.invalid && !this.dialog
+      && !this.history.isBusy() && !this.commands.pending() && !this.hasComposition() && !hasCanonicalInlineAsyncEdits()
+    if (!host || !payload || !isDirectlyRecoverable(record, payload) || !current()) return false
+    const workspaceMatches = (live: EditorRecoveryWorkspace) => live.workspaceScope === record.workspace.workspaceScope
+      && live.recoveryEpoch === record.workspace.recoveryEpoch
+    if (!workspaceMatches(await window.knowbook.getEditorRecoveryWorkspace()) || !current()) return false
+    const stillRetained = async () => {
+      const row = await window.knowbook.readEditorRecoveryDraft(record.recordId)
+      return current() && row?.generation === record.generation && row.hash === record.hash && workspaceMatches(row.workspace)
+        && workspaceMatches(await window.knowbook.getEditorRecoveryWorkspace()) && current()
+    }
+
+    if (record.kind === 'document' || payload.sourceKind === 'host') {
+      const document = record.kind === 'document' ? readRecoveryHost(payload.host) : null
+      const original = document ?? readRecoveryHostAddress(payload.base?.host)
+      const { documentId, expectedPersistedUpdatedAt } = original
+      if (documentId !== record.targetId || !host.navigateDocument || !await host.navigateDocument(documentId, current)) return false
+      const opening = await this.waitForRecoveryTarget(documentId, current, () => this.sourceCurrent())
+      if (!opening || opening.host.expectedPersistedUpdatedAt !== expectedPersistedUpdatedAt) return false
+      const opened = await this.open({ kind: 'host', hostDocumentId: documentId })
+      const persisted = await window.knowbook.getDocumentDetail(documentId)
+      if (!opened || !workspaceMatches(opened.session) || !persisted || persisted.updatedAt !== expectedPersistedUpdatedAt
+        || !sameRecoveryDocument(opening.host.workingBefore, persisted)) return false
+      const base = document ? payload.persisted : payload.base?.host?.workingBefore
+      const hash = document ? payload.persistedHash : payload.base?.hostHash
+      const exact = hash ? await recoveryDocumentHash(document ? persisted : opening.host.workingBefore) === hash
+        : base && sameRecoveryDocument(base, persisted)
+      if (!exact || !await stillRetained()) return false
+      const latest = this.sourceCurrent()
+      if (latest?.hostSession !== opening.hostSession || latest.editSequence !== opening.editSequence
+        || latest.host.expectedPersistedUpdatedAt !== expectedPersistedUpdatedAt || host.canStartStructure?.() === false) return false
+      if (document) return host.stageRecovery?.(document.workingBefore) ?? false
+      const { source, start, end, anchors } = readRecoverySource(payload.working)
+      const baseDraft = createSyncedHostSourceDraft(latest.host)
+      const draft = restoreHostRecoverySource(baseDraft, source, anchors)
+      this.dialog = { ...this.sourceState(), kind: 'host', opening: latest, opener: null, operationId: crypto.randomUUID(),
+        initialRecovery: { base: baseDraft, draft, start, end } }
+      this.emit()
+      return true
+    }
+
+    const baseline = validateSyncedGroupSnapshot(record.kind === 'group' ? payload.snapshot : payload.base?.snapshot)
+    const instance = record.kind === 'source' ? baseline.instances.find(item => item.instanceId === payload.base?.instanceId)
+      : baseline.instances.find(item => item.hostDocumentId === host.selectedHostId()) ?? baseline.instances[0]
+    if (!instance || baseline.groupId !== record.targetId || !await host.navigateHost(instance.hostDocumentId, instance.instanceId, current)) return false
+    const key = JSON.stringify([instance.hostDocumentId, instance.instanceId])
+    const binding = await this.waitForRecoveryTarget(instance.hostDocumentId, current, () => this.mounts.get(key)?.binding)
+    if (!binding?.isCurrent() || binding.scope.bindingVersion !== instance.bindingVersion) return false
+    const opened = await this.open({ kind: 'instance', hostDocumentId: instance.hostDocumentId, instanceId: instance.instanceId, groupId: baseline.groupId })
+    if (!opened?.snapshot || !workspaceMatches(opened.session) || !this.matchesRecoveryGroup(baseline, opened.snapshot) || !await stillRetained()) return false
+    const state = binding.getCurrent()
+    if (!binding.isCurrent() || !clean(state) || !this.matchesRecoveryGroup(baseline, state.snapshot)) return false
+    if (record.kind === 'group') {
+      const working = validateSyncedCanonicalEdit(payload.working), recorded = payload.bindingClaims
+      const claims = recorded === 'legacy' || recorded === undefined && !baseline.bindings.length ? unchangedRecoveryBindings(baseline, working) : recorded
+      if (!claims || claims.some(claim => claim.kind === 'copy' && claim.source.kind === 'ticket')) return false
+      return binding.apply({ blocks: working, expectedEditSequence: state.editSequence, guards: syncedSnapshotGuard(state.snapshot),
+        bindingClaims: claims, bookmark: null, transactionId: crypto.randomUUID() })
+    }
+    if (payload.sourceKind !== 'canonical' || !payload.base?.working || !areDocumentDraftBlocksEqual(payload.base.working, state.working)) return false
+    const { source, start, end, anchors } = readRecoverySource(payload.working)
+    const base = createCanonicalSourceDraft(state.working), draft = restoreRecoveryAnchors(base, source, anchors)
+    this.dialog = { ...this.sourceState(), kind: 'canonical', binding, opener: null, baseline: state,
+      initialRecovery: { base, draft, start, end } }
+    this.emit()
+    return true
+  }
+
+  private matchesRecoveryGroup(expected: SyncedGroupSnapshot, actual: SyncedGroupSnapshot) {
+    return expected.groupId === actual.groupId && expected.creationId === actual.creationId && expected.createdAt === actual.createdAt
+      && expected.revision === actual.revision && expected.topologyRevision === actual.topologyRevision
+  }
+
+  private async waitForRecoveryTarget<T>(documentId: string, current: () => boolean, read: () => T | null | undefined) {
+    const deadline = performance.now() + 5000
+    while (current()) {
+      if (this.host?.selectedHostId() === documentId && this.host.isReady?.()) {
+        const result = read()
+        if (result) return result
+      }
+      if (performance.now() >= deadline) return null
+      await new Promise(resolve => setTimeout(resolve, 20))
+    }
+    return null
   }
   private adoptStructure(before: SyncedHostSourceCurrent, result: SyncedStructureApplied) {
     const accepted = this.host?.adopt(before, result) ?? false
@@ -303,7 +473,11 @@ class InlineRuntime {
   }
   private sourceState(): SourceState {
     const id = Object.freeze({})
-    return { id, local: blankSource, report: state => {
+    return { id, local: blankSource, recovery: null, reportRecovery: snapshot => {
+      if (this.dialog?.id !== id) return
+      this.dialog.recovery = snapshot
+      if (!this.locked) this.recovery.schedule()
+    }, report: state => {
       if (this.dialog?.id !== id || same(this.dialog.local, state)) return
       this.dialog.local = Object.freeze({ ...state }); this.emit()
     }, close: () => { if (this.dialog?.id === id) {
@@ -312,7 +486,7 @@ class InlineRuntime {
   }
   openCanonicalSource(binding: SyncedGroupBinding, opener: HTMLElement | null) {
     if (this.isLocked() || this.dialog || this.history.isBusy() || this.commands.pending() || !binding.isCurrent()) return false
-    this.dialog = { ...this.sourceState(), kind: 'canonical', binding, opener }; this.emit(); return true
+    this.dialog = { ...this.sourceState(), kind: 'canonical', binding, opener, baseline: binding.getCurrent() }; this.emit(); return true
   }
   async openHostSource(opener: HTMLElement | null) {
     if (this.isLocked() || this.dialog || this.history.isBusy() || this.commands.pending() || !await this.host?.flushHost()) return false
@@ -464,12 +638,41 @@ class InlineRuntime {
     else request.finish(false)
     return success
   }
+  async resolveHeading(documentId: string, anchor: string, matchText: boolean, shouldContinue: () => boolean) {
+    if (this.isLocked() || !shouldContinue() || !await this.host?.flushHost()) return null
+    const saved = this.host?.getPersisted()
+    if (!shouldContinue() || saved?.id !== documentId) return null
+    return window.knowbook.resolveSyncedHeadingAnchor({ documentId, expectedUpdatedAt: saved.updatedAt, anchor, matchText })
+  }
+  private openHeading(...[target, blocks, callbacks, clear]: Parameters<CanonicalHeadingAction>) {
+    if (!target.anchor || !blocks.some(block => block.type === 'synced-block')) return
+    let current = true
+    const isCurrent = () => current
+    const missing = () => { if (current) { callbacks.onPendingTargetMissing(); clear() } }
+    void this.resolveHeading(target.documentId, target.anchor, target.wiki ?? false, isCurrent).then(async result => {
+      if (!current) return
+      if (result?.status !== 'ready') return missing()
+      if (result.kind === 'canonical') {
+        if (!await this.openSearch(result.occurrence, isCurrent)) missing()
+        return
+      }
+      if (result.kind === 'title') callbacks.onPendingTargetResolved(-1, '', 0)
+      else {
+        const index = blocks.findIndex(block => block.id === result.blockId)
+        if (index < 0) return missing()
+        callbacks.onPendingTargetResolved(index, result.blockId, result.headingIndex)
+      }
+      clear()
+    }).catch(missing)
+    return () => { current = false }
+  }
   cancelNavigation = () => { this.attention++; this.navigation?.finish(false) }
   navigationFor(hostId: string, instanceId: string) { const request = this.navigation
     return request?.occurrence.hostDocumentId === hostId && request.occurrence.instanceId === instanceId ? request : null }
   freeze(requestId: string) {
     for (const timer of this.saveTimers.values()) clearTimeout(timer)
     this.saveTimers.clear()
+    this.recovery.pause()
     this.requestId = requestId; this.locked = true; this.navigation?.finish(false); this.emit()
   }
   cancelFreeze(requestId: string) {

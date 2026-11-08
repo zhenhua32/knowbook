@@ -15,7 +15,7 @@ const runFile = promisify(execFile)
 const helperRoot = dirname(fileURLToPath(import.meta.url)), repoRoot = join(helperRoot, '..', '..')
 const electronRoot = dirname(createRequire(import.meta.url).resolve('electron/package.json'))
 
-export async function prepareCanonicalInlineProfile(): Promise<{ profile: string; seed: CanonicalInlineSeed }> {
+export async function prepareCanonicalInlineProfile(bodyBlocks = 2): Promise<{ profile: string; seed: CanonicalInlineSeed }> {
   // This source-backed Main preparer is intentionally paired with the local
   // built app, not an arbitrary packaged executable with another schema/ABI.
   if (process.env.KNOWBOOK_E2E_EXECUTABLE?.trim()) throw new Error('Canonical inline seed requires the current local build; unset KNOWBOOK_E2E_EXECUTABLE')
@@ -24,7 +24,7 @@ export async function prepareCanonicalInlineProfile(): Promise<{ profile: string
   const env: NodeJS.ProcessEnv = { ...process.env, ELECTRON_RUN_AS_NODE: '1', KNOWBOOK_USER_DATA_DIR: profile }
   delete env.ELECTRON_RENDERER_URL
   try {
-    await runFile(executable, ['--import', 'tsx', join(helperRoot, 'canonical-inline-seed.ts'), profile], {
+    await runFile(executable, ['--import', 'tsx', join(helperRoot, 'canonical-inline-seed.ts'), profile, String(bodyBlocks)], {
       cwd: repoRoot, env, windowsHide: true, timeout: 30_000, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8'
     })
     const seed = JSON.parse(readFileSync(join(profile, 'canonical-inline-seed.json'), 'utf8')) as CanonicalInlineSeed
@@ -39,8 +39,8 @@ export async function prepareCanonicalInlineProfile(): Promise<{ profile: string
 
 export async function withCanonicalInlineApp(info: TestInfo, run: (fixture: {
   context: () => ElectronAppContext; seed: CanonicalInlineSeed; restart: () => Promise<void>
-}) => Promise<void>): Promise<void> {
-  const { profile, seed } = await prepareCanonicalInlineProfile()
+}) => Promise<void>, bodyBlocks = 2): Promise<void> {
+  const { profile, seed } = await prepareCanonicalInlineProfile(bodyBlocks)
   let current: ElectronAppContext | null = null, failed = true
   await info.attach('canonical-inline-seed', { body: Buffer.from(JSON.stringify({ profile, seed }, null, 2)), contentType: 'application/json' })
   try {

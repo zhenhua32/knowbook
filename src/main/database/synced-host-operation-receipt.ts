@@ -1,5 +1,5 @@
 import type { SyncedGroupSaved, SyncedStructureApplied } from '../../shared/synced-blocks'
-import { assertSyncedShape, isSyncedBlockId, isSyncedUuid, validateSyncedGroupSnapshot } from '../../shared/syncedBlockValidation'
+import { assertSyncedShape, isSyncedBlockId, isSyncedUuid, parseSyncedBlockPayload, validateSyncedGroupSnapshot } from '../../shared/syncedBlockValidation'
 import { decodeSyncedGroupOperationAck, type SyncedGroupOperationRow } from './synced-group-operation-receipt'
 import { hostJson, validateHostDocumentDetail } from './synced-host-document-read'
 import { hostHash, hostReferencedGroups, sameHostContent, validateHostContent } from './synced-host-journal'
@@ -16,7 +16,7 @@ function unique<T>(value: unknown, read: (raw: unknown) => T, key: (item: T) => 
   if (new Set(result.map(key)).size !== result.length) return bad()
   return result
 }
-export function validateHostOperationAck(value: unknown, operationId: string): SyncedStructureApplied {
+export function validateHostOperationAck(value: unknown, operationId: string, detached = false): SyncedStructureApplied {
   assertSyncedShape(value, ['status', 'operationId', 'historyToken', 'replayed', 'hosts', 'groups', 'affectedInstanceIds', 'blockIdMap'])
   if (!isSyncedUuid(operationId) || value.operationId !== operationId || value.replayed !== false
     || value.status !== 'applied' && value.status !== 'noop' || value.historyToken !== null && !isSyncedUuid(value.historyToken)
@@ -46,17 +46,29 @@ export function validateHostOperationAck(value: unknown, operationId: string): S
   const logicalChange = hosts.some(host => !sameHostContent(host.logicalBefore, { title: host.after.title, summary: host.after.summary,
     blocks: host.after.blocks.map(({ sortOrder: _sortOrder, ...block }) => block) }))
   if (logicalChange !== (value.historyToken !== null) || value.status === 'noop' && (logicalChange || affectedInstanceIds.length)) return bad()
-  // This finite host-final namespace never changes stable IDs or creates groups.
-  if (!Array.isArray(value.blockIdMap) || value.blockIdMap.length) return bad()
-  return { status: value.status, operationId, historyToken: value.historyToken, replayed: false, hosts, groups, affectedInstanceIds, blockIdMap: [] }
+  const blockIdMap = unique(value.blockIdMap, raw => {
+    assertSyncedShape(raw, ['from', 'to'])
+    if (!isSyncedBlockId(raw.from) || !isSyncedUuid(raw.to)) return bad()
+    return { from: raw.from, to: raw.to }
+  }, item => item.from)
+  if (detached) {
+    if (value.status !== 'applied' || hosts.length !== 1 || affectedInstanceIds.length !== 1) return bad()
+    const { logicalBefore, after } = hosts[0], removed = logicalBefore.blocks.filter(block => !afterIds.has(block.id))
+    if (removed.length !== 1 || removed[0].type !== 'synced-block' || removed[0].id !== affectedInstanceIds[0]) return bad()
+    const group = groups.find(group => group.groupId === parseSyncedBlockPayload(removed[0].content).groupId)
+    const beforeIds = new Set(logicalBefore.blocks.map(block => block.id)), copied = after.blocks.filter(block => !beforeIds.has(block.id))
+    if (!group || group.blocks.length !== blockIdMap.length || copied.length !== blockIdMap.length
+      || blockIdMap.some((item, index) => item.from !== group.blocks[index].id || item.to !== copied[index].id || copied[index].type === 'synced-block')) return bad()
+  } else if (blockIdMap.length) return bad()
+  return { status: value.status, operationId, historyToken: value.historyToken, replayed: false, hosts, groups, affectedInstanceIds, blockIdMap }
 }
 export function decodeHostOperationAck(row: SyncedGroupOperationRow): SyncedStructureApplied {
   try {
     if (!/^[a-f0-9]{64}$/.test(row.request_hash)) return bad()
     const envelope = hostJson(row.result_json)
     assertSyncedShape(envelope, ['kind', 'version', 'result'])
-    if (envelope.kind !== 'synced-host-operation' || envelope.version !== 1) return bad()
-    return validateHostOperationAck(envelope.result, row.client_operation_id)
+    if (envelope.kind !== 'synced-host-operation' || envelope.version !== 1 && envelope.version !== 2) return bad()
+    return validateHostOperationAck(envelope.result, row.client_operation_id, envelope.version === 2)
   } catch (cause) { throw new Error('宿主结构操作回执损坏，未重发或重建。', { cause }) }
 }
 /** Generic operation lookup dispatches only a validated finite envelope. Group

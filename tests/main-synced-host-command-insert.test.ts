@@ -243,10 +243,9 @@ test('W cannot retarget remove mutate or reparent an existing reference under th
 })
 
 test('title changes and other typed commands stay unsupported with zero normalization or provisional writes', () => {
-  for (const kind of ['title', 'delete', 'detach'] as const) withHostDatabase(db => {
+  for (const kind of ['title', 'delete'] as const) withHostDatabase(db => {
     const input = command(db)
-    const value = kind === 'delete' ? { ...input, action: { kind: 'delete', selection: { documentId: a, selectedRootIds: [bodyId(a)] } } }
-      : kind === 'detach' ? { ...input, action: { kind: 'detach', instanceId, groupId } } : input
+    const value = kind === 'delete' ? { ...input, action: { kind: 'delete', selection: { documentId: a, selectedRootIds: [bodyId(a)] } } } : input
     if (kind === 'title') input.hostsWorkingBefore[0].workingBefore.title += ' unsaved title'
     const count = totalChanges(db), result = rejected(db, () => applySyncedHostCommand(db, value), 'unsupported')
     assert.ok(result.status === 'unsupported' && result.reason === (kind === 'title' ? 'title-change' : 'command'))

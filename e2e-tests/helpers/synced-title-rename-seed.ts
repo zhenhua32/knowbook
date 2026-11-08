@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { KnowbookStore } from '../../src/main/database/store'
+import { AttachmentStore } from '../../src/main/attachments'
 import { writeSyncedBackupV3 } from '../../src/main/backup/v3-export'
 import { assertCanonicalRuntimeReadableOwned } from '../../src/main/database/canonical-runtime-read'
 import { assertRawSyncedHistoricalEvidenceOwned } from '../../src/main/database/synced-operation-history-read'
@@ -17,7 +18,7 @@ import type { SyncedGroupSnapshot, SyncedStableBlockDraft, SyncedStructureApplie
 // only runs with the current local build, in Electron-as-Node with its SQLite ABI.
 // No BrowserWindow, test-only IPC, live DB replacement, or fake exposure is used.
 export type TitleRenameSeed = {
-  version: 1; scenario: 'published' | 'canonical-history'; profile: string
+  version: 1; scenario: 'published' | 'canonical-history' | 'canonical-history-supported' | 'ordinary-section'; profile: string
   hostId: string; childId: string; observerId: string; groupId: string
   hostTitle: string; childTitle: string; observerTitle: string; missingTitle: string
   hostInstanceId: string; observerInstanceId: string
@@ -87,7 +88,7 @@ if (mode === 'inspect') {
     db.close()
     writeFileSync(output, JSON.stringify(result) + '\n', { flag: 'wx' })
   } finally { if (db.open) db.close() }
-} else if (mode === 'published' || mode === 'canonical-history') {
+} else if (mode === 'published' || mode === 'canonical-history' || mode === 'canonical-history-supported' || mode === 'ordinary-section') {
   if (outputName !== undefined || existsSync(databasePath) || existsSync(seedPath)) throw new Error('Seed refuses an existing database or extra arguments')
   mkdirSync(join(profile, 'storage', 'assets'), { recursive: true })
   const store = new KnowbookStore(databasePath), sender = Object.freeze({ kind: 'stopped-title-rename-seed' })
@@ -99,11 +100,18 @@ if (mode === 'inspect') {
     const documentLinkId = randomUUID(), blockLinkId = randomUUID(), unresolvedLinkId = randomUUID()
     const groupId = randomUUID(), hostInstanceId = randomUUID(), observerInstanceId = randomUUID(), originalOperationIds: string[] = []
     const hostUrl = encodeURIComponent(hostTitle) + '.md', childUrl = encodeURIComponent(hostTitle) + '/' + encodeURIComponent(childTitle) + '.md'
-    store.updateDocument(hostId, { title: hostTitle, summary: 'Original host summary retained', blocks: [bare(hostOrdinaryLinkId, '[Ordinary child](' + childUrl + ')')] })
-    store.updateDocument(childId, { title: childTitle, summary: 'Original child summary retained', blocks: [bare(targetBlockId, 'Original ordinary block target 中文🙂')] })
+    const section = mode === 'ordinary-section', sectionSlug = 'original-ordinary-section'
+    const childAnchor = section ? childUrl + '#' + sectionSlug : childUrl + '#^' + targetBlockId
+    const spacing = (label: string) => Array.from({ length: 32 }, (_, index) => bare(randomUUID(), `${label} ${index + 1}`))
+    store.updateDocument(hostId, { title: hostTitle, summary: 'Original host summary retained', blocks: [bare(hostOrdinaryLinkId,
+      '[Ordinary child](' + (section ? childAnchor : childUrl) + ')')] })
+    store.updateDocument(childId, { title: childTitle, summary: 'Original child summary retained', blocks: section
+      ? [...spacing('Content before the section'), { ...bare(targetBlockId, 'Original ordinary section'), type: 'heading-2' },
+        bare(randomUUID(), '[Back to document title](#title-child)'), ...spacing('Content after the section')]
+      : [bare(targetBlockId, 'Original ordinary block target 中文🙂')] })
     store.updateDocument(observerId, { title: observerTitle, summary: 'Independent original observer summary', blocks: [
       bare(documentLinkId, '[Original document](' + hostUrl + ')'),
-      bare(blockLinkId, '[Original block](' + childUrl + '#^' + targetBlockId + ')'),
+      bare(blockLinkId, (section ? '[Original section](' : '[Original block](') + childAnchor + ')'),
       bare(unresolvedLinkId, '[Unavailable original](' + encodeURIComponent(missingTitle) + '.md)'),
       bare(observerOrdinaryLinkId, '[Ordinary original](' + hostUrl + ')')
     ] })
@@ -128,16 +136,21 @@ if (mode === 'inspect') {
     assert.ok(captured && captured.status === 'ready'); if (!captured || captured.status !== 'ready') throw new Error('The created group must be read independently')
     const beforeGroup: SyncedGroupSnapshot = captured.snapshot
     assert.deepEqual(beforeGroup.bindings.find(item => item.blockId === documentLinkId)!.target, { kind: 'document', id: hostId, state: 'live' })
-    assert.deepEqual(beforeGroup.bindings.find(item => item.blockId === blockLinkId)!.target, { kind: 'block', id: targetBlockId, documentId: childId, state: 'live' })
+    assert.deepEqual(beforeGroup.bindings.find(item => item.blockId === blockLinkId)!.target, section
+      ? { kind: 'heading', documentId: childId, slug: sectionSlug, state: 'live' }
+      : { kind: 'block', id: targetBlockId, documentId: childId, state: 'live' })
     assert.equal(beforeGroup.bindings.find(item => item.blockId === unresolvedLinkId)!.target.kind, 'unresolved-url')
     apply(hostSession, { clientOperationId: randomUUID(), mode: 'command', hostsWorkingBefore: [working(hostId)],
       groups: [{ groupId, expectedRevision: beforeGroup.revision, expectedTopologyRevision: beforeGroup.topologyRevision }], expectedInstances: [],
       action: { kind: 'insert', groupId, instanceId: hostInstanceId, target: { documentId: hostId, parentBlockId: null, beforeBlockId: null, depth: 0 } } })
     writeSyncedBackupV3(store.getUnsafeDatabaseHandle(), { userDataRoot: profile, destination: join(profile, 'seed-genuine-publication'), snapshotId: randomUUID() })
     assert.equal(readSyncedGroupLifecycles(store.getUnsafeDatabaseHandle(), [groupId]).get(groupId)?.exposure, 'confirmed')
-    if (mode === 'canonical-history') {
-      // The real app publishes a V3 backup on startup. A real user-history
-      // refusal remains valid after that publication; a stopped never flag does not.
+    if (mode === 'canonical-history' || mode === 'canonical-history-supported') {
+      // Asset-bearing user history is outside the finite first projection. The
+      // exact original asset is created through the real managed-file store.
+      const asset = mode === 'canonical-history' ? (await new AttachmentStore(join(profile, 'storage', 'assets')).import([{
+        name: 'Original history image.png', bytes: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aRSoAAAAASUVORK5CYII=', 'base64')
+      }]))[0] : undefined
       const editSession = open(hostId)
       const fresh = store.invokeSyncedEditingSession(sender, { sessionId: editSession, method: 'getSyncedGroupSnapshots', input: { groupIds: [groupId] } }).items[0]
       assert.ok(fresh && fresh.status === 'ready')
@@ -148,7 +161,7 @@ if (mode === 'inspect') {
         clientOperationId: randomUUID(), groupId, expectedRevision: fresh.snapshot.revision, expectedTopologyRevision: fresh.snapshot.topologyRevision,
         expectedInstanceBinding: { instanceId: instance.instanceId, hostDocumentId: hostId, bindingVersion: instance.bindingVersion },
         blocks: fresh.snapshot.blocks.map(({ createdAt: _createdAt, ...block }) => block.id === documentLinkId
-          ? { ...block, content: block.content + ' retained canonical edit' } : block)
+          ? { ...block, content: block.content + ' retained canonical edit' + (asset ? ` ![original history image](<${asset.url}>)` : '') } : block)
       } })
       assert.equal(edited.status, 'saved')
       if (edited.status !== 'saved') throw new Error('The real canonical edit must save')
@@ -168,4 +181,4 @@ if (mode === 'inspect') {
     if (!stopped) { try { store.destroy() } catch { /* Preserve the original preparation failure. */ } }
     throw error
   }
-} else throw new Error('published|canonical-history|inspect is required')
+} else throw new Error('published|canonical-history|canonical-history-supported|ordinary-section|inspect is required')

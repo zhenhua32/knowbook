@@ -1,8 +1,38 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { previewSyncedExchangeDeletionDetails, resolveSyncedExchangeDeletions } from '../src/main/sync/synced-exchange'
 import { withDeletionChoices, groupConflict, docConflict, realNewReference, ready, component, choose, completed,
   proof2, receipt7, snapshot, count, randomUUID, encode, hash, localPortable, missingGroup,
   readStrictHostDocument, hostEdit, deleteGroup, assertAbsentKnowledge, state } from './helpers/synced-deletion-choice-fixture'
+import { runtime } from './helpers/synced-deletion-choice-setup'
+
+test('deletion presentation uses the original hash-verified common, local and remote objects and rejects a different preview hash', () => withDeletionChoices(async f => {
+  const conflict = docConflict(f), previewId = randomUUID(), operationId = randomUUID()
+  const input = { previewId, userDataRoot: f.B.root, target: f.targetConfig }
+  const readonlyStart = f.server.requests.length
+  const result = await f.track(previewSyncedExchangeDeletionDetails(f.B.db, input, runtime))
+  assert.equal(result.status, 'ready')
+  if (result.status !== 'ready') throw new Error('The genuine deletion preview is unavailable')
+  const { preview } = result, group = preview.components.find(row => row.records.some(record => record.key === conflict.key))!
+  const record = group.records.find(row => row.key === conflict.key)!
+  assert.deepEqual(record.base, { kind: 'live', hash: hash(encode(conflict.base)), title: conflict.base.content.title,
+    text: [conflict.base.content.summary, ...conflict.base.content.blocks.map(block => block.content)].filter(Boolean).join('\n'), truncated: false })
+  assert.deepEqual(record.local, { kind: 'live', hash: hash(encode(conflict.local)), title: conflict.local.content.title,
+    text: [conflict.local.content.summary, ...conflict.local.content.blocks.map(block => block.content)].filter(Boolean).join('\n'), truncated: false })
+  assert.deepEqual(record.remote, { kind: 'deleted', hash: f.remote().manifest.entries[conflict.key] })
+  assert.ok(group.choices.includes('keep-delete'))
+  assert.equal(preview.previewHash, ready(await f.preview(f.B, previewId)).previewHash)
+  assert.ok(f.server.requests.slice(readonlyStart).every(request => ['GET', 'HEAD', 'PROPFIND'].includes(request.method)))
+  const operation = { ...input, operationId, decisions: [{ componentId: group.componentId, choice: 'keep-delete' as const }] }
+  const wrongHash = preview.previewHash.replace(/^./, char => char === '0' ? '1' : '0')
+  await assert.rejects(f.track(resolveSyncedExchangeDeletions(f.B.db, { ...operation, expectedPreviewHash: wrongHash }, runtime)), /预览已变化/)
+  assert.equal(count(f.B.db, 'documents', 'id', conflict.id), 1)
+  completed(await f.track(resolveSyncedExchangeDeletions(f.B.db, { ...operation, expectedPreviewHash: preview.previewHash }, runtime)), 'applied')
+  assert.equal(count(f.B.db, 'documents', 'id', conflict.id), 0)
+  proof2(f, operationId, conflict.key)
+  await assert.rejects(f.track(resolveSyncedExchangeDeletions(f.B.db, { ...operation, expectedPreviewHash: wrongHash }, runtime)), /预览已变化/)
+  assert.deepEqual(await f.track(previewSyncedExchangeDeletionDetails(f.B.db, input, runtime)), result)
+}))
 
 test('explicit keep-delete really removes changed unpinned G and records both true B and current L with its original remote predecessor', () => withDeletionChoices(async f => {
   const conflict = groupConflict(f), p = ready(await f.preview()), c = component(p, conflict.key), operationId = randomUUID()

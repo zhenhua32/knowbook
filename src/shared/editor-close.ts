@@ -6,4 +6,7 @@ export const EDITOR_RELOAD_REQUEST_CHANNEL = 'knowbook:request-editor-reload'
 export type EditorCloseReason = 'window' | 'quit' | 'reload'
 export interface EditorCloseRequest { requestId: string; reason: EditorCloseReason }
 export interface EditorCloseCancelled extends EditorCloseRequest { message?: string }
-export interface EditorCloseAcknowledgement { requestId: string; status: 'flushed' | 'blocked'; message?: string }
+export type EditorCloseAcknowledgement = { requestId: string } & (
+  { status: 'flushed' | 'blocked'; message?: string }
+  | { status: 'draft-journaled'; receiptId: string; closeGeneration: number }
+)

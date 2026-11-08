@@ -1,5 +1,7 @@
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlockDraft, DocumentDetail, HomeData } from '@shared/contracts'
+import { hasExistingNativeHeadingTextChange } from '@shared/document-rename-admission'
+import { getMarkdownHeadingRewrites, getMarkdownHeadingTargets } from '@shared/markdownLinkMaintenance'
 import type { SyncedHostSourceCurrent } from '../features/synced-blocks/SyncedHostSourceDialog'
 import { toDraftBlock } from './draftBlockShape'
 import { normalizeDraftBlocks } from './draftTreeNormalization'
@@ -10,7 +12,7 @@ type Ref<T> = { current: T }
 type Context = {
   documentId: string; title: string; summary: string; normalizedBlocks: DocumentBlockDraft[]
   detail: DocumentDetail; baseTitle: string; renaming: boolean; saveFailed: string
-  requiresSyncedWriter: boolean; syncedHost: SyncedHostSourceCurrent | null
+  requiresSyncedWriter: boolean; syncedHost: () => SyncedHostSourceCurrent | null
   isCurrentSession: () => boolean; mountedRef: Ref<boolean>
   selectedDocumentRef: Ref<DocumentDetail | null>; draftTitleRef: Ref<string>; draftSummaryRef: Ref<string>
   draftBlocksRef: Ref<DocumentBlockDraft[]>; editHistoryRef: Ref<Array<{ move?: { versions: Record<string, string> } }>>
@@ -20,9 +22,8 @@ type Context = {
   onHomeDataChange: Dispatch<SetStateAction<HomeData>>
 }
 
-/** Loaded by an actual save, after the hook has reserved its original pending
- * writer. The submitted body and canonical opening are captured before loading;
- * loading never grants permission to write into another document session. */
+/** Loaded by an actual save after the hook reserves its original pending writer.
+ * Any canonical opening still needs the submitted document's exact original CAS. */
 export async function completeDocumentDraftWrite(context: Context): Promise<boolean> {
   const { documentId, title, summary, normalizedBlocks, detail, baseTitle, renaming, saveFailed,
     requiresSyncedWriter, syncedHost, isCurrentSession, mountedRef, selectedDocumentRef,
@@ -33,17 +34,20 @@ export async function completeDocumentDraftWrite(context: Context): Promise<bool
   let submittedTitle = title, submittedSummary = summary, submittedBlocks = normalizedBlocks
   let refreshedDetail: DocumentDetail | null
   let useSyncedWriter = requiresSyncedWriter
-  if (renaming && !useSyncedWriter) {
-    const hint = await window.knowbook.getDocumentRenameAdmission({ documentId, expectedUpdatedAt: detail.updatedAt })
+  const headingSlugs = !useSyncedWriter && !renaming && hasExistingNativeHeadingTextChange(detail.blocks, normalizedBlocks)
+    ? [...getMarkdownHeadingRewrites(getMarkdownHeadingTargets(detail.blocks, detail.title), getMarkdownHeadingTargets(normalizedBlocks, title)).keys()] : []
+  if (!useSyncedWriter && (renaming || headingSlugs.length)) {
+    const hint = await window.knowbook.getDocumentRenameAdmission({ documentId, expectedUpdatedAt: detail.updatedAt, ...(renaming ? {} : { headingSlugs }) })
     if (!isCurrentSession()) return false
     if (hint.status !== 'ready' || hint.documentId !== documentId || hint.updatedAt !== detail.updatedAt || hint.writePermit !== false) throw new Error(saveFailed)
     useSyncedWriter = hint.requiresFencedTitle2
   }
   if (useSyncedWriter) {
-    if (!syncedHost) throw new Error(saveFailed)
+    const opening = syncedHost()
+    if (!opening || opening.host.documentId !== documentId || opening.host.expectedPersistedUpdatedAt !== detail.updatedAt) throw new Error(saveFailed)
     const { persistCanonicalHostDraft } = await import('../features/synced-blocks/inlineHostPersistence')
     if (!isCurrentSession()) return false
-    const saved = await persistCanonicalHostDraft(syncedHost, { title, summary, blocks: normalizedBlocks })
+    const saved = await persistCanonicalHostDraft(opening, { title, summary, blocks: normalizedBlocks })
     refreshedDetail = saved.document
     submittedTitle = saved.submitted.title; submittedSummary = saved.submitted.summary; submittedBlocks = saved.submitted.blocks
   } else {

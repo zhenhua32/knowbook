@@ -3348,8 +3348,9 @@ async function inspectDetachedProcess(
   }
   if (platform === 'win32') {
     const script = [
+      "$ErrorActionPreference = 'Stop'",
       '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
-      `$item = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}'`,
+      `$item = Get-CimInstance Win32_Process -Property ExecutablePath,CreationDate -Filter 'ProcessId = ${pid}'`,
       'if ($null -eq $item) { exit 3 }',
       "$value = [pscustomobject]@{ executable = $item.ExecutablePath; startToken = $item.CreationDate.ToUniversalTime().Ticks.ToString() }",
       '$value | ConvertTo-Json -Compress'

@@ -85,7 +85,7 @@ export type InlineReferenceNavigationContext = {
   draftBlocks: DocumentBlockDraft[]
   onOpenDocument: (documentId: string) => void
   onOpenDocumentBlock: (documentId: string, blockId: string) => void
-  onOpenAnchor: (documentId: string, anchor: string) => void
+  onOpenAnchor: (documentId: string, anchor: string, matchAnchorText?: boolean) => void
   draftTitle: string
   selectedDocumentId: string | null
   notify: AppMessageHandler
@@ -141,6 +141,7 @@ export async function navigateInlineReference(content: string, cursorPosition: n
       return
     }
     if (detail.blocks.some((block) => block.id === target.blockId)) onOpenDocumentBlock(detail.id, target.blockId)
+    else if (detail.blocks.some(block => block.type === 'synced-block')) onOpenAnchor(detail.id, target.blockId, true)
     else {
       const heading = findInlineReferenceHeading(target.blockId, detail.blocks, detail.title)
       if (heading) onOpenAnchor(detail.id, heading.slug)

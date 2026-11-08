@@ -28,6 +28,13 @@ export interface MarkdownSourceLocalState {
   applying: boolean
   importing: boolean
 }
+export interface MarkdownSourceRecoverySnapshot {
+  source: string
+  start: number
+  end: number
+  captureAnchors?: () => unknown
+}
+export type MarkdownSourceRecoveryOpening<Draft> = Snapshot<Draft> & { base: Draft }
 /** Optional cold producer handoff. It updates local source ownership only;
  * the producer must already own its actual accepted persistence receipt. */
 export interface MarkdownSourceAppliedCheckpoint<Draft extends { source: string }> {
@@ -46,6 +53,9 @@ export type MarkdownSourceDialogProps<Draft extends { source: string }> = {
   getReturnFocus: () => HTMLElement | null
   onCompositionChange?: (composing: boolean) => void
   onLocalStateChange?: (state: Readonly<MarkdownSourceLocalState>) => void
+  onRecoverySnapshot?: (snapshot: Readonly<MarkdownSourceRecoverySnapshot> | null) => void
+  captureRecoveryAnchors?: (draft: Draft) => unknown
+  initialRecovery?: MarkdownSourceRecoveryOpening<Draft>
   isZh: boolean
   onClose: () => void
   text?: Partial<MarkdownSourceDialogText>
@@ -80,9 +90,10 @@ export function MarkdownSourceDialog<Draft extends { source: string }>(props: Ma
 
 function MarkdownSourceDialogOpening<Draft extends { source: string }>(props: MarkdownSourceDialogProps<Draft> & { ownsOpening: () => boolean }) {
   const { isZh } = props
-  const [snapshot, setSnapshot] = useState<Snapshot<Draft>>(() => ({ draft: props.createDraft(), start: 0, end: 0 }))
+  const [snapshot, setSnapshot] = useState<Snapshot<Draft>>(() => props.initialRecovery ?? { draft: props.createDraft(), start: 0, end: 0 })
   const current = useRef(snapshot), live = useRef(props); live.current = props
-  const history = useRef({ entries: [snapshot], index: 0, lastInput: 0 })
+  const history = useRef({ entries: props.initialRecovery ? [{ draft: props.initialRecovery.base, start: 0, end: 0 }, snapshot] : [snapshot],
+    index: props.initialRecovery ? 1 : 0, lastInput: 0 })
   const dialog = useRef<HTMLDialogElement>(null)
   const editorHost = useRef<HTMLDivElement>(null)
   const editor = useRef<EditorView | null>(null)
@@ -94,10 +105,19 @@ function MarkdownSourceDialogOpening<Draft extends { source: string }>(props: Ma
   const [error, setError] = useState('')
   const [isApplying, setIsApplying] = useState(false)
   const [importing, setImporting] = useState(false), importLock = useRef(false)
-  const acceptedSource = useRef(snapshot.draft.source)
+  const acceptedSource = useRef((props.initialRecovery?.base ?? snapshot.draft).source)
   const reportedLocalState = useRef<Readonly<MarkdownSourceLocalState> | null>(null)
+  const reportRecoverySnapshot = () => {
+    if (!mounted.current || !live.current.ownsOpening() || composing.current) return
+    const { draft, start, end } = current.current
+    const capture = live.current.captureRecoveryAnchors
+    live.current.onRecoverySnapshot?.(draft.source === acceptedSource.current ? null : {
+      source: draft.source, start, end, captureAnchors: capture && (() => capture(draft))
+    })
+  }
   const reportLocalState = () => {
     if (!mounted.current) return
+    reportRecoverySnapshot()
     const state: Readonly<MarkdownSourceLocalState> = Object.freeze({ dirty: current.current.draft.source !== acceptedSource.current,
       composing: composing.current, applying: applying.current !== null, importing: importLock.current })
     const before = reportedLocalState.current
@@ -270,6 +290,7 @@ function MarkdownSourceDialogOpening<Draft extends { source: string }>(props: Ma
         current.current = next
       }
       if (changed) { setSnapshot(current.current); reportLocalState() }
+      else if (update.selectionSet) reportRecoverySnapshot()
     },
     keydown: event => {
       if (isImeKeyboardEvent(event, composing.current)) { event.stopPropagation(); return false }
@@ -289,6 +310,7 @@ function MarkdownSourceDialogOpening<Draft extends { source: string }>(props: Ma
     const returnFocus = live.current.getReturnFocus()
     if (canUse()) dialog.current?.showModal()
     const view = new EditorView({ parent: editorHost.current!, state: EditorState.create({ doc: markdownSourceEditorText(current.current.draft.source),
+      selection: { anchor: current.current.start, head: current.current.end },
       extensions: [session.extension, EditorState.tabSize.of(2), EditorView.lineWrapping, drawSelection(), keymap.of(standardKeymap),
         EditorView.theme({ '&.cm-focused .cm-selectionBackground, .cm-selectionBackground': {
           backgroundColor: 'color-mix(in srgb, var(--kb-accent) 25%, transparent)'

@@ -1,0 +1,20 @@
+(async () => {
+  const assert = require('node:assert/strict')
+  const { originalLocator, identityLocator, referenceLocator, derivedLocator } = JSON.parse(process.argv[2])
+  const { reopenPreparedMixedOriginBundle } = await import('../../src/main/database/restore-knowledge-mixed-origin-bundle-read.ts')
+  const { prepareRootKnowledgeConservationPlan3 } = await import('../../src/main/database/restore-knowledge-root3-read.ts')
+  const { reopenRootRestoreIdentityPlan3 } = await import('../../src/main/database/restore-knowledge-identity3-read.ts')
+  const { reopenRootRestoreReferencePlan3 } = await import('../../src/main/database/restore-knowledge-reference3-read.ts')
+  const { reopenRootRestoreDerivedStage4 } = await import('../../src/main/database/restore-knowledge-derived-stage4.ts')
+  const original = await reopenPreparedMixedOriginBundle(originalLocator)
+  const knowledge = await prepareRootKnowledgeConservationPlan3(original)
+  const identity = await reopenRootRestoreIdentityPlan3(knowledge.plan, identityLocator)
+  const reference = await reopenRootRestoreReferencePlan3(identity.plan, referenceLocator)
+  await assert.rejects(reopenRootRestoreDerivedStage4(reference.plan, { ...derivedLocator, expectedManifestHash: '0'.repeat(64) }), /冷清单/)
+  const stage = await reopenRootRestoreDerivedStage4(reference.plan, derivedLocator)
+  assert.equal(stage.value.installPermit, false)
+  process.stdout.write(JSON.stringify({ pid: process.pid, manifestHash: stage.manifestHash, value: stage.value }))
+})().catch(error => {
+  console.error(error)
+  process.exitCode = 1
+})

@@ -9,6 +9,7 @@ import { validateSyncedStructureInput } from '../src/shared/syncedBlockInputs'
 import { parseMarkdownDocumentBlocks } from '../src/shared/markdownDocument'
 import type { MarkdownNode } from '../src/shared/markdownEngine'
 import { getSyncedOperation } from '../src/main/database/synced-blocks-content'
+import { resolveSyncedHeadingAnchor } from '../src/main/database/synced-heading-projection2'
 import { getSyncedGroupSnapshots, listSyncedGroups } from '../src/main/database/synced-blocks-read'
 import { readSyncedGroupLifecycles, syncedLifecycleSemanticHash } from '../src/main/database/synced-lifecycle-state'
 import { assertNoUnsupportedSyncedContent } from '../src/main/database/synced-schema'
@@ -474,7 +475,7 @@ test('foreign W ownership unknown retained birth and stale complete CAS guards c
 })
 
 test('unsafe definition projection and heading identity rewrites refuse the create instead of flattening source or redirecting surviving bindings', () => {
-  for (const kind of ['native-definition', 'duplicate-heading'] as const) withHostDatabase(db => {
+  for (const kind of ['native-definition', 'dirty-heading-rename'] as const) withHostDatabase(db => {
     let input = createRequest(db)
     if (kind === 'native-definition') {
       const owner = ' create:ambiguous definition owner ', definition = ' create:ambiguous definition '
@@ -482,11 +483,40 @@ test('unsafe definition projection and heading identity rewrites refuse the crea
       db.prepare('UPDATE blocks SET content=? WHERE id=?').run('Use[^inside]', bodyId(a)); input = createRequest(db)
     } else {
       seedCreateBlocks(db, [{ id: ' create:heading first ', type: 'heading-2', content: 'Same' }, { id: ' create:heading second ', type: 'heading-2', content: 'Same' }])
-      input = createRequest(db, { selectedRootIds: [' create:heading first '] })
+      input = createRequest(db, { selectedRootIds: [' create:heading first '], dirty: working => {
+        working.blocks.find(block => block.id === ' create:heading second ')!.content = 'A dirty rename'
+      } })
     }
     rejected(db, () => applySyncedHostCommand(db, input))
   })
 })
+
+test('heading creation preserves the two exact duplicate anchors and their original births through Undo and Redo', () => withHostDatabase((db, reopen) => {
+  const heading = ' selected heading ', link = ' selected heading link ', peer = ' surviving heading '
+  seedCreateBlocks(db, [{ id: heading, type: 'heading-2', content: 'Same' }, { id: link, content: '[original section](#same)' },
+    { id: peer, type: 'heading-2', content: 'Same' }])
+  const lookup = (connection: Database.Database, anchor: string) => resolveSyncedHeadingAnchor(connection, { documentId: a, anchor,
+    expectedUpdatedAt: (connection.prepare('SELECT updated_at FROM documents WHERE id=?').get(a) as { updated_at: string }).updated_at, matchText: false })
+  const birth = bodyBirth(db, heading)
+  assert.deepEqual(lookup(db, 'same'), { status: 'ready', kind: 'ordinary', blockId: heading, headingIndex: 0 })
+  assert.deepEqual(lookup(db, 'same-1'), { status: 'ready', kind: 'ordinary', blockId: peer, headingIndex: 0 })
+  const input = createRequest(db, { selectedRootIds: [heading, link] }), ack = created(applySyncedHostCommand(db, input)), current = active(db, ack)
+  assert.equal(current.blocks.find(block => block.id === heading)?.createdAt, birth)
+  assert.deepEqual(current.bindings.map(binding => binding.target), [{ kind: 'heading', documentId: a, slug: 'same', state: 'live' }])
+  const cold = reopen(), moved = lookup(cold, 'same')
+  assert.ok(moved.status === 'ready' && moved.kind === 'canonical')
+  assert.equal(moved.occurrence.instanceId, input.action.instanceId)
+  assert.equal(moved.occurrence.canonicalBlockId, heading)
+  assert.equal(moved.occurrence.canonicalCreatedAt, birth)
+  assert.deepEqual(lookup(cold, 'same-1'), { status: 'ready', kind: 'ordinary', blockId: peer, headingIndex: 0 })
+  const undo = restoreCreated(cold, ack, 'undo'); retired(cold, undo.ack)
+  assert.deepEqual(lookup(cold, 'same'), { status: 'ready', kind: 'ordinary', blockId: heading, headingIndex: 0 })
+  const redo = restoreCreated(cold, undo.ack, 'redo'); active(cold, redo.ack)
+  const restored = lookup(cold, 'same')
+  assert.ok(restored.status === 'ready' && restored.kind === 'canonical')
+  assert.equal(restored.occurrence.canonicalBlockId, heading)
+  assert.equal(restored.occurrence.canonicalCreatedAt, birth)
+}))
 
 test('a later real host journal pins the created content even after its own Undo so create cannot consume it as a pure reference inverse', () => withHostDatabase(db => {
   const input = createRequest(db), ack = created(applySyncedHostCommand(db, input))

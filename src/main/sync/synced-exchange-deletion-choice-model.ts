@@ -29,6 +29,7 @@ export interface SyncedExchangeDeletionPreview {
 export interface SyncedExchangeDeletionPreviewInput { previewId: string; userDataRoot: string; target: WebDavSyncConfig }
 export interface SyncedExchangeDeletionResolveInput {
   operationId: string; userDataRoot: string; target: WebDavSyncConfig; previewId: string; decisions: SyncedExchangeDeletionDecision[]
+  expectedPreviewHash?: string
 }
 export type SyncedExchangeDeletionPreviewResult = { status: 'ready'; preview: SyncedExchangeDeletionPreview }
   | { status: 'missing' } | { status: 'unsupported'; reason: 'schema-27-required' | 'protocol5-required' }

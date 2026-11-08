@@ -6,7 +6,7 @@ import { planSyncedExchange } from './synced-exchange-plan'
 import { mergeSyncedProtocol5Record } from './synced-merge'
 import type { ExchangeMergeProvenance } from './synced-exchange-conflict-model'
 import { publicationCompare, publicationHash, publicationJson, publicationInvalid, SyncedPublicationError } from './synced-publication-model'
-import { validateSyncedProtocol5Record, validateSyncedProtocol5Snapshot, type SyncedProtocol5Record, type SyncedProtocol5Snapshot } from './synced-protocol5-model'
+import { validateSyncedProtocol5Record, validateSyncedProtocol5Snapshot, withProtocol5Successor, type SyncedProtocol5Record, type SyncedProtocol5Snapshot } from './synced-protocol5-model'
 import type { TombstoneAcceptedSide, TombstoneDeletionIntent, TombstoneDeferredComponent,
   TombstoneExchangePlan, TombstoneIdentityEffect, TombstoneLocalOutcome, TombstonePlanInput } from './synced-exchange-tombstone-types'
 
@@ -302,8 +302,9 @@ export function planSyncedTombstoneExchange(input: TombstonePlanInput): Tombston
     transfers.push(...componentTransfers)
     merges.push(...componentMerges)
   }
-  const next = snapshot(nextRemote, state.remoteWorkspaceId), finalKnowledge = snapshot(localFinal, state.workspaceScope), finalPhysical = snapshot(live(localFinal), state.workspaceScope)
   const acceptedKeys = sorted(accepted), acceptedSet = new Set(acceptedKeys), writes = acceptedKeys.filter(key => remote.get(key)?.hash !== nextRemote.get(key)?.hash)
+  const next = withProtocol5Successor(snapshot(nextRemote, state.remoteWorkspaceId), input.remote.manifest, input.operationId, writes.length > 0)
+  const finalKnowledge = snapshot(localFinal, state.workspaceScope), finalPhysical = snapshot(live(localFinal), state.workspaceScope)
   const incoming = acceptedKeys.filter(key => physicalLocal.get(key)?.hash !== (deleted(localFinal.get(key)!.record) ? undefined : localFinal.get(key)?.hash))
   const sides: TombstoneAcceptedSide[] = acceptedKeys.map(key => {
     const row = localFinal.get(key)!, existing = facts.get(key), intent = acceptedIntents.get(key)

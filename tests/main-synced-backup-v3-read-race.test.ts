@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import test from 'node:test'
 import { createRequire, syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
-import { readBackupV3Files } from '../src/main/backup/v3-reader'
+import { readBackupV3FileDigests, readBackupV3Files } from '../src/main/backup/v3-reader'
 
 const require = createRequire(import.meta.url)
 const nativeFs: typeof import('node:fs') = require('node:fs')
 
-test('Main V3 reader rejects growth after the real fd stat while reading only the checked size plus one byte', { concurrency: false }, () => {
+function assertGrowthRejected(read: (root: string) => unknown) {
   const root = nativeFs.mkdtempSync(join(tmpdir(), 'knowbook-v3-fd-growth-'))
   const directory = join(root, '__knowbook', 'synced-groups'), file = join(directory, 'isolated-group.json')
   const initial = Buffer.from('{}\n'), append = Buffer.alloc(5 * 1024 * 1024 + 32, 120)
@@ -47,7 +48,7 @@ test('Main V3 reader rejects growth after the real fd stat while reading only th
       return Reflect.apply(originalReadFile, nativeFs, args)
     } })
     syncBuiltinESMExports()
-    assert.throws(() => readBackupV3Files(nativeFs.realpathSync(root)), /archive file changed while reading/,
+    assert.throws(() => read(nativeFs.realpathSync(root)), /archive file changed while reading/,
       'A real post-stat append is rejected without accepting any archive facts')
     assert.equal(injected, true, 'The native post-fstat race was actually reached')
     assert.ok(readCalls > 0, 'The regression measures the real read path rather than only an early validation throw')
@@ -59,6 +60,40 @@ test('Main V3 reader rejects growth after the real fd stat while reading only th
     syncBuiltinESMExports()
     assert.equal(dirname(resolve(root)), resolve(tmpdir()), 'Only this directly owned isolated temporary directory is removed')
     assert.ok(basename(root).startsWith('knowbook-v3-fd-growth-'), 'The cleanup target has the test-owned unique prefix')
+    nativeFs.rmSync(root, { recursive: true, force: true })
+  }
+}
+
+test('Main V3 reader rejects growth after the real fd stat while reading only the checked size plus one byte',
+  { concurrency: false }, () => assertGrowthRejected(readBackupV3Files))
+test('Main V3 digest capture rejects growth after the real fd stat without consuming appended bytes',
+  { concurrency: false }, () => assertGrowthRejected(readBackupV3FileDigests))
+
+test('Main V3 digest capture hashes the complete real archive using only bounded chunk reads', { concurrency: false }, () => {
+  const root = nativeFs.mkdtempSync(join(tmpdir(), 'knowbook-v3-file-digests-'))
+  const relativePath = '__knowbook/assets/sample.bin', file = join(root, ...relativePath.split('/'))
+  const content = Buffer.alloc(2 * 1024 * 1024 + 7, 61)
+  content[content.length - 1] = 99
+  const descriptor = Object.getOwnPropertyDescriptor(nativeFs, 'readSync')!, nativeRead = nativeFs.readSync
+  let largest = 0, total = 0
+  try {
+    nativeFs.mkdirSync(dirname(file), { recursive: true })
+    nativeFs.writeFileSync(file, content, { flag: 'wx' })
+    Object.defineProperty(nativeFs, 'readSync', { ...descriptor, value: (...args: unknown[]) => {
+      largest = Math.max(largest, args[3] as number)
+      total += args[3] as number
+      return Reflect.apply(nativeRead, nativeFs, args)
+    } })
+    syncBuiltinESMExports()
+    assert.deepEqual(readBackupV3FileDigests(nativeFs.realpathSync(root)), [{ relativePath, bytes: content.length,
+      hash: createHash('sha256').update(content).digest('hex') }])
+    assert.equal(total, content.length + 1)
+    assert.equal(largest, 1024 * 1024)
+  } finally {
+    Object.defineProperty(nativeFs, 'readSync', descriptor)
+    syncBuiltinESMExports()
+    assert.equal(dirname(resolve(root)), resolve(tmpdir()))
+    assert.ok(basename(root).startsWith('knowbook-v3-file-digests-'))
     nativeFs.rmSync(root, { recursive: true, force: true })
   }
 })

@@ -20,3 +20,24 @@ export async function selectSource(editor: Locator, start: number, end = start):
     view.dispatch({ selection: { anchor: start, head: end }, scrollIntoView: true })
   }, { start, end })
 }
+
+// Measure inside the renderer, starting at the trusted input/click/keydown
+// event. Two animation frames include a rendering opportunity, not OS display latency.
+export async function measureNextFrame(target: Locator, eventName: 'input' | 'click' | 'keydown', name: string) {
+  await target.evaluate((element, { eventName, name }) => {
+    const listener = (event: Event) => {
+      if (eventName === 'keydown' && (event as KeyboardEvent).key.toLowerCase() !== 'b') return
+      element.removeEventListener(eventName, listener, true)
+      if (!event.isTrusted) throw new Error('Expected trusted input')
+      const start = performance.now()
+      const frame = () => requestAnimationFrame(() => requestAnimationFrame(() => performance.measure(name, { start, end: performance.now() })))
+      if (name === 'source-open-frame' && !document.querySelector('.document-markdown-source .cm-content')) {
+        const observer = new MutationObserver(() => {
+          if (document.querySelector('.document-markdown-source .cm-content')) { observer.disconnect(); frame() }
+        })
+        observer.observe(document.body, { childList: true, subtree: true })
+      } else frame()
+    }
+    element.addEventListener(eventName, listener, { capture: true })
+  }, { eventName, name })
+}

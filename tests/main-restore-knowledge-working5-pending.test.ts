@@ -18,9 +18,29 @@ test('archive5 seals genuine pending automatic whole W and remote-only definitio
     const record = f.working.records.find(item => item.jobSettingKey === f.row.key && item.recordKey === 'doc:' + f.documentId); assert.ok(record)
     assert.equal(publicationJson(record.record), publicationJson(f.oracle.record))
     assert.deepEqual(record.provenance, f.oracle.merge)
+    if (!('replayedLocalFinal' in record)) throw new Error('A captured pending record must have its replayed local plan')
+    const local = record.replayedLocalFinal
+    assert.equal(local.planHash, f.job.descriptor.planHash)
+    assert.deepEqual(local.component, f.job.components.find(component => component.keys.includes(record.recordKey)))
+    assert.deepEqual(local.entry, { key: record.recordKey, hash: record.provenance.resultHash, record: f.oracle.record })
+    assert.equal(local.localApply, true)
+    assert.equal(local.remoteOnly, false)
+    assert.ok(f.applied.appliedKeys.includes(record.recordKey))
+
+    const remoteOnly = f.working.records.find(item => item.jobSettingKey === f.row.key && item.recordKey === 'doc:' + f.remoteOnlyDocumentId)
+    if (!remoteOnly || !('replayedLocalFinal' in remoteOnly)) throw new Error('A real publication-only merge must retain its local plan observation')
+    assert.equal(remoteOnly.provenance.resultHash, remoteOnly.provenance.localHash)
+    assert.deepEqual(remoteOnly.replayedLocalFinal.entry,
+      { key: remoteOnly.recordKey, hash: remoteOnly.provenance.localHash, record: remoteOnly.record })
+    assert.equal(remoteOnly.replayedLocalFinal.localApply, false)
+    assert.equal(remoteOnly.replayedLocalFinal.remoteOnly, true)
+    assert.equal(f.applied.appliedKeys.includes(remoteOnly.recordKey), false)
+    assert.ok(f.applied.publishedKeys.includes(remoteOnly.recordKey))
     assert.equal(graph3Rows(f.value.source.sourceContent, 'synced_operations').some(row => row.value.client_operation_id === f.operationId), false,
       'A later genuine live receipt cannot substitute for the original pending SQL')
-    const scopes = f.working.observation.scopes.filter(scope => scope.jobSettingKey === f.row.key)
+    const jobScopes = f.working.observation.scopes.filter(scope => scope.jobSettingKey === f.row.key)
+    assert.equal(jobScopes.length, 2)
+    const scopes = jobScopes.filter(scope => scope.recordKey === record.recordKey)
     assert.equal(scopes.length, 1); assert.equal(scopes[0].family, 4)
     assert.equal(scopes[0].evidenceKind, 'replayed-original-working-inputs')
     assert.ok(scopes[0].source.includes('app_settings')); assert.equal(scopes[0].source.includes('synced_operations'), false)
@@ -41,4 +61,4 @@ test('archive5 seals genuine pending automatic whole W and remote-only definitio
     for (const gate of [f.working.manifest.allAssetScopesCaptured, f.working.manifest.otherHeldPayloadScopesComplete,
       f.working.manifest.acceptedCoverage, f.working.manifest.effective, f.working.manifest.installPermit,
       f.working.observation.allAssetScopesCaptured, archive.coverage.installPermit]) assert.equal(gate, false)
-  }))
+  }, { includeRemoteOnlyMerge: true }))
