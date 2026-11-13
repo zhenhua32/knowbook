@@ -80,13 +80,17 @@ export async function readMountedMixedOriginBundle(profile:string,operationId:st
   if(!names.includes('original')||names.some(n=>!['original','verification-profiles'].includes(n)))return bad('mixed mount顶层闭集变化')
   return {profileRoot,operationId:op,mountId:mount,original:await readMixedOriginBundleOriginal(join(location,'original'),expectedHash)}
 }
-export async function createMixedOriginVerificationProfile(input:Awaited<ReturnType<typeof readMountedMixedOriginBundle>>) {
-  const actual=await readMountedMixedOriginBundle(input.profileRoot,input.operationId,input.mountId,input.original.descriptorHash)
-  const collection=join(dirname(actual.original.directory),'verification-profiles'),profile=join(collection,randomUUID()),descriptor=actual.original.descriptor,workingTexts=actual.original.workingTexts
-  await restoreDirectory(collection,input.profileRoot);await restoreDirectory(profile,input.profileRoot,true)
+export async function createMixedOriginVerificationProfile(
+  profileRoot: string, operationId: string, mountId: string, expectedDescriptorHash: string
+) {
+  const mounted = await readMountedMixedOriginBundle(profileRoot, operationId, mountId, expectedDescriptorHash)
+  const { directory: originalDirectory, descriptor, workingTexts, descriptorHash } = mounted.original
+  const collection = join(dirname(originalDirectory), 'verification-profiles'), profile = join(collection, randomUUID())
+  await restoreDirectory(collection,mounted.profileRoot);await restoreDirectory(profile,mounted.profileRoot,true)
   for(const path of mixedOriginBundleDirectories(descriptor,workingTexts))if(path!=='catalog')await restoreDirectory(local(profile,path.slice('catalog/'.length)),profile)
-  await batch(mixedOriginBundleFiles(descriptor,workingTexts),file=>copyFile(local(actual.original.directory,file.path),actual.original.directory,local(profile,file.path.slice('catalog/'.length)),profile,file))
-  await readMixedOriginBundleOriginal(actual.original.directory,actual.original.descriptorHash)
+  await batch(mixedOriginBundleFiles(descriptor,workingTexts),file=>copyFile(local(originalDirectory,file.path),originalDirectory,local(profile,file.path.slice('catalog/'.length)),profile,file))
+  await readMixedOriginBundleOriginal(originalDirectory,descriptorHash)
   for(const path of [...mixedOriginBundleDirectories(descriptor,workingTexts)].reverse())if(path!=='catalog')await syncRestoreDirectory(local(profile,path.slice('catalog/'.length)))
-  await syncRestoreDirectory(profile);await syncAncestors(collection,input.profileRoot);return canonical(profile)
+  await syncRestoreDirectory(profile);await syncAncestors(collection,mounted.profileRoot)
+  return { mounted, verificationProfile: await canonical(profile) }
 }

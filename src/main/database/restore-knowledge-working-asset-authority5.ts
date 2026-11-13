@@ -10,8 +10,8 @@ import { mixedOriginCapsulePath } from './restore-knowledge-mixed-origin-bundle-
 import { assertMerge3JsonBudget } from './restore-knowledge-merge3-storage'
 import type { OriginalFrameCopy } from './restore-knowledge-original-frame-files'
 import { referenceContextFileKey } from './restore-knowledge-reference-context-model'
-import { assertRootRestoreReferenceOriginalBytes3, readRootRestoreReferenceInputsAndOriginals5,
-  type RootRestoreReferencePlan3 } from './restore-knowledge-reference3-read'
+import { assertRootRestoreReferenceOriginalBytes3, readRootRestoreReferenceInputsAndOriginals5, readRootRestoreStageInputs5,
+  type RootRestoreReferencePlan3, type RootRestoreStageInputs5 } from './restore-knowledge-reference3-read'
 
 export interface RootRestoreWorkingAssetAuthority5 { readonly kind: 'main-root-restore-working-asset-authority5' }
 type ReferenceRead = Awaited<ReturnType<typeof readRootRestoreReferenceInputsAndOriginals5>>
@@ -166,8 +166,8 @@ function observations(captured: ReferenceRead) {
 
 /** Fixed same-read input for Main's asset stage. A caller cannot supply any
  * observation, path or file selection to this original reader. */
-export async function readRootRestoreWorkingAssetSources5(reference: RootRestoreReferencePlan3) {
-  const captured = await readRootRestoreReferenceInputsAndOriginals5(reference)
+export async function readRootRestoreWorkingAssetSources5(reference: RootRestoreReferencePlan3, scope?: RootRestoreStageInputs5) {
+  const captured = scope ? await readRootRestoreStageInputs5(reference, scope) : await readRootRestoreReferenceInputsAndOriginals5(reference)
   const observed = observations(captured)
   await assertRootRestoreReferenceOriginalBytes3(reference)
   const files: ReadonlyMap<string, OriginalFrameCopy> = observed.payloads

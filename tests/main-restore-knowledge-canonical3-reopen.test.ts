@@ -9,10 +9,10 @@ import { readRootKnowledgePlanLocation3 } from '../src/main/database/restore-kno
 import { prepareRootRestoreIdentityPlan3, readRootRestoreIdentityPlan3 } from '../src/main/database/restore-knowledge-identity3-read'
 import { prepareRootRestoreReferencePlan3, readRootRestoreReferencePlan3 } from '../src/main/database/restore-knowledge-reference3-read'
 import { allTables, randomUUID } from './helpers/synced-backup-v3-fixture'
-import { withCanonical3Fixture } from './helpers/canonical3-fixture'
+import { withColdCanonical3Fixture } from './helpers/canonical3-fixture'
 
 test('independent cold canonical reference reopens both durable kernels and reconstructs exact candidate cells from copied source and current originals', () =>
-  withCanonical3Fixture(async f => {
+  withColdCanonical3Fixture(async f => {
     const identity = await prepareRootRestoreIdentityPlan3(f.saved.knowledgePlan)
     const prepared = await prepareRootRestoreReferencePlan3(identity.plan,
       { originPolicy: 'isolate-incoming', anonymousValues: 'source' }), expected = prepared.value

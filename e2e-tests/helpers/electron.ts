@@ -16,6 +16,8 @@ export type ElectronAppContext = {
 export type ElectronLaunchOptions = {
   /** Fix native DPI when a suite must exercise exact one-pixel media boundaries. */
   deviceScaleFactor?: number
+  /** Keep Windows offscreen screenshot and resize fixtures on a separate GPU service with software fallback. */
+  windowsSoftwareCompositorFallback?: boolean
   /** Existing editing suites exercise Markdown mode; new suites explicitly exercise the rich text default. */
   editorMode?: 'markdown' | 'rich'
   /** Reuse a prior isolated user-data root to exercise restart-only behavior. */
@@ -30,13 +32,16 @@ export type ElectronCloseOptions = {
   /** A detached-service acceptance must keep intentional children alive across host exit. */
   preserveDetachedChildren?: boolean
 }
+type BuiltinReadinessOptions = { freshProfile?: boolean; safeMode?: boolean }
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const builtMainEntry = join(repoRoot, 'out', 'main', 'index.cjs')
 const electronHostPids = new WeakMap<ElectronApplication, number>()
+const electronInspectors = new WeakMap<ElectronApplication, { endpoint: string; pid: number; actionTimeout: number }>()
 // Playwright disposes its application channel after exit, so app.process()
 // cannot be used later to retrieve the launcher for teardown or diagnostics.
 const electronChildProcesses = new WeakMap<ElectronApplication, ChildProcess>()
+const destroyedInspectorContext = 'electronApplication.evaluate: Execution context was destroyed, most likely because of a navigation.'
 
 export function hasBuiltElectronApp(): boolean {
   // An explicitly requested packaged app must fail loudly if missing, rather
@@ -80,11 +85,16 @@ export async function ensureDocumentMetadataEditor(page: Page): Promise<void> {
 /** Wait for committed built-in renderers before a fixture can reload their first page. */
 export async function waitForBuiltinPluginReadiness(
   { app, page }: Pick<ElectronAppContext, 'app' | 'page'>,
-  { freshProfile = false, safeMode = false }: { freshProfile?: boolean; safeMode?: boolean } = {}
+  options: BuiltinReadinessOptions = {}
 ) {
   const rendererPid = await app.evaluate(({ BrowserWindow }) => (
     BrowserWindow.getAllWindows()[0].webContents.getOSProcessId()
   ))
+  return waitForBuiltinRendererReadiness(page, rendererPid, options)
+}
+
+async function waitForBuiltinRendererReadiness(page: Page, rendererPid: number,
+  { freshProfile = false, safeMode = false }: BuiltinReadinessOptions) {
   const readState = () => page.evaluate(async () => {
     const plugins = (await window.knowbook.listSystemPlugins())
       .filter(plugin => plugin.pluginId === 'theme-switcher' || plugin.pluginId === 'document-translator')
@@ -140,6 +150,9 @@ export async function launchElectronApp(
   options: ElectronLaunchOptions = {}
 ): Promise<ElectronAppContext> {
   const target = getElectronLaunchTarget(extraEnv.KNOWBOOK_E2E_EXECUTABLE ?? process.env.KNOWBOOK_E2E_EXECUTABLE)
+  if (process.platform === 'win32' && options.windowsSoftwareCompositorFallback) {
+    target.args = target.args.filter(flag => flag !== '--in-process-gpu' && flag !== '--disable-software-rasterizer')
+  }
   if (options.deviceScaleFactor !== undefined) {
     if (!Number.isFinite(options.deviceScaleFactor) || options.deviceScaleFactor <= 0) throw new Error('Device scale factor must be positive and finite')
     target.args.unshift(`--force-device-scale-factor=${options.deviceScaleFactor}`)
@@ -173,20 +186,29 @@ export async function launchElectronApp(
   try {
     // Keep CI and local runs independent of the operating system language.
     // Override explicitly when checking the other supported UI language.
-    app = await electron.launch({ ...target, env, locale: env.PLAYWRIGHT_ELECTRON_LOCALE ?? 'en-US' })
+    const launchedApp = await electron.launch({ ...target, env, locale: env.PLAYWRIGHT_ELECTRON_LOCALE ?? 'en-US' })
+    app = launchedApp
     // Electron's independently created context bypasses Playwright's browser
     // fixture setup. Apply the project's configured action/navigation limits
     // before any native-page work, including pages created after startup.
     const { actionTimeout, navigationTimeout } = test.info().project.use
     app.context().setDefaultTimeout(actionTimeout ?? 0)
     app.context().setDefaultNavigationTimeout(navigationTimeout ?? 0)
-    childProcess = app.process()
+    const launchedChild = app.process()
+    childProcess = launchedChild
     electronChildProcesses.set(app, childProcess)
     childProcess.stdout?.on('data', captureStartupOutput)
     childProcess.stderr?.on('data', captureStartupOutput)
 
     const page = await app.firstWindow()
-    electronHostPids.set(app, await readElectronHostPid(app, childProcess))
+    const host = await readElectronStartup(childProcess, () => launchedApp.evaluate(() => ({
+      pid: process.pid,
+      inspectorUrl: process.getBuiltinModule?.('node:inspector')?.url()
+    })))
+    electronHostPids.set(app, host.pid)
+    if (host.inspectorUrl && actionTimeout) electronInspectors.set(app, {
+      endpoint: host.inspectorUrl, pid: host.pid, actionTimeout
+    })
     page.on('console', (message) => console.error(`[renderer:${message.type()}] ${message.text()}`))
     page.on('pageerror', (error) => console.error('[renderer:pageerror]', error))
     await page.waitForLoadState('domcontentloaded')
@@ -201,12 +223,21 @@ export async function launchElectronApp(
     // Emulate renderer focus through CDP while the native window stays hidden.
     const backgroundSession = await page.context().newCDPSession(page)
     await backgroundSession.send('Emulation.setFocusEmulationEnabled', { enabled: true })
-    const nativeWindows = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()
-      .map(window => ({ visible: window.isVisible(), focused: window.isFocused(), focusable: window.isFocusable() })))
+    const nativeDeadline = performance.now() + (actionTimeout ?? 0)
+    const nativeState = await launchedApp.evaluate(readNativeStartupState).catch(async error => {
+      if (!(error instanceof Error) || error.message !== destroyedInspectorContext || !host.inspectorUrl
+        || performance.now() >= nativeDeadline || launchedChild.exitCode !== null || launchedChild.signalCode !== null) throw error
+      try { return await evaluateFreshInspectorByValue(host.inspectorUrl, nativeDeadline, `(${readNativeStartupState})(require('electron'))`) }
+      catch (cause) { throw new Error(`Fresh Electron inspector could not read the native window state: ${String(cause)}`, { cause: error }) }
+    })
+    if (!isNativeStartupState(nativeState) || nativeState.hostPid !== host.pid) {
+      throw new Error('The native Electron startup state does not belong to the launched host and renderer.')
+    }
+    const { nativeWindows, rendererPid } = nativeState
     if (nativeWindows.some(window => window.visible || window.focused || window.focusable)) {
       throw new Error(`Electron tests must remain in the background: ${JSON.stringify(nativeWindows)}`)
     }
-    await waitForBuiltinPluginReadiness({ app, page }, {
+    await waitForBuiltinRendererReadiness(page, rendererPid, {
       freshProfile, safeMode: restoredSafeMode || env.KNOWBOOK_SYSTEM_PLUGIN_SAFE_MODE === '1'
     })
     childProcess.stdout?.off('data', captureStartupOutput)
@@ -302,6 +333,7 @@ export async function closeElectronApp(
   // is gone, release a surviving wrapper without selecting any child process.
   if (childProcess.exitCode === null && childProcess.signalCode === null) childProcess.kill('SIGKILL')
   electronHostPids.delete(context.app)
+  electronInspectors.delete(context.app)
 
   if (context.tempRoot && !options.preserveUserData) {
     rmSync(context.tempRoot, {
@@ -314,16 +346,95 @@ export async function closeElectronApp(
   }
 }
 
-async function readElectronHostPid(app: ElectronApplication, child: ChildProcess): Promise<number> {
+function readNativeStartupState({ BrowserWindow }: typeof import('electron')) {
+  const windows = BrowserWindow.getAllWindows()
+  return { hostPid: process.pid, rendererPid: windows[0]?.webContents.getOSProcessId(),
+    nativeWindows: windows.map(window => ({ visible: window.isVisible(), focused: window.isFocused(), focusable: window.isFocusable() })) }
+}
+
+function isNativeStartupState(value: unknown): value is ReturnType<typeof readNativeStartupState> & { rendererPid: number } {
+  if (!value || typeof value !== 'object' || !('hostPid' in value) || !('rendererPid' in value) || !('nativeWindows' in value)) return false
+  const { hostPid, rendererPid, nativeWindows } = value
+  return Number.isSafeInteger(hostPid) && typeof rendererPid === 'number' && Number.isSafeInteger(rendererPid) && rendererPid > 0
+    && Array.isArray(nativeWindows) && nativeWindows.length > 0 && nativeWindows.every(window => window && typeof window === 'object'
+      && typeof window.visible === 'boolean' && typeof window.focused === 'boolean' && typeof window.focusable === 'boolean')
+}
+
+/** A fresh, by-value request avoids Playwright's original Node module handle. */
+async function evaluateFreshInspectorByValue(endpoint: string, deadline: number, expression: string): Promise<unknown> {
+  const url = new URL(endpoint)
+  if (url.href !== endpoint || url.protocol !== 'ws:' || !['127.0.0.1', '[::1]'].includes(url.hostname)
+    || !url.port || url.username || url.password || url.search || url.hash
+    || !/^\/[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(url.pathname)) {
+    throw new Error('The launched Electron inspector did not provide a local WebSocket endpoint.')
+  }
+  const socket = new WebSocket(url), events = new AbortController(), { signal } = events
+  let timer: NodeJS.Timeout | undefined
+  try {
+    return await new Promise<unknown>((resolve, reject) => {
+      const deadlineError = () => new Error('The native Electron inspector request exceeded the action deadline.')
+      timer = setTimeout(() => reject(deadlineError()), Math.max(0, Math.floor(deadline - performance.now())))
+      socket.addEventListener('open', () => {
+        try {
+          if (performance.now() >= deadline) throw deadlineError()
+          socket.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: {
+            expression, includeCommandLineAPI: true, returnByValue: true
+          } }))
+        } catch (error) { reject(error) }
+      }, { once: true, signal })
+      socket.addEventListener('message', event => {
+        try {
+          if (typeof event.data !== 'string') throw new Error('The Electron inspector returned a non-text response.')
+          const reply = JSON.parse(event.data)
+          if (reply.id !== 1) return
+          if (performance.now() >= deadline) throw deadlineError()
+          if (reply.error || reply.result?.exceptionDetails) {
+            throw new Error(reply.error?.message ?? reply.result.exceptionDetails.exception?.description ?? reply.result.exceptionDetails.text)
+          }
+          resolve(reply.result?.result?.value)
+        } catch (error) { reject(error) }
+      }, { signal })
+      socket.addEventListener('error', () => reject(new Error('The Electron inspector WebSocket failed.')), { once: true, signal })
+      socket.addEventListener('close', () => reject(new Error('The Electron inspector closed before replying.')), { once: true, signal })
+    })
+  } finally {
+    if (timer) clearTimeout(timer)
+    events.abort()
+    socket.close()
+  }
+}
+
+/** Run one synchronous fixture operation in the launched Main process using
+ * a fresh connection and JSON values. No fallback can replay a write or gate. */
+export async function evaluateInFreshElectronMain<Result, Arg = undefined>(app: ElectronApplication,
+  run: (electron: typeof import('electron'), arg: Arg) => Result, arg?: Arg): Promise<Result> {
+  const owner = electronInspectors.get(app), child = electronChildProcesses.get(app)
+  if (!owner || !child || child.exitCode !== null || child.signalCode !== null || !processIsAlive(owner.pid)) {
+    throw new Error('A live Electron Main inspector owned by this fixture is required.')
+  }
+  const encoded = JSON.stringify(arg) ?? 'undefined'
+  const result = await evaluateFreshInspectorByValue(owner.endpoint, performance.now() + owner.actionTimeout,
+    `(() => {
+      if (process.pid !== ${owner.pid}) throw new Error('Electron Main inspector belongs to a different process.');
+      const value = (${run})(require('electron'), ${encoded});
+      if (value && typeof value.then === 'function') throw new Error('Fixture operation must be synchronous.');
+      return { pid: process.pid, value };
+    })()`)
+  if (!result || typeof result !== 'object' || !('pid' in result) || result.pid !== owner.pid) {
+    throw new Error('The Electron Main inspector did not verify the launched process.')
+  }
+  return (result as { value?: Result }).value as Result
+}
+
+async function readElectronStartup<T>(child: ChildProcess, read: () => Promise<T>): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
-      return await app.evaluate(() => process.pid)
+      return await read()
     } catch (error) {
       // The inspector can replace its initial execution context during startup.
       // Retry only that exact transient failure, never a closed/crashed host or
       // an unrelated evaluation error. The wrapper PID is still not a host PID.
-      if (!(error instanceof Error)
-        || error.message !== 'electronApplication.evaluate: Execution context was destroyed, most likely because of a navigation.'
+      if (!(error instanceof Error) || error.message !== destroyedInspectorContext
         || attempt >= 4 || child.exitCode !== null || child.signalCode !== null) throw error
       await new Promise(resolve => setTimeout(resolve, 100))
     }

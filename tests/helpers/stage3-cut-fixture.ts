@@ -9,6 +9,7 @@ import Database from 'better-sqlite3'
 import type { SyncedRestoreGroupInput, SyncedUpdateGroupInput } from '../../src/shared/synced-blocks'
 import { capsuleJson } from '../../src/main/database/restore-knowledge-capsule-model'
 import { rawRestoreSqlCell } from '../../src/main/database/restore-knowledge-sql-cell'
+import { KnowbookStore } from '../../src/main/database/store'
 import type { Capsule2Encoding } from '../../src/main/database/restore-knowledge-capsule2-raw-model'
 import { captureActualFirstRequiredSqlDag } from '../../src/main/database/restore-knowledge-mixed-required-dag-read'
 import { exportPreparedMixedOriginBundle } from '../../src/main/database/restore-knowledge-mixed-origin-bundle-read'
@@ -18,7 +19,7 @@ import { prepareRootRestoreIdentityPlan3 } from '../../src/main/database/restore
 import { prepareRootRestoreReferencePlan3 } from '../../src/main/database/restore-knowledge-reference3-read'
 import { restoreSyncedGroupOperation, updateSyncedBlockGroup } from '../../src/main/database/synced-blocks-content'
 import { getSyncedHostHistory } from '../../src/main/database/synced-host-final'
-import { captureMixedSource } from './mixed-required-source-fixture'
+import { captureMixedSource, captureMixedSourceFromDatabase } from './mixed-required-source-fixture'
 import { withV3Fixture, allTables, createRequest, created, applySyncedHostCommand, applySyncedHostFinal,
   restoreSyncedHostOperation, createRestoreInput, request, applied, snapshot, type V3Fixture } from './synced-backup-v3-fixture'
 import { freshBlock, restoreInput, savedGroup } from './synced-host-final-fixture'
@@ -41,7 +42,7 @@ export function cutGroupRestore(db: Database.Database, groupId: string, historyT
     expectedInstanceBinding: { instanceId: instance.instanceId, hostDocumentId: instance.hostDocumentId,
       bindingVersion: instance.bindingVersion } }
 }
-function newHost(f: V3Fixture, title: string) {
+function newHost(f: Pick<V3Fixture, 'db' | 'store'>, title: string) {
   const hostId = f.store.createDocument(null), ordinaryId = randomUUID(), canonicalId = randomUUID()
   f.store.updateDocument(hostId, { title, summary: 'Current-only complete host summary', blocks: [
     freshBlock(ordinaryId, title + ' ordinary survivor'), freshBlock(canonicalId, title + ' canonical body')
@@ -92,8 +93,29 @@ function currentCases(f: V3Fixture) {
 export async function withStage3CutFixture(run: (fixture: Awaited<ReturnType<typeof setup>>) => Promise<void>) {
   await withV3Fixture(source => withV3Fixture(receiver => setup(source, receiver).then(run)))
 }
-async function setup(source: V3Fixture, receiver: V3Fixture) {
-  const left = await captureMixedSource(source, 2)
+
+/** Keep all real current instance owners. The separately created incoming
+ * host does not participate in any current host forest or reuse its IDs. */
+export async function withStage3RetainedHistoryFixture(run: (fixture: Awaited<ReturnType<typeof setup>>) => Promise<void>) {
+  await withV3Fixture(source => withV3Fixture(async receiver => {
+    const incomingProfile = join(source.root, 'independent-incoming')
+    await mkdir(incomingProfile)
+    const donor = KnowbookStore.createEmptySyncedReceiver(join(incomingProfile, 'storage', 'knowbook.db'))
+    try {
+      const db = donor.getUnsafeDatabaseHandle()
+      const host = newHost({ store: donor, db }, 'R1 independent incoming host')
+      assert.deepEqual(db.prepare('SELECT id FROM documents').pluck().all(), [host.hostId])
+      assert.deepEqual(db.prepare('SELECT id FROM synced_groups').pluck().all(), [host.groupId])
+      const before = allTables(db)
+      const incoming = await captureMixedSourceFromDatabase({ db, userDataRoot: source.userDataRoot }, 2)
+      await run(await setup(source, receiver, incoming))
+      assert.deepEqual(allTables(db), before)
+    } finally { donor.destroy() }
+  }))
+}
+
+async function setup(source: V3Fixture, receiver: V3Fixture, incoming?: Awaited<ReturnType<typeof captureMixedSource>>) {
+  const left = incoming ?? await captureMixedSource(source, 2)
   const sourcePacket = (await tryReadCertifiedCapsule2SourceInputs(left.handle))!.value
   const cases = currentCases(source)
   const right = await captureMixedSource(source, 2)

@@ -322,6 +322,15 @@ export async function restoreControlledDatabase(input:ControlledRestoreInput,leg
       // unsupported/missing/unreadable originals cannot stand for empty K.
       const preparedDag=source.capsule&&currentCapsule?await captureDurableSqlDag({profileRoot:root,
         operationId:p.recovery.split(/[\\/]/).at(-1)!,dagId:randomUUID(),source:source.capsule,current:currentCapsule,parents:[]}):null
+      const verifyPreparedOriginals = async () => {
+        // A fresh DAG read verifies both exact private capsule handles above.
+        if (preparedDag) {
+          await readCertifiedDurableSqlDag(preparedDag)
+          return
+        }
+        if (source.capsule) await readCertifiedDurableSqlCapsule(source.capsule)
+        if (currentCapsule) await readCertifiedDurableSqlCapsule(currentCapsule)
+      }
       await writeRestoreJson(join(p.recovery,'knowledge-dag-preflight.json'),{
         kind:'controlled-restore-original-dag-preflight',version:1,status:preparedDag?'prepared-originals-only':'not-certified',
         sourceSchemaVersion:source.schemaVersion,currentSchemaVersion:current.schemaVersion,currentClassification:current.classification,
@@ -347,9 +356,7 @@ export async function restoreControlledDatabase(input:ControlledRestoreInput,leg
         createdAt:acceptedAt,source:{path:resolve(input.backupPath),sha256:source.sha256,schemaVersion:source.schemaVersion},current,candidateAuthority:source.authority,
         parentFenceHash:parentRaw===null?null:rawHash(parentRaw),receipt,receiptHash:restoreHash(receipt),stagedSha256})
       await assertRestoreInventory(p.storage,inventory)
-      if(source.capsule)await readCertifiedDurableSqlCapsule(source.capsule)
-      if(currentCapsule)await readCertifiedDurableSqlCapsule(currentCapsule)
-      if(preparedDag)await readCertifiedDurableSqlDag(preparedDag)
+      await verifyPreparedOriginals()
       if((await restoreFileDigest(input.backupPath)).sha256!==source.sha256)return restoreFail('源备份在维护期间变化。')
       if(restoreJson(await sourceSqlInventory(input.backupPath))!==restoreJson(source.inventory))return restoreFail('源原三文件在维护期间变化。')
       await assertNoActiveRestoreRollbackJournal(input.backupPath)
@@ -360,9 +367,7 @@ export async function restoreControlledDatabase(input:ControlledRestoreInput,leg
       for(const file of inventory)if(file.present)await rename(join(p.storage,file.name),join(p.original,file.name))
       await syncRestoreDirectory(p.storage);await syncRestoreDirectory(p.original)
       await input.beforeReplace?.()
-      if(source.capsule)await readCertifiedDurableSqlCapsule(source.capsule)
-      if(currentCapsule)await readCertifiedDurableSqlCapsule(currentCapsule)
-      if(preparedDag)await readCertifiedDurableSqlDag(preparedDag)
+      await verifyPreparedOriginals()
       if(restoreJson(await sourceSqlInventory(input.backupPath))!==restoreJson(source.inventory))return restoreFail('源原三文件在安装前变化。')
       await assertNoActiveRestoreRollbackJournal(input.backupPath)
       await assertNoActiveRestoreRollbackJournal(p.database)

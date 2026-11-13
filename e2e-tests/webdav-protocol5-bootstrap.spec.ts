@@ -1,5 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { closeElectronApp, launchElectronApp, uiText, type ElectronAppContext } from './helpers/electron'
@@ -77,8 +78,16 @@ test('production WebDAV preserves legacy data, joins a fresh independent profile
   // Keep the loopback connection available while Main revalidates the SQLite snapshot.
   const server = await createWebDavServer({ keepAliveTimeout: 0 }), receiverRoot = mkdtempSync(join(tmpdir(), 'kb-webdav-receiver-'))
   let sender: ElectronAppContext | null = null, receiver: ElectronAppContext | null = null
+  let receiverLaunchStarted = false
+  let receiverLaunch: Promise<ElectronAppContext> | null = null
   try {
     sender = await launchElectronApp({}, { editorMode: 'markdown' })
+    receiverLaunchStarted = true
+    receiverLaunch = launchElectronApp({}, { userDataRoot: receiverRoot, startupArgs: [
+      `--knowbook-user-data-dir=${receiverRoot}`, '--knowbook-initialize-sync-receiver'
+    ] })
+    // Observe a launch failure even while the sender is still publishing.
+    void receiverLaunch.catch(() => undefined)
     const { page } = sender
     const original = await page.evaluate(async () => {
       const doc = await window.knowbook.createDocument(null), blockId = crypto.randomUUID()
@@ -126,9 +135,8 @@ test('production WebDAV preserves legacy data, joins a fresh independent profile
     expect(manifest.history.previousHash).toBeNull()
     expect(manifest.entries[`group:${address.groupId}`]).toMatch(/^[a-f0-9]{64}$/)
 
-    receiver = await launchElectronApp({}, { userDataRoot: receiverRoot, startupArgs: [
-      `--knowbook-user-data-dir=${receiverRoot}`, '--knowbook-initialize-sync-receiver'
-    ] })
+    receiver = await receiverLaunch
+    receiverLaunch = null
     expect(await receiver.page.evaluate(async () => (await window.knowbook.getHomeData()).documentCatalog.length)).toBe(0)
     await configure(receiver.page, server.url, 'protocol5-test', true)
     const incoming = await receiver.page.evaluate(() => window.knowbook.syncWebDavNow())
@@ -248,10 +256,22 @@ test('production WebDAV preserves legacy data, joins a fresh independent profile
     expect(finalDeletion.document, `WebDAV deletion status (${finalDeletion.phase}): ${finalDeletion.message}`).toBeNull()
     expect(server.files.get('/protocol5-test/manifest.json')).toEqual(tombstone)
   } finally {
-    try { await closeElectronApp(receiver) }
-    finally {
-      try { await closeElectronApp(sender) }
-      finally { await server.close(); rmSync(receiverRoot, { recursive: true, force: true }) }
+    const closeReceiver = async () => {
+      if (receiverLaunch) receiver = await receiverLaunch.catch(() => null)
+      await closeElectronApp(receiver, { preserveUserData: true })
     }
+    const hosts = await Promise.allSettled([
+      closeReceiver(),
+      closeElectronApp(sender)
+    ])
+    // A failed launch without an app handle may leave a host using this root.
+    const canRemoveReceiver = hosts[0].status === 'fulfilled' && (receiver !== null || !receiverLaunchStarted)
+    const resources = await Promise.allSettled([
+      server.close(),
+      canRemoveReceiver ? rm(receiverRoot, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }) : undefined
+    ])
+    const errors = [...hosts, ...resources].flatMap(result => result.status === 'rejected' ? [result.reason] : [])
+    if (errors.length === 1) throw errors[0]
+    if (errors.length > 1) throw new AggregateError(errors, 'WebDAV fixture cleanup failed.')
   }
 })

@@ -8,11 +8,12 @@ export async function withElectronFailureTrace(
   info: TestInfo,
   run: (context: ElectronAppContext) => Promise<void>,
   extraEnv: Record<string, string> = {},
-  options: ElectronLaunchOptions = {}
+  options: ElectronLaunchOptions = {},
+  traceOptions: { screenshots?: boolean } = {}
 ): Promise<void> {
   await withElectronApp(async context => {
     const tracing = context.app.context().tracing
-    await tracing.start({ screenshots: true, snapshots: true, sources: true })
+    await tracing.start({ screenshots: traceOptions.screenshots ?? true, snapshots: true, sources: true })
     let failed = false
     try {
       await run(context)

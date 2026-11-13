@@ -1,7 +1,8 @@
 import { capsuleBytesHash, capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { durableSqlDagHash } from './restore-knowledge-dag-model'
 import { validateCoverageCapsuleReference, validateCoverageRootReference } from './restore-knowledge-coverage-model'
-import { reopenActualFirstRequiredSqlDagWithInitialMaterial, readActualFirstRequiredSqlDagMaterial, type ActualFirstRequiredSqlDag } from './restore-knowledge-mixed-required-dag-read'
+import { reopenActualFirstRequiredSqlDagWithInitialContent3, reopenActualFirstRequiredSqlDagWithInitialMaterial,
+  readActualFirstRequiredSqlDagMaterial, type ActualFirstRequiredSqlDag } from './restore-knowledge-mixed-required-dag-read'
 import { importMixedOriginBundleOriginal, readMountedMixedOriginBundle, writeMixedOriginBundle, createMixedOriginVerificationProfile } from './restore-knowledge-mixed-origin-bundle-files'
 import { originBundleInvalid as bad } from './restore-knowledge-origin-bundle-model'
 import { mixedOriginBundleDirectories, mixedOriginBundleFiles } from './restore-knowledge-mixed-origin-bundle-model'
@@ -17,21 +18,26 @@ const bundles=new WeakMap<PreparedMixedOriginBundle,Saved>()
 export async function exportPreparedMixedOriginBundle(dag:ActualFirstRequiredSqlDag,input:{operationId:string;bundleId:string}) {
   const row=capsuleRecord(input,['operationId','bundleId']);return writeMixedOriginBundle(dag,row.operationId as string,row.bundleId as string)
 }
-async function certify(mounted:Mounted) {
-  const verificationProfile=await createMixedOriginVerificationProfile(mounted),ref=mounted.original.descriptor.root
-  const {dag,value:material}=await reopenActualFirstRequiredSqlDagWithInitialMaterial({profileRoot:verificationProfile,operationId:ref.operationId,dagId:ref.dagId,expectedRootHash:ref.rootHash})
+async function certify(locator: Parameters<typeof createMixedOriginVerificationProfile>, captureContent = false) {
+  const { mounted, verificationProfile } = await createMixedOriginVerificationProfile(...locator)
+  const ref = mounted.original.descriptor.root
+  const input = {profileRoot:verificationProfile,operationId:ref.operationId,dagId:ref.dagId,expectedRootHash:ref.rootHash}
+  const content = captureContent ? await reopenActualFirstRequiredSqlDagWithInitialContent3(input) : null
+  const { dag, value: material } = content ?? await reopenActualFirstRequiredSqlDagWithInitialMaterial(input)
   if(capsuleJson(material.root)!==capsuleJson(ref)||capsuleJson(material.node)!==mounted.original.descriptor.nodeText||material.inputs.length!==2)
     return bad('mixed实际SQL认证根/node/完整input不等于原catalog')
   const last=await readMountedMixedOriginBundle(mounted.profileRoot,mounted.operationId,mounted.mountId,mounted.original.descriptorHash)
   const handle:PreparedMixedOriginBundle=Object.freeze({kind:'prepared-mixed-origin-bundle'})
   const entry={...last,dag,material,verificationProfile};bundles.set(handle,entry)
-  return Object.freeze({bundle:handle,value:qualifiedMaterial(entry,material),original:last.original})
+  return Object.freeze({bundle:handle,value:qualifiedMaterial(entry,material),original:last.original,
+    ...(content ? { packets: content.packets } : {})})
 }
 /** Initial data comes from this same complete import certification. Later
  * consumption still requires readPreparedMixedOriginBundle's full reread. */
 export async function capturePreparedMixedOriginBundleWithOriginal(input:{profileRoot:string;operationId:string;sourceDirectory:string}) {
   const row=capsuleRecord(input,['profileRoot','operationId','sourceDirectory'])
-  return certify(await importMixedOriginBundleOriginal(row.profileRoot as string,row.operationId as string,row.sourceDirectory as string))
+  const imported = await importMixedOriginBundleOriginal(row.profileRoot as string,row.operationId as string,row.sourceDirectory as string)
+  return certify([imported.profileRoot, imported.operationId, imported.mountId, imported.original.descriptorHash])
 }
 export async function capturePreparedMixedOriginBundle(input:Parameters<typeof capturePreparedMixedOriginBundleWithOriginal>[0]) {
   const {bundle,value}=await capturePreparedMixedOriginBundleWithOriginal(input)
@@ -44,9 +50,21 @@ export async function importPreparedMixedOriginBundle(input:Parameters<typeof ca
  * It accepts no old handle; every call creates an independently verified mount
  * profile and runs both real readers before exposing the snapshot. */
 export async function captureReopenedPreparedMixedOriginBundle(input:{profileRoot:string;operationId:string;mountId:string;expectedDescriptorHash:string}) {
-  const row=capsuleRecord(input,['profileRoot','operationId','mountId','expectedDescriptorHash'])
-  const {bundle,value}=await certify(await readMountedMixedOriginBundle(row.profileRoot as string,row.operationId as string,row.mountId as string,durableSqlDagHash(row.expectedDescriptorHash)))
+  const {bundle,value}=await certify(reopenLocator(input))
   return Object.freeze({bundle,value})
+}
+
+function reopenLocator(input: Parameters<typeof captureReopenedPreparedMixedOriginBundle>[0]): Parameters<typeof createMixedOriginVerificationProfile> {
+  const row=capsuleRecord(input,['profileRoot','operationId','mountId','expectedDescriptorHash'])
+  return [row.profileRoot as string,row.operationId as string,row.mountId as string,durableSqlDagHash(row.expectedDescriptorHash)]
+}
+
+/** One fresh mounted verification profile supplies both original packets. The
+ * existing mount byte tail runs before they leave this exact invocation. */
+export async function captureReopenedPreparedMixedOriginBundleWithInitialContent3(input: Parameters<typeof captureReopenedPreparedMixedOriginBundle>[0]) {
+  const captured = await certify(reopenLocator(input), true)
+  if (!captured.packets) return bad('实际冷重开缺完整两侧内容')
+  return Object.freeze({ ...captured, packets: captured.packets })
 }
 export async function reopenPreparedMixedOriginBundle(input:Parameters<typeof captureReopenedPreparedMixedOriginBundle>[0]) {
   return (await captureReopenedPreparedMixedOriginBundle(input)).bundle

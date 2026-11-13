@@ -3,7 +3,7 @@ import type { ElectronApplication } from 'playwright'
 import type { DatabaseViewConfigV1 } from '../src/shared/contracts'
 import { getDatabaseWorkspaceText } from '../src/renderer/src/features/database/databaseText'
 import { writeFileSync } from 'node:fs'
-import { hasBuiltElectronApp } from './helpers/electron'
+import { evaluateInFreshElectronMain, hasBuiltElectronApp } from './helpers/electron'
 import { withElectronFailureTrace } from './helpers/electron-failure-trace'
 
 type Language = 'en-US' | 'zh-CN'
@@ -57,7 +57,7 @@ async function prepare(page: Page, language: Language) {
 }
 
 async function installProbe(app: ElectronApplication) {
-  await app.evaluate(({ ipcMain }) => {
+  await evaluateInFreshElectronMain(app, ({ ipcMain }) => {
     const handlers = (ipcMain as unknown as { _invokeHandlers: Map<string, Handler> })._invokeHandlers
     const probe: Probe = { requests: [], writes: [], failures: [] }
     ;(globalThis as ProbeGlobal).__toolbarPopoverProbe = probe
@@ -85,7 +85,7 @@ async function readStored(page: Page, app: ElectronApplication, language: Langua
         fields: (await window.knowbook.getDocumentDatabaseColumns(database.id)).sort((left, right) => left.id.localeCompare(right.id)),
         views: (await window.knowbook.getDatabaseSavedViews(database.id)).sort((left, right) => left.id.localeCompare(right.id)) }))) }
   }, language)
-  const sql = await app.evaluate(({ app }) => {
+  const sql = await evaluateInFreshElectronMain(app, ({ app }) => {
     const { createRequire } = process.getBuiltinModule('node:module')!
     const { join } = process.getBuiltinModule('node:path')!
     const Database = createRequire(join(app.getAppPath(), 'package.json'))('better-sqlite3')
@@ -172,9 +172,9 @@ async function record(page: Page, app: ElectronApplication, info: TestInfo, lang
       active: active instanceof HTMLElement ? { tag: active.tagName, className: active.className,
         label: active.getAttribute('aria-label'), text: active.textContent?.slice(0, 120) } : null }
   }, kind)
-  const windows = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map(window => ({
+  const windows = await evaluateInFreshElectronMain(app, ({ BrowserWindow }) => BrowserWindow.getAllWindows().map(window => ({
     visible: window.isVisible(), focused: window.isFocused(), focusable: window.isFocusable() })))
-  const probe = await app.evaluate(() => (globalThis as ProbeGlobal).__toolbarPopoverProbe!)
+  const probe = await evaluateInFreshElectronMain(app, () => (globalThis as ProbeGlobal).__toolbarPopoverProbe!)
   const stored = await readStored(page, app, language)
   const result = { phase, language, kind, steps, observations: await observations(page), state, windows, probe, before, stored }
   const path = info.outputPath(`${language}-${kind}-${phase}.json`)
@@ -344,6 +344,9 @@ for (const language of ['en-US', 'zh-CN'] as const) for (const kind of ['filter'
       expect(final.state.sortCount).toBe(1)
       expect(final.state.confirmCount).toBe(0)
       expect(errors).toEqual([])
-    }, { PLAYWRIGHT_ELECTRON_LOCALE: language })
+    }, { PLAYWRIGHT_ELECTRON_LOCALE: language }, { windowsSoftwareCompositorFallback: true }, {
+      // Keep the explicit phase screenshots while avoiding a second continuous capture on Windows OSR.
+      screenshots: process.platform !== 'win32'
+    })
   })
 }

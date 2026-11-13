@@ -3,7 +3,7 @@ import type { ElectronApplication } from 'playwright'
 import type { DatabaseViewConfigV1, UpdateDatabaseEntityInput } from '../src/shared/contracts'
 import { getDatabaseWorkspaceText } from '../src/renderer/src/features/database/databaseText'
 import { writeFileSync } from 'node:fs'
-import { hasBuiltElectronApp, withElectronApp } from './helpers/electron'
+import { evaluateInFreshElectronMain, hasBuiltElectronApp, withElectronApp } from './helpers/electron'
 
 type Language = 'en-US' | 'zh-CN'
 type Ids = { databaseId: string; entityId: string; doneId: string; notesId: string; viewId: string }
@@ -55,7 +55,7 @@ async function prepare(page: Page, language: Language): Promise<Ids> {
 }
 
 async function installProbe(app: ElectronApplication, ids: Ids) {
-  await app.evaluate(({ ipcMain }, ids) => {
+  await evaluateInFreshElectronMain(app, ({ ipcMain }, ids) => {
     const handlers = (ipcMain as unknown as { _invokeHandlers: Map<string, Handler> })._invokeHandlers
     const probe: Probe = { requests: [], writes: [], failures: [], reads: [], diagnosticReads: false, gates: [], holdWrites: true, failNextRead: false }
     ;(globalThis as ProbeGlobal).__checkboxSaveProbe = probe
@@ -106,7 +106,7 @@ async function installProbe(app: ElectronApplication, ids: Ids) {
 }
 
 async function mainState(app: ElectronApplication) {
-  return app.evaluate(() => {
+  return evaluateInFreshElectronMain(app, () => {
     const probe = (globalThis as ProbeGlobal).__checkboxSaveProbe!
     return { requests: probe.requests, writes: probe.writes, failures: probe.failures, reads: probe.reads,
       readChannel: 'knowbook:get-database-entities', holdWrites: probe.holdWrites,
@@ -116,7 +116,7 @@ async function mainState(app: ElectronApplication) {
 }
 
 async function releaseWrite(app: ElectronApplication, index: number) {
-  await app.evaluate(({}, index) => {
+  await evaluateInFreshElectronMain(app, ({}, index) => {
     const gate = (globalThis as ProbeGlobal).__checkboxSaveProbe!.gates[index]
     if (!gate?.started || gate.released || !gate.release) throw new Error('An unreleased genuine accepted write is required')
     gate.released = true
@@ -125,7 +125,7 @@ async function releaseWrite(app: ElectronApplication, index: number) {
 }
 
 async function armReadFailure(app: ElectronApplication) {
-  await app.evaluate(() => {
+  await evaluateInFreshElectronMain(app, () => {
     const probe = (globalThis as ProbeGlobal).__checkboxSaveProbe!
     probe.failNextRead = true
     probe.readGate = { started: false, released: false }
@@ -133,7 +133,7 @@ async function armReadFailure(app: ElectronApplication) {
 }
 
 async function releaseReadFailure(app: ElectronApplication) {
-  await app.evaluate(() => {
+  await evaluateInFreshElectronMain(app, () => {
     const gate = (globalThis as ProbeGlobal).__checkboxSaveProbe!.readGate
     if (!gate?.started || !gate.release) throw new Error('A genuine captured authenticated GET is required')
     gate.released = true
@@ -142,11 +142,11 @@ async function releaseReadFailure(app: ElectronApplication) {
 }
 
 async function holdWrites(app: ElectronApplication, hold: boolean) {
-  await app.evaluate(({}, hold) => { (globalThis as ProbeGlobal).__checkboxSaveProbe!.holdWrites = hold }, hold)
+  await evaluateInFreshElectronMain(app, ({}, hold) => { (globalThis as ProbeGlobal).__checkboxSaveProbe!.holdWrites = hold }, hold)
 }
 
 async function installFailure(app: ElectronApplication, ids: Ids) {
-  await app.evaluate(({ app }, { ids, failureReason }) => {
+  await evaluateInFreshElectronMain(app, ({ app }, { ids, failureReason }) => {
     const { createRequire } = process.getBuiltinModule('node:module')!
     const { join } = process.getBuiltinModule('node:path')!
     const Database = createRequire(join(app.getAppPath(), 'package.json'))('better-sqlite3')
@@ -162,7 +162,7 @@ async function installFailure(app: ElectronApplication, ids: Ids) {
 }
 
 async function removeFailure(app: ElectronApplication) {
-  await app.evaluate(({ app }) => {
+  await evaluateInFreshElectronMain(app, ({ app }) => {
     const { createRequire } = process.getBuiltinModule('node:module')!
     const { join } = process.getBuiltinModule('node:path')!
     const Database = createRequire(join(app.getAppPath(), 'package.json'))('better-sqlite3')
@@ -188,7 +188,7 @@ async function tabTo(page: Page, target: Locator) {
 async function readStored(page: Page, app: ElectronApplication, language: Language) {
   // Evidence reads still delegate the real authenticated handler, but are
   // excluded from the UI refresh counter; no data or handler result is faked.
-  await app.evaluate(() => { const probe = (globalThis as ProbeGlobal).__checkboxSaveProbe; if (probe) probe.diagnosticReads = true })
+  await evaluateInFreshElectronMain(app, () => { const probe = (globalThis as ProbeGlobal).__checkboxSaveProbe; if (probe) probe.diagnosticReads = true })
   try {
     const api = await page.evaluate(async language => {
       const databases = (await window.knowbook.getDatabases()).sort((left, right) => left.id.localeCompare(right.id))
@@ -200,7 +200,7 @@ async function readStored(page: Page, app: ElectronApplication, language: Langua
           fields: (await window.knowbook.getDocumentDatabaseColumns(database.id)).sort((left, right) => left.id.localeCompare(right.id)),
           views: (await window.knowbook.getDatabaseSavedViews(database.id)).sort((left, right) => left.id.localeCompare(right.id)) }))) }
     }, language)
-    const sql = await app.evaluate(({ app }) => {
+    const sql = await evaluateInFreshElectronMain(app, ({ app }) => {
       const { createRequire } = process.getBuiltinModule('node:module')!
       const { join } = process.getBuiltinModule('node:path')!
       const Database = createRequire(join(app.getAppPath(), 'package.json'))('better-sqlite3')
@@ -216,7 +216,7 @@ async function readStored(page: Page, app: ElectronApplication, language: Langua
     })
     return { ...api, sql }
   } finally {
-    await app.evaluate(() => { const probe = (globalThis as ProbeGlobal).__checkboxSaveProbe; if (probe) probe.diagnosticReads = false })
+    await evaluateInFreshElectronMain(app, () => { const probe = (globalThis as ProbeGlobal).__checkboxSaveProbe; if (probe) probe.diagnosticReads = false })
   }
 }
 
@@ -295,7 +295,7 @@ async function record(page: Page, app: ElectronApplication, info: TestInfo, lang
         text: document.activeElement.textContent, label: document.activeElement.getAttribute('aria-label') } : null }
   })
   const layout = { input: await geometry(input), actions: await Promise.all((await input.locator('xpath=ancestor::td').getByRole('button').all()).map(button => geometry(button))) }
-  const windows = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map(window => ({ visible: window.isVisible(), focused: window.isFocused(), focusable: window.isFocusable() })))
+  const windows = await evaluateInFreshElectronMain(app, ({ BrowserWindow }) => BrowserWindow.getAllWindows().map(window => ({ visible: window.isVisible(), focused: window.isFocused(), focusable: window.isFocusable() })))
   const ipc = await mainState(app), stored = await readStored(page, app, language)
   const path = info.outputPath(phase + '.json')
   writeFileSync(path, JSON.stringify({ phase, state, layout, windows, ipc, before, stored }, null, 2))

@@ -77,21 +77,35 @@ function currentCases(f: V3Fixture, source: ReturnType<typeof sourceCases>) {
   return { futureId, externalHostId, externalBodyId, externalInstanceId: insert.action.instanceId }
 }
 
+type Fixture = Awaited<ReturnType<typeof setup>>
+type CertifiedPacket = NonNullable<Fixture['sourcePacket']>
+type FixtureWithPackets = Fixture & { sourcePacket: CertifiedPacket; currentPacket: CertifiedPacket }
+
+export async function withCanonical3Fixture(run: (fixture: FixtureWithPackets) => Promise<void>, phase: (name: string) => void = () => {}) {
+  await withV3Fixture(source => withV3Fixture(async receiver => {
+    const fixture = await setup(source, receiver, phase, true)
+    const { sourcePacket, currentPacket } = fixture
+    assert.ok(sourcePacket && currentPacket)
+    await run({ ...fixture, sourcePacket, currentPacket })
+  }))
+}
+
+export async function withColdCanonical3Fixture(run: (fixture: Omit<Fixture, 'sourcePacket' | 'currentPacket'>) => Promise<void>, phase: (name: string) => void = () => {}) {
+  await withV3Fixture(source => withV3Fixture(async receiver => run(await setup(source, receiver, phase, false))))
+}
+
 /** Real Main source/current snapshots of one user's evolving database. No
  * source typed target, journal, lifecycle, birth or K row is fabricated. */
-export async function withCanonical3Fixture(run: (fixture: Awaited<ReturnType<typeof setup>>) => Promise<void>, phase: (name: string) => void = () => {}) {
-  await withV3Fixture(source => withV3Fixture(async receiver => run(await setup(source, receiver, phase))))
-}
-async function setup(source: V3Fixture, receiver: V3Fixture, phase: (name: string) => void) {
+async function setup(source: V3Fixture, receiver: V3Fixture, phase: (name: string) => void, readPackets: boolean) {
   phase('stores-ready')
   const before = sourceCases(source); phase('source-cases-ready')
   const left = await captureMixedSource(source, 2); phase('source-captured')
-  const sourcePacket = (await tryReadCertifiedCapsule2SourceInputs(left.handle))!.value
-  phase('source-packet-read')
+  const sourcePacket = readPackets ? (await tryReadCertifiedCapsule2SourceInputs(left.handle))!.value : undefined
+  if (readPackets) phase('source-packet-read')
   const after = currentCases(source, before); phase('current-cases-ready')
   const right = await captureMixedSource(source, 2); phase('current-captured')
-  const currentPacket = (await tryReadCertifiedCapsule2SourceInputs(right.handle))!.value
-  phase('current-packet-read')
+  const currentPacket = readPackets ? (await tryReadCertifiedCapsule2SourceInputs(right.handle))!.value : undefined
+  if (readPackets) phase('current-packet-read')
   const dag = await captureActualFirstRequiredSqlDag({ profileRoot: source.userDataRoot,
     operationId: basename(left.original.info.recoveryDirectory), dagId: randomUUID(), source: left.handle, current: right.handle })
   phase('dag-captured')

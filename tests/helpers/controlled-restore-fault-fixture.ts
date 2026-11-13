@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { basename, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const worker = fileURLToPath(new URL('./controlled-restore-fault-worker.mjs', import.meta.url))
 export async function faultChild(profile: string, backup: string, mode: string, transcript: string) {
+  const startedAt = performance.now()
   const child = spawn(process.execPath, ['--import', 'tsx', worker, resolve('.'), profile, backup, mode, transcript], {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe']
   })
@@ -18,9 +19,11 @@ export async function faultChild(profile: string, backup: string, mode: string, 
   const timer = setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL') }, 20000)
   try {
     const result = await ended
+    const elapsedMs = Math.round(performance.now() - startedAt)
     writeFileSync(transcript + '.stdio.json', JSON.stringify({ ...result, error: failed?.message ?? null, stdout, stderr }, null, 2) + '\n')
     assert.equal(failed, undefined, 'The hidden fault child starts successfully')
-    assert.equal(result.signal, null, 'The genuine fault child exits within the unchanged bounded cleanup deadline: ' + stderr.slice(-1500))
+    assert.equal(result.signal, null,
+      `The genuine fault child exits within the unchanged bounded cleanup deadline (${basename(transcript)}, ${mode}, ${elapsedMs} ms): ${stderr.slice(-1500)}`)
     const evidence = JSON.parse(readFileSync(transcript, 'utf8')) as Record<string, unknown>
     if (result.code === 2) globalThis.process.stderr.write('[controlled-restore-hook-miss] ' + JSON.stringify({ mode,
       inputProfile: evidence.inputProfile, canonicalProfile: evidence.canonicalProfile, injected: evidence.injected,

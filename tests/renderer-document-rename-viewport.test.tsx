@@ -11,7 +11,7 @@ type ViewportFixture = {
   scroll: () => HTMLElement
   row: (index: number) => HTMLElement
   setScroll: (top: number) => Promise<void>
-  render: (next: Partial<Model>, restore?: () => void) => Promise<void>
+  render: (next: Partial<Model>, restore?: () => void, beforeFirstFrameMs?: number) => Promise<void>
   resize: () => Promise<void>
   flushFrames: () => Promise<void>
   advance: (milliseconds: number) => void
@@ -109,8 +109,9 @@ async function withViewport(run: (fixture: ViewportFixture) => Promise<void>) {
     await act(async () => { scroll().scrollTop = top; scroll().dispatchEvent(new dom.window.Event('scroll')) })
     await flushFrames()
   }
-  const render = async (next: Partial<Model>, restore?: () => void) => {
+  const render = async (next: Partial<Model>, restore?: () => void, beforeFirstFrameMs = 0) => {
     await act(async () => { model = { ...model, ...next }; publish(); restore?.() })
+    now += beforeFirstFrameMs
     await resize()
   }
   const activity = async (type: 'wheel' | 'keydown' | 'pointerdown' | 'touchstart', outside = false) => {
@@ -183,6 +184,23 @@ test('the ordinary explicit mode-switch bookmark still keeps the same paragraph 
     await render({ reading: false, prefix: 120 })
     assert.equal(scroll().scrollTop, 620)
     assert.equal(row(2).getBoundingClientRect().top, visibleParagraphTop)
+  })
+})
+
+test('the reading-to-editing bookmark keeps its full settling window after a delayed first frame', async () => {
+  await withViewport(async ({ viewport, row, render, advance }) => {
+    const paragraphTop = row(2).getBoundingClientRect().top
+    viewport().capturePosition()
+    await render({ reading: false, prefix: 120 }, undefined, 1501)
+    assert.equal(row(2).getBoundingClientRect().top, paragraphTop)
+
+    advance(1499)
+    await render({ prefix: 160 })
+    assert.equal(row(2).getBoundingClientRect().top, paragraphTop)
+
+    advance(2)
+    await render({ prefix: 200 })
+    assert.equal(row(2).getBoundingClientRect().top, paragraphTop + 40)
   })
 })
 

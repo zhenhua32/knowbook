@@ -1,10 +1,11 @@
 // REVIEW DRAFT. No owner/value packet crosses the process boundary.
 ;(async () => {
   const assert = require('node:assert/strict')
-  const { captureReopenedSealedCapsule2Source, readSealedCapsule2Source, readSealedCapsule2SourceMaterial } = await import('../../src/main/database/restore-knowledge-capsule2-source-seal.ts')
+  const { captureReopenedSealedCapsule2Source, readSealedCapsule2SourceInputs } = await import('../../src/main/database/restore-knowledge-capsule2-source-seal.ts')
   const { capsule2AssetReferenceProvenance2Hash } = await import('../../src/main/database/restore-knowledge-capsule2-asset-provenance.ts')
   const captured = await captureReopenedSealedCapsule2Source(JSON.parse(process.argv[2]))
-  const info = await readSealedCapsule2Source(captured.source), value = await readSealedCapsule2SourceMaterial(captured.source), archive = value.assetArchive
+  const { info, value } = await readSealedCapsule2SourceInputs(captured.source)
+  const archive = value.assetArchive
   assert.equal(archive.version, 3)
   assert.equal(archive.referenceProvenance.version, 2); assert.equal(archive.contextOriginals.version, 2)
   assert.equal(archive.contextOriginals.captures.length, 1); assert.equal(archive.contextOriginals.captures[0].state, 'captured')

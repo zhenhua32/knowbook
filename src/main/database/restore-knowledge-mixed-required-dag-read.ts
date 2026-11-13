@@ -104,7 +104,8 @@ export async function captureActualFirstRequiredSqlDag(input: {profileRoot:strin
   const file=await writeRequiredSqlDagNodeFile(profileRoot,row.operationId as string,row.dagId as string,nodeFor(inputs))
   const entry:Saved={profileRoot,file,inputs};await fresh(entry);return mint(entry)
 }
-export async function reopenActualFirstRequiredSqlDag(input: {profileRoot:string;operationId:string;dagId:string;expectedRootHash:string}): Promise<ActualFirstRequiredSqlDag> {
+type ReopenDag = {profileRoot:string;operationId:string;dagId:string;expectedRootHash:string}
+async function reopenOwnedFirstRequiredSqlDag(input: ReopenDag, captureContent: boolean) {
   const row=capsuleRecord(input,['profileRoot','operationId','dagId','expectedRootHash']),profileRoot=await canonicalRequiredSqlDagRoot(row.profileRoot)
   const ref=validateCoverageRootReference({kind:'restore-knowledge-origin-root-ref',version:1,namespace:{kind:'native'},operationId:row.operationId,
     dagId:row.dagId,rootHash:row.expectedRootHash,readerVersion:'knowbook-required-sql-knowledge-dag-v2'})
@@ -127,7 +128,17 @@ export async function reopenActualFirstRequiredSqlDag(input: {profileRoot:string
   if(results[1].status==='rejected')throw results[1].reason
   const inputs=[results[0].value,results[1].value] as const
   if(capsuleJson(nodeFor(inputs))!==capsuleJson(node))return bad('真实两侧重建不等于完整持久node')
-  totals(inputs);const entry:Saved={profileRoot,file,inputs};await fresh(entry);return mint(entry)
+  totals(inputs)
+  const entry:Saved={profileRoot,file,inputs}
+  if (captureContent) {
+    const packets = await freshWithWorking5(entry)
+    return { dag: mint(entry), packets }
+  }
+  await fresh(entry)
+  return { dag: mint(entry) }
+}
+export async function reopenActualFirstRequiredSqlDag(input: ReopenDag): Promise<ActualFirstRequiredSqlDag> {
+  return (await reopenOwnedFirstRequiredSqlDag(input, false)).dag
 }
 /** Complete Main-private K3 input material. Each row reference remains inside
  * its reader-qualified original envelope; no v2 source is relabeled as K1. */
@@ -196,14 +207,26 @@ export async function readActualFirstMixedOriginSource(handle: ActualFirstRequir
  * handle, skip verification, or use this path for a later read. */
 export async function reopenActualFirstRequiredSqlDagWithInitialMaterial(input:Parameters<typeof reopenActualFirstRequiredSqlDag>[0]) {
   const dag=await reopenActualFirstRequiredSqlDag(input),entry=dags.get(dag)!
-  const actual=entry.inputs,inputs=actual.map(input=>({capsule:input.binding.capsule,binding:input.binding,origin:input.origin,knowledge:input.knowledge}))
+  return Object.freeze({ dag, value: initialMaterial(entry, entry.inputs) })
+}
+
+/** Initial complete content from the final real read within this cold reopen.
+ * The DAG registry keeps only its existing commitments and source handles. */
+export async function reopenActualFirstRequiredSqlDagWithInitialContent3(input: ReopenDag) {
+  const { dag, packets } = await reopenOwnedFirstRequiredSqlDag(input, true)
+  if (!packets || packets.some(item => !item.packet)) return bad('同次冷重开缺完整两侧 capsule2 内容')
+  const [source, current] = packets
+  return Object.freeze({ dag, value: initialMaterial(dags.get(dag)!, [source.input, current.input]), packets })
+}
+
+function initialMaterial(entry: Saved, actual: readonly [Input, Input]) {
+  const inputs=actual.map(input=>({capsule:input.binding.capsule,binding:input.binding,origin:input.origin,knowledge:input.knowledge}))
     .sort((a,b)=>requiredDagCapsuleLocator(a.binding)<requiredDagCapsuleLocator(b.binding)?-1:1)
   const body={kind:'actual-required-root-source-material' as const,version:3 as const,scope:'exact-first-generation-original-input-pair' as const,
     root:entry.file.ref,node:entry.file.node,inputs,...totals(actual),preparedEvidence:true as const,fullRootInputSetProven:true as const,
     emptyKnowledgeProven:false as const,acceptedCoverage:false as const,effective:false as const,permit:false as const}
   if(Buffer.byteLength(capsuleJson(body))>CAPSULE2_RAW_MAX_JSON_BYTES)return bad('完整初始mixed材料超原预算，不截断')
-  const value=freezeCapsuleValue({...body,materialHash:knowledgeHash('knowbook.knowledge.actual-required-root-material.v3',body)})
-  return Object.freeze({dag,value})
+  return freezeCapsuleValue({...body,materialHash:knowledgeHash('knowbook.knowledge.actual-required-root-material.v3',body)})
 }
 
 /** Fixed Main-private no-prior input seam. Unknown objects reach the original
@@ -236,7 +259,7 @@ export async function readActualNoPriorOriginalContentAndWorking5(profileRoot: s
 async function freshWithWorking5(entry: Saved) {
   const first=await readRequiredSqlDagNodeFile(entry.profileRoot,entry.file.ref)
   if(capsuleJson(first.node)!==capsuleJson(entry.file.node))return bad('实际node被替换')
-  const captured=await Promise.allSettled(entry.inputs.map(input=>readActualNoPriorOriginalInputWithWorking5(entry.profileRoot,input.source)))
+  const captured=await Promise.allSettled(entry.inputs.map(input=>readActualNoPriorOriginalContentAndWorking5(entry.profileRoot,input.source)))
   if(captured[0].status==='rejected')throw captured[0].reason
   if(captured[1].status==='rejected')throw captured[1].reason
   const joined=[captured[0].value,captured[1].value] as const

@@ -7,7 +7,8 @@ import { graph3Text } from './restore-knowledge-graph3-data'
 import { nativeAssetMetadataHash5 } from './restore-knowledge-selected-native-assets5'
 import { syncOriginCatalogAncestors } from './restore-knowledge-origin-bundle-files'
 import { pendingLocalCellTextHash5 } from './restore-knowledge-pending-local-cell5'
-import { assertRootRestoreReferenceOriginalBytes3, readRootRestoreReferenceCopySource3, type RootRestoreReferencePlan3 } from './restore-knowledge-reference3-read'
+import { assertRootRestoreReferenceOriginalBytes3, readRootRestoreReferenceCopySource3, withRootRestoreStageInputs5,
+  type RootRestoreReferencePlan3 } from './restore-knowledge-reference3-read'
 import { assertRootRestoreStage3FilesHeld3, closeRootRestoreStage3FilesHeld3, holdRootRestoreStage3Files3,
   verifyRootRestoreStage3FilesHeld3 } from './restore-knowledge-stage3-files'
 import { holdRootRestorePhysicalStageOriginalBytes3, prepareRootRestorePhysicalStage3, readRootRestorePhysicalStage3, readRootRestorePhysicalStageAssetEvidence3,
@@ -16,7 +17,8 @@ import { assertRootRestoreWorkingAssetStageOriginalBytes5, prepareRootRestoreWor
   reopenRootRestoreWorkingAssetStage5, workingAssetSelectedCellHash5, type RootRestoreWorkingAssetStage5 } from './restore-knowledge-working-asset-stage5'
 import { restoreDirectory, syncRestoreDirectory } from './restore-safety-files'
 import { template3ContentStringRanges } from './restore-knowledge-template3-json'
-import { observeRootRestoreFinalAssetClosure5 } from './restore-knowledge-final-asset-closure5'
+import { observeRootRestoreFinalAssetClosure5, rootRestoreFinalAssetCellKey5, rootRestoreStagedAssetCellKey5,
+  rootRestoreStagedAssetSelections5 } from './restore-knowledge-final-asset-closure5'
 import { referenceContextFileKey, referenceContextObjectPath } from './restore-knowledge-reference-context-model'
 import type { OriginalFrameCopy } from './restore-knowledge-original-frame-files'
 
@@ -122,11 +124,15 @@ function mint(saved: Saved) {
   return stage
 }
 
-/** Each independent producer reauthenticates the same genuine Reference3
- * owner. The combined handle is issued only after actual SQL and file tails. */
+/** SQL and assets derive from one fresh Reference3 reconstruction.
+ * The combined handle is issued only after actual SQL and file tails. */
 export async function prepareRootRestoreSqlAssetStage5(reference: RootRestoreReferencePlan3) {
   const binding = await readRootRestoreReferenceCopySource3(reference), stageId = randomUUID()
-  const assets = await prepareRootRestoreWorkingAssetStage5(reference), sql = await prepareRootRestorePhysicalStage3(reference)
+  const { assets, sql } = await withRootRestoreStageInputs5(reference, binding.pendingCellProofHash, async scope => {
+    const assets = await prepareRootRestoreWorkingAssetStage5(reference, scope)
+    const sql = await prepareRootRestorePhysicalStage3(reference, scope)
+    return { assets, sql }
+  })
   const body = combined(binding, stageId, sql.value, assets.value)
   const saved = { reference, stageId, expectedManifestHash: capsuleBytesHash(capsuleJson(body) + '\n'), sql: sql.stage, assets: assets.stage }
   const result = await finish(saved, binding, sql.value, assets.value, 'create')
@@ -151,7 +157,11 @@ async function readClosure(stage: RootRestoreSqlAssetStage5) {
   const saved = owners.get(stage)
   if (!saved) return fail('不是实际合并阶段句柄')
   const binding = await readRootRestoreReferenceCopySource3(saved.reference)
-  const sql = await readRootRestorePhysicalStageAssetEvidence3(saved.sql), assets = await readRootRestoreWorkingAssetStageAndSources5(saved.assets)
+  const { sql, assets } = await withRootRestoreStageInputs5(saved.reference, binding.pendingCellProofHash, async scope => {
+    const sql = await readRootRestorePhysicalStageAssetEvidence3(saved.sql, scope)
+    const assets = await readRootRestoreWorkingAssetStageAndSources5(saved.assets, scope)
+    return { sql, assets }
+  })
   const audit = observeRootRestoreFinalAssetClosure5(sql, assets)
   await assertRootRestoreReferenceOriginalBytes3(saved.reference)
   await finish(saved, binding, sql.value, assets.value, 'verify')
@@ -161,9 +171,10 @@ async function readClosure(stage: RootRestoreSqlAssetStage5) {
 /** Actual file sources for each independently matched closure occurrence.
  * Same-byte aliases are deduplicated only after this exact role/frame lookup. */
 export async function readRootRestoreSqlAssetClosureCopySource5(stage: RootRestoreSqlAssetStage5) {
-  const { saved, binding, assets, audit } = await readClosure(stage)
+  const { saved, binding, sql, assets, audit } = await readClosure(stage)
   const originalFiles = new Map(assets.sources.captured.pair.originalPackage.files.map(file => [referenceContextFileKey(file), file]))
   const stagedFiles = new Map(assets.value.files.map(file => [referenceContextFileKey(file), file]))
+  const stagedSelections = new Map(rootRestoreStagedAssetSelections5(assets.value).map(row => [rootRestoreStagedAssetCellKey5(row), row]))
   const matched = audit.entries.flatMap(entry => {
     if (entry.status !== 'matched') return []
     const key = referenceContextFileKey(entry.proof.file), file = (entry.proof.kind === 'staged' ? stagedFiles : originalFiles).get(key)
@@ -171,9 +182,15 @@ export async function readRootRestoreSqlAssetClosureCopySource5(stage: RootResto
     const copy: OriginalFrameCopy = entry.proof.kind === 'staged'
       ? { ...file, sourceRoot: assets.directory, sourcePath: join(assets.directory, referenceContextObjectPath(file.frame, file.path)) }
       : originalFiles.get(key) ?? fail('审计缺本角色原件地址')
-    return [Object.freeze({ entry, file: Object.freeze(copy) })]
+    const selection = entry.proof.kind === 'staged' && entry.cell ? stagedSelections.get(rootRestoreFinalAssetCellKey5(entry.cell)) : undefined
+    if (entry.proof.kind === 'staged' && (!selection || selection.hash !== entry.proof.hash || selection.bytes !== entry.proof.bytes
+      || selection.logicalName !== entry.proof.logicalName || capsuleJson(selection.occurrenceIds) !== capsuleJson(entry.proof.occurrenceIds)))
+      return fail('附件审计与入选单元格证明不同')
+    return [Object.freeze({ entry, file: Object.freeze(copy), selection })]
   })
-  return Object.freeze({ audit, matched: Object.freeze(matched), location: binding.location,
+  const referenceActual = assets.sources.captured.actual, { data, allocation } = referenceActual
+  return Object.freeze({ audit, matched: Object.freeze(matched), location: binding.location, physical: sql.value, physicalStage: saved.sql,
+    referencePlanId: binding.referencePlanId, referenceManifestHash: binding.referenceManifestHash, data, allocation, referenceActual,
     combinedStageId: saved.stageId, combinedManifestHash: saved.expectedManifestHash })
 }
 
@@ -208,8 +225,13 @@ export async function reopenRootRestoreSqlAssetStage5(reference: RootRestoreRefe
     || stored.referenceManifestHash !== binding.referenceManifestHash || stored.checkedCanonicalCandidateHash !== binding.checkedCanonicalCandidateHash
     || stored.selectedAssetsMatchPhysicalSql !== true || ['finalAssetClosureComplete','portableAssetsInstalled','acceptedCoverage','effective','installPermit']
       .some(key => stored[key] !== false)) return fail('未知版本、原候选或持久哈希不符')
-  const sql = await reopenRootRestorePhysicalStage3(reference, { stageId: durableSqlDagUuid(stored.sqlStageId), expectedManifestHash: durableSqlDagHash(stored.sqlManifestHash) })
-  const assets = await reopenRootRestoreWorkingAssetStage5(reference, { stageId: durableSqlDagUuid(stored.assetStageId), expectedManifestHash: durableSqlDagHash(stored.assetManifestHash) })
+  const { sql, assets } = await withRootRestoreStageInputs5(reference, binding.pendingCellProofHash, async scope => {
+    const sql = await reopenRootRestorePhysicalStage3(reference,
+      { stageId: durableSqlDagUuid(stored.sqlStageId), expectedManifestHash: durableSqlDagHash(stored.sqlManifestHash) }, scope)
+    const assets = await reopenRootRestoreWorkingAssetStage5(reference,
+      { stageId: durableSqlDagUuid(stored.assetStageId), expectedManifestHash: durableSqlDagHash(stored.assetManifestHash) }, scope)
+    return { sql, assets }
+  })
   const saved = { reference, stageId, expectedManifestHash, sql: sql.stage, assets: assets.stage }
   const result = await finish(saved, binding, sql.value, assets.value, 'verify')
   return Object.freeze({ ...result, stage: mint(saved), sql, assets })

@@ -12,7 +12,10 @@ import { writeMixedOrdinary501 } from './capsule2-raw-fixture'
 import { withV3Fixture, addV3Assets, allTables, type V3Fixture } from './synced-backup-v3-fixture'
 
 export { withV3Fixture, addV3Assets, allTables, randomUUID, readActualFirstRequiredSqlDagMaterial, diagnoseActualFirstRequiredSqlDag }
-export async function captureMixedSource(f: V3Fixture, reader: 1 | 2) {
+export function captureMixedSource(f: V3Fixture, reader: 1 | 2) {
+  return captureMixedSourceFromDatabase(f, reader)
+}
+export async function captureMixedSourceFromDatabase(f: Pick<V3Fixture, 'db' | 'userDataRoot'>, reader: 1 | 2) {
   const original = await captureAssetOriginal(f)
   if (reader === 1) return {reader,original,handle:await certifyDurableSqlCapsuleOriginal(original.original),archive:undefined,managedBytes:0}
   const archive = await prepareCapsule2AssetArchive(original.original),source = await sealCapsule2Source(await extractCapsule2SourceMaterial(archive))

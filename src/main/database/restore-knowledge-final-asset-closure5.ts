@@ -32,8 +32,21 @@ const same = (left: unknown, right: unknown) => capsuleJson(left) === capsuleJso
 const hash = (domain: string, value: unknown) => capsuleBytesHash(domain + '\0' + capsuleJson(value))
 const by = <T>(items: readonly T[], key: (item: T) => string) => new Map(items.map(item => [key(item), item]))
 const text = (table: Navigation3Table, row: MergedRow3, column: string) => graph3Text(row.cells[table.columns.indexOf(column)], table.encoding)
-const assetKey = (cell: NonNullable<Address['cell']>) => capsuleJson([cell.sourceRef, cell.targetRowId, cell.column,
+export const rootRestoreFinalAssetCellKey5 = (cell: NonNullable<Address['cell']>) => capsuleJson([cell.sourceRef, cell.targetRowId, cell.column,
   cell.range.from, cell.range.to, cell.range.raw, cell.token ? [cell.token.from, cell.token.to] : null])
+
+/** Old manifests omit context on disk. Normalize only after the genuine stage
+ * reader has authenticated the discriminated format. */
+export function rootRestoreStagedAssetSelections5(value: Assets['value']) {
+  return value.version === 2 ? value.selected.map(row => ({ ...row, context: null })) : value.selected
+}
+
+export function rootRestoreStagedAssetCellKey5(row: ReturnType<typeof rootRestoreStagedAssetSelections5>[number]) {
+  const context = row.context?.kind === 'template-content' ? row.context : null
+  return rootRestoreFinalAssetCellKey5({ sourceRef: row.sourceRef, targetRowId: row.targetRowId, column: row.column,
+    range: context?.asset ?? { from: row.finalFrom, to: row.finalTo, raw: row.raw },
+    ...(context ? { token: { from: row.finalFrom, to: row.finalTo } } : {}) })
+}
 const originalAssetKey = (range: { from: number; to: number }, destination: Destination) =>
   capsuleJson([range.from, range.to, destination.uri, destination.raw, destination.kind, destination.syntax])
 const retainedTableHash = (table: Capsule2RawSqlTable) => hash('knowbook.restore.stage3.exact-table.v1', { ...table,
@@ -123,14 +136,10 @@ export function observeRootRestoreFinalAssetClosure5(physical: Physical, stage: 
   const stagedRows = new Map<string, Array<Proof>>()
   const aliases = by(staged.aliases, value => capsuleJson([value.hash, value.logicalName]))
   const files = by(staged.files, value => value.sha256)
-  const selected = staged.version === 2 ? staged.selected.map(row => ({ ...row, context: null })) : staged.selected
-  for (const row of selected) {
+  for (const row of rootRestoreStagedAssetSelections5(staged)) {
     const alias = aliases.get(capsuleJson([row.hash, row.logicalName])), file = files.get(row.hash)
     if (!alias || !file || alias.bytes !== row.bytes || file.bytes !== row.bytes) return fail('实际附件清单缺精确文件和别名')
-    const context = row.context?.kind === 'template-content' ? row.context : null
-    const key = assetKey({ sourceRef: row.sourceRef, targetRowId: row.targetRowId, column: row.column,
-      range: context?.asset ?? { from: row.finalFrom, to: row.finalTo, raw: row.raw },
-      ...(context ? { token: { from: row.finalFrom, to: row.finalTo } } : {}) })
+    const key = rootRestoreStagedAssetCellKey5(row)
     const proofs = stagedRows.get(key) ?? []
     proofs.push({ kind: 'staged', hash: row.hash, bytes: row.bytes, logicalName: row.logicalName, occurrenceIds: row.occurrenceIds,
       file: { frame: file.frame, path: file.path } }); stagedRows.set(key, proofs)
@@ -139,7 +148,7 @@ export function observeRootRestoreFinalAssetClosure5(physical: Physical, stage: 
   const seen = new Set<string>(), matchedStaged = new Set<string>()
   let budget = 0
   function add(address: Address, fallback?: () => Proof | undefined) {
-    const key = address.cell ? assetKey(address.cell) : capsuleJson([address.domain, address.scope, address.destination])
+    const key = address.cell ? rootRestoreFinalAssetCellKey5(address.cell) : capsuleJson([address.domain, address.scope, address.destination])
     if (seen.has(key)) return fail('最终附件位置重复')
     seen.add(key)
     const matches = address.cell ? stagedRows.get(key) ?? [] : []

@@ -1,4 +1,4 @@
-import { lazy, memo, Suspense, useState, useContext } from 'react'
+import { lazy, memo, Suspense, useContext, useMemo, useState } from 'react'
 import { MarkdownReferencesContext } from './MarkdownContent'
 import { MarkdownNavigationContext } from './MarkdownNavigationContext'
 import { extractBlockRichMedia, isBlockNavigationUrl, toBlockRichMediaPreviewUrl } from '../utils/blockRichMedia'
@@ -24,7 +24,8 @@ type BlockRichMediaPreviewProps = {
 export const BlockRichMediaPreview = memo(function BlockRichMediaPreview({ content, ui, isZh = false, onImageBegin, onImageCommit }: BlockRichMediaPreviewProps) {
   const references = useContext(MarkdownReferencesContext)
   const navigateLink = useContext(MarkdownNavigationContext)
-  const richMedia = extractBlockRichMedia(content, references, Boolean(navigateLink))
+  const includeLocalLinks = Boolean(navigateLink)
+  const richMedia = useMemo(() => extractBlockRichMedia(content, references, includeLocalLinks), [content, references, includeLocalLinks])
 
   if (richMedia.images.length === 0 && richMedia.links.length === 0) {
     return null

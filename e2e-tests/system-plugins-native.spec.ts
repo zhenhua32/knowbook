@@ -1,14 +1,12 @@
 import { expect, test } from '@playwright/test'
 import { createHash } from 'node:crypto'
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import type { SystemPluginV3Manifest } from '../src/shared/system-plugin'
 import { closeElectronApp, hasBuiltElectronApp, launchElectronApp, type ElectronAppContext } from './helpers/electron'
 
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
-const nativeSource = join(repoRoot, 'node_modules', 'better-sqlite3', 'build', 'Release', 'better_sqlite3.node')
 const pluginId = 'system.e2e.native-acceptance'
 
 interface NativeEvidence {
@@ -52,8 +50,10 @@ test.describe('System Plugin native modules @electron', () => {
     let current: ElectronAppContext | null = null
     let profile: string | null = null
     try {
+      const packageRoot = dirname(createRequire(import.meta.url).resolve('better-sqlite3/package.json'))
+      const nativeSource = join(packageRoot, 'build', 'Release', 'better_sqlite3.node')
       expect(existsSync(nativeSource), 'Install/rebuild better-sqlite3 for the current Electron ABI.').toBe(true)
-      writeNativeFixture(sourceRoot, '1.0.0')
+      writeNativeFixture(sourceRoot, '1.0.0', nativeSource)
       const originalBinaryHash = sha256(nativeSource)
       current = await launchElectronApp()
       profile = current.tempRoot
@@ -97,7 +97,7 @@ test.describe('System Plugin native modules @electron', () => {
       completedStages.push(stage)
 
       stage = 'invalid-binary-rejection'
-      writeNativeFixture(sourceRoot, '99.0.0', true)
+      writeNativeFixture(sourceRoot, '99.0.0', nativeSource, true)
       const invalid = await prepareNativePlugin(current, sourceRoot)
       revisions.push(invalid.artifactSha256)
       await expect(confirmNativePlugin(current, invalid)).rejects.toThrow(/native module probe/i)
@@ -109,7 +109,7 @@ test.describe('System Plugin native modules @electron', () => {
       completedStages.push(stage)
 
       stage = 'upgrade'
-      writeNativeFixture(sourceRoot, '2.0.0')
+      writeNativeFixture(sourceRoot, '2.0.0', nativeSource)
       const second = await prepareNativePlugin(current, sourceRoot)
       revisions.push(second.artifactSha256)
       await confirmNativePlugin(current, second)
@@ -272,7 +272,7 @@ async function readPackageEvidence(context: ElectronAppContext, hash: string, st
   }, { pluginId, hash, staleAbi })
 }
 
-function writeNativeFixture(root: string, version: string, invalid = false) {
+function writeNativeFixture(root: string, version: string, nativeSource: string, invalid = false) {
   mkdirSync(join(root, 'native'), { recursive: true })
   if (invalid) writeFileSync(join(root, 'native', 'better_sqlite3.node'), 'controlled invalid native binary')
   else copyFileSync(nativeSource, join(root, 'native', 'better_sqlite3.node'))

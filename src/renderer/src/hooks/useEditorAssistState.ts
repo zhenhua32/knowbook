@@ -5,6 +5,7 @@ import type { UiLanguage } from '../i18n'
 import { getOpenLinkContext, getSlashCommandContext } from '../utils/editorAssist'
 import { canBlockOwnChildren } from '@shared/blockTypes'
 import { computeSlashPanelPosition } from '../utils/menuPosition'
+import type { BlockSlashCommand } from '../utils/slashCommandCatalog'
 import { useSlashCommandCatalog } from './useSlashCommandCatalog'
 
 type UseEditorAssistStateParams = {
@@ -30,6 +31,7 @@ type LinkSuggestionState = {
 
 const editorAssistBlockTypes = new Set(['paragraph', 'quote', 'heading-1', 'heading-2', 'heading-3',
   'heading-4', 'heading-5', 'heading-6', 'todo', 'numbered-todo', 'bulleted-list', 'numbered-list', 'callout', 'toggle'])
+const emptySlashCommands: BlockSlashCommand[] = []
 
 export function useEditorAssistState({
   activeBlockIndex,
@@ -219,7 +221,7 @@ export function useEditorAssistState({
     retry: retrySlashCommands } = useSlashCommandCatalog(uiLanguage, slashContextKey)
 
   const filteredSlashCommands = useMemo(() => {
-    if (!activeSlashContext || !activeAssistBlock) return []
+    if (!activeSlashContext || !activeAssistBlock) return emptySlashCommands
     const availableCommands = blockSlashCommands.filter(command =>
       command.kind !== 'action' || command.action !== 'insert-child'
       || (canBlockOwnChildren(activeAssistBlock.type) && activeAssistBlock.depth < 6))

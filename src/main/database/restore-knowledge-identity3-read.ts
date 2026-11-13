@@ -6,7 +6,7 @@ import { restoreDirectory, syncRestoreDirectory } from './restore-safety-files'
 import { readCapsule2AssetManifest, writeCapsule2AssetCopy } from './restore-knowledge-capsule2-assets-files'
 import { syncOriginCatalogAncestors } from './restore-knowledge-origin-bundle-files'
 import { readRootKnowledgeConservationContent3, readRootKnowledgeConservationContentAndOriginals5, readRootKnowledgePlanLocation3, assertRootKnowledgePlanOriginalBytes3,
-  readRootKnowledgeOriginalOwnerForCopy3,
+  readRootKnowledgeOriginalOwnerForCopy3, readReopenedRootKnowledgeConservationInputs5, type ReopenedRootKnowledgeInputs5,
   type RootKnowledgeConservationPlan3 } from './restore-knowledge-root3-read'
 import { deriveRootRestoreIdentityPlan3, identity3Invalid, type Identity3Kernel, type Identity3Inputs } from './restore-knowledge-identity3-model'
 
@@ -113,11 +113,39 @@ export function readRootRestoreIdentityOriginalOwnerForCopy3(handle: RootRestore
 /** Restart accepts only a genuine newly reconstructed knowledge owner and the
  * exact durable plan locator/hash. A saved allocation DTO cannot mint a plan. */
 export async function reopenRootRestoreIdentityPlan3(knowledge: RootKnowledgeConservationPlan3, input: { planId: string; expectedManifestHash: string }) {
+  const saved = await reopenSaved(knowledge, input)
+  const value = await reconstruct(saved)
+  return Object.freeze({ plan: mint(saved), value, planId: saved.planId, manifestHash: saved.manifestHash, directory: saved.directory })
+}
+
+async function reopenSaved(knowledge: RootKnowledgeConservationPlan3, input: { planId: string; expectedManifestHash: string }): Promise<Saved> {
   const location = await readRootKnowledgePlanLocation3(knowledge), row = capsuleRecord(input, ['planId','expectedManifestHash'])
   const planId = durableSqlDagUuid(row.planId), expected = durableSqlDagHash(row.expectedManifestHash)
-  const saved: Saved = { knowledge, location, planId, directory: directory(location, planId), manifestHash: expected }
-  const value = await reconstruct(saved)
-  return Object.freeze({ plan: mint(saved), value, planId, manifestHash: expected, directory: saved.directory })
+  return { knowledge, location, planId, directory: directory(location, planId), manifestHash: expected }
+}
+
+export interface ReopenedRootIdentityInputs5 { readonly kind: 'main-reopened-root-identity-inputs' }
+type IdentityOriginals = Awaited<ReturnType<typeof readRootRestoreIdentityInputsAndOriginals5>>
+const reopenedInputs = new WeakMap<ReopenedRootIdentityInputs5, { plan: RootRestoreIdentityPlan3; data: IdentityOriginals }>()
+
+/** Reopen the durable identity manifest against this invocation's genuine qualified read. */
+export async function withReopenedRootRestoreIdentityInputs5<T>(knowledge: RootKnowledgeConservationPlan3, knowledgeScope: ReopenedRootKnowledgeInputs5,
+  input: Parameters<typeof reopenRootRestoreIdentityPlan3>[1],
+  run: (plan: RootRestoreIdentityPlan3, scope: ReopenedRootIdentityInputs5) => Promise<T>): Promise<T> {
+  const saved = await reopenSaved(knowledge, input)
+  const data = await reconstructInputsAndOriginals5(saved, knowledgeScope), plan = mint(saved)
+  const scope: ReopenedRootIdentityInputs5 = Object.freeze({ kind: 'main-reopened-root-identity-inputs' })
+  reopenedInputs.set(scope, { plan, data })
+  try { return await run(plan, scope) }
+  finally { reopenedInputs.delete(scope) }
+}
+
+export async function readReopenedRootRestoreIdentityInputs5(plan: RootRestoreIdentityPlan3, scope: ReopenedRootIdentityInputs5) {
+  const entry = reopenedInputs.get(scope)
+  if (!entry || entry.plan !== plan) return identity3Invalid('不是本次冷重开的真实身份规划')
+  await assertRootRestoreIdentityOriginalBytes3(plan)
+  if (reopenedInputs.get(scope) !== entry) return identity3Invalid('冷重开身份原件已结束')
+  return entry.data
 }
 
 /** Fixed Main joint read from the private identity registry. Its released
@@ -126,8 +154,15 @@ export async function reopenRootRestoreIdentityPlan3(knowledge: RootKnowledgeCon
 export async function readRootRestoreIdentityInputsAndOriginals5(handle: RootRestoreIdentityPlan3) {
   const saved = plans.get(handle)
   if (!saved) return identity3Invalid('不是实际Main持久身份规划句柄')
+  return reconstructInputsAndOriginals5(saved)
+}
+
+async function reconstructInputsAndOriginals5(saved: Saved, scope?: ReopenedRootKnowledgeInputs5) {
   const before = await readManifest(saved)
-  const captured = await readRootKnowledgeConservationContentAndOriginals5(saved.knowledge), inputs = captured.value
+  const captured = scope
+    ? await readReopenedRootKnowledgeConservationInputs5(saved.knowledge, scope)
+    : await readRootKnowledgeConservationContentAndOriginals5(saved.knowledge)
+  const inputs = captured.value
   const value = deriveRootRestoreIdentityPlan3(inputs, before.kernel), actual = manifestBody(saved.location, saved.planId, inputs, before.kernel, value)
   if (capsuleJson(actual) !== capsuleJson(before)) return identity3Invalid('实际完整SQL/K/内容不等于持久预分配输入')
   await readManifest(saved); await assertRootKnowledgePlanOriginalBytes3(saved.knowledge)

@@ -61,40 +61,51 @@ function derive(source: Source, stageId: string) {
     directory: join(collection(source.location), stageId), location: source.location }
 }
 
-function mint(saved: Saved) {
+function mint(saved: Saved, actual: ReturnType<typeof derive>) {
   const owner: RootRestoreAssetAliasStage5 = Object.freeze({ kind: 'main-root-restore-asset-alias-stage5' })
   owners.set(owner, saved)
-  return owner
+  return Object.freeze({ owner, stageId: saved.stageId, value: actual.value, directory: actual.directory, manifestHash: actual.manifestHash })
 }
 
 async function verify(saved: Saved) {
-  const actual = derive(await readRootRestoreSqlAssetClosureCopySource5(saved.combined), saved.stageId)
+  const source = await readRootRestoreSqlAssetClosureCopySource5(saved.combined)
+  const actual = derive(source, saved.stageId)
   if (actual.manifestHash !== saved.expectedManifestHash) return fail('实际原件和别名不等于持久清单')
   await assertOriginalFrameDirectory(actual.directory, actual.text, actual.files)
   await assertRootRestoreSqlAssetStageBytes5(saved.combined)
   await assertOriginalFrameDirectory(actual.directory, actual.text, actual.files)
-  return actual
+  return { ...actual, source }
 }
 
-/** One independent file for each confirmed logical alias, including aliases
- * that share a SHA. Uncovered audit entries remain visible and cannot stage. */
-export async function prepareRootRestoreAssetAliasStage5(combined: RootRestoreSqlAssetStage5) {
-  const stageId = randomUUID(), actual = derive(await readRootRestoreSqlAssetClosureCopySource5(combined), stageId)
+async function prepare(combined: RootRestoreSqlAssetStage5) {
+  const stageId = randomUUID(), source = await readRootRestoreSqlAssetClosureCopySource5(combined)
+  const actual = { ...derive(source, stageId), source }
   const base = collection(actual.location), root = actual.location.profileRoot
   await restoreDirectory(base, root)
   await writeOriginalFrameDirectory({ profileRoot: root, directory: actual.directory, descriptorText: actual.text, files: actual.files })
   await syncOriginCatalogAncestors(base, root)
   await assertRootRestoreSqlAssetStageBytes5(combined)
   await assertOriginalFrameDirectory(actual.directory, actual.text, actual.files)
-  const owner = mint({ combined, stageId, expectedManifestHash: actual.manifestHash })
-  return Object.freeze({ owner, stageId, value: actual.value, directory: actual.directory, manifestHash: actual.manifestHash })
+  return { saved: { combined, stageId, expectedManifestHash: actual.manifestHash }, actual }
 }
 
-export async function reopenRootRestoreAssetAliasStage5(combined: RootRestoreSqlAssetStage5, locator: Locator) {
+/** One independent file for each confirmed logical alias, including aliases
+ * that share a SHA. Uncovered audit entries remain visible and cannot stage. */
+export async function prepareRootRestoreAssetAliasStage5(combined: RootRestoreSqlAssetStage5) {
+  const { saved, actual } = await prepare(combined)
+  return mint(saved, actual)
+}
+
+async function reopen(combined: RootRestoreSqlAssetStage5, locator: Locator) {
   const row = capsuleRecord(locator, ['stageId', 'expectedManifestHash'])
   const stageId = durableSqlDagUuid(row.stageId), expectedManifestHash = durableSqlDagHash(row.expectedManifestHash)
   const saved = { combined, stageId, expectedManifestHash }, actual = await verify(saved)
-  return Object.freeze({ owner: mint(saved), stageId, value: actual.value, directory: actual.directory, manifestHash: actual.manifestHash })
+  return { saved, actual }
+}
+
+export async function reopenRootRestoreAssetAliasStage5(combined: RootRestoreSqlAssetStage5, locator: Locator) {
+  const { saved, actual } = await reopen(combined, locator)
+  return mint(saved, actual)
 }
 
 /** Fixed R4 read. Each source path is the freshly verified independent alias
@@ -108,4 +119,33 @@ export async function readRootRestoreAssetAliasStageCopies5(owner: RootRestoreAs
     assetClosureObservationHash: actual.value.assetClosureObservationHash, remaining: actual.value.remaining,
     installPermit: false as const, files: actual.value.aliases.map(({ hash, bytes, logicalName, path }) => ({ hash, bytes, logicalName, path,
       sourceRoot: actual.directory, sourcePath: join(actual.directory, referenceContextObjectPath([], path)) })) })
+}
+
+/** The SQL rewrite needs the exact matched occurrences behind these files,
+ * including their original role and address. Do not reconstruct them by SHA. */
+export async function readRootRestoreAssetAliasSqlSource5(owner: RootRestoreAssetAliasStage5) {
+  const saved = owners.get(owner)
+  if (!saved) return fail('不是实际附件别名 owner')
+  return sqlSource(saved, await verify(saved))
+}
+
+function sqlSource(saved: Saved, actual: Awaited<ReturnType<typeof verify>>) {
+  return Object.freeze({ source: actual.source, aliases: actual.value.aliases, remaining: actual.value.remaining,
+    stageId: saved.stageId, manifestHash: actual.manifestHash,
+    async assertOriginalBytes() {
+      await assertRootRestoreSqlAssetStageBytes5(saved.combined)
+      await assertOriginalFrameDirectory(actual.directory, actual.text, actual.files)
+    } })
+}
+
+/** Keep this invocation's authenticated input with the alias it produced.
+ * Downstream writers still check the original and persisted bytes at their tails. */
+export async function prepareRootRestoreAssetAliasWithSqlSource5(combined: RootRestoreSqlAssetStage5) {
+  const { saved, actual } = await prepare(combined)
+  return { aliases: mint(saved, actual), input: sqlSource(saved, actual) }
+}
+
+export async function reopenRootRestoreAssetAliasWithSqlSource5(combined: RootRestoreSqlAssetStage5, locator: Locator) {
+  const { saved, actual } = await reopen(combined, locator)
+  return { aliases: mint(saved, actual), input: sqlSource(saved, actual) }
 }

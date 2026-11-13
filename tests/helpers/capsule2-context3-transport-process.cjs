@@ -22,12 +22,14 @@
       originals.push({ object, name, original }); object[name] = wrapped
     }
     module.syncBuiltinESMExports()
-    const { captureReopenedPreparedMixedOriginBundle } = await import('../../src/main/database/restore-knowledge-mixed-origin-bundle-read.ts')
-    const { readCompleteOriginalContentPair3, captureReopenedQualifiedOriginalBundle } = await import('../../src/main/database/restore-knowledge-qualified-originals.ts')
+    const { captureReopenedMixedOriginalPackageWithInitialContent3, readCompleteOriginalContentPair3, captureReopenedQualifiedOriginalBundle } =
+      await import('../../src/main/database/restore-knowledge-qualified-originals.ts')
     const { capsule2SourceManifestHash } = await import('../../src/main/database/restore-knowledge-capsule2-source-seal-model.ts')
     assert.ok(input.mode === 'mixed' || input.mode === 'qualified')
-    const captured = input.mode === 'qualified' ? await captureReopenedQualifiedOriginalBundle(input.locator) : await captureReopenedPreparedMixedOriginBundle(input.locator)
-    const actual = await readCompleteOriginalContentPair3(captured.bundle), source = actual.source, current = actual.current, archive = source.assetArchive
+    const captured = input.mode === 'qualified' ? await captureReopenedQualifiedOriginalBundle(input.locator)
+      : await captureReopenedMixedOriginalPackageWithInitialContent3(input.locator)
+    const actual = 'content' in captured ? captured.content.pair : await readCompleteOriginalContentPair3(captured.bundle)
+    const { source, current } = actual, archive = source.assetArchive
     assert.equal(archive.version, 3); assert.equal(current.assetArchive.version, 2)
     const sourceManifestPath = `catalog/backups/database-restore/${source.operationId}/knowledge-source-capsules-v2/${source.capsuleId}/manifest.json`
     const sourceManifestFile = actual.originalPackage.files.find(file => file.path === sourceManifestPath)
@@ -42,6 +44,7 @@
     const suffix = path.join('backups', 'database-restore', current.operationId, 'knowledge-complete-assets-v2', current.capsuleId, 'files')
     const recreated = [...new Set(createdDirectories.filter(value => key(value).endsWith(path.sep + key(suffix))))]
     assert.ok(recreated.length > 0, 'The genuine fresh reader recreates the transported empty directory')
+    if (input.mode === 'mixed') assert.equal(recreated.length, 1, 'The mixed content capture uses the cold reader’s single verification profile')
     for (const directory of recreated) assert.deepEqual(await promises.readdir(directory), [])
     assert.equal(actual.originalPackage.original.managedOriginalBytes, captured.value.managedOriginalBytes)
     assert.deepEqual(accesses, []); assert.equal(archive.coverage.installPermit, false)

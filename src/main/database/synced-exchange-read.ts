@@ -4,7 +4,7 @@ import { readInitialIncomingLocal, type InitialIncomingIdentity } from './synced
 import { assertSyncedExchangeHostCutRecords } from './synced-exchange-host-cut'
 import type { SyncedPublicationLocalSnapshot } from './synced-publication'
 import type { InitialIncomingBaseline } from '../sync/synced-initial-incoming-model'
-import { exchangeRequestHash, exchangeStateKey, parseExchangeStored, validateExchangeReceipt, validateAnyExchangeState,
+import { exchangeStateKey, parseExchangeStored, validateAnyExchangeState,
   type ExchangeRequest, type ExchangeReceipt, type AnyExchangeState } from '../sync/synced-exchange-model'
 import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-read'
 import type { TombstonePinFact } from '../sync/synced-exchange-tombstone-types'
@@ -27,8 +27,19 @@ export function readSyncedExchangeReceipt(db: Database.Database, request: Exchan
   owned(db)
   return readExactSyncedExchangeReceipt(db, request)
 }
+function snapshotReceiptReader(db: Database.Database) {
+  const receipts = new Map<string, ExchangeReceipt | null>()
+  return (operationId: string) => {
+    if (!receipts.has(operationId)) receipts.set(operationId, readSyncedExchangeReceiptById(db, operationId))
+    return receipts.get(operationId) ?? null
+  }
+}
 export function readSyncedExchangeState(db: Database.Database, request: ExchangeRequest,
   context: { workspaceScope: string; recoveryEpoch: string }): { value: AnyExchangeState; raw: string } | null {
+  return readState(db, request, context, snapshotReceiptReader(db))
+}
+function readState(db: Database.Database, request: ExchangeRequest,
+  context: { workspaceScope: string; recoveryEpoch: string }, readReceipt: ReturnType<typeof snapshotReceiptReader>) {
   owned(db)
   const row = db.prepare('SELECT value,updated_at FROM app_settings WHERE key=?').get(exchangeStateKey(request.targetFingerprint)) as
     { value: string; updated_at: string } | undefined
@@ -39,19 +50,17 @@ export function readSyncedExchangeState(db: Database.Database, request: Exchange
   if (value.workspaceScope !== context.workspaceScope || value.recoveryEpoch !== context.recoveryEpoch)
     throw new SyncedPublicationError('unavailable', '历史exchange state属于另一workspace/recovery世代；不借旧state授新写权。')
   if (!isSyncedUuid(value.currentOperationId)) return publicationInvalid('durable exchange state缺准确最终operation。')
-  const current = readSyncedExchangeReceiptById(db, value.currentOperationId)
+  const current = readReceipt(value.currentOperationId)
   if (!current || current.request.databasePath !== request.databasePath || current.request.targetFingerprint !== request.targetFingerprint
     || current.provenance.afterStateHash !== publicationHash(publicationJson(value)) || current.result.acceptedAt !== value.lastSyncAt
     || current.result.workspaceScope !== value.workspaceScope || current.result.recoveryEpoch !== value.recoveryEpoch
     || current.result.remoteWorkspaceId !== value.remoteWorkspaceId || publicationJson(current.provenance.source) !== publicationJson(value.source))
     return publicationInvalid('exchange完整state缺原结算receipt准确认证；不能删baseline row再猜新来源。')
-  const receiptCache = new Map<string, ExchangeReceipt>([[current.request.operationId,current]])
   const acceptedIndexes = new Map<string, Map<string, ExchangeReceipt['provenance']['accepted'][number]>>()
   for (const entry of value.baseline) {
     // The initial source proof is authenticated separately from its original receipt/spool.
     if (entry.acceptedOperationId === value.source.operationId) continue
-    const original = receiptCache.get(entry.acceptedOperationId) ?? readSyncedExchangeReceiptById(db, entry.acceptedOperationId)
-    if (original) receiptCache.set(entry.acceptedOperationId,original)
+    const original = readReceipt(entry.acceptedOperationId)
     let byKey = acceptedIndexes.get(entry.acceptedOperationId)
     if (original && !byKey) { byKey = new Map(original.provenance.accepted.map(side => [side.key,side])); acceptedIndexes.set(entry.acceptedOperationId,byKey) }
     const accepted = byKey?.get(entry.key)
@@ -73,8 +82,13 @@ export function readSyncedExchangeLocal(db: Database.Database,
   owned(db)
   const legacy = readInitialIncomingLocal(db, { method: 'receiveInitialSyncedSnapshot', operationId: input.request.operationId,
     databasePath: input.request.databasePath, targetFingerprint: input.initialTargetFingerprint })
-  const state = readSyncedExchangeState(db, input.request, legacy.snapshot)
-  const logicalDeletions = assertSyncedLogicalDeletionRecords(db)
+  // State and archive checks use the same exact owned SQL snapshot. Never
+  // reuse a verified receipt across another capture or a write boundary.
+  const readReceipt = snapshotReceiptReader(db)
+  const state = readState(db, input.request, legacy.snapshot, readReceipt)
+  // The schema27 snapshot already authenticated the complete deletion proof set.
+  const logicalDeletions = db.pragma('user_version', { simple: true }) === 27
+    ? legacy.snapshot.deletions ?? [] : assertSyncedLogicalDeletionRecords(db).values()
   const hostCuts = assertSyncedExchangeHostCutRecords(db)
   const rows = db.prepare('SELECT history_id,document_id FROM synced_host_history_documents ORDER BY history_id,document_id')
     .all() as Array<{ history_id: string; document_id: string }>
@@ -88,9 +102,9 @@ export function readSyncedExchangeLocal(db: Database.Database,
     .map(row => ({ groupId: row.group_id, kind: row.kind, pinId: row.pin_id, sourceHash: publicationHash(publicationJson(row)) }))
   const referencedRows = new Set<string>()
   const archiveReceipts = new Map<string, ExchangeReceipt>()
-  const operationRows = db.prepare("SELECT client_operation_id,result_json FROM synced_operations WHERE json_extract(result_json,'$.kind')='synced-exchange-operation'").all() as Array<{ client_operation_id: string; result_json: string }>
+  const operationRows = db.prepare("SELECT client_operation_id FROM synced_operations WHERE json_extract(result_json,'$.kind')='synced-exchange-operation'").all() as Array<{ client_operation_id: string }>
   for (const row of operationRows) {
-    const raw = validateExchangeReceipt(parseExchangeStored(row.result_json)), receipt = readSyncedExchangeReceipt(db, raw.request)
+    const receipt = readReceipt(row.client_operation_id)
     if (!receipt || row.client_operation_id !== receipt.request.operationId) return publicationInvalid('exchange archive原operation行/准确request不闭合。')
     archiveReceipts.set(row.client_operation_id, receipt)
   }
@@ -189,7 +203,7 @@ export function readSyncedExchangeLocal(db: Database.Database,
     const key = record.kind === 'databases' ? 'databases' : record.kind === 'document' ? 'doc:' + record.id : 'group:' + record.id
     keyGuards[key] = publicationHash(publicationJson({ record, owners: owners.get(key) ?? [], guards: (parts.get(key) ?? []).sort(), group: groups.get(record.id) ?? null }))
   }
-  for (const [key, proof] of logicalDeletions) keyGuards[key] = publicationHash(publicationJson(proof))
+  for (const proof of logicalDeletions) keyGuards[proof.key] = publicationHash(publicationJson(proof))
   return { snapshot: legacy.snapshot, identities: [...legacy.identities.values()], occupiedDocumentIds: [...legacy.historyDocuments].sort(),
     historyComponents, pinnedGroupIds: [...pinned].sort(), initialBaseline: legacy.baseline,
     state: state?.value ?? null, stateRaw: state?.raw ?? null,

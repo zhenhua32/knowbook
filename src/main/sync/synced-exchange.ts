@@ -355,7 +355,9 @@ async function prepare(db: Database.Database, c: Context, runtime: SyncedExchang
     ...(engine === 2 ? {conflictSelections:c.selections} : {}) },engine,c.both?.selections??[],bothLinks)
   return { context: c, local, localMaterial, localWire, source, remote, state, baseRecords: common.records, plan, planningAuthority, engine, bothLinks }
 }
-async function prepareTombstone(db: Database.Database, c: Context, runtime: SyncedExchangeRuntime, deferredKeys: string[], selectLegacyLive = false): Promise<Prepared | M.SyncedExchangeResult> {
+type TombstonePlanningMode = 'tombstone' | 'tombstone-or-legacy' | 'deletion-choice'
+async function prepareTombstone(db: Database.Database, c: Context, runtime: SyncedExchangeRuntime, deferredKeys: string[],
+  mode: TombstonePlanningMode = 'tombstone'): Promise<Prepared | M.SyncedExchangeResult> {
   const loaded = await readObservedSyncedProtocol5(db, { userDataRoot: c.root, target: c.target }, runtime)
   if (loaded.status !== 'ready') return loaded
   const source = loaded.source, remote = readObservedSyncedProtocol5Facts(source)
@@ -368,7 +370,7 @@ async function prepareTombstone(db: Database.Database, c: Context, runtime: Sync
   // observer completion or new race window is introduced by this dispatch.
   const needsTombstones = local.state?.version === 2 || Boolean(local.snapshot.deletions?.length) || !local.snapshot.groups.length
     || remoteWire.records.some(row => row.record.kind === 'deleted' || row.record.kind === 'synced-group-deleted')
-  if (selectLegacyLive && !needsTombstones) return prepare(db,c,runtime,deferredKeys,2,{source,localMaterial,local})
+  if (mode === 'tombstone-or-legacy' && !needsTombstones) return prepare(db,c,runtime,deferredKeys,2,{source,localMaterial,local})
   const initialized = local.state ? { state: local.state, original: undefined } : await initialState(c, local, localPhysical, remoteWire)
   let state = initialized.state.version === 2 ? initialized.state : M.liftTombstoneExchangeState(initialized.state)
   const client = new WebDavClient(c.target, runtime.password, runtime.signal)
@@ -403,6 +405,16 @@ async function prepareTombstone(db: Database.Database, c: Context, runtime: Sync
   }
   await assertKnownRemoteLineage(db, c, client, state, origin, remote.manifest)
   if (capture(db, c).fingerprint !== local.fingerprint) return { status: 'stale', side: 'local' }
+  if (mode === 'deletion-choice') {
+    // The deletion planner builds the automatic tombstone plan from these same inputs.
+    const planningAuthority = knowledgeAuthority(local, sort(common.missing), deferredKeys)
+    const plan = makeDeletionChoicePlan({ operationId: c.request.operationId, localPhysical, localKnowledge: localWire, remote: remoteWire,
+      baseRecords: common.records, state: M.validateTombstoneExchangeState(state), localFingerprint: local.fingerprint, authority: planningAuthority,
+      remoteSource: { manifestHash: remote.manifestHash, closureHash: remote.closureHash, etag: remote.manifestEtag },
+      resolution: c.deletionChoice?.resolution ?? null, selections: c.deletionChoice?.selections ?? [] })
+    return { context: c, local, localMaterial, localWire, localPhysical, source, remote, state, baseRecords: common.records,
+      plan, planningAuthority, engine: 7, bothLinks: [] }
+  }
   const planningAuthority = deletionAuthority(local, sort(common.missing), deferredKeys)
   const plan = makeTombstonePlan({ operationId: c.request.operationId, localPhysical, localKnowledge: localWire, remote: remoteWire, baseRecords: common.records,
     state, localFingerprint: local.fingerprint, authority: planningAuthority })
@@ -447,9 +459,10 @@ function readHead(db: Database.Database, c: Context): Head | null {
 function phases(db: Database.Database, job: M.ExchangeJob): M.ExchangeJobPhaseFact[] {
   const prefix = 'sync.webdav.protocol5.exchange-job-phase.v1.' + job.request.operationId + '.' + job.attemptId + '.'
   const rows = db.prepare('SELECT key,value,updated_at FROM app_settings WHERE substr(key,1,?)=?').all(prefix.length, prefix) as Array<{ key: string; value: string; updated_at: string }>
+  let jobHash: string | undefined
   const facts = rows.map(row => { const fact = M.validateExchangeJobPhase(M.parseExchangeStored(row.value))
     if (row.key !== M.exchangeJobPhaseKey(job.request.operationId, job.attemptId, fact.sequence) || row.updated_at !== fact.recordedAt
-      || fact.version !== ((job.version === 3 || job.version === 6) ? 2 : 1) || fact.requestHash !== job.requestHash || fact.jobHash !== M.exchangeJobHash(job) || fact.operationId !== job.request.operationId || fact.attemptId !== job.attemptId) return publicationInvalid('exchange原phase不属于实际job。')
+      || fact.version !== ((job.version === 3 || job.version === 6) ? 2 : 1) || fact.requestHash !== job.requestHash || fact.jobHash !== (jobHash ??= M.exchangeJobHash(job)) || fact.operationId !== job.request.operationId || fact.attemptId !== job.attemptId) return publicationInvalid('exchange原phase不属于实际job。')
     return fact }).sort((a, b) => a.sequence - b.sequence)
   let previous: string | null = null
   for (const [index, fact] of facts.entries()) { if (fact.sequence !== index || fact.previousFactHash !== previous) return publicationInvalid('exchange phase追加链不连续。'); previous = publicationHash(publicationJson(fact)) }
@@ -1011,11 +1024,13 @@ function install(db: Database.Database, c: Context, saved: Spool, original: Sync
   if (!same(actual.manifest.entries, plan.localFinal.manifest.entries) || !same(actual.manifest.syncedInstances, plan.localFinal.manifest.syncedInstances)) return publicationInvalid('exchange actual SQL→portable全图/hash/Key未精确闭合。')
   return archives
 }
-function settle(db: Database.Database, c: Context, saved: Spool, etag: string): M.SyncedExchangeAccepted | null {
+function settle(db: Database.Database, c: Context, saved: Spool, etag: string, checkConfirmedLocal = false): M.SyncedExchangeAccepted | null {
   return db.transaction(() => {
     current(db, c)
+    const confirmedLocal = checkConfirmedLocal ? capture(db, c) : null
+    if (confirmedLocal && confirmedLocal.fingerprint !== saved.localFingerprint) return null
     const replay = readSyncedExchangeReceipt(db, c.request); if (replay) return { ...replay.result, replayed: true }
-    const local = capture(db, c)
+    const local = confirmedLocal ?? capture(db, c)
     if (local.fingerprint !== saved.localFingerprint || local.stateRaw !== saved.planning.stateRaw) return null
     const actualLocal = wire(portableRecords(local.snapshot, c), c.workspaceScope)
     if((saved.job.version===3||saved.job.version===6)&&bothCollisions(db,c,saved).length)return null
@@ -1196,7 +1211,7 @@ async function run(db: Database.Database, c: Context, runtime: SyncedExchangeRun
   for (let turn = 0; turn < 8; turn++) {
     aborted(runtime.signal)
     if (!saved) {
-      const prepared = engine === 4 && !head ? await prepareTombstone(db,c,runtime,deferredKeys,true) : await prepare(db, c, runtime, deferredKeys,engine)
+      const prepared = engine === 4 && !head ? await prepareTombstone(db,c,runtime,deferredKeys,'tombstone-or-legacy') : await prepare(db, c, runtime, deferredKeys,engine)
       if (!('plan' in prepared)) {
         if (prepared.status === 'stale' && prepared.side === 'local') { deferredKeys = sort([...deferredKeys, ...changedKeys(originalGuards, capture(db, c).keyGuards)]); continue }
         return frozenPublicationFacts(prepared)
@@ -1794,15 +1809,8 @@ function makeDeletionChoicePlan(input:DC.DeletionChoicePlanInput):DeletionChoice
   const plan=planSyncedDeletionChoices(input)
   return {...plan,localFinal:plan.localPhysicalFinal}
 }
-async function prepareDeletionChoices(db:Database.Database,c:Context,runtime:SyncedExchangeRuntime,deferredKeys:string[]):Promise<Prepared|M.SyncedExchangeResult> {
-  const base=await prepareTombstone(db,c,runtime,deferredKeys)
-  if(!('plan'in base))return base
-  if(!base.localPhysical)return publicationInvalid('删除选择缺真实physical capture。')
-  const planningAuthority=knowledgeAuthority(base.local,base.planningAuthority.missingBaseKeys,deferredKeys)
-  const input:DC.DeletionChoicePlanInput={operationId:c.request.operationId,localPhysical:base.localPhysical,localKnowledge:base.localWire,remote:fromRemote(base.remote),
-    baseRecords:base.baseRecords,state:M.validateTombstoneExchangeState(base.state),localFingerprint:base.local.fingerprint,authority:planningAuthority,
-    remoteSource:{manifestHash:base.remote.manifestHash,closureHash:base.remote.closureHash,etag:base.remote.manifestEtag},resolution:c.deletionChoice?.resolution??null,selections:c.deletionChoice?.selections??[]}
-  return {...base,engine:7,planningAuthority,plan:makeDeletionChoicePlan(input)}
+function prepareDeletionChoices(db:Database.Database,c:Context,runtime:SyncedExchangeRuntime,deferredKeys:string[]) {
+  return prepareTombstone(db,c,runtime,deferredKeys,'deletion-choice')
 }
 function readDeletionSelections(value:unknown,request:M.ExchangeRequest):NonNullable<DC.DeletionChoicePlanInput['selections']> {
   M.assertExchangeData(value)
@@ -1916,10 +1924,14 @@ async function runDeletionChoices(db:Database.Database,c:Context,runtime:SyncedE
     else remote=await publish(db,c,saved,runtime)
     if(remote.status!=='confirmed'){if(remote.status==='stale')deferredKeys=sort([...deferredKeys,...changedKeys(saved.planning.keyGuards,capture(db,c).keyGuards)]);saved=null;continue}
     aborted(runtime.signal)
-    if(capture(db,c).fingerprint!==saved.localFingerprint){db.transaction(()=>{current(db,c);phase(db,saved!.job,'published-local-deferred',remote.etag)}).immediate();return Object.freeze({status:'stale',side:'local'})}
-    publishAliases(c,saved);verifyAliases(c,saved.job.descriptor.next.assets)
+    // An empty asset set has no file effects between confirmation and SQL settlement.
+    const checkConfirmedLocal = saved.job.descriptor.next.assets.length === 0
+    if (!checkConfirmedLocal) {
+      if(capture(db,c).fingerprint!==saved.localFingerprint){db.transaction(()=>{current(db,c);phase(db,saved!.job,'published-local-deferred',remote.etag)}).immediate();return Object.freeze({status:'stale',side:'local'})}
+      publishAliases(c,saved);verifyAliases(c,saved.job.descriptor.next.assets)
+    }
     let settled:M.SyncedExchangeAccepted|null
-    try{settled=settle(db,c,saved,remote.etag)}catch(cause){
+    try{settled=settle(db,c,saved,remote.etag,checkConfirmedLocal)}catch(cause){
       try{db.transaction(()=>{current(db,c);phase(db,saved!.job,'published-local-deferred',remote.etag)}).immediate()}
       catch(recording){throw new SyncedPublicationError('database','删除选择远端事实已存在；本机SQL与失败记录失败，原job保持。',{cause,recording})}
       throw cause instanceof SyncedPublicationError?cause:new SyncedPublicationError('database','删除选择本机SQL已回滚；原任务可重开收敛。',cause)}

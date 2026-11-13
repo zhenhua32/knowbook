@@ -1,7 +1,7 @@
 import { expect, test, type Locator, type Page, type TestInfo } from '@playwright/test'
 import type { ElectronApplication } from 'playwright'
 import { writeFileSync } from 'node:fs'
-import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
+import { evaluateInFreshElectronMain, hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
 
 type Language = 'en-US' | 'zh-CN'
 type Handler = (event: unknown, ...input: unknown[]) => unknown | Promise<unknown>
@@ -28,7 +28,7 @@ async function waitLayout(page: Page) {
   await twoFrames(page)
 }
 async function resize(page: Page, app: ElectronApplication, width: number, height = 800) {
-  const contentSize = await app.evaluate(({ BrowserWindow }, { width, height }) => {
+  const contentSize = await evaluateInFreshElectronMain(app, ({ BrowserWindow }, { width, height }) => {
     const window = BrowserWindow.getAllWindows()[0]
     window.setBounds({ width, height })
     return window.getContentSize()
@@ -72,7 +72,7 @@ async function prepare(page: Page, language: Language) {
   return id
 }
 async function installProbe(app: ElectronApplication) {
-  await app.evaluate(({ ipcMain }) => {
+  await evaluateInFreshElectronMain(app, ({ ipcMain }) => {
     const handlers = (ipcMain as unknown as { _invokeHandlers: Map<string, Handler> })._invokeHandlers
     const probe: Probe = { requests: [], writes: [], failures: [] }
     ;(globalThis as ProbeGlobal).__documentAuxResponsiveProbe = probe
@@ -101,7 +101,7 @@ async function readApi(page: Page, language: Language) {
   }, language)
 }
 async function readMain(app: ElectronApplication) {
-  return app.evaluate(({ app, BrowserWindow }) => {
+  return evaluateInFreshElectronMain(app, ({ app, BrowserWindow }) => {
     const { createRequire } = process.getBuiltinModule('node:module')!
     const { join } = process.getBuiltinModule('node:path')!
     const Database = createRequire(join(app.getAppPath(), 'package.json'))('better-sqlite3')

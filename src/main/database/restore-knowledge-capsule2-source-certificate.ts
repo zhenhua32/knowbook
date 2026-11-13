@@ -164,6 +164,16 @@ export async function tryReadCertifiedCapsule2SourceInputsWithWorking5(handle: u
 /** Complete certificate/source byte tail only; this does not observe SQL/K,
  * return Working data, or mint a semantic source/certificate capability. */
 export async function assertCertifiedCapsule2SourceOriginalBytes5(handle: CertifiedCapsule2NoPriorSource) {
+  await assertCertifiedSourceByteBracket(handle, 3)
+}
+
+/** The caller already completed SQL in this scope. Read this registered
+ * independent source once, bracketed by the actual pinned certificate. */
+export async function assertCertifiedCapsule2VerificationBytes5(handle: CertifiedCapsule2NoPriorSource) {
+  await assertCertifiedSourceByteBracket(handle, 1)
+}
+
+async function assertCertifiedSourceByteBracket(handle: CertifiedCapsule2NoPriorSource, sourceReads: 1 | 3) {
   const entry = certified.get(handle)
   if (!entry) return bad('不是Main认证的私有来源句柄')
   // Both mint paths already join certificateFor(full genuine source) to this
@@ -185,9 +195,7 @@ export async function assertCertifiedCapsule2SourceOriginalBytes5(handle: Certif
     await certificateDirectory()
   }
   await certificateBytes()
-  await assertSealedCapsule2SourceOriginalBytes(entry.source)
-  await assertSealedCapsule2SourceOriginalBytes(entry.source)
-  await assertSealedCapsule2SourceOriginalBytes(entry.source)
+  for (let read = 0; read < sourceReads; read++) await assertSealedCapsule2SourceOriginalBytes(entry.source)
   await certificateBytes()
 }
 

@@ -17,17 +17,27 @@ function inside(path: string, root: string): boolean {
   return normalize(path).startsWith(normalize(root) + sep)
 }
 
+export function localAttachmentFileUrl(path: string): string {
+  return pathToFileURL(path).href.replace(/[!'()*]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`)
+}
+
+/** Decode an address for this asset root without assuming the file has been published. */
+export function managedLocalAttachmentPath(url: string, root: string): string {
+  if (typeof url !== 'string' || url.length > 8192) throw new Error('Invalid attachment URL.')
+  const parsed = new URL(url)
+  if (parsed.protocol !== 'file:' || parsed.hostname && parsed.hostname !== 'localhost') throw new Error('Only managed local attachments are allowed.')
+  const path = resolve(fileURLToPath(parsed))
+  if (!inside(path, root)) throw new Error('Attachment is outside the workspace.')
+  return path
+}
+
 /** One immutable, content-addressed copy shared by document, history and Trash references. */
 export class AttachmentStore {
   private pending: Promise<unknown> = Promise.resolve()
   constructor(readonly root: string) {}
 
   resolve(url: string): string {
-    if (typeof url !== 'string' || url.length > 8192) throw new Error('Invalid attachment URL.')
-    const parsed = new URL(url)
-    if (parsed.protocol !== 'file:' || parsed.hostname && parsed.hostname !== 'localhost') throw new Error('Only managed local attachments are allowed.')
-    const path = resolve(fileURLToPath(parsed))
-    if (!inside(path, this.root)) throw new Error('Attachment is outside the workspace.')
+    const path = managedLocalAttachmentPath(url, this.root)
     this.assertSafePath(path)
     if (!lstatSync(path).isFile() || !inside(realpathSync(path), realpathSync(this.root))) throw new Error('Attachment is not a managed regular file.')
     return path
@@ -35,8 +45,7 @@ export class AttachmentStore {
 
   get(url: string): ManagedAttachment {
     const path = this.resolve(url), name = basename(path)
-    const encodedUrl = pathToFileURL(path).href.replace(/[!'()*]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`)
-    return { url: encodedUrl, name, size: lstatSync(path).size, kind: isAttachmentImage(name) ? 'image' : 'file' }
+    return { url: localAttachmentFileUrl(path), name, size: lstatSync(path).size, kind: isAttachmentImage(name) ? 'image' : 'file' }
   }
 
   import(files: AttachmentInput[]): Promise<ManagedAttachment[]> {

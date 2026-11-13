@@ -2,7 +2,7 @@ import { isTaskBlockType, isOrderedListBlockType, isContainerBlockType, canBlock
 import { getHeadingLevel, type MarkdownEnvironment } from '@shared/markdownEngine'
 import { htmlClipboardToMarkdown } from '@shared/htmlClipboard'
 import { hasAdvancedMarkdown, type MarkdownDocumentModel } from '@shared/markdownDocument'
-import { lazy, memo, Suspense, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { lazy, memo, Suspense, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { MarkdownBlockContent, MarkdownMermaidPreview } from './MarkdownContent'
 import { MarkdownBlockNodesContext } from './MarkdownDocumentContext'
 import { detectCodeLanguage } from '@shared/code'
@@ -238,7 +238,10 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
   const isMermaid = block.type === 'code' && /^mermaid(?:\s|$)/i.test((block.markdownFormat?.codeInfo ?? block.language ?? '').trim())
   const showAdvancedPreview = !['code', 'math', 'divider', 'table', 'frontmatter', 'database-view', 'synced-block'].includes(block.type) && nodes && hasAdvancedMarkdown(nodes)
   const mediaEligible = !['code', 'math', 'divider', 'table', 'frontmatter', 'database-view', 'synced-block'].includes(block.type)
-  const richMedia = mediaEligible ? extractBlockRichMedia(block.content, props.markdownReferences) : { images: [], links: [] }
+  const richMedia = useMemo(
+    () => mediaEligible ? extractBlockRichMedia(block.content, props.markdownReferences) : { images: [], links: [] },
+    [block.content, mediaEligible, props.markdownReferences]
+  )
   const shouldShowRichMediaPreview = mediaEligible && (!showAdvancedPreview || richMedia.images.length > 0)
   const hasRichMedia = shouldShowRichMediaPreview && (richMedia.images.length > 0 || richMedia.links.length > 0)
 

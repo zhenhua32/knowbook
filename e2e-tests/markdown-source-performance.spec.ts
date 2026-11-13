@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process'
 import os from 'node:os'
 import { withElectronApp, uiText } from './helpers/electron'
 import { sourceEditingBlocks } from '../tests/fixtures/markdown-source-performance'
-import { expectSource, measureNextFrame, selectSource, sourceValue } from './helpers/markdown-source'
+import { expectSource, measureNextFrame, selectSource, sourceSelection, sourceValue } from './helpers/markdown-source'
 
 for (const count of [800, 4000]) test(`full Markdown source input and batch formatting stay responsive for ${count} blocks @electron`, async () => {
   test.setTimeout(240_000)
@@ -57,7 +57,10 @@ for (const count of [800, 4000]) test(`full Markdown source input and batch form
     const formatProfiler = process.env.KNOWBOOK_PROFILE_MARKDOWN_FORMAT === '1' ? await page.context().newCDPSession(page) : null
     if (formatProfiler) await formatProfiler.send('Profiler.enable')
     for (let index = 0; index < 9; index++) {
+      await measureNextFrame(editor, 'keydown', 'source-selection-frame', 'a')
       await editor.press('Control+a')
+      await expect.poll(() => sourceSelection(editor)).toEqual({ from: 0, to: edited.length })
+      await expect.poll(async () => (await entries('source-selection-frame')).length).toBe(index + 1)
       if (formatProfiler && index === 2) await formatProfiler.send('Profiler.start')
       await measureNextFrame(editor, 'keydown', 'source-format-frame')
       await editor.press('Control+b')
@@ -85,14 +88,19 @@ for (const count of [800, 4000]) test(`full Markdown source input and batch form
     expect(saved.blocks.map(block => block.tags)).toEqual(blocks.map(block => block.tags))
     for (let index = 19; index < count; index += 20) expect(saved.blocks[index].content).toBe(blocks[index].content)
     await expect.poll(async () => (await entries('source-apply-frame')).length).toBe(1)
+    const frameStats = async (name: string, warmups: number) => {
+      const samplesMs = (await entries(name)).slice(warmups)
+      const sorted = samplesMs.toSorted((a, b) => a - b)
+      return { name, warmups, samplesMs, medianMs: sorted[Math.floor(sorted.length / 2)],
+        p95Ms: sorted[Math.ceil(sorted.length * 0.95) - 1] }
+    }
+    const selection = await frameStats('source-selection-frame', 2)
     const metrics = []
     for (const [name, warmups, ceilingMs] of [
       ['source-open-frame', 0, 3000], ['source-input-frame', 0, 500],
       ['source-format-frame', 2, 1500], ['source-apply-frame', 0, 8000]
     ] as const) {
-      const samplesMs = (await entries(name)).slice(warmups), sorted = samplesMs.toSorted((a, b) => a - b)
-      metrics.push({ name, warmups, samplesMs, medianMs: sorted[Math.floor(sorted.length / 2)],
-        p95Ms: sorted[Math.ceil(sorted.length * 0.95) - 1], ceilingMs })
+      metrics.push({ ...await frameStats(name, warmups), ceilingMs })
     }
     await page.reload(); await page.locator('.tree-button', { hasText: 'Large source editing' }).click()
     await open(); await expectSource(editor, formatted)
@@ -111,8 +119,8 @@ for (const count of [800, 4000]) test(`full Markdown source input and batch form
       sourceFiles, sourceFingerprint: createHash('sha256').update(sourceFiles.map(path => path + '\n' + readFileSync(path, 'utf8').replace(/\r\n/g, '\n')).join('\n')).digest('hex'),
       blocks: count, characters: original.length, visibleSourceLines, sourceSha256: createHash('sha256').update(original).digest('hex'),
       environment: { platform: process.platform, cpu: os.cpus()[0]?.model, renderer: await page.evaluate(() => navigator.userAgent) },
-      method: 'Trusted event to second animation frame; opening also waits for the lazy editor DOM. GPU disabled. Input at beginning/middle/end. Format: two warmups and seven samples. Open/apply each have one sample. Ceilings detect regressions, not OS screen latency or competitor performance.',
-      reload: true, blockIds: true, tags: true, literalCode: true, metrics }, null, 2) + '\n')
+      method: 'Trusted event to second animation frame; opening also waits for the lazy editor DOM. GPU disabled. Input at beginning/middle/end. Select all and format each have two warmups and seven samples. Open/apply each have one sample. Ceilings detect regressions, not OS screen latency or competitor performance.',
+      reload: true, blockIds: true, tags: true, literalCode: true, selection, metrics }, null, 2) + '\n')
     await page.screenshot({ path: `test-results/markdown-source-frame-${count}.png` })
     if (metrics.some(metric => metric.p95Ms >= metric.ceilingMs)) {
       // Keep profiling overhead out of the measured samples. A failed budget

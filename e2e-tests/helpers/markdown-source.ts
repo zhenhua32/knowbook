@@ -14,6 +14,13 @@ export async function expectSource(editor: Locator, source: string): Promise<voi
   await expect.poll(() => sourceValue(editor)).toBe(source)
 }
 
+export async function sourceSelection(editor: Locator): Promise<{ from: number; to: number }> {
+  return editor.evaluate(element => {
+    const { from, to } = (element as SourceContent).cmTile.root.view.state.selection.main
+    return { from, to }
+  })
+}
+
 export async function selectSource(editor: Locator, start: number, end = start): Promise<void> {
   await editor.evaluate((element, { start, end }) => {
     const view = (element as SourceContent).cmTile.root.view
@@ -23,10 +30,10 @@ export async function selectSource(editor: Locator, start: number, end = start):
 
 // Measure inside the renderer, starting at the trusted input/click/keydown
 // event. Two animation frames include a rendering opportunity, not OS display latency.
-export async function measureNextFrame(target: Locator, eventName: 'input' | 'click' | 'keydown', name: string) {
-  await target.evaluate((element, { eventName, name }) => {
+export async function measureNextFrame(target: Locator, eventName: 'input' | 'click' | 'keydown', name: string, key = 'b') {
+  await target.evaluate((element, { eventName, name, key }) => {
     const listener = (event: Event) => {
-      if (eventName === 'keydown' && (event as KeyboardEvent).key.toLowerCase() !== 'b') return
+      if (eventName === 'keydown' && (event as KeyboardEvent).key.toLowerCase() !== key) return
       element.removeEventListener(eventName, listener, true)
       if (!event.isTrusted) throw new Error('Expected trusted input')
       const start = performance.now()
@@ -39,5 +46,5 @@ export async function measureNextFrame(target: Locator, eventName: 'input' | 'cl
       } else frame()
     }
     element.addEventListener(eventName, listener, { capture: true })
-  }, { eventName, name })
+  }, { eventName, name, key })
 }

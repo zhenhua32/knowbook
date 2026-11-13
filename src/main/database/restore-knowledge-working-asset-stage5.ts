@@ -11,7 +11,7 @@ import { syncOriginCatalogAncestors } from './restore-knowledge-origin-bundle-fi
 import { assertOriginalFrameDirectory, writeOriginalFrameDirectory, type OriginalFrameCopy } from './restore-knowledge-original-frame-files'
 import { pendingLocalCellTextHash5 } from './restore-knowledge-pending-local-cell5'
 import { assertRootRestoreReferenceOriginalBytes3, readRootRestoreReferenceCopySource3,
-  type RootRestoreReferencePlan3 } from './restore-knowledge-reference3-read'
+  type RootRestoreReferencePlan3, type RootRestoreStageInputs5 } from './restore-knowledge-reference3-read'
 import { readRootRestoreWorkingAssetSources5 } from './restore-knowledge-working-asset-authority5'
 import { projectWorkingAssetBodyCells5, workingAssetCellPosition5, workingAssetPosition5 } from './restore-knowledge-working-asset-cells5'
 import { selectRootRestoreNativeAssetScopes5, type NativeAssetCellContext5 } from './restore-knowledge-selected-native-assets5'
@@ -276,9 +276,9 @@ function manifest(actual: Actual, stageId: string, selection: ReturnType<typeof 
   return freezeCapsuleValue({ ...shared, version: 3 as const, selectionHash: hash('knowbook.restore.working5.native-selection.v3', selection), ...selection })
 }
 
-async function readStageInputs(reference: RootRestoreReferencePlan3, stageId: string, savedFormat?: Format) {
+async function readStageInputs(reference: RootRestoreReferencePlan3, stageId: string, savedFormat?: Format, scope?: RootRestoreStageInputs5) {
   const source = await readRootRestoreReferenceCopySource3(reference)
-  const actual = await readRootRestoreWorkingAssetSources5(reference), pending = actual.captured.actual.candidate.pendingLocalBody
+  const actual = await readRootRestoreWorkingAssetSources5(reference, scope), pending = actual.captured.actual.candidate.pendingLocalBody
   if (source.pendingCellProofHash !== pending?.proofHash) return fail('附件与 Reference 的 pending 选择不同')
   const format = savedFormat ?? (pending ? 4 : 3), selection = selectAssets(actual, format)
   if (!selection.value.selected.length) return fail('没有具备确切原件证明的入选原生附件')
@@ -287,8 +287,8 @@ async function readStageInputs(reference: RootRestoreReferencePlan3, stageId: st
     location: source.location, directory: join(collection(source.location), stageId), sources: actual }
 }
 
-async function verify(saved: Locator) {
-  const actual = await readStageInputs(saved.reference, saved.stageId, saved.format)
+async function verify(saved: Locator, scope?: RootRestoreStageInputs5) {
+  const actual = await readStageInputs(saved.reference, saved.stageId, saved.format, scope)
   if (actual.manifestHash !== saved.expectedManifestHash) return fail('实际候选选择不等于持久清单')
   await assertOriginalFrameDirectory(actual.directory, actual.text, actual.value.files)
   await assertRootRestoreReferenceOriginalBytes3(saved.reference)
@@ -304,8 +304,8 @@ function mint(locator: Locator, actual: Awaited<ReturnType<typeof readStageInput
 
 /** Only an isolated, non-executable asset sidecar. The existing SQL stage,
  * production restore, links and broader asset closure are separate domains. */
-export async function prepareRootRestoreWorkingAssetStage5(reference: RootRestoreReferencePlan3) {
-  const stageId = randomUUID(), actual = await readStageInputs(reference, stageId), root = actual.location.profileRoot
+export async function prepareRootRestoreWorkingAssetStage5(reference: RootRestoreReferencePlan3, scope?: RootRestoreStageInputs5) {
+  const stageId = randomUUID(), actual = await readStageInputs(reference, stageId, undefined, scope), root = actual.location.profileRoot
   await restoreDirectory(collection(actual.location), root)
   await writeOriginalFrameDirectory({ profileRoot: root, directory: actual.directory, descriptorText: actual.text, files: actual.files })
   await syncRestoreDirectory(collection(actual.location))
@@ -324,10 +324,10 @@ export async function readRootRestoreWorkingAssetStage5(stage: RootRestoreWorkin
 
 /** Same fresh observation and exact original frames used by this asset stage.
  * A closure audit does not need another semantic source read. */
-export async function readRootRestoreWorkingAssetStageAndSources5(stage: RootRestoreWorkingAssetStage5) {
+export async function readRootRestoreWorkingAssetStageAndSources5(stage: RootRestoreWorkingAssetStage5, scope?: RootRestoreStageInputs5) {
   const saved = stages.get(stage)
   if (!saved) return fail('不是实际附件暂存 owner')
-  const { value, sources, directory } = await verify(saved)
+  const { value, sources, directory } = await verify(saved, scope)
   return Object.freeze({ value, sources, directory })
 }
 
@@ -338,7 +338,8 @@ export async function assertRootRestoreWorkingAssetStageOriginalBytes5(stage: Ro
   await assertOriginalFrameDirectory(saved.directory, saved.descriptorText, saved.files)
 }
 
-export async function reopenRootRestoreWorkingAssetStage5(reference: RootRestoreReferencePlan3, locator: { stageId: string; expectedManifestHash: string }) {
+export async function reopenRootRestoreWorkingAssetStage5(reference: RootRestoreReferencePlan3,
+  locator: { stageId: string; expectedManifestHash: string }, scope?: RootRestoreStageInputs5) {
   const row = capsuleRecord(locator, ['stageId', 'expectedManifestHash'])
   const stageId = durableSqlDagUuid(row.stageId), expectedManifestHash = durableSqlDagHash(row.expectedManifestHash)
   const { location } = await readRootRestoreReferenceCopySource3(reference)
@@ -348,6 +349,6 @@ export async function reopenRootRestoreWorkingAssetStage5(reference: RootRestore
   if (!descriptor || typeof descriptor !== 'object' || !('version' in descriptor)
     || (descriptor.version !== 2 && descriptor.version !== 3 && descriptor.version !== 4)) return fail('未知旧/新附件暂存格式')
   const saved: Locator = { reference, stageId, expectedManifestHash, format: descriptor.version }
-  const actual = await verify(saved)
+  const actual = await verify(saved, scope)
   return Object.freeze({ stage: mint(saved, actual), value: actual.value, directory: actual.directory, stageId: saved.stageId, manifestHash: actual.manifestHash })
 }

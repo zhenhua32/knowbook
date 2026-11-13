@@ -5,7 +5,7 @@ import { readDocumentPosition, saveDocumentPosition, type DocumentReadingPositio
 type ViewportSession = {
   documentId: string
   position: DocumentReadingPosition | null
-  restoring: { position: DocumentReadingPosition; until: number } | null
+  restoring: { position: DocumentReadingPosition; until: number | null } | null
 }
 
 export function useDocumentViewport({ documentId, reading, navigation, highlightedBlockId, onRevealBlock }: {
@@ -124,7 +124,8 @@ export function useDocumentViewport({ documentId, reading, navigation, highlight
     layoutRestoreRef.current = null
     const position = modePositionRef.current
     if (position && sessionRef.current) {
-      sessionRef.current.restoring = { position, until: Date.now() + 1500 }
+      // The newly mounted editor may need to size its rows before the first update.
+      sessionRef.current.restoring = { position, until: null }
     }
     modePositionRef.current = null
   }, [reading])
@@ -192,13 +193,14 @@ export function useDocumentViewport({ documentId, reading, navigation, highlight
     const update = () => {
       frame = null
       const restoring = session.restoring
-      if (restoring && Date.now() <= restoring.until) {
+      if (restoring && (restoring.until === null || Date.now() <= restoring.until)) {
         const position = restoring.position
         const row = position.blockId
           ? Array.from(content.querySelectorAll<HTMLElement>('[data-block-id]')).find((element) => element.dataset.blockId === position.blockId)
           : null
         if (row) scrollToElement(row, Math.max(position.offset, 1 - row.getBoundingClientRect().height))
         else container.scrollTop = position.scrollTop
+        restoring.until ??= Date.now() + 1500
       } else session.restoring = null
       session.position = readPosition()
       const extent = container.scrollHeight - container.clientHeight

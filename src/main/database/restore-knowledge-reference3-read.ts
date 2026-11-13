@@ -6,8 +6,10 @@ import { readCapsule2AssetManifest, writeCapsule2AssetCopy } from './restore-kno
 import { syncOriginCatalogAncestors } from './restore-knowledge-origin-bundle-files'
 import { restoreDirectory, syncRestoreDirectory } from './restore-safety-files'
 import { assertRootRestoreIdentityOriginalBytes3, readRootRestoreIdentityGraphInputs3, readRootRestoreIdentityInputsAndOriginals5,
-  readRootRestoreIdentityPlanLocation3, readRootRestoreIdentityOriginalOwnerForCopy3,
-  type RootRestoreIdentityPlan3 } from './restore-knowledge-identity3-read'
+  readRootRestoreIdentityPlanLocation3, readRootRestoreIdentityOriginalOwnerForCopy3, readReopenedRootRestoreIdentityInputs5,
+  withReopenedRootRestoreIdentityInputs5, type ReopenedRootIdentityInputs5, type RootRestoreIdentityPlan3 } from './restore-knowledge-identity3-read'
+import { withReopenedRootKnowledgeConservationInputs5 } from './restore-knowledge-root3-read'
+import { assertCompleteOriginalVerificationBytes5 } from './restore-knowledge-qualified-originals'
 import { deriveRootRestoreReferenceAllocation3, normalizeReference3Choices, validateReference3Kernel,
   type Reference3Allocation, type Reference3Choices, type Reference3Kernel } from './restore-knowledge-reference3-model'
 import { deriveRootRestoreCanonicalCandidateWithCells3 } from './restore-knowledge-canonical3-model'
@@ -224,13 +226,38 @@ export async function readRootRestoreReferenceCopySource3(plan: RootRestoreRefer
  * a new seed, migrates a base manifest or silently chooses a newer policy. */
 export async function reopenRootRestoreReferencePlan3(identity: RootRestoreIdentityPlan3,
   input: { readonly planId: string; readonly expectedManifestHash: string }) {
+  const saved = await reopenSaved(identity, input)
+  const actual = await reconstruct(saved)
+  return reopenedReference(saved, actual.value)
+}
+
+async function reopenSaved(identity: RootRestoreIdentityPlan3,
+  input: { readonly planId: string; readonly expectedManifestHash: string }): Promise<Saved> {
   const row = capsuleRecord(input, ['planId','expectedManifestHash'])
   const planId = durableSqlDagUuid(row.planId), expected = durableSqlDagHash(row.expectedManifestHash)
   const base = await readRootRestoreIdentityPlanLocation3(identity)
-  const saved: Saved = { identity, planId, manifestHash: expected, location: base.location, directory: directory(base.location, planId),
+  return { identity, planId, manifestHash: expected, location: base.location, directory: directory(base.location, planId),
     basePlanId: base.planId, baseManifestHash: base.manifestHash }
-  const actual = await reconstruct(saved)
-  return Object.freeze({ plan: mint(saved), value: actual.value, planId, manifestHash: expected, directory: saved.directory })
+}
+
+function reopenedReference(saved: Saved, value: Reference3Value) {
+  return Object.freeze({ plan: mint(saved), value, planId: saved.planId, manifestHash: saved.manifestHash, directory: saved.directory })
+}
+
+/** Reopen an explicit pending selection from the actual qualified mount and
+ * both durable plan locators. The caller receives the checked planning result. */
+export async function reopenRootRestorePendingReferenceFromQualified5(
+  qualified: Parameters<typeof withReopenedRootKnowledgeConservationInputs5>[0],
+  identity: Parameters<typeof withReopenedRootRestoreIdentityInputs5>[2],
+  reference: Parameters<typeof reopenRootRestoreReferencePlan3>[1]) {
+  return withReopenedRootKnowledgeConservationInputs5(qualified, (knowledge, knowledgeScope) =>
+    withReopenedRootRestoreIdentityInputs5(knowledge, knowledgeScope, identity, async (plan, scope) => {
+      const saved = await reopenSaved(plan, reference)
+      const before = await readManifest(saved), base = await readBaseLocation(saved)
+      if (before.version !== 2) return invalid('联合冷重开要求实际pending引用清单')
+      const { actual } = await reconstructWithOriginals(saved, before, base, scope)
+      return reopenedReference(saved, actual.value)
+    }))
 }
 
 /** Fixed genuine reference read for original-coordinate consumers. The
@@ -244,10 +271,47 @@ export async function readRootRestoreReferenceInputsAndOriginals5(plan: RootRest
   return reconstructWithOriginals(saved, before, base)
 }
 
-async function reconstructWithOriginals(saved: Saved, before: Manifest, base: BaseLocation) {
-  // Exactly one fresh complete SQL/K read per fixed public call. Metadata and
-  // tail-byte checks do not reread SQL or turn a DTO into an authority.
-  const captured = await readRootRestoreIdentityInputsAndOriginals5(saved.identity), data = captured.actual
+export interface RootRestoreStageInputs5 { readonly kind: 'main-root-restore-stage-inputs' }
+type ReferenceInputs = Awaited<ReturnType<typeof readRootRestoreReferenceInputsAndOriginals5>>
+const stageInputs = new WeakMap<RootRestoreStageInputs5, {
+  reference: RootRestoreReferencePlan3; pendingCellProofHash: string | undefined; read?: Promise<ReferenceInputs>
+}>()
+
+/** A combined SQL/asset call can share one actual Reference3 reconstruction.
+ * No SQL observation is cached on the reference or kept after the combined call. */
+export async function withRootRestoreStageInputs5<T>(reference: RootRestoreReferencePlan3, pendingCellProofHash: string | undefined,
+  run: (scope: RootRestoreStageInputs5) => Promise<T>): Promise<T> {
+  const scope: RootRestoreStageInputs5 = Object.freeze({ kind: 'main-root-restore-stage-inputs' })
+  stageInputs.set(scope, { reference, pendingCellProofHash })
+  try { return await run(scope) }
+  finally { stageInputs.delete(scope) }
+}
+
+export async function readRootRestoreStageInputs5(reference: RootRestoreReferencePlan3, scope: RootRestoreStageInputs5) {
+  const saved = stageInputs.get(scope)
+  if (!saved || saved.reference !== reference) return invalid('不是本次同一genuine reference的阶段认证')
+  const previous = saved.read
+  saved.read ??= readRootRestoreReferenceInputsAndOriginals5(reference).then(result => {
+    if (result.actual.candidate.pendingLocalBody?.proofHash !== saved.pendingCellProofHash)
+      return invalid('联合阶段与实际持久pending选择不符')
+    return result
+  })
+  const result = await saved.read
+  // A sibling stage may have copied or written its own output in between.
+  // Authenticate the actual source/reference bytes again before reusing SQL.
+  if (previous) {
+    await assertCompleteOriginalVerificationBytes5(result.pair.originalPackage)
+    await assertRootRestoreReferenceOriginalBytes3(reference)
+  }
+  if (stageInputs.get(scope) !== saved) return invalid('阶段认证已结束')
+  return result
+}
+
+async function reconstructWithOriginals(saved: Saved, before: Manifest, base: BaseLocation, scope?: ReopenedRootIdentityInputs5) {
+  const captured = scope
+    ? await readReopenedRootRestoreIdentityInputs5(saved.identity, scope)
+    : await readRootRestoreIdentityInputsAndOriginals5(saved.identity)
+  const data = captured.actual
   const allocation = deriveRootRestoreReferenceAllocation3(data, before.kernel, before.choices)
   if (allocation.purposes.some(purpose => purpose.targetId === saved.planId)) return invalid('引用plan locator与新分配身份碰撞')
   const original = checkedCandidateWithCells(data, allocation, before.choices)

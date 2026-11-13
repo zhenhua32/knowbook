@@ -1,20 +1,25 @@
 (async () => {
   const assert = require('node:assert/strict'), { readFile } = require('node:fs/promises'), { join } = require('node:path')
+  const { appendFileSync } = require('node:fs'), tracePath = process.env.KNOWBOOK_PENDING_STAGE5_TEST_TRACE
+  function phase(name) {
+    if (tracePath) appendFileSync(tracePath, JSON.stringify({ actor: 'child', pid: process.pid, time: new Date().toISOString(),
+      elapsedMs: Math.round(performance.now()), phase: name }) + '\n')
+  }
+  phase('process-started')
   const { qualifiedLocator, identityLocator, referenceLocator, stageLocator, expected } = JSON.parse(process.argv[2])
-  const { captureReopenedRootKnowledgeConservationPlan3 } = await import('../../src/main/database/restore-knowledge-root3-read.ts')
-  const { reopenRootRestoreIdentityPlan3 } = await import('../../src/main/database/restore-knowledge-identity3-read.ts')
-  const { reopenRootRestoreReferencePlan3 } = await import('../../src/main/database/restore-knowledge-reference3-read.ts')
+  const { reopenRootRestorePendingReferenceFromQualified5 } = await import('../../src/main/database/restore-knowledge-reference3-read.ts')
   const { reopenRootRestoreSqlAssetStage5 } = await import('../../src/main/database/restore-knowledge-sql-asset-stage5.ts')
   const { referenceContextObjectPath } = await import('../../src/main/database/restore-knowledge-reference-context-model.ts')
   const { graph3Text } = await import('../../src/main/database/restore-knowledge-graph3-data.ts')
-  const mounted = await captureReopenedRootKnowledgeConservationPlan3(qualifiedLocator)
-  const identity = await reopenRootRestoreIdentityPlan3(mounted.knowledgePlan, identityLocator)
-  const reference = await reopenRootRestoreReferencePlan3(identity.plan, referenceLocator)
+  phase('imports-completed')
+  const reference = await reopenRootRestorePendingReferenceFromQualified5(qualifiedLocator, identityLocator, referenceLocator)
+  phase('pending-reference-reopened')
   const pending = reference.value.candidate.pendingLocalBody
   assert.ok(pending)
   assert.equal(pending.proofHash, expected.proofHash)
   assert.equal(reference.value.candidate.checkedCanonicalCandidateHash, expected.candidateHash)
   const reopened = await reopenRootRestoreSqlAssetStage5(reference.plan, stageLocator)
+  phase('combined-stage-reopened')
   assert.equal(reopened.assets.value.version, 4)
   assert.equal(reopened.assets.value.pendingCellProofHash, expected.proofHash)
   assert.equal(reopened.value.physicalObservationHash, expected.physicalHash)
@@ -32,10 +37,12 @@
   assert.equal(cell('document_id'), pending.documentId)
   assert.equal(cell('created_at'), pending.blockBirth)
   assert.equal(cell('content'), expected.content)
+  phase('sql-cell-verified')
   const copies = reopened.assets.value.files.filter(file => file.sha256 === expected.blobHash)
   assert.equal(copies.length, 1)
   const [file] = copies
   const bytes = await readFile(join(reopened.assets.directory, referenceContextObjectPath(file.frame, file.path)))
   assert.deepEqual(bytes, Buffer.from(expected.bytes, 'base64'))
+  phase('asset-bytes-verified')
   process.stdout.write(JSON.stringify({ pid: process.pid, stageHash: reopened.manifestHash, proofHash: pending.proofHash }))
 })().catch(error => { console.error(error); process.exitCode = 1 })

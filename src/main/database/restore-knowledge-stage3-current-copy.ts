@@ -83,6 +83,12 @@ async function reconstruct(saved: Saved): Promise<Value> {
   checkOriginalBinding(owner, original)
   if (!same(referenceBinding(owner), saved.binding) || !same(original, saved.original))
     return invalid('genuine reference或其实际root current原件变化')
+  return verifyCopyFiles(saved)
+}
+
+/** Create and reopen already established the exact reference and root.current
+ * binding in this call. Keep the original-byte tail while holding the copy. */
+async function verifyCopyFiles(saved: Saved): Promise<Value> {
   const manifestText = capsuleJson(saved.manifest) + '\n'
   const inventory = saved.original.sourceManifest.files
   const held = await holdRootRestoreStage3Files3({ profileRoot: saved.original.profileRoot,
@@ -130,7 +136,7 @@ export async function prepareRootRestoreCurrentCopy3(reference: RootRestoreRefer
   await syncOriginCatalogAncestors(collection, original.profileRoot)
   const saved: Saved = { reference, copyId, preparedAt, binding, original, directory, databaseDirectory,
     manifest, manifestHash: manifestHash(manifest) }
-  const value = await reconstruct(saved)
+  const value = await verifyCopyFiles(saved)
   const copy: RootRestoreCurrentCopy3 = Object.freeze({ kind: 'main-root-restore-current-original-copy' })
   copies.set(copy, saved)
   return Object.freeze({ copy, value, copyId, manifestHash: saved.manifestHash, directory })
@@ -147,11 +153,31 @@ export async function readRootRestoreCurrentCopy3(copy: RootRestoreCurrentCopy3)
 export async function readRootRestoreCurrentCopyForStage3(copy: RootRestoreCurrentCopy3) {
   const saved = copies.get(copy)
   if (!saved) return invalid('不是实际Main current原件副本句柄')
-  const value = await reconstruct(saved)
+  return stage3CopyInfo(saved, await reconstruct(saved))
+}
+
+function stage3CopyInfo(saved: Saved, value: Value) {
   return Object.freeze({ reference: saved.reference, value, copyId: saved.copyId, manifestHash: saved.manifestHash,
     profileRoot: saved.original.profileRoot, operationId: saved.original.operationId,
     directory: saved.directory, databaseDirectory: saved.databaseDirectory,
     databasePath: join(saved.databaseDirectory, 'knowbook.db') })
+}
+
+function stage3CopyFromFreshRead(result: { copy: RootRestoreCurrentCopy3; value: Value }) {
+  const saved = copies.get(result.copy)
+  if (!saved) return invalid('不是实际Main current原件副本句柄')
+  return { copy: result.copy, info: stage3CopyInfo(saved, result.value) }
+}
+
+/** Stage3 uses the authentication performed by its own create or reopen call.
+ * Subsequent reads still reconstruct the original and the copied files. */
+export async function prepareRootRestoreCurrentCopyForStage3(reference: RootRestoreReferencePlan3) {
+  return stage3CopyFromFreshRead(await prepareRootRestoreCurrentCopy3(reference))
+}
+
+export async function reopenRootRestoreCurrentCopyForStage3(reference: RootRestoreReferencePlan3,
+  input: { readonly copyId: string; readonly expectedManifestHash: string }) {
+  return stage3CopyFromFreshRead(await reopenRootRestoreCurrentCopy3(reference, input))
 }
 /** Durable locator only. The genuine reference/private original chain derives
  * every binding and the complete root.current inventory again. The copied
@@ -178,7 +204,7 @@ export async function reopenRootRestoreCurrentCopy3(reference: RootRestoreRefere
     return invalid('cold copy不是同genuine reference/实际current原件的exact持久清单')
   const saved: Saved = { reference, copyId, preparedAt: stamp, binding, original, directory, databaseDirectory,
     manifest, manifestHash: expected }
-  const value = await reconstruct(saved)
+  const value = await verifyCopyFiles(saved)
   const copy: RootRestoreCurrentCopy3 = Object.freeze({ kind: 'main-root-restore-current-original-copy' })
   copies.set(copy, saved)
   return Object.freeze({ copy, value, copyId, manifestHash: expected, directory })

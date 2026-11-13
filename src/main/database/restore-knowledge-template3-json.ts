@@ -1,4 +1,5 @@
 import { graph3Conflict } from './restore-knowledge-graph3-data'
+import type { Navigation3TextEdit } from './restore-knowledge-navigation3-rewrite-cells'
 
 /** Locations in an already JSON.parse-validated saved block array. Ordinary
  * persisted JSON uses last-key-wins semantics. Do not turn it into strict
@@ -67,4 +68,27 @@ export function template3ContentStringRanges(raw: string) {
   at++; whitespace()
   if (at !== raw.length) return bad()
   return result
+}
+
+/** Project decoded UTF-16 positions onto the original spelling of one JSON
+ * string. Escapes outside the edited destinations remain byte-for-byte intact. */
+export function projectTemplate3ContentStringEdits(raw: string, content: string, edits: readonly Navigation3TextEdit[]) {
+  const bad = (): never => graph3Conflict('template-content-string-edit-projection', null)
+  if (raw[0] !== '"' || raw.at(-1) !== '"' || JSON.parse(raw) !== content) return bad()
+  const required = new Set(edits.flatMap(edit => [edit.from, edit.to])), offsets = new Map<number, number>()
+  let decoded = 0, offset = 1
+  while (offset < raw.length - 1) {
+    if (required.has(decoded)) offsets.set(decoded, offset)
+    offset += raw[offset] === '\\' ? raw[offset + 1] === 'u' ? 6 : 2 : 1
+    decoded++
+  }
+  if (offset !== raw.length - 1 || decoded !== content.length) return bad()
+  if (required.has(decoded)) offsets.set(decoded, offset)
+  return edits.map(edit => {
+    const from = offsets.get(edit.from), to = offsets.get(edit.to)
+    if (from === undefined || to === undefined || from >= to) return bad()
+    const before = raw.slice(from, to)
+    if (JSON.parse('"' + before + '"') !== edit.before) return bad()
+    return { from, to, before, after: JSON.stringify(edit.after).slice(1, -1) }
+  })
 }

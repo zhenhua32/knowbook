@@ -1,5 +1,6 @@
-import { assertCompleteOriginalPackageBytes, readCompleteOriginalPackage, captureMixedOriginalPackageWithInitialInputs,
-  captureQualifiedOriginalBundleFromReferences, captureReopenedQualifiedOriginalBundle, type CompleteOriginalBundle } from './restore-knowledge-qualified-originals'
+import { assertCompleteOriginalPackageBytes, assertCompleteOriginalVerificationBytes5, readCompleteOriginalPackage, captureMixedOriginalPackageWithInitialInputs,
+  captureQualifiedOriginalBundle, captureQualifiedOriginalBundleFromReferences, captureReopenedQualifiedOriginalBundle, captureReopenedQualifiedOriginalContent5,
+  type CompleteOriginalBundle } from './restore-knowledge-qualified-originals'
 import type { CompleteOriginalPackage } from './restore-knowledge-original-input-types'
 import { deriveRoot3KnowledgeConstraints, root3Invalid, type Root3KnowledgeConstraints } from './restore-knowledge-root3-model'
 import { freezeCapsuleValue } from './restore-knowledge-capsule-model'
@@ -27,6 +28,11 @@ export async function captureMixedRootKnowledgeConservationPlan3(input: Paramete
   const knowledge = await mintFromInitial(captured.bundle, captured.originalPackage)
   return Object.freeze({ ...captured, knowledgePlan: knowledge.plan, knowledgeValue: knowledge.value })
 }
+export async function captureRootKnowledgeConservationPlanFromCertifiedSources3(input: Parameters<typeof captureQualifiedOriginalBundle>[0]) {
+  const captured = await captureQualifiedOriginalBundle(input)
+  const knowledge = await mintFromInitial(captured.bundle, captured.originalPackage)
+  return Object.freeze({ ...captured, knowledgePlan: knowledge.plan, knowledgeValue: knowledge.value })
+}
 export async function captureRootKnowledgeConservationPlanFromReferences3(input: Parameters<typeof captureQualifiedOriginalBundleFromReferences>[0]) {
   const captured = await captureQualifiedOriginalBundleFromReferences(input)
   const knowledge = await mintFromInitial(captured.bundle, captured.originalPackage)
@@ -37,6 +43,35 @@ export async function captureReopenedRootKnowledgeConservationPlan3(input: Param
   const knowledge = await mintFromInitial(captured.bundle, captured.originalPackage)
   return Object.freeze({ ...captured, knowledgePlan: knowledge.plan, knowledgeValue: knowledge.value })
 }
+
+export interface ReopenedRootKnowledgeInputs5 { readonly kind: 'main-reopened-root-knowledge-inputs' }
+type KnowledgeOriginals = Awaited<ReturnType<typeof readRootKnowledgeConservationContentAndOriginals5>>
+const reopenedInputs = new WeakMap<ReopenedRootKnowledgeInputs5, { plan: RootKnowledgeConservationPlan3; data: KnowledgeOriginals }>()
+
+/** Keep the actual qualified content alive only for the fixed cold chain. */
+export async function withReopenedRootKnowledgeConservationInputs5<T>(input: Parameters<typeof captureReopenedQualifiedOriginalBundle>[0],
+  run: (plan: RootKnowledgeConservationPlan3, scope: ReopenedRootKnowledgeInputs5) => Promise<T>): Promise<T> {
+  const { bundle, originalPackage, pair, working } = await captureReopenedQualifiedOriginalContent5(input)
+  const { plan, value: knowledge } = await mintFromInitial(bundle, originalPackage)
+  const scope: ReopenedRootKnowledgeInputs5 = Object.freeze({ kind: 'main-reopened-root-knowledge-inputs' })
+  const value = Object.freeze({ knowledge, source: pair.source, current: pair.current })
+  reopenedInputs.set(scope, { plan, data: Object.freeze({ value, pair, original: bundle, working }) })
+  try {
+    const result = await run(plan, scope)
+    await assertCompleteOriginalVerificationBytes5(originalPackage)
+    return result
+  }
+  finally { reopenedInputs.delete(scope) }
+}
+
+export async function readReopenedRootKnowledgeConservationInputs5(plan: RootKnowledgeConservationPlan3, scope: ReopenedRootKnowledgeInputs5) {
+  const entry = reopenedInputs.get(scope)
+  if (!entry || entry.plan !== plan) return root3Invalid('不是本次冷重开的真实知识原件')
+  await assertRootKnowledgePlanOriginalBytes3(plan)
+  if (reopenedInputs.get(scope) !== entry) return root3Invalid('冷重开知识原件已结束')
+  return entry.data
+}
+
 function owned(value: Root3KnowledgeConstraints) {
   return freezeCapsuleValue({ kind: 'main-complete-qualified-knowledge-plan-data' as const, version: 1 as const,
     constraints: value, conservationHash: value.conservationHash,

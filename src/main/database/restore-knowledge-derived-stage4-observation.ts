@@ -1,21 +1,27 @@
 import type Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
 import { capsuleBytesHash, capsuleJson } from './restore-knowledge-capsule-model'
-import { graph3Rows, graph3Text } from './restore-knowledge-graph3-data'
+import { graph3Rows, graph3Text, type Graph3Inputs } from './restore-knowledge-graph3-data'
 import { buildMerge3NavigationFinalIndex3 } from './restore-knowledge-navigation3-merge-context'
+import { createNavigation3RangeProjection } from './restore-knowledge-navigation3-rewrite-cells'
 import { toReference3GraphInputs } from './restore-knowledge-reference3-model'
 import { readRootRestoreReferenceGraphInputs3, type RootRestoreReferencePlan3 } from './restore-knowledge-reference3-read'
 import type { reopenRootRestorePhysicalStage3 } from './restore-knowledge-stage3-physical'
+import type { readRootRestoreSqlAssetAliasDerivationSource5 } from './restore-knowledge-sql-asset-alias-stage5'
 import { readRawSyncedGroupSnapshotsOwned } from './synced-blocks-raw-read'
 import { assertSyncedLifecycleCoverage } from './synced-lifecycle-state'
 import { canonicalSearchOccurrencesSql, occurrenceFromCanonicalSearchRow,
   type CanonicalSearchOccurrenceRow } from './workspace-search-occurrences'
 
 type Physical = Awaited<ReturnType<typeof reopenRootRestorePhysicalStage3>>
+type AliasSql = Awaited<ReturnType<typeof readRootRestoreSqlAssetAliasDerivationSource5>>
+type SyntaxIndex = ReturnType<typeof buildMerge3NavigationFinalIndex3>
+type FinalScope = SyntaxIndex['scopes'][number]
 export type DerivedRoutePlan4 = Awaited<ReturnType<typeof deriveStage4Routes>>
 const fail = (message: string): never => { throw new Error('恢复派生路由与搜索：' + message) }
 const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0
 const routeKey = (path: string, blockId: string) => capsuleJson([path, blockId])
+const same = (left: unknown, right: unknown) => capsuleJson(left) === capsuleJson(right)
 
 /** Use the qualified original row/birth mapping already proved by Reference3.
  * A current path, a coincident slug or a bare block ID cannot mint a route. */
@@ -25,6 +31,10 @@ export async function deriveStage4Routes(reference: RootRestoreReferencePlan3, p
     return fail('路由原件属于另一候选')
   const index = buildMerge3NavigationFinalIndex3(toReference3GraphInputs(original.data, original.allocation), physical.value.tables)
   if (index.indexHash !== physical.value.finalSyntaxIndexHash) return fail('重建的原导航索引与物理暂存不同')
+  return routesFromIndex(index, original.data.inputs.current.source.sourceContent)
+}
+
+function routesFromIndex(index: SyntaxIndex, current: Graph3Inputs['inputs']['current']['source']['sourceContent']) {
   const blocks = new Map(index.physicalBlocks.map(block => [block.id, block]))
   const routes = new Map<string, { path: string; blockId: string; documentId?: string; createdAt?: string; currentRowId?: string }>()
   for (const route of index.routes) {
@@ -38,7 +48,6 @@ export async function deriveStage4Routes(reference: RootRestoreReferencePlan3, p
   // Stage3 already certified its complete current route table and FK graph.
   // Retain each exact current row. The actual live physical identity check
   // below is independent from the selection index used for new aliases.
-  const current = original.data.inputs.current.source.sourceContent
   const currentRoutes = graph3Rows(current, 'document_block_routes')
   for (const row of currentRoutes) {
     const { document_path: path, block_id: blockId } = row.value
@@ -48,6 +57,49 @@ export async function deriveStage4Routes(reference: RootRestoreReferencePlan3, p
   }
   return { routes, witnessHash: capsuleBytesHash('knowbook.restore.derived-stage4.route-witness.v1\0'
     + capsuleJson([index.routes, currentRoutes.map(row => row.original)])) }
+}
+
+/** The readback rows, not a computed post-edit DTO, drive the new index.
+ * Prove that exact address edits preserve other scoped navigation. */
+export function deriveStage4AliasNavigation(source: AliasSql) {
+  const graph = toReference3GraphInputs(source.data, source.allocation)
+  const before = buildMerge3NavigationFinalIndex3(graph, source.physical.tables)
+  if (before.indexHash !== source.physical.finalSyntaxIndexHash) return fail('原导航索引与物理暂存不同')
+  const after = buildMerge3NavigationFinalIndex3(graph, source.tables)
+  const headings = (value: SyntaxIndex) => value.headingNamespaces.map(({ document, headings }) => [document.id, headings])
+  if (!same(headings(before), headings(after)) || !same(before.routes, after.routes) || before.scopes.length !== after.scopes.length)
+    return fail('地址改写改变标题或原路由')
+  const key = (cell: Pick<FinalScope['blocks'][number]['cell'], 'table' | 'targetRowId' | 'column'>) =>
+    capsuleJson([cell.table, cell.targetRowId, cell.column])
+  const destinationKey = (from: number, to: number, raw: string) => capsuleJson([from, to, raw])
+  const edited = new Map(source.navigationEdits.map(cell => [key(cell), {
+    edits: new Map(cell.edits.map(edit => [destinationKey(edit.from, edit.to, edit.before), edit])),
+    project: createNavigation3RangeProjection(cell.edits)
+  }]))
+  const scope = (value: FinalScope, project: boolean) => {
+    const cells = new Map(value.blocks.map(block => [block.occurrenceKey, block.cell]))
+    function range<T extends { blockId: string; from: number; to: number }>(value: T) {
+      const cell = cells.get(value.blockId) ?? fail('导航范围缺实际 SQL 单元格')
+      const change = project ? edited.get(key(cell)) : undefined
+      const next = change ? change.project(value.from, value.to) : { from: value.from, to: value.to }
+      if (!next) return fail('地址改写穿过实际导航范围')
+      return { ...value, ...next }
+    }
+    const destinations = value.destinations.map(({ key: original, url, cell, ...facts }) => {
+      const change = project ? edited.get(key(cell)) : undefined
+      const edit = change?.edits.get(destinationKey(original.from, original.to, original.raw))
+      const { text: _text, ...identity } = cell
+      return { ...facts, cell: identity, url: edit?.after ?? url, key: { ...range(original), raw: edit?.after ?? original.raw } }
+    })
+    return { scopeId: value.scopeId, field: value.field, finalDocumentId: value.finalDocumentId, path: value.path, title: value.title,
+      blocks: value.blocks.map(({ occurrenceKey, finalOccurrenceKey, location }) => [occurrenceKey, finalOccurrenceKey, location]),
+      destinations, definitions: value.definitions.map(range),
+      effectiveDefinitions: value.effectiveDefinitions.map(({ key, definition }) => ({ key, definition: range(definition) })), uses: value.uses }
+  }
+  for (const [index, item] of before.scopes.entries()) {
+    if (!same(scope(item, true), scope(after.scopes[index], false))) return fail('地址改写改变实际导航或有效定义')
+  }
+  return { routes: routesFromIndex(after, source.data.inputs.current.source.sourceContent), syntaxIndexHash: after.indexHash }
 }
 
 function actualRoutes(db: Database.Database, plan: DerivedRoutePlan4) {
