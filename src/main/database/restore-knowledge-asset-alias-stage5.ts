@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { ATTACHMENT_MAX_FILE_BYTES } from '../../shared/attachments'
 import { buildSyncedPortableAssetUri } from '../../shared/syncedBlockPortable'
 import { capsuleBytesHash, capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
+import { CAPSULE_V3_ASSET_MAX_FILE_BYTES } from './restore-knowledge-capsule-v3-assets'
 import { DURABLE_SQL_DAG_MAX_ORIGINAL_BYTES, durableSqlDagHash, durableSqlDagUuid } from './restore-knowledge-dag-model'
 import { assertMerge3JsonBudget } from './restore-knowledge-merge3-storage'
 import { syncOriginCatalogAncestors } from './restore-knowledge-origin-bundle-files'
@@ -30,7 +31,8 @@ function derive(source: Source, stageId: string) {
   for (const { entry, file } of source.matched) {
     const { hash, bytes, logicalName } = entry.proof
     buildSyncedPortableAssetUri({ hash, name: logicalName })
-    if (file.sha256 !== hash || file.bytes !== bytes || !Number.isSafeInteger(bytes) || bytes < 0 || bytes > ATTACHMENT_MAX_FILE_BYTES)
+    const maxBytes = entry.proof.backupV3 ? CAPSULE_V3_ASSET_MAX_FILE_BYTES : ATTACHMENT_MAX_FILE_BYTES
+    if (file.sha256 !== hash || file.bytes !== bytes || !Number.isSafeInteger(bytes) || bytes < 0 || bytes > maxBytes)
       return fail('原范围未绑定确切文件字节')
     const path = 'attachments/' + hash.slice(0, 2) + '/' + hash + '/' + logicalName
     const existing = byPath.get(path)
@@ -45,7 +47,9 @@ function derive(source: Source, stageId: string) {
     const key = path.normalize('NFC').toLowerCase(), spellings = portablePaths.get(key) ?? []
     spellings.push(path); portablePaths.set(key, spellings)
   }
-  if (!byPath.size) return fail('没有可逐原范围证明的别名')
+  if (!byPath.size && (audit.entries.length || !audit.knownOccurrencesComplete
+    || audit.remainder.some(item => item.domain !== 'retained-policy' || item.reason !== 'remaining-policy-held-payload-asset-scopes')))
+    return fail('没有可逐原范围证明的别名，且仍有未验附件范围')
   const ordered = [...byPath.values()].sort((left, right) => compare(left.alias.path, right.alias.path))
   const aliasPathConflicts = [...portablePaths.values()].filter(paths => paths.length > 1).map(paths => paths.sort(compare))
     .sort((left, right) => compare(left[0], right[0]))
@@ -72,9 +76,13 @@ async function verify(saved: Saved) {
   const actual = derive(source, saved.stageId)
   if (actual.manifestHash !== saved.expectedManifestHash) return fail('实际原件和别名不等于持久清单')
   await assertOriginalFrameDirectory(actual.directory, actual.text, actual.files)
+  await assertAliasBytes(saved, actual)
+  return { ...actual, source }
+}
+
+async function assertAliasBytes(saved: Saved, actual: ReturnType<typeof derive>) {
   await assertRootRestoreSqlAssetStageBytes5(saved.combined)
   await assertOriginalFrameDirectory(actual.directory, actual.text, actual.files)
-  return { ...actual, source }
 }
 
 async function prepare(combined: RootRestoreSqlAssetStage5) {
@@ -84,9 +92,9 @@ async function prepare(combined: RootRestoreSqlAssetStage5) {
   await restoreDirectory(base, root)
   await writeOriginalFrameDirectory({ profileRoot: root, directory: actual.directory, descriptorText: actual.text, files: actual.files })
   await syncOriginCatalogAncestors(base, root)
-  await assertRootRestoreSqlAssetStageBytes5(combined)
-  await assertOriginalFrameDirectory(actual.directory, actual.text, actual.files)
-  return { saved: { combined, stageId, expectedManifestHash: actual.manifestHash }, actual }
+  const saved = { combined, stageId, expectedManifestHash: actual.manifestHash }
+  await assertAliasBytes(saved, actual)
+  return { saved, actual }
 }
 
 /** One independent file for each confirmed logical alias, including aliases
@@ -113,11 +121,15 @@ export async function reopenRootRestoreAssetAliasStage5(combined: RootRestoreSql
 export async function readRootRestoreAssetAliasStageCopies5(owner: RootRestoreAssetAliasStage5) {
   const saved = owners.get(owner)
   if (!saved) return fail('不是实际附件别名 owner')
-  const actual = await verify(saved)
+  return transferCopies(saved, await verify(saved))
+}
+
+function transferCopies(saved: Saved, actual: ReturnType<typeof derive>) {
   return freezeCapsuleValue({ stageId: saved.stageId, manifestHash: actual.manifestHash,
     location: { profileRoot: actual.location.profileRoot, operationId: actual.location.operationId },
     assetClosureObservationHash: actual.value.assetClosureObservationHash, remaining: actual.value.remaining,
-    installPermit: false as const, files: actual.value.aliases.map(({ hash, bytes, logicalName, path }) => ({ hash, bytes, logicalName, path,
+    installPermit: false as const, assertOriginalBytes: () => assertAliasBytes(saved, actual),
+    files: actual.value.aliases.map(({ hash, bytes, logicalName, path }) => ({ hash, bytes, logicalName, path,
       sourceRoot: actual.directory, sourcePath: join(actual.directory, referenceContextObjectPath([], path)) })) })
 }
 
@@ -132,17 +144,24 @@ export async function readRootRestoreAssetAliasSqlSource5(owner: RootRestoreAsse
 function sqlSource(saved: Saved, actual: Awaited<ReturnType<typeof verify>>) {
   return Object.freeze({ source: actual.source, aliases: actual.value.aliases, remaining: actual.value.remaining,
     stageId: saved.stageId, manifestHash: actual.manifestHash,
-    async assertOriginalBytes() {
-      await assertRootRestoreSqlAssetStageBytes5(saved.combined)
-      await assertOriginalFrameDirectory(actual.directory, actual.text, actual.files)
-    } })
+    assertOriginalBytes: () => assertAliasBytes(saved, actual) })
 }
 
 /** Keep this invocation's authenticated input with the alias it produced.
  * Downstream writers still check the original and persisted bytes at their tails. */
 export async function prepareRootRestoreAssetAliasWithSqlSource5(combined: RootRestoreSqlAssetStage5) {
   const { saved, actual } = await prepare(combined)
-  return { aliases: mint(saved, actual), input: sqlSource(saved, actual) }
+  const copies = transferCopies(saved, actual)
+  const assertTransferBytes = async () => {
+    const { assertCompleteOriginalVerificationBytes5 } = await import('./restore-knowledge-qualified-originals')
+    await assertCompleteOriginalVerificationBytes5(actual.source.coverageOriginal)
+    await copies.assertOriginalBytes()
+  }
+  return { aliases: mint(saved, actual), input: sqlSource(saved, actual), async readTransferCopies() {
+    await assertOriginalFrameDirectory(actual.directory, actual.text, actual.files)
+    await assertTransferBytes()
+    return Object.freeze({ ...copies, assertOriginalBytes: assertTransferBytes })
+  } }
 }
 
 export async function reopenRootRestoreAssetAliasWithSqlSource5(combined: RootRestoreSqlAssetStage5, locator: Locator) {

@@ -6,6 +6,7 @@ import { buildSyncedPortableAssetUri, syncedPortableAssetBackupPath } from '../.
 import { capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { readCapsule2AssetManifest } from './restore-knowledge-capsule2-assets-files'
 import { readRootRestoreAssetAliasStageCopies5, type RootRestoreAssetAliasStage5 } from './restore-knowledge-asset-alias-stage5'
+import type { PreparedRestoreHistoryScope3 } from './restore-knowledge-stage3-physical'
 import { copyOriginCatalogFileWithIdentity3, syncOriginCatalogAncestors } from './restore-knowledge-origin-bundle-files'
 import { assertRestorePath, canonicalRestoreRoot, restoreDirectory, restoreExists, restorePaths,
   syncRestoreDirectory, writeRestoreJson } from './restore-safety-files'
@@ -29,7 +30,8 @@ const fail = (message: string): never => { throw new Error('恢复附件发布�
 const order = (a: string, b: string): number => a < b ? -1 : a > b ? 1 : 0
 const alias = (file: FileFact) => syncedPortableAssetBackupPath(buildSyncedPortableAssetUri({ hash: file.hash, name: file.logicalName }))
   .slice('__knowbook/assets/'.length)
-const key = (file: FileFact) => process.platform === 'win32' ? alias(file).toLowerCase() : alias(file)
+const windowsKey = (file: FileFact) => alias(file).toLowerCase()
+const key = process.platform === 'win32' ? windowsKey : alias
 const collection = (root: string, operationId: string) => join(restorePaths(root, operationId).recovery, 'asset-transfer-v4')
 const payload = (directory: string, index: number) => join(directory, 'payloads', index + '.bin')
 const destination = (root: string, file: FileFact) => join(root, 'storage', 'assets', ...alias(file).split('/'))
@@ -44,26 +46,29 @@ function readFact(value: Record<string, unknown>): FileFact {
   return fact
 }
 
-function readIdentity(value: unknown): Identity {
+function readIdentity(value: unknown, requireDevice: boolean): Identity {
   const row = capsuleRecord(value, ['dev', 'ino'])
   if (typeof row.dev !== 'string' || !/^-?(?:0|[1-9][0-9]{0,19})$/.test(row.dev)
     || typeof row.ino !== 'string' || !/^[1-9][0-9]{0,19}$/.test(row.ino)
-    || process.platform === 'win32' && row.dev === '0') return fail('附件文件身份无效')
+    || requireDevice && row.dev === '0') return fail('附件文件身份无效')
   return { dev: row.dev, ino: row.ino }
 }
 
-function readManifest(value: unknown): Manifest {
+function readManifest(value: unknown, archived = false): Manifest {
   const row = capsuleRecord(value, ['kind', 'version', 'operationId', 'transferId', 'entries'])
   if (row.kind !== 'controlled-restore-asset-transfer' || row.version !== 4
     || !Array.isArray(row.entries) || row.entries.length > maxFiles) return fail('未知附件转移格式或超清单预算')
   const entries = row.entries.map((value: unknown): Entry => {
     const item = capsuleRecord(value, ['hash', 'bytes', 'logicalName', 'action', 'identity'])
     if (item.action !== 'keep' && item.action !== 'link') return fail('未知附件转移操作')
-    return { ...readFact(item), action: item.action, identity: readIdentity(item.identity) }
+    return { ...readFact(item), action: item.action, identity: readIdentity(item.identity, !archived && process.platform === 'win32') }
   })
-  for (let index = 1; index < entries.length; index++) {
-    if (order(key(entries[index - 1]), key(entries[index])) >= 0) return fail('附件目标重复或顺序无效')
-  }
+  const sorted = (keyOf: (file: FileFact) => string) =>
+    entries.every((entry, index) => index === 0 || order(keyOf(entries[index - 1]), keyOf(entry)) < 0)
+  // A transported manifest can retain the producer's platform ordering.
+  // Live transfers always use the local path rules and device identity.
+  const validOrder = archived ? sorted(alias) || sorted(windowsKey) && entries.every(entry => entry.identity.dev !== '0') : sorted(key)
+  if (!validOrder) return fail('附件目标重复或顺序无效')
   return freezeCapsuleValue({ kind: row.kind, version: 4 as const, operationId: restoreUuid(row.operationId),
     transferId: restoreUuid(row.transferId), entries })
 }
@@ -182,29 +187,72 @@ export async function prepareRestoreAssetTransfer4(profileRoot: string, operatio
 
 /** The genuine staged aliases can prepare an independent transfer, but the
  * coverage and outer installation journal still control any live publication. */
-export async function prepareRootRestoreAssetTransfer4(owner: RootRestoreAssetAliasStage5) {
-  const before = await readRootRestoreAssetAliasStageCopies5(owner)
+export async function prepareRootRestoreAssetTransfer4(owner: RootRestoreAssetAliasStage5, scope?: PreparedRestoreHistoryScope3) {
+  const before = scope ? await (await import('./restore-knowledge-stage3-physical')).readPreparedRootRestoreAliasTransferCopies3(owner, scope)
+    : await readRootRestoreAssetAliasStageCopies5(owner)
   const files = before.files.map(({ path, ...file }) => {
     if (path !== alias(file)) return fail('实际别名与目标路径不符')
     return file
   })
   const { profileRoot, operationId } = before.location
   const { transferId, manifestHash } = await prepareRestoreAssetTransfer4(profileRoot, operationId, files)
-  const after = await readRootRestoreAssetAliasStageCopies5(owner)
-  if (after.manifestHash !== before.manifestHash) return fail('实际别名来源在复制时变化')
+  await before.assertOriginalBytes()
   return Object.freeze({ transferId, manifestHash, aliasStageId: before.stageId, aliasManifestHash: before.manifestHash,
     remaining: before.remaining, installPermit: false as const })
 }
 
-export async function reopenRestoreAssetTransfer4(profileRoot: string, operationId: string, transferId: string, expectedManifestHash: string) {
+function checkedTransfer(source: string, operationId: string, transferId: string, expectedManifestHash: string, archived = false) {
+  const manifest = readManifest(parseRestoreJson(source), archived), manifestHash = restoreHash(manifest)
+  if (manifest.operationId !== operationId || manifest.transferId !== transferId || manifestHash !== hash(expectedManifestHash)
+    || archived && source !== restoreJson(manifest))
+    return fail('原附件转移清单与已记录凭据不同')
+  return manifest
+}
+
+async function readSavedTransfer(profileRoot: string, operationId: string, transferId: string, expectedManifestHash: string): Promise<Saved> {
   const root = await canonicalRestoreRoot(profileRoot), directory = join(collection(root, operationId), restoreUuid(transferId))
   const source = await readCapsule2AssetManifest(join(directory, 'manifest.json'), root, maxManifestBytes)
-  const manifest = readManifest(parseRestoreJson(source)), manifestHash = restoreHash(manifest)
-  if (manifest.operationId !== operationId || manifest.transferId !== transferId || manifestHash !== hash(expectedManifestHash))
-    return fail('原附件转移清单与已记录凭据不同')
-  const saved = { root, directory, manifest, manifestHash }
+  const manifest = checkedTransfer(source, operationId, transferId, expectedManifestHash)
+  return { root, directory, manifest, manifestHash: expectedManifestHash }
+}
+
+/** These are canonical archived facts. A foreign transfer manifest cannot
+ * authorize a file read, link, rollback or installation. */
+export function readArchivedTransferFacts4(text: string, locator: { operationId: string; transferId: string; manifestHash: string }) {
+  return checkedTransfer(text, locator.operationId, locator.transferId, locator.manifestHash, true).entries
+}
+
+export async function readPinnedTransferManifestText4(profileRoot: string, locator: { operationId: string; transferId: string; manifestHash: string }) {
+  const root = await canonicalRestoreRoot(profileRoot), directory = join(collection(root, locator.operationId), restoreUuid(locator.transferId))
+  const text = await readCapsule2AssetManifest(join(directory, 'manifest.json'), root, maxManifestBytes)
+  checkedTransfer(text, locator.operationId, locator.transferId, locator.manifestHash, true)
+  return text
+}
+
+export async function reopenRestoreAssetTransfer4(profileRoot: string, operationId: string, transferId: string, expectedManifestHash: string) {
+  const saved = await readSavedTransfer(profileRoot, operationId, transferId, expectedManifestHash)
   await readState(saved)
   return mint(saved)
+}
+
+/** Only the absence of a path entry can select an earlier installed transfer.
+ * An existing entry with different bytes or live identity fails closed.
+ * Other previous live names may have been legitimately removed since commit. */
+export async function tryReadInstalledRestoreAsset4(profileRoot: string, operationId: string, transferId: string,
+  manifestHash: string, file: FileFact) {
+  const { root, directory, manifest } = await readSavedTransfer(profileRoot, operationId, transferId, manifestHash)
+  const index = manifest.entries.findIndex(entry => alias(entry) === alias(file))
+  if (index < 0) return
+  const entry = manifest.entries[index], target = destination(root, entry)
+  if (entry.bytes !== file.bytes) return fail('安装附件与同路径原 transfer 长度不同')
+  const actual = await readFile(target, root, entry)
+  if (!sameIdentity(actual.identity, entry.identity)) return fail('安装附件已经由其他实际文件替换')
+  if (entry.action === 'link') {
+    const staged = await readFile(payload(directory, index), root, entry)
+    if (!sameIdentity(staged.identity, entry.identity) || staged.links !== 2n || actual.links !== 2n)
+      return fail('安装附件不再是原 transfer 的准确链接')
+  }
+  return actual.identity
 }
 
 async function authenticated(transfer: RestoreAssetTransfer4) {
@@ -212,6 +260,14 @@ async function authenticated(transfer: RestoreAssetTransfer4) {
   const stored = await readCapsule2AssetManifest(join(saved.directory, 'manifest.json'), saved.root, maxManifestBytes)
   if (stored !== restoreJson(saved.manifest)) return fail('原附件转移清单已变化')
   return { saved, states: await readState(saved) }
+}
+
+/** A reopened transfer may describe a partial publication. These assertions
+ * let the outer journal distinguish its own pre-move and commit phases. */
+export async function assertRestoreAssetTransferState4(transfer: RestoreAssetTransfer4, expected: 'pristine' | 'published') {
+  const { states } = await authenticated(transfer)
+  if (states.includes(expected === 'pristine' ? 'published' : 'absent'))
+    return fail('附件转移状态与联合恢复阶段不同')
 }
 
 /** Called only under the outer restore owner and its durable moving journal.

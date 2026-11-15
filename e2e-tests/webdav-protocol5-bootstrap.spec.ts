@@ -3,7 +3,7 @@ import { mkdtempSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { closeElectronApp, launchElectronApp, uiText, type ElectronAppContext } from './helpers/electron'
+import { closeElectronApp, launchElectronApp, relaunchElectronApp, uiText, type ElectronAppContext } from './helpers/electron'
 import { createWebDavServer } from '../tests/helpers/webdav-server'
 import { randomUUID } from 'node:crypto'
 import { protocol5HistoryLink, publicationHash, publicationJson, validateInitialManifest5 } from '../src/main/sync/synced-publication-model'
@@ -143,7 +143,7 @@ test('production WebDAV preserves legacy data, joins a fresh independent profile
     expect(incoming.downloaded).toBeGreaterThan(0)
     await closeElectronApp(receiver, { preserveUserData: true })
     receiver = null
-    receiver = await launchElectronApp({}, { userDataRoot: receiverRoot })
+    receiver = await relaunchElectronApp({ userDataRoot: receiverRoot })
     expect((await receiver.page.evaluate(() => window.knowbook.getWebDavSyncStatus())).protocol5).toBe(true)
     const resolved = await receiver.page.evaluate(input => window.knowbook.resolveSyncedInlineInstance(input), address)
     expect(resolved.status).toBe('ready')

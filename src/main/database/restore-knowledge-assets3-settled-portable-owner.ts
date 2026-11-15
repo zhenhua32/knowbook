@@ -11,6 +11,8 @@ const fail = (reason: string): never => { throw new Error('settled portable owne
 function derive(input: Input, base?: Pick<Awaited<ReturnType<typeof readSealedCapsule2SourceBaseProjection4>>, 'baseProof'>) {
   const packet = input.value, archive = packet.assetArchive
   if (archive.version === 1) return fail('原archive1没有capture-time file URI权属，不升级旧资料')
+  if (archive.version === 6 || archive.version === 7 || archive.version === 8 || archive.version === 9 || archive.version === 10)
+    return fail('V3 备份附件不授予旧同步任务的 settled 资产权限')
   const referenceCapture = (archive.version === 4 ||archive.version===5) ? { version: 2 as const, sourceContentHash: archive.sourceContentHash,
     workspaceHistoryObservationHash: archive.workspaceHistoryObservationHash, assetReferencesObservationHash: archive.assetReferencesObservationHash,
     referenceUris: archive.referenceUris, tree: archive.tree,

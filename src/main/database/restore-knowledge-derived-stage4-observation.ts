@@ -1,14 +1,15 @@
-import type Database from 'better-sqlite3'
+import Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
-import { capsuleBytesHash, capsuleJson } from './restore-knowledge-capsule-model'
-import { graph3Rows, graph3Text, type Graph3Inputs } from './restore-knowledge-graph3-data'
+import { capsuleJson } from './restore-knowledge-capsule-model'
+import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
+import { graph3Text, type Graph3Inputs } from './restore-knowledge-graph3-data'
 import { buildMerge3NavigationFinalIndex3 } from './restore-knowledge-navigation3-merge-context'
 import { createNavigation3RangeProjection } from './restore-knowledge-navigation3-rewrite-cells'
 import { toReference3GraphInputs } from './restore-knowledge-reference3-model'
 import { readRootRestoreReferenceGraphInputs3, type RootRestoreReferencePlan3 } from './restore-knowledge-reference3-read'
 import type { reopenRootRestorePhysicalStage3 } from './restore-knowledge-stage3-physical'
 import type { readRootRestoreSqlAssetAliasDerivationSource5 } from './restore-knowledge-sql-asset-alias-stage5'
-import { readRawSyncedGroupSnapshotsOwned } from './synced-blocks-raw-read'
+import { iterateRawActiveSyncedGroupSnapshotsOwned } from './synced-blocks-raw-read'
 import { assertSyncedLifecycleCoverage } from './synced-lifecycle-state'
 import { canonicalSearchOccurrencesSql, occurrenceFromCanonicalSearchRow,
   type CanonicalSearchOccurrenceRow } from './workspace-search-occurrences'
@@ -19,7 +20,6 @@ type SyntaxIndex = ReturnType<typeof buildMerge3NavigationFinalIndex3>
 type FinalScope = SyntaxIndex['scopes'][number]
 export type DerivedRoutePlan4 = Awaited<ReturnType<typeof deriveStage4Routes>>
 const fail = (message: string): never => { throw new Error('恢复派生路由与搜索：' + message) }
-const compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0
 const routeKey = (path: string, blockId: string) => capsuleJson([path, blockId])
 const same = (left: unknown, right: unknown) => capsuleJson(left) === capsuleJson(right)
 
@@ -48,15 +48,19 @@ function routesFromIndex(index: SyntaxIndex, current: Graph3Inputs['inputs']['cu
   // Stage3 already certified its complete current route table and FK graph.
   // Retain each exact current row. The actual live physical identity check
   // below is independent from the selection index used for new aliases.
-  const currentRoutes = graph3Rows(current, 'document_block_routes')
-  for (const row of currentRoutes) {
-    const { document_path: path, block_id: blockId } = row.value
-    if (typeof path !== 'string' || typeof blockId !== 'string') return fail('原 current 路由不是准确 TEXT')
+  const currentRoutes = current.tables.find(table => table.name === 'document_block_routes') ?? fail('缺原 current 路由表')
+  const pathIndex = currentRoutes.columns.indexOf('document_path'), blockIndex = currentRoutes.columns.indexOf('block_id')
+  if (pathIndex < 0 || blockIndex < 0) return fail('缺原 current 路由字段')
+  for (const row of currentRoutes.rows) {
+    const pathCell = row.cells[pathIndex], blockCell = row.cells[blockIndex]
+    if (pathCell[0] !== 'text' || blockCell[0] !== 'text') return fail('原 current 路由不是准确 TEXT')
+    const path = graph3Text(pathCell, current.encoding), blockId = graph3Text(blockCell, current.encoding)
     const key = routeKey(path, blockId)
-    routes.set(key, { ...routes.get(key), path, blockId, currentRowId: row.original.sourceRowId })
+    routes.set(key, { ...routes.get(key), path, blockId, currentRowId: row.sourceRowId })
   }
-  return { routes, witnessHash: capsuleBytesHash('knowbook.restore.derived-stage4.route-witness.v1\0'
-    + capsuleJson([index.routes, currentRoutes.map(row => row.original)])) }
+  const witnessHash = hashBoundedCapsuleJson([index.routes, currentRoutes.rows], Number.MAX_SAFE_INTEGER,
+    'knowbook.restore.derived-stage4.route-witness.v1\0') ?? fail('原路由见证大小超出准确整数')
+  return { routes, witnessHash }
 }
 
 /** The readback rows, not a computed post-edit DTO, drive the new index.
@@ -72,10 +76,15 @@ export function deriveStage4AliasNavigation(source: AliasSql) {
   const key = (cell: Pick<FinalScope['blocks'][number]['cell'], 'table' | 'targetRowId' | 'column'>) =>
     capsuleJson([cell.table, cell.targetRowId, cell.column])
   const destinationKey = (from: number, to: number, raw: string) => capsuleJson([from, to, raw])
-  const edited = new Map(source.navigationEdits.map(cell => [key(cell), {
-    edits: new Map(cell.edits.map(edit => [destinationKey(edit.from, edit.to, edit.before), edit])),
-    project: createNavigation3RangeProjection(cell.edits)
-  }]))
+  const edited = new Map(source.navigationEdits.map(cell => {
+    const project = createNavigation3RangeProjection(cell.edits)
+    const html = new Map(cell.edits.flatMap(edit => {
+      if (edit.syntax !== 'html' || !edit.uri.startsWith('knowbook-asset://')) return []
+      const range = project(edit.from, edit.to) ?? fail('HTML 附件地址超出原范围')
+      return [[destinationKey(range.from, range.to, edit.after), edit] as const]
+    }))
+    return [key(cell), { edits: new Map(cell.edits.map(edit => [destinationKey(edit.from, edit.to, edit.before), edit])), project, html }]
+  }))
   const scope = (value: FinalScope, project: boolean) => {
     const cells = new Map(value.blocks.map(block => [block.occurrenceKey, block.cell]))
     function range<T extends { blockId: string; from: number; to: number }>(value: T) {
@@ -85,11 +94,15 @@ export function deriveStage4AliasNavigation(source: AliasSql) {
       if (!next) return fail('地址改写穿过实际导航范围')
       return { ...value, ...next }
     }
-    const destinations = value.destinations.map(({ key: original, url, cell, ...facts }) => {
-      const change = project ? edited.get(key(cell)) : undefined
-      const edit = change?.edits.get(destinationKey(original.from, original.to, original.raw))
+    const destinations = value.destinations.flatMap(({ key: original, url, cell, ...facts }) => {
+      const change = edited.get(key(cell)), address = destinationKey(original.from, original.to, original.raw)
+      const localizedHtml = !project && facts.grammar.syntax === 'html' && change?.html.get(address)
+      // Native HTML navigation starts reporting the destination after the
+      // portable asset is localized. Its exact typed range was checked by the alias stage.
+      if (localizedHtml && localizedHtml.kind === facts.grammar.kind && localizedHtml.destination === url) return []
+      const edit = project ? change?.edits.get(address) : undefined
       const { text: _text, ...identity } = cell
-      return { ...facts, cell: identity, url: edit?.after ?? url, key: { ...range(original), raw: edit?.after ?? original.raw } }
+      return [{ ...facts, cell: identity, url: edit?.destination ?? edit?.after ?? url, key: { ...range(original), raw: edit?.after ?? original.raw } }]
     })
     return { scopeId: value.scopeId, field: value.field, finalDocumentId: value.finalDocumentId, path: value.path, title: value.title,
       blocks: value.blocks.map(({ occurrenceKey, finalOccurrenceKey, location }) => [occurrenceKey, finalOccurrenceKey, location]),
@@ -111,11 +124,12 @@ function actualRoutes(db: Database.Database, plan: DerivedRoutePlan4) {
       SELECT 1 FROM main.synced_group_blocks c WHERE c.id=i.id AND c.group_id=i.last_owner_id AND c.created_at=i.created_at))) AS dormant
     FROM main.document_block_routes r LEFT JOIN main.blocks b ON b.id=r.block_id
     LEFT JOIN main.block_identities i ON i.id=r.block_id
-    ORDER BY r.document_path COLLATE BINARY,r.block_id COLLATE BINARY`).safeIntegers(true).all() as Array<{
+    ORDER BY r.document_path COLLATE BINARY,r.block_id COLLATE BINARY`).safeIntegers(true).iterate() as IterableIterator<{
       rowid: bigint; path: Buffer; block: Buffer; owner: Buffer | null; birth: Buffer | null; live: bigint | null; dormant: bigint | null
     }>
   const text = (bytes: Buffer) => graph3Text(['text', bytes.toString('base64')], encoding)
-  const exact = new Map<string, { rowid: string; navigable: boolean }>()
+  const originalRows = createHash('sha256')
+  let previousKey: string | undefined, routeCount = 0, currentCount = 0, navigableRouteCount = 0
   for (const row of rows) {
     const key = routeKey(text(row.path), text(row.block)), expected = plan.routes.get(key)
     if (!expected) return fail('实际旧路由键不在原路线闭集')
@@ -128,78 +142,119 @@ function actualRoutes(db: Database.Database, plan: DerivedRoutePlan4) {
       || expected.documentId !== undefined || expected.createdAt !== undefined) {
       return fail('休眠路由缺原 current 行和实际保留或 canonical ledger')
     }
-    if (typeof row.rowid !== 'bigint' || exact.has(key)
+    if (typeof row.rowid !== 'bigint' || previousKey === key
       || expected.currentRowId !== undefined && row.rowid.toString() !== expected.currentRowId) return fail('实际旧路由 rowid 不同')
-    exact.set(key, { rowid: row.rowid.toString(), navigable })
+    if (expected.currentRowId !== undefined) {
+      originalRows.update(capsuleJson([key, row.rowid.toString(), navigable]) + '\n')
+      currentCount++
+    }
+    previousKey = key
+    routeCount++
+    if (navigable) navigableRouteCount++
   }
-  return exact
+  return { routeCount, currentCount, navigableRouteCount, currentHash: originalRows.digest('hex') }
 }
 
 export function completeStage4Routes(db: Database.Database, plan: DerivedRoutePlan4) {
   const original = actualRoutes(db, plan)
-  if (original.size !== [...plan.routes.values()].filter(route => route.currentRowId !== undefined).length
-    || [...original.keys()].some(key => plan.routes.get(key)!.currentRowId === undefined)) return fail('原物理阶段的 current 路由闭集改变')
-  const insert = db.prepare('INSERT INTO main.document_block_routes(_rowid_,document_path,block_id) VALUES(?,?,?)')
-  const occupied = new Set([...original.values()].map(row => row.rowid))
-  let nextRowId = 1n
-  for (const [key, route] of [...plan.routes].sort(([left], [right]) => compare(left, right))) {
-    if (original.has(key)) continue
-    while (occupied.has(nextRowId.toString())) nextRowId++
-    insert.run(nextRowId++, route.path, route.blockId)
-  }
+  let expectedCurrentCount = 0
+  for (const route of plan.routes.values()) if (route.currentRowId !== undefined) expectedCurrentCount++
+  if (original.routeCount !== expectedCurrentCount || original.currentCount !== expectedCurrentCount)
+    return fail('原物理阶段的 current 路由闭集改变')
+  if (original.routeCount === plan.routes.size) return
+
+  // Big-endian UTF-16 keys preserve the existing JavaScript lexical order,
+  // including surrogate pairs. SQLite's file-backed TEMP index owns the sort.
+  db.exec('CREATE TEMP TABLE stage4_new_routes(sort_key BLOB PRIMARY KEY, path TEXT NOT NULL, block_id TEXT NOT NULL) WITHOUT ROWID')
+  try {
+    const enqueue = db.prepare('INSERT INTO temp.stage4_new_routes(sort_key,path,block_id) VALUES(?,?,?)')
+    for (const [key, route] of plan.routes) if (route.currentRowId === undefined)
+      enqueue.run(Buffer.from(key, 'utf16le').swap16(), route.path, route.blockId)
+    appendStage4Routes(db)
+  } finally { db.exec('DROP TABLE temp.stage4_new_routes') }
+
   const after = actualRoutes(db, plan)
-  if (after.size !== plan.routes.size || [...original].some(([key, row]) => {
-    const observed = after.get(key)
-    return observed?.rowid !== row.rowid || observed.navigable !== row.navigable
-  }))
+  if (after.routeCount !== plan.routes.size || after.currentCount !== original.currentCount || after.currentHash !== original.currentHash)
     return fail('实际路由数量或原 rowid 改变')
 }
 
-export function observeStage4Routes(db: Database.Database, plan: DerivedRoutePlan4) {
-  const actual = actualRoutes(db, plan)
-  if (actual.size !== plan.routes.size) return fail('派生 SQL 缺已认证旧路由')
-  const navigableRouteCount = [...actual.values()].filter(row => row.navigable).length
-  return { routeCount: actual.size, navigableRouteCount, dormantRouteCount: actual.size - navigableRouteCount, routeWitnessHash: plan.witnessHash }
+function appendStage4Routes(db: Database.Database) {
+  const page = db.prepare('SELECT sort_key,path,block_id FROM temp.stage4_new_routes WHERE sort_key>? ORDER BY sort_key LIMIT 256')
+  const occupied = db.prepare('SELECT 1 FROM main.document_block_routes WHERE _rowid_=?')
+  const insert = db.prepare('INSERT INTO main.document_block_routes(_rowid_,document_path,block_id) VALUES(?,?,?)')
+  let nextRowId = 1n
+  let lastKey: Buffer = Buffer.alloc(0)
+  for (;;) {
+    // Finish each cursor before writing to main on the same connection.
+    const rows = page.all(lastKey) as Array<{ sort_key: Buffer; path: string; block_id: string }>
+    if (!rows.length) return
+    for (const row of rows) {
+      while (occupied.get(nextRowId)) nextRowId++
+      insert.run(nextRowId++, row.path, row.block_id)
+    }
+    lastKey = rows[rows.length - 1].sort_key
+  }
 }
 
-/** Canonical search is a live query, not a persistent FTS table. Run the real
- * projection and compare its complete expansion with strict group/host rows.
- * The caller has already authenticated its stage marker; normal search keeps
- * its original runtime admission check and will still reject a staged DB. */
-export function observeStage4CanonicalSearch(db: Database.Database) {
-  assertSyncedLifecycleCoverage(db)
-  const ids = (db.prepare("SELECT group_id FROM main.synced_group_lifecycle WHERE state='active' ORDER BY group_id").all() as Array<{ group_id: string }>).map(row => row.group_id)
-  const groups = readRawSyncedGroupSnapshotsOwned(db, ids)
-  const states = new Map([...groups].map(([id, group]) => [id, { group,
-    blocks: new Map(group.blocks.map(block => [block.id, block])), instances: new Map(group.instances.map(instance => [instance.instanceId, instance])) }]))
-  const expected = [...states.values()].reduce((count, item) => count + item.blocks.size * item.instances.size, 0)
-  if (!Number.isSafeInteger(expected)) return fail('搜索实例数量超出准确整数')
+export function observeStage4Routes(db: Database.Database, plan: DerivedRoutePlan4) {
+  const { routeCount, navigableRouteCount } = actualRoutes(db, plan)
+  if (routeCount !== plan.routes.size) return fail('派生 SQL 缺已认证旧路由')
+  return { routeCount, navigableRouteCount, dormantRouteCount: routeCount - navigableRouteCount, routeWitnessHash: plan.witnessHash }
+}
+
+function prepareStage4CanonicalComparison(db: Database.Database, scratch: Database.Database) {
+  scratch.exec(`CREATE TEMP TABLE stage4_search_groups(id TEXT PRIMARY KEY, facts TEXT NOT NULL) WITHOUT ROWID;
+    CREATE TEMP TABLE stage4_search_blocks(group_id TEXT, id TEXT, content TEXT NOT NULL, facts TEXT NOT NULL,
+      PRIMARY KEY(group_id,id)) WITHOUT ROWID;
+    CREATE TEMP TABLE stage4_search_instances(group_id TEXT, id TEXT, facts TEXT NOT NULL,
+      PRIMARY KEY(group_id,id)) WITHOUT ROWID;`)
+  scratch.pragma('temp.cache_size=-2048')
+  const groupRow = scratch.prepare('INSERT INTO temp.stage4_search_groups VALUES(?,?)')
+  const blockRow = scratch.prepare('INSERT INTO temp.stage4_search_blocks VALUES(?,?,?,?)')
+  const instanceRow = scratch.prepare('INSERT INTO temp.stage4_search_instances VALUES(?,?,?)')
+  return scratch.transaction(() => {
+    let expected = 0
+    for (const group of iterateRawActiveSyncedGroupSnapshotsOwned(db)) {
+      expected += group.blocks.length * group.instances.length
+      if (!Number.isSafeInteger(expected)) return fail('搜索实例数量超出准确整数')
+      groupRow.run(group.groupId, capsuleJson([group.createdAt, group.creationId, group.revision, group.topologyRevision]))
+      for (const block of group.blocks) blockRow.run(group.groupId, block.id, block.content,
+        capsuleJson([block.type, block.createdAt, block.tags ?? []]))
+      for (const instance of group.instances) instanceRow.run(group.groupId, instance.instanceId,
+        capsuleJson([instance.hostDocumentId, instance.bindingVersion, instance.parentBlockId, instance.depth]))
+    }
+    return expected
+  })()
+}
+
+type SearchHostRow = { title: string; path: string; updated_at: string; created_at: string; instanceCreatedAt: string; sort_order: number }
+
+function compareStage4CanonicalSearch(db: Database.Database, scratch: Database.Database, expected: number) {
+  const compare = scratch.prepare(`SELECT 1 FROM temp.stage4_search_groups g JOIN temp.stage4_search_blocks b ON b.group_id=g.id
+    JOIN temp.stage4_search_instances i ON i.group_id=g.id
+    WHERE g.id=? AND b.id=? AND i.id=? AND g.facts=? AND b.content=? AND b.facts=? AND i.facts=?`)
   const hostQuery = db.prepare(`SELECT d.title,d.path,d.updated_at,d.created_at,h.created_at AS instanceCreatedAt,h.sort_order
     FROM main.documents d JOIN main.blocks h ON h.document_id=d.id WHERE d.id=? AND h.id=?`)
-  const hosts = new Map<string, { title: string; path: string; updated_at: string; created_at: string; instanceCreatedAt: string; sort_order: number }>()
   const hash = createHash('sha256').update('knowbook.restore.derived-stage4.canonical-search.v1\0')
-  let count = 0, previous = ''
+  let count = 0, previous = '', hostDocumentId = '', hostInstanceId = ''
+  let host: SearchHostRow | undefined
   const rows = db.prepare(`SELECT * FROM (${canonicalSearchOccurrencesSql})
     ORDER BY document_id COLLATE BINARY,instance_id COLLATE BINARY,group_id COLLATE BINARY,block_id COLLATE BINARY`).iterate()
   for (const row of rows as IterableIterator<CanonicalSearchOccurrenceRow>) {
-    const occurrence = occurrenceFromCanonicalSearchRow(row), state = states.get(occurrence.groupId)
-    const block = state?.blocks.get(occurrence.canonicalBlockId), instance = state?.instances.get(occurrence.instanceId)
+    const occurrence = occurrenceFromCanonicalSearchRow(row)
     const key = capsuleJson([row.document_id, row.instance_id, row.group_id, row.block_id])
-    const hostKey = capsuleJson([row.document_id, row.instance_id])
-    let host = hosts.get(hostKey)
-    if (!host) {
-      host = hostQuery.get(row.document_id, row.instance_id) as typeof host
+    if (!host || row.document_id !== hostDocumentId || row.instance_id !== hostInstanceId) {
+      host = hostQuery.get(row.document_id, row.instance_id) as SearchHostRow | undefined
       if (!host) return fail('真实搜索 occurrence 缺宿主')
-      hosts.set(hostKey, host)
+      hostDocumentId = row.document_id
+      hostInstanceId = row.instance_id
     }
-    if (key === previous || !state || !block || !instance || block.content !== row.content || block.type !== row.block_type
-      || block.createdAt !== row.canonical_created_at || capsuleJson(block.tags ?? []) !== capsuleJson(JSON.parse(row.tags_json))
-      || instance.hostDocumentId !== row.document_id || instance.bindingVersion !== row.binding_version
-      || instance.parentBlockId !== row.parent_block_id || instance.depth !== row.instance_depth
+    if (key === previous || !compare.get(occurrence.groupId, occurrence.canonicalBlockId, occurrence.instanceId,
+      capsuleJson([row.group_created_at, row.creation_id, row.revision, row.topology_revision]), row.content,
+      capsuleJson([row.block_type, row.canonical_created_at, JSON.parse(row.tags_json)]),
+      capsuleJson([row.document_id, row.binding_version, row.parent_block_id, row.instance_depth]))
       || host.title !== row.document_title || host.path !== row.document_path || host.updated_at !== row.updated_at
-      || host.created_at !== row.host_created_at || host.instanceCreatedAt !== row.instance_created_at || host.sort_order !== row.instance_order
-      || state.group.createdAt !== row.group_created_at || state.group.creationId !== row.creation_id
-      || state.group.revision !== row.revision || state.group.topologyRevision !== row.topology_revision)
+      || host.created_at !== row.host_created_at || host.instanceCreatedAt !== row.instance_created_at || host.sort_order !== row.instance_order)
       return fail('真实 canonical 搜索 occurrence 与实际组/宿主不闭合')
     hash.update(capsuleJson([occurrence, row.document_title, row.document_path, row.content, row.tags_json, row.block_type,
       row.instance_order, row.block_order]) + '\n')
@@ -207,4 +262,17 @@ export function observeStage4CanonicalSearch(db: Database.Database) {
   }
   if (count !== expected) return fail('搜索实际展开数量与精确活跃组正文乘真实实例不同')
   return { canonicalOccurrenceCount: count, canonicalSearchHash: hash.digest('hex') }
+}
+
+/** Compare the real search expansion with strict group/host rows. The private
+ * comparison database keeps writable spill space away from the staged main,
+ * which may be open with query_only for the cold read. */
+export function observeStage4CanonicalSearch(db: Database.Database) {
+  assertSyncedLifecycleCoverage(db)
+  const scratch = new Database(':memory:')
+  try {
+    scratch.pragma('temp_store=FILE')
+    if (scratch.pragma('temp_store', { simple: true }) !== 1) return fail('无法启用搜索比较临时文件')
+    return compareStage4CanonicalSearch(db, scratch, prepareStage4CanonicalComparison(db, scratch))
+  } finally { scratch.close() }
 }

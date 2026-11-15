@@ -8,6 +8,7 @@ import { rawRestoreSqlCell, type RawRestoreSqlCell } from './restore-knowledge-s
 
 type Table = FinishedMerge3Table['table']
 type Collation = 'BINARY' | 'NOCASE'
+type InsertComparison = Database.Statement<[string, string, string, string, string, Collation]>
 export interface Merge3NativeConflict {
   readonly code: string; readonly table: Merge3ContentTable; readonly rowKeys: readonly string[]
   readonly detail: { readonly constraint: string; readonly columns: readonly string[]; readonly collations: readonly Collation[]; readonly count: number }
@@ -16,7 +17,6 @@ interface Check {
   rule: string; code: string; table: Merge3ContentTable; constraint: string; columns: string[]; collations: Collation[]
   rowsChecked: number; nullKeyRowsSkipped: number; duplicateGroups: number
 }
-interface Entry { rule: string; table: Merge3ContentTable; rowKey: string; first: string; second: string; collation: Collation }
 const fail = (code: string, detail: unknown): never => graph3Conflict('merge-native-' + code, detail)
 const same = (left: unknown, right: unknown) => capsuleJson(left) === capsuleJson(right)
 const fixedColumns = new Map(capsule2ApplicationColumns())
@@ -40,15 +40,15 @@ function encoding(value: unknown): Capsule2Encoding {
 }
 function text(value: unknown): string { return typeof value === 'string' ? value : fail('text', typeof value) }
 
-/** Actual SQLite comparison of complete candidate storage keys. This writable
- * bounded :memory: database is ONLY a collation instrument, never a stage,
- * readonly source reader, foreign-key proof or installation certification.
- * It does not instantiate Store or touch source/current/history/guards. */
+/** Actual SQLite comparison of complete candidate storage keys. The in-memory
+ * connection holds no candidate tables in its main schema. The comparison
+ * indexes use SQLite's private file-backed temp schema with a small page cache. */
 export function checkMerge3NativeStorage3(input: readonly Table[]) {
   assertMerge3JsonBudget(input)
   const tables = array(input, MERGE3_CONTENT_TABLES.length), names = new Set<string>(), keys = new Set<string>()
-  const checks: Check[] = [], entries: Entry[] = []
-  let rows = 0, valueBytes = 0, jsonBytes = 2, targetEncoding: Capsule2Encoding | null = null
+  const checks: Check[] = [], conflicts: Merge3NativeConflict[] = []
+  let rows = 0, valueBytes = 0, jsonBytes = 2, comparisonRows = 0, conflictKeyMinimumBytes = 0
+  let targetEncoding: Capsule2Encoding
   const take = (kind: 'value' | 'json', bytes: number) => {
     const previous = kind === 'value' ? valueBytes : jsonBytes, limit = kind === 'value' ? CAPSULE2_RAW_MAX_VALUE_BYTES : CAPSULE2_RAW_MAX_JSON_BYTES
     if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > limit - previous) return fail(kind + '-budget', null)
@@ -68,57 +68,67 @@ export function checkMerge3NativeStorage3(input: readonly Table[]) {
     }
     return fail('storage-cell', null)
   }
-  function add(check: Check, rowKey: string, cells: readonly RawRestoreSqlCell[], columns: readonly string[], enc: Capsule2Encoding) {
+  function add(insert: InsertComparison, check: Check, rowKey: string, cells: readonly RawRestoreSqlCell[], columns: readonly string[], enc: Capsule2Encoding) {
     const values = check.columns.map(column => cells[columns.indexOf(column)])
     // SQLite UNIQUE/PRIMARY KEY comparisons leave every NULL-key occurrence
     // independent. This also matches the existing nullable document values.
     if (values.some(value => value[0] === 'null')) { check.nullKeyRowsSkipped++; return }
     if (values.some(value => value[0] !== 'text')) return fail('comparison-key-storage-class', { table: check.table, rowKey })
     check.rowsChecked++
-    entries.push({ rule: check.rule, table: check.table, rowKey, first: graph3Text(values[0], enc),
-      second: values.length === 2 ? graph3Text(values[1], enc) : '', collation: check.collations[check.collations.length - 1] })
+    insert.run(check.rule, check.table, rowKey, graph3Text(values[0], enc),
+      values.length === 2 ? graph3Text(values[1], enc) : '', check.collations[check.collations.length - 1])
+    comparisonRows++
   }
-  for (let tableIndex = 0; tableIndex < tables.length; tableIndex++) {
-    const source = capsuleRecord(tables[tableIndex], ['name', 'role', 'columns', 'primaryKey', 'encoding', 'rows'])
-    if (!MERGE3_CONTENT_TABLES.includes(source.name as Merge3ContentTable) || source.role !== 'content' || names.has(String(source.name))) return fail('table-closure', source.name)
-    const name = source.name as Merge3ContentTable, enc = encoding(source.encoding), columns = array(source.columns, 512).map(text)
-    if (!same([...columns].sort(), [...fixedColumns.get(name)!].sort()) || !same(array(source.primaryKey, 2), primaryKey(name))) return fail('fixed-columns-or-pk', name)
-    if (targetEncoding !== null && targetEncoding !== enc) return fail('mixed-target-encoding', name)
-    targetEncoding = enc; names.add(name)
-    const tableChecks: Check[] = [{ rule: name + ':primary-key', code: 'native-binary-primary-key-duplicate', table: name,
-      constraint: 'non-null-primary-key', columns: primaryKey(name), collations: primaryKey(name).map(() => 'BINARY'),
-      rowsChecked: 0, nullKeyRowsSkipped: 0, duplicateGroups: 0 }]
-    if (name === 'documents') tableChecks.push({ rule: name + ':slug', code: 'native-binary-document-slug-duplicate', table: name,
-      constraint: 'document-slug', columns: ['slug'], collations: ['BINARY'], rowsChecked: 0, nullKeyRowsSkipped: 0, duplicateGroups: 0 })
-    if (name === 'database_saved_views') tableChecks.push({ rule: name + ':database-name', code: 'native-nocase-saved-view-name-duplicate', table: name,
-      constraint: 'database-saved-view-name', columns: ['database_id', 'name'], collations: ['BINARY', 'NOCASE'], rowsChecked: 0, nullKeyRowsSkipped: 0, duplicateGroups: 0 })
-    if (name === 'database_entities') tableChecks.push({ rule: name + ':database-document', code: 'native-binary-database-document-duplicate', table: name,
-      constraint: 'non-null-database-entity-document', columns: ['database_id', 'document_id'], collations: ['BINARY', 'BINARY'], rowsChecked: 0, nullKeyRowsSkipped: 0, duplicateGroups: 0 })
-    checks.push(...tableChecks)
-    const tableRows = array(source.rows, CAPSULE2_RAW_MAX_ROWS)
-    take('json', Buffer.byteLength(capsuleJson({ ...source, rows: [] })) + (tableIndex ? 1 : 0))
-    for (let index = 0; index < tableRows.length; index++) {
-      const row = capsuleRecord(tableRows[index], ['key', 'targetRowId', 'cells', 'sourceRef', 'replaces']), rowKey = text(row.key)
-      if (++rows > CAPSULE2_RAW_MAX_ROWS || keys.has(rowKey) || !int64(row.targetRowId)) return fail('row-closure-or-budget', { table: name, rowKey })
-      keys.add(rowKey)
-      const cells = array(row.cells, 512).map(value => cell(value, enc))
-      if (cells.length !== columns.length) return fail('row-width', name)
-      take('json', Buffer.byteLength(capsuleJson(row)) + (index ? 1 : 0))
-      for (const check of tableChecks) add(check, rowKey, cells, columns, enc)
-    }
-  }
-  if (names.size !== MERGE3_CONTENT_TABLES.length || targetEncoding === null) return fail('complete-twelve-tables-required', null)
-  const conflicts: Merge3NativeConflict[] = [], checkByRule = new Map(checks.map(check => [check.rule, check]))
-  let conflictKeyMinimumBytes = 0
   const db = new Database(':memory:')
   try {
-    db.pragma("encoding = '" + targetEncoding + "'")
-    db.exec(`CREATE TABLE comparisons (ordinal INTEGER PRIMARY KEY, rule TEXT NOT NULL, table_name TEXT NOT NULL,
-      row_key TEXT NOT NULL, first_key TEXT NOT NULL, second_key TEXT NOT NULL, name_collation TEXT NOT NULL);
-      CREATE INDEX comparisons_binary ON comparisons(name_collation,rule,first_key COLLATE BINARY,second_key COLLATE BINARY);
-      CREATE INDEX comparisons_nocase ON comparisons(name_collation,rule,first_key COLLATE BINARY,second_key COLLATE NOCASE);`)
-    const insert = db.prepare('INSERT INTO comparisons(rule,table_name,row_key,first_key,second_key,name_collation) VALUES(?,?,?,?,?,?)')
-    db.transaction(() => { for (const entry of entries) insert.run(entry.rule, entry.table, entry.rowKey, entry.first, entry.second, entry.collation) })()
+    db.pragma('temp_store=FILE')
+    if (db.pragma('temp_store', { simple: true }) !== 1) return fail('file-backed-comparisons-unavailable', null)
+    targetEncoding = db.transaction(() => {
+      let commonEncoding: Capsule2Encoding | null = null, insert: InsertComparison | undefined
+      for (let tableIndex = 0; tableIndex < tables.length; tableIndex++) {
+        const source = capsuleRecord(tables[tableIndex], ['name', 'role', 'columns', 'primaryKey', 'encoding', 'rows'])
+        if (!MERGE3_CONTENT_TABLES.includes(source.name as Merge3ContentTable) || source.role !== 'content' || names.has(String(source.name))) return fail('table-closure', source.name)
+        const name = source.name as Merge3ContentTable, enc = encoding(source.encoding), columns = array(source.columns, 512).map(text)
+        if (!same([...columns].sort(), [...fixedColumns.get(name)!].sort()) || !same(array(source.primaryKey, 2), primaryKey(name))) return fail('fixed-columns-or-pk', name)
+        if (commonEncoding !== null && commonEncoding !== enc) return fail('mixed-target-encoding', name)
+        if (!insert) {
+          commonEncoding = enc
+          db.pragma("encoding = '" + enc + "'")
+          db.exec(`CREATE TEMP TABLE comparisons (ordinal INTEGER PRIMARY KEY, rule TEXT NOT NULL, table_name TEXT NOT NULL,
+            row_key TEXT NOT NULL, first_key TEXT NOT NULL, second_key TEXT NOT NULL, name_collation TEXT NOT NULL);
+            CREATE INDEX temp.comparisons_binary ON comparisons(name_collation,rule,first_key COLLATE BINARY,second_key COLLATE BINARY);
+            CREATE INDEX temp.comparisons_nocase ON comparisons(name_collation,rule,first_key COLLATE BINARY,second_key COLLATE NOCASE);`)
+          if (db.pragma('temp.encoding', { simple: true }) !== enc) return fail('comparison-encoding-mismatch', enc)
+          db.pragma('temp.cache_size=-2048')
+          insert = db.prepare('INSERT INTO comparisons(rule,table_name,row_key,first_key,second_key,name_collation) VALUES(?,?,?,?,?,?)')
+        }
+        names.add(name)
+        const tableChecks: Check[] = [{ rule: name + ':primary-key', code: 'native-binary-primary-key-duplicate', table: name,
+          constraint: 'non-null-primary-key', columns: primaryKey(name), collations: primaryKey(name).map(() => 'BINARY'),
+          rowsChecked: 0, nullKeyRowsSkipped: 0, duplicateGroups: 0 }]
+        if (name === 'documents') tableChecks.push({ rule: name + ':slug', code: 'native-binary-document-slug-duplicate', table: name,
+          constraint: 'document-slug', columns: ['slug'], collations: ['BINARY'], rowsChecked: 0, nullKeyRowsSkipped: 0, duplicateGroups: 0 })
+        if (name === 'database_saved_views') tableChecks.push({ rule: name + ':database-name', code: 'native-nocase-saved-view-name-duplicate', table: name,
+          constraint: 'database-saved-view-name', columns: ['database_id', 'name'], collations: ['BINARY', 'NOCASE'], rowsChecked: 0, nullKeyRowsSkipped: 0, duplicateGroups: 0 })
+        if (name === 'database_entities') tableChecks.push({ rule: name + ':database-document', code: 'native-binary-database-document-duplicate', table: name,
+          constraint: 'non-null-database-entity-document', columns: ['database_id', 'document_id'], collations: ['BINARY', 'BINARY'], rowsChecked: 0, nullKeyRowsSkipped: 0, duplicateGroups: 0 })
+        checks.push(...tableChecks)
+        const tableRows = array(source.rows, CAPSULE2_RAW_MAX_ROWS)
+        take('json', Buffer.byteLength(capsuleJson({ ...source, rows: [] })) + (tableIndex ? 1 : 0))
+        for (let index = 0; index < tableRows.length; index++) {
+          const row = capsuleRecord(tableRows[index], ['key', 'targetRowId', 'cells', 'sourceRef', 'replaces']), rowKey = text(row.key)
+          if (++rows > CAPSULE2_RAW_MAX_ROWS || keys.has(rowKey) || !int64(row.targetRowId)) return fail('row-closure-or-budget', { table: name, rowKey })
+          keys.add(rowKey)
+          const cells = array(row.cells, 512).map(value => cell(value, enc))
+          if (cells.length !== columns.length) return fail('row-width', name)
+          take('json', Buffer.byteLength(capsuleJson(row)) + (index ? 1 : 0))
+          for (const check of tableChecks) add(insert, check, rowKey, cells, columns, enc)
+        }
+      }
+      if (names.size !== MERGE3_CONTENT_TABLES.length || commonEncoding === null) return fail('complete-twelve-tables-required', null)
+      return commonEncoding
+    })()
+    const checkByRule = new Map(checks.map(check => [check.rule, check]))
     for (const collation of ['BINARY', 'NOCASE'] as const) {
       // All grouping and membership comparisons stay in this actual engine.
       // Never round-trip a representative NUL-containing name through JS and
@@ -151,7 +161,7 @@ export function checkMerge3NativeStorage3(input: readonly Table[]) {
     }
   } finally { db.close() }
   const body = { kind: 'root-restore-native-storage-checks' as const, version: 3 as const, scope: 'candidate-storage-collations-only' as const,
-    engine: 'SQLite' as const, database: ':memory:' as const, targetEncoding, checkedRows: rows, comparisonRows: entries.length,
+    engine: 'SQLite' as const, database: ':memory:' as const, targetEncoding, checkedRows: rows, comparisonRows,
     checks, conflicts, sourceSqlRead: false as const, stagingDatabase: false as const, foreignKeysValidated: false as const,
     semanticValidationComplete: false as const, acceptedCoverage: false as const, effective: false as const, permit: false as const }
   assertMerge3JsonBudget(body)

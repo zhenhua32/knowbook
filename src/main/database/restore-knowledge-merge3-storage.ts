@@ -1,11 +1,12 @@
-import { capsuleBytesHash, capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
+import { capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
+import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_RAW_MAX_ROWS, CAPSULE2_RAW_MAX_VALUE_BYTES,
   capsule2ApplicationColumns, type Capsule2Encoding, type Capsule2RawSqlTable } from './restore-knowledge-capsule2-raw-model'
 import { validateCoverageCapsuleReference, validateCoverageRootReference } from './restore-knowledge-coverage-model'
 import { DURABLE_SQL_DAG_MAX_DEPTH } from './restore-knowledge-dag-model'
 import { graph3Encode, graph3Text } from './restore-knowledge-graph3-data'
 import type { Root3Witness } from './restore-knowledge-root3-model'
-import { rawRestoreSqlCell, type RawRestoreSqlCell } from './restore-knowledge-sql-cell'
+import { assertRawRestoreSqlTextRoundtrip, type RawRestoreSqlCell } from './restore-knowledge-sql-cell'
 
 /** This is a pure storage transform. A witness/DTO/hash is not a Main owner,
  * SQL reader, merge policy, foreign-key proof or installation capability. */
@@ -63,7 +64,9 @@ export interface PrepareMerge3TableInput {
   readonly source: Merge3Material; readonly current: Merge3Material
 }
 const fail = (message: string): never => { throw new Error('merge3存储候选无效：' + message + '；纯数据不授SQL或安装权。') }
-const hash = (domain: string, value: unknown) => capsuleBytesHash(domain + '\0' + capsuleJson(value))
+function hash(domain: string, value: object, maxBytes = Number.MAX_SAFE_INTEGER) {
+  return hashBoundedCapsuleJson(value, maxBytes, domain + '\0') ?? fail('完整jsonBytes超原有限预算，不截断')
+}
 const same = (a: unknown, b: unknown) => capsuleJson(a) === capsuleJson(b)
 const primaryKeys = {
   blocks: ['id'], database_entities: ['id'], database_entity_values: ['entity_id', 'column_id'], database_saved_views: ['id'],
@@ -112,31 +115,42 @@ function jsonBudget(value: unknown): void {
   // Count actual JSON bytes before serializing the whole DTO. Descriptors are
   // inspected first, so neither getters nor toJSON can run in this data layer.
   const b = budget(), ancestors = new Set<object>()
-  const stack: Array<{ value: unknown; exit?: boolean }> = [{ value }]
-  while (stack.length) {
-    const task = stack.pop()!, item = task.value
-    if (task.exit) { ancestors.delete(item as object); continue }
-    if (typeof item === 'string') { take(b, 'jsonBytes', Buffer.byteLength(JSON.stringify(item))); continue }
+  type Frame = { container: object; values: unknown[]; next: number }
+  const stack: Frame[] = []
+  const enter = (item: unknown) => {
+    if (typeof item === 'string') { take(b, 'jsonBytes', Buffer.byteLength(JSON.stringify(item))); return }
     if (item === null || typeof item === 'boolean' || typeof item === 'number' && Number.isFinite(item)) {
-      take(b, 'jsonBytes', String(item).length); continue
+      take(b, 'jsonBytes', String(item).length); return
     }
     if (!item || typeof item !== 'object' || ancestors.has(item)) return fail('JSON含非data值或循环')
-    ancestors.add(item); stack.push({ value: item, exit: true })
+    ancestors.add(item)
     if (Array.isArray(item)) {
       const values = array(item, CAPSULE2_RAW_MAX_ROWS * 2)
       take(b, 'jsonBytes', 2 + Math.max(0, values.length - 1))
-      for (let index = values.length - 1; index >= 0; index--) stack.push({ value: values[index] })
+      stack.push({ container: item, values, next: 0 })
     } else {
       if (![Object.prototype, null].includes(Object.getPrototypeOf(item) as object | null)) return fail('JSON不是plain data对象')
       const descriptors = Object.getOwnPropertyDescriptors(item), keys = Reflect.ownKeys(descriptors)
+      const values: unknown[] = []
       take(b, 'jsonBytes', 2 + Math.max(0, keys.length - 1))
       for (const key of keys) {
-        const descriptor = typeof key === 'string' ? descriptors[key] : null
-        if (!descriptor?.enumerable || !('value' in descriptor)) return fail('JSON含访问器/非enumerable字段')
+        const descriptor = typeof key === 'string' ? descriptors[key] : undefined
+        if (typeof key !== 'string' || !descriptor?.enumerable || !('value' in descriptor)) return fail('JSON含访问器/非enumerable字段')
         take(b, 'jsonBytes', Buffer.byteLength(JSON.stringify(key)) + 1)
-        stack.push({ value: descriptor.value })
+        values.push(descriptor.value)
       }
+      stack.push({ container: item, values: values.reverse(), next: 0 })
     }
+  }
+  enter(value)
+  while (stack.length) {
+    const frame = stack[stack.length - 1]
+    if (frame.next === frame.values.length) {
+      ancestors.delete(frame.container)
+      stack.pop()
+      continue
+    }
+    enter(frame.values[frame.next++])
   }
 }
 export { jsonBudget as assertMerge3JsonBudget }
@@ -150,17 +164,38 @@ function cell(value: unknown, textEncoding: Capsule2Encoding, b: Budget): RawRes
     const padding = tuple[1].endsWith('==') ? 2 : tuple[1].endsWith('=') ? 1 : 0
     take(b, 'valueBytes', tuple[1].length / 4 * 3 - padding)
     const bytes = Buffer.from(tuple[1], 'base64')
-    if (bytes.toString('base64') === tuple[1]) return rawRestoreSqlCell(tag, bytes, textEncoding)
+    if (bytes.toString('base64') === tuple[1]) {
+      if (tag === 'text') assertRawRestoreSqlTextRoundtrip(bytes, textEncoding)
+      return [tag, tuple[1]]
+    }
   }
   return fail('未知storage class或非canonical原字节')
 }
+/** Checked storage payloads are ASCII decimals, hexadecimal or base64, so
+ * there are no JSON escapes inside either tuple field. */
+function rowCellsJsonBytes(row: readonly RawRestoreSqlCell[]): number {
+  let bytes = 2 + Math.max(0, row.length - 1)
+  for (const value of row) bytes += value[0] === 'null' ? 8 : value[0].length + value[1].length + 7
+  return bytes
+}
+
+function sameCells(left: readonly RawRestoreSqlCell[], right: readonly RawRestoreSqlCell[]) {
+  return left.length === right.length && left.every((value, index) => value[0] === right[index][0] && value[1] === right[index][1])
+}
+
 function cells(value: unknown, width: number, textEncoding: Capsule2Encoding, b: Budget): RawRestoreSqlCell[] {
   const values = array(value, 512)
   if (values.length !== width) return fail('完整原行宽度不一致')
   take(b, 'rows', 1)
   const checked = values.map(value => cell(value, textEncoding, b))
-  take(b, 'jsonBytes', Buffer.byteLength(capsuleJson(checked)))
+  take(b, 'jsonBytes', rowCellsJsonBytes(checked))
   return checked
+}
+
+function preparedRowJsonBytes(row: Merge3InputRow): number {
+  const metadata = { ...row, originalCells: [], cells: [], primaryKeyCells: row.primaryKeyCells === null ? null : [] }
+  return Buffer.byteLength(capsuleJson(metadata)) + rowCellsJsonBytes(row.originalCells) + rowCellsJsonBytes(row.cells) - 4
+    + (row.primaryKeyCells === null ? 0 : rowCellsJsonBytes(row.primaryKeyCells) - 2)
 }
 function material(value: unknown, side: Merge3Side): Merge3Material {
   const source = capsuleRecord(value, ['payload', 'materialHash', 'witness'])
@@ -210,7 +245,8 @@ export function prepareMerge3Table(input: PrepareMerge3TableInput): PreparedMerg
   const sourceEncoding = encoding(value.sourceEncoding), currentEncoding = encoding(value.currentEncoding)
   const source = originalTable(value.sourceOriginal, sourceEncoding), candidate = originalTable(value.sourceCandidate, sourceEncoding)
   const current = originalTable(value.currentOriginal, currentEncoding)
-  if (source.name !== candidate.name || source.name !== current.name || !same(source.rows.map(row => row.sourceRowId), candidate.rows.map(row => row.sourceRowId)))
+  if (source.name !== candidate.name || source.name !== current.name || source.rows.length !== candidate.rows.length
+    || source.rows.some((row, index) => row.sourceRowId !== candidate.rows[index].sourceRowId))
     return fail('source候选必须逐原行对应同一表，不得新增/省略/合并occurrence')
   const sourceMaterial = material(value.source, 'source'), currentMaterial = material(value.current, 'current')
   const targetColumns = current.columns, primaryKey = current.primaryKey, preparedBudget = budget()
@@ -228,7 +264,7 @@ export function prepareMerge3Table(input: PrepareMerge3TableInput): PreparedMerg
         originalRowHash: originalRowHash(source.name, original.columns, primaryKey, originalEncoding, row.sourceRowId, row.cells) }
       const result = { key: rowKey(ref), ref, originalCells: row.cells,
         cells: targetCells, primaryKeyCells: primaryKeyCells(targetColumns, primaryKey, targetCells) }
-      take(preparedBudget, 'jsonBytes', Buffer.byteLength(capsuleJson(result)))
+      take(preparedBudget, 'jsonBytes', preparedRowJsonBytes(result))
       return result
     })
   }
@@ -236,8 +272,7 @@ export function prepareMerge3Table(input: PrepareMerge3TableInput): PreparedMerg
     columns: targetColumns, primaryKey, sourceEncoding, currentEncoding, targetEncoding: currentEncoding,
     originalColumns: { source: source.columns, current: current.columns },
     sourceRows: makeRows('source', source, candidate, sourceMaterial, sourceEncoding), currentRows: makeRows('current', current, current, currentMaterial, currentEncoding) }
-  jsonBudget(body)
-  return freezeCapsuleValue({ ...body, preparedHash: hash('knowbook.restore.merge3.prepared-table.v1', body) })
+  return freezeCapsuleValue({ ...body, preparedHash: hash('knowbook.restore.merge3.prepared-table.v1', body, CAPSULE2_RAW_MAX_JSON_BYTES) })
 }
 
 /** Validate data afresh, including full original-row hashes. This intentionally
@@ -273,18 +308,18 @@ function preparedTable(input: PreparedMerge3Table): PreparedMerge3Table {
       const keyCells = primaryKeyCells(targetColumns, primaryKey, targetCells)
       // Validate the supplied redundant PK without evaluating accessors.
       const declared = row.primaryKeyCells === null ? null : array(row.primaryKeyCells, 8).map(value => cell(value, currentEncoding, budget()))
-      if (!same(declared, keyCells)) return fail('目标PK与完整cell不一致')
-      if (side === 'current' && !same(originalCells, targetCells)) return fail('current保留行不得改写原值')
+      if (declared === null ? keyCells !== null : keyCells === null || !sameCells(declared, keyCells)) return fail('目标PK与完整cell不一致')
+      if (side === 'current' && !sameCells(originalCells, targetCells)) return fail('current保留行不得改写原值')
       const result = { key: String(row.key), ref: originalRowRef, originalCells, cells: targetCells, primaryKeyCells: keyCells }
-      take(preparedBudget, 'jsonBytes', Buffer.byteLength(capsuleJson(result)))
+      take(preparedBudget, 'jsonBytes', preparedRowJsonBytes(result))
       return result
     })
   }
   const body = { kind: 'restore-merge3-prepared-content-table' as const, version: 1 as const, name, columns: targetColumns, primaryKey,
     sourceEncoding, currentEncoding, targetEncoding: currentEncoding, originalColumns,
     sourceRows: readRows('source', value.sourceRows), currentRows: readRows('current', value.currentRows) }
-  jsonBudget(body)
-  if (digest(value.preparedHash) !== hash('knowbook.restore.merge3.prepared-table.v1', body)) return fail('prepared完整hash不一致')
+  const preparedHash = hash('knowbook.restore.merge3.prepared-table.v1', body, CAPSULE2_RAW_MAX_JSON_BYTES)
+  if (digest(value.preparedHash) !== preparedHash) return fail('prepared完整hash不一致')
   return { ...body, preparedHash: value.preparedHash as string }
 }
 
@@ -319,7 +354,7 @@ export function finishMerge3Table(input: PreparedMerge3Table, selectedRows: read
   for (const row of selected) {
     const choice = choices.get(row.key)!, replaced = choice.replaceCurrentRowKey === null ? null : rows.get(choice.replaceCurrentRowKey)!
     if (replaced && (row.ref.side !== 'source' || replaced.ref.side !== 'current' || byDisposition.get(replaced.key)!.status !== 'replaced'
-      || row.primaryKeyCells === null || replaced.primaryKeyCells === null || !same(row.primaryKeyCells, replaced.primaryKeyCells)))
+      || row.primaryKeyCells === null || replaced.primaryKeyCells === null || !sameCells(row.primaryKeyCells, replaced.primaryKeyCells)))
       return fail('只有显式准确非NULL PK来源替换可复用current rowid')
     let targetRowId: string
     if (row.ref.side === 'current') {
@@ -351,8 +386,7 @@ export function finishMerge3Table(input: PreparedMerge3Table, selectedRows: read
     table: { name: prepared.name, role: 'content' as const, columns: prepared.columns, primaryKey: prepared.primaryKey,
       encoding: prepared.currentEncoding, rows: output }, dispositions: orderedDispositions, conflicts, complete: conflicts.length === 0,
     semanticValidationComplete: false as const, permit: false as const }
-  jsonBudget(body)
-  return freezeCapsuleValue({ ...body, storageHash: hash('knowbook.restore.merge3.selected-table.v1', body) })
+  return freezeCapsuleValue({ ...body, storageHash: hash('knowbook.restore.merge3.selected-table.v1', body, CAPSULE2_RAW_MAX_JSON_BYTES) })
 }
 
 /** Planning convenience only. Decoded BigInts/Buffers are deliberately not

@@ -28,6 +28,7 @@ export default function DataRecoveryDialog({ target, isZh: zh, onClose, beforeRe
   const title = target.kind === 'trash' ? (zh ? '回收站' : 'Trash') : target.kind === 'history'
     ? (zh ? '文档历史' : 'Document history') : (zh ? '备份版本' : 'Backup versions')
   const selected = entries.find((entry) => entry.id === selectedId)
+  const selectedV3 = selected && 'format' in selected && selected.format === 'synced-v3'
   const visible = entries.filter((entry) => `${'title' in entry ? `${entry.title} ${entry.path}` : ''} ${entry.createdAt}`.toLowerCase().includes(query.toLowerCase()))
   const markdown = useMemo(() => content ? serializeBlocksToMarkdown(content.blocks) : '', [content])
   const currentMarkdown = useMemo(() => current ? serializeBlocksToMarkdown(current.blocks) : '', [current])
@@ -66,7 +67,7 @@ export default function DataRecoveryDialog({ target, isZh: zh, onClose, beforeRe
   const mutate = async (purge = false) => {
     if (lock.current || !selected) return
     if ('restorable' in selected && selected.restorable === false) {
-      setError(zh ? '完整 V3 备份已保留，V3 恢复入口尚待实现；不会降级为旧恢复。' : 'The complete V3 backup is retained. V3 restoration is not available yet; legacy restoration will not be used.')
+      setError(zh ? '无法恢复所选备份。' : 'The selected backup cannot be restored.')
       return
     }
     lock.current = true; setBusy(true); setError('')
@@ -123,13 +124,15 @@ export default function DataRecoveryDialog({ target, isZh: zh, onClose, beforeRe
           <time dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString(zh ? 'zh-CN' : 'en-US')}</time>
           {'path' in entry && <small>{entry.path}</small>}
           {'documentCount' in entry && entry.documentCount !== null && <small>{entry.documentCount} {zh ? '篇文档' : 'documents'}</small>}
-          {'format' in entry && entry.format === 'synced-v3' && <small>{zh ? '完整 V3 · 恢复入口待接入' : 'Complete V3 · restore pending'}</small>}
+          {'format' in entry && entry.format === 'synced-v3' && <small>{zh ? '完整 V3 备份' : 'Complete V3 backup'}</small>}
           {'reason' in entry && target.kind === 'history' && <small>{entry.reason === 'restore' ? (zh ? '恢复前' : 'Before restore') : entry.reason === 'delete' ? (zh ? '删除前' : 'Before deletion') : (zh ? '修改前' : 'Before edit')}</small>}
         </button></li>)}</ul>{visible.length === 0 && <p>{zh ? '没有匹配记录。' : 'No matching records.'}</p>}</aside>
       <section className="recovery-preview">{previewLoading ? <p role="status">{zh ? '正在读取预览…' : 'Loading preview…'}</p> : content ? <div className={`recovery-comparison${current ? ' has-current' : ''}`}>
         <article><h3>{zh ? '所选版本' : 'Selected version'}</h3><h4>{content.title}</h4><p>{content.summary}</p><pre>{markdown}</pre></article>
         {current && <article><h3>{zh ? '当前版本' : 'Current version'}</h3><h4>{current.title}</h4><p>{current.summary}</p><pre>{currentMarkdown}</pre></article>}
-      </div> : target.kind === 'backups' && selected ? <p>{zh ? '选择“恢复所选备份”后，将显示创建、更新和删除数量，确认后才会恢复。备份包含当时的文档、附件及数据库；文档历史和回收站保存在本机 SQLite 中。' : 'Restore selected backup shows a preview of creations, updates and deletions before confirmation. Snapshots include documents, attachments and databases. History and Trash live in the local SQLite database.'}</p> : null}</section>
+      </div> : target.kind === 'backups' && selected ? <p>{selectedV3
+        ? (zh ? 'KnowBook 将重启并生成恢复计划。你可以查看计划后决定是否合并。' : 'KnowBook restarts to prepare a restore plan. Review the plan before deciding whether to merge.')
+        : (zh ? '选择“恢复所选备份”后，将显示创建、更新和删除数量，确认后才会恢复。备份包含当时的文档、附件及数据库；文档历史和回收站保存在本机 SQLite 中。' : 'Restore selected backup shows a preview of creations, updates and deletions before confirmation. Snapshots include documents, attachments and databases. History and Trash live in the local SQLite database.')}</p> : null}</section>
     </div>}
     <footer>{target.kind === 'trash' && <button className="secondary-button" type="button" disabled={busy || loading || !selected} onClick={() => void mutate(true)}>{zh ? '永久删除' : 'Delete permanently'}</button>}
       <button className="primary-button" type="button" disabled={busy || loading || previewLoading || !selected || ('restorable' in selected && selected.restorable === false) || (target.kind !== 'backups' && !content)} onClick={() => void mutate()}>

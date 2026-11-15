@@ -21,8 +21,8 @@ export interface SyncedRecoveryHostCut {
   historyToken: string; journalHash: string; documentIds: string[]
   mappings: Array<{ documentId: string; position: number }>
 }
-export interface SyncedRecoveryHistoryBoundary {
-  kind: 'synced-recovery-history-boundary'; version: 1; operationId: string; workspaceScope: string
+interface SyncedRecoveryHistoryBoundaryBase {
+  kind: 'synced-recovery-history-boundary'; operationId: string; workspaceScope: string
   beforeEpoch: string; afterEpoch: string; acceptedAt: string; documentBoundary: string
   documents: Array<{ documentId: string; beforeUpdatedAt: string; afterUpdatedAt: string }>
   hosts: Array<{ documentId: string; beforeCursor: string; beforePosition: number; afterCursor: string }>
@@ -31,6 +31,17 @@ export interface SyncedRecoveryHistoryBoundary {
   retainedOperations: Array<{ operationId: string; rowHash: string }>
   retainedPins: Array<{ groupId: string; kind: string; pinId: string; createdAt: string }>
 }
+interface SyncedRecoveryInstanceBinding {
+  groupId: string; hostDocumentId: string; bindingVersion: string; rowId: string
+  parentBlockId: string | null; depth: number
+}
+export interface SyncedRecoveryRemovedInstance {
+  instanceId: string; createdAt: string
+  before: SyncedRecoveryInstanceBinding; after: null
+}
+export type SyncedRecoveryHistoryBoundary = SyncedRecoveryHistoryBoundaryBase & (
+  { version: 1 } | { version: 2; instanceChanges: SyncedRecoveryRemovedInstance[] }
+)
 export interface SyncedRecoveryEpochReceipt {
   kind: 'synced-recovery-epoch'; version: 1; operationId: string; workspaceScope: string
   beforeEpoch: string; afterEpoch: string; boundaryHash: string; acceptedAt: string
@@ -111,9 +122,24 @@ function groupArchive(value: unknown): SyncedRecoveryGroupArchive {
     before, after: { ...after, historyPosition: 0 }, rows }
 }
 
+function instanceBinding(value: unknown): SyncedRecoveryInstanceBinding {
+  shape(value, ['groupId', 'hostDocumentId', 'bindingVersion', 'rowId', 'parentBlockId', 'depth'])
+  const rowId = text(value.rowId)
+  if (!/^(0|-?[1-9][0-9]{0,18})$/.test(rowId) || BigInt.asIntN(64, BigInt(rowId)).toString() !== rowId)
+    return recoveryBoundaryInvalid('原实例 rowid 不是准确 int64')
+  const parentBlockId = value.parentBlockId === null ? null : opaque(value.parentBlockId), depth = integer(value.depth)
+  if (depth > 6 || (depth === 0) !== (parentBlockId === null)) return recoveryBoundaryInvalid('原实例层级或父块无效')
+  return { groupId: uuid(value.groupId), hostDocumentId: opaque(value.hostDocumentId), bindingVersion: uuid(value.bindingVersion), rowId,
+    parentBlockId, depth }
+}
+
 export function validateSyncedRecoveryHistoryBoundary(value: unknown): SyncedRecoveryHistoryBoundary {
-  shape(value, ['kind', 'version', 'operationId', 'workspaceScope', 'beforeEpoch', 'afterEpoch', 'acceptedAt', 'documentBoundary', 'documents', 'hosts', 'hostCuts', 'groups', 'instances', 'retainedOperations', 'retainedPins'])
-  if (value.kind !== 'synced-recovery-history-boundary' || value.version !== 1) return recoveryBoundaryInvalid('边界域/版本无效')
+  const version = value && typeof value === 'object' ? Object.getOwnPropertyDescriptor(value, 'version')?.value : null
+  if (version !== 1 && version !== 2) return recoveryBoundaryInvalid('边界域/版本无效')
+  const keys = ['kind', 'version', 'operationId', 'workspaceScope', 'beforeEpoch', 'afterEpoch', 'acceptedAt', 'documentBoundary', 'documents', 'hosts', 'hostCuts', 'groups', 'instances', 'retainedOperations', 'retainedPins']
+  if (version === 2) keys.push('instanceChanges')
+  shape(value, keys)
+  if (value.kind !== 'synced-recovery-history-boundary') return recoveryBoundaryInvalid('边界域/版本无效')
   const operationId = uuid(value.operationId), workspaceScope = uuid(value.workspaceScope), beforeEpoch = uuid(value.beforeEpoch), afterEpoch = uuid(value.afterEpoch), acceptedAt = time(value.acceptedAt), documentBoundary = time(value.documentBoundary)
   if (beforeEpoch === afterEpoch) return recoveryBoundaryInvalid('恢复世代未推进')
   const documents = ordered(list(value.documents, raw => {
@@ -146,7 +172,8 @@ export function validateSyncedRecoveryHistoryBoundary(value: unknown): SyncedRec
     const chain = (positions.get(host.documentId) ?? []).sort((a, b) => a - b)
     if (chain.some((position, index) => position !== index + 1) || host.beforePosition > chain.length) return recoveryBoundaryInvalid('原宿主完整mapping链不连续')
   }
-  const groups = ordered(list(value.groups, groupArchive), row => row.groupId), groupIds = new Set(groups.map(row => row.groupId)), rowIds = new Set<string>()
+  const groups = ordered(list(value.groups, groupArchive), row => row.groupId), rowIds = new Set<string>()
+  const dispositions = new Map(groups.map(group => [group.groupId, group.disposition]))
   for (const group of groups) for (const row of group.rows) {
     if (rowIds.has(row.id)) return recoveryBoundaryInvalid('不同组归档重复原history ID')
     rowIds.add(row.id)
@@ -154,7 +181,7 @@ export function validateSyncedRecoveryHistoryBoundary(value: unknown): SyncedRec
   const instances = ordered(list(value.instances, raw => {
     shape(raw, ['instanceId', 'groupId', 'hostDocumentId', 'beforeBindingVersion', 'afterBindingVersion'])
     const instance = { instanceId: uuid(raw.instanceId), groupId: uuid(raw.groupId), hostDocumentId: opaque(raw.hostDocumentId), beforeBindingVersion: uuid(raw.beforeBindingVersion), afterBindingVersion: uuid(raw.afterBindingVersion) }
-    if (!groupIds.has(instance.groupId) || groups.find(group => group.groupId === instance.groupId)?.disposition !== 'active'
+    if (dispositions.get(instance.groupId) !== 'active'
       || instance.beforeBindingVersion === instance.afterBindingVersion) return recoveryBoundaryInvalid('实例fresh binding或所属活动组无效')
     return instance
   }), row => row.instanceId)
@@ -167,8 +194,24 @@ export function validateSyncedRecoveryHistoryBoundary(value: unknown): SyncedRec
     shape(raw, ['groupId', 'kind', 'pinId', 'createdAt'])
     return { groupId: uuid(raw.groupId), kind: opaque(raw.kind), pinId: opaque(raw.pinId), createdAt: time(raw.createdAt) }
   }), row => recoveryBoundaryJson([row.groupId, row.kind, row.pinId]))
+  const base = { kind: value.kind, operationId, workspaceScope, beforeEpoch, afterEpoch, acceptedAt, documentBoundary,
+    documents, hosts, hostCuts, groups, instances, retainedOperations, retainedPins } satisfies SyncedRecoveryHistoryBoundaryBase
   if (!hosts.length && !hostCuts.length && !groups.length && !instances.length) return recoveryBoundaryInvalid('普通空历史不能伪造同步边界anchor')
-  return { kind: 'synced-recovery-history-boundary', version: 1, operationId, workspaceScope, beforeEpoch, afterEpoch, acceptedAt, documentBoundary, documents, hosts, hostCuts, groups, instances, retainedOperations, retainedPins }
+  if (version === 1) return { ...base, version }
+  const retainedInstanceIds = new Set(instances.map(instance => instance.instanceId))
+  const retainedDocumentIds = new Set(documents.map(document => document.documentId))
+  const beforeRows = new Set<string>()
+  const instanceChanges = ordered(list(value.instanceChanges, raw => {
+    shape(raw, ['instanceId', 'createdAt', 'before', 'after'])
+    const instanceId = uuid(raw.instanceId), createdAt = time(raw.createdAt), before = instanceBinding(raw.before)
+    if (raw.after !== null || retainedInstanceIds.has(instanceId) || dispositions.get(before.groupId) !== 'active' || beforeRows.has(before.rowId)
+      || before.parentBlockId === instanceId || !retainedDocumentIds.has(before.hostDocumentId))
+      return recoveryBoundaryInvalid('移除实例的原归属、行或目标无效')
+    beforeRows.add(before.rowId)
+    return { instanceId, createdAt, before, after: null }
+  }), row => row.instanceId)
+  if (!instanceChanges.length) return recoveryBoundaryInvalid('没有实例移除的边界必须沿用 v1')
+  return { ...base, version, instanceChanges }
 }
 export function validateSyncedRecoveryEpochReceipt(value: unknown): SyncedRecoveryEpochReceipt {
   shape(value, ['kind', 'version', 'operationId', 'workspaceScope', 'beforeEpoch', 'afterEpoch', 'boundaryHash', 'acceptedAt'])

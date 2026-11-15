@@ -46,6 +46,7 @@ export interface EditorCloseBarrierOptions {
   reloadEditor?: (window: EditorCloseWindow, ignoreCache: boolean) => void
   verifyRecoveryReceipt?: (event: EditorCloseIpcEvent, receipt: Extract<EditorCloseAcknowledgement, { status: 'draft-journaled' }>) => boolean
   onShutdownError?: (error: unknown) => void
+  onQuitCancelled?: () => void
   timeoutMs?: number
   setTimer?: (callback: () => void, milliseconds: number) => unknown
   clearTimer?: (timer: unknown) => void
@@ -125,6 +126,9 @@ export function createEditorCloseBarrier(options: EditorCloseBarrierOptions): Ed
     const cancelled = attempt
     if (!cancelled || shuttingDown) return
     attempt = null; clearTimer(cancelled.timer)
+    if (cancelled.reason === 'quit') {
+      try { options.onQuitCancelled?.() } catch { /* All peers must still unfreeze. */ }
+    }
     if (reloadLanding?.requestId === cancelled.requestId) reloadLanding = null
     for (const target of cancelled.targets.values()) {
       if (target.registered.approvedClose === cancelled.requestId) target.registered.approvedClose = null

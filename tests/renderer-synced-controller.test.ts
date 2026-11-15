@@ -7,7 +7,7 @@ import type {
   SyncedGroupSaved, SyncedGroupSnapshot, SyncedGroupSnapshotsResult, SyncedOperationResult,
   SyncedRestoreGroupInput, SyncedUpdateGroupInput
 } from '../src/shared/synced-blocks'
-import { getSyncedWorkspaceController } from '../src/renderer/src/features/synced-blocks/controller'
+import { getSyncedWorkspaceController, holdGroupForHostReorder } from '../src/renderer/src/features/synced-blocks/controller'
 import { syncedScopeDomKey, syncedSnapshotGuard, type SyncedGroupBinding, type SyncedGroupScope,
   type SyncedScopeBookmark } from '../src/renderer/src/features/synced-blocks/types'
 
@@ -224,6 +224,26 @@ test('one injected workspace shares its group controller, request and subscripti
   assert.equal(await controller.flush(), true)
   assert.equal(workspace.releaseClean(api.current.groupId), true)
   assert.equal(workspace.dispose(), true); assert.equal(api.listeners.size, 0)
+})
+
+test('a host reorder hold blocks a queued group save and late producer edits without consuming its draft', async () => {
+  const { api, workspace, controller, first } = await setup()
+  assert.equal(apply(first, [paragraph('retained working')]), true)
+  const original = first.getCurrent(), queued = controller.flush()
+  const hold = holdGroupForHostReorder(controller)
+  assert.ok(hold)
+  assert.equal(hold.current(), true)
+  assert.equal(await queued, false)
+  assert.equal(await first.flush(), false)
+  assert.equal(apply(first, [paragraph('late input')]), false)
+  await workspace.load([api.current.groupId])
+  assert.equal(hold.current(), true, 'The actual equal read may accompany the host ACK')
+  assert.equal(first.getCurrent(), original)
+  assert.equal(api.updates.length, 0)
+  hold.release()
+  assert.equal(hold.current(), false)
+  assert.equal(await first.flush(), true)
+  assert.equal(api.updates[0].blocks[0].content, 'retained working')
 })
 
 test('raw invalid forests, nested references and empty last deletion are rejected without accepting an edit or filler', async () => {

@@ -240,7 +240,8 @@ export function deriveHeadingTitleRestorationStyles3(initial: {
     const root = saved.subtree.find(item => item.id === saved.hostId)
     const after = { title: ack.after.title, summary: ack.after.summary,
       blocks: ack.after.blocks.map(({ sortOrder: _sortOrder, ...block }) => ({ ...block, parentBlockId: block.parentBlockId ?? null })) }
-    if (raw?.documentId === saved.hostId && root && hostHash(raw.content) === saved.workingContentHash && hostHash(after) === saved.afterContentHash) {
+    if (!('crossMove' in journal) && raw?.documentId === saved.hostId && root
+      && hostHash(raw.content) === saved.workingContentHash && hostHash(after) === saved.afterContentHash) {
       const facts = { documentId: saved.hostId, createdAt: saved.hostCreatedAt, parentId: saved.hostParentId, sortOrder: root.sortOrder,
         births: journal.births.filter(item => item.documentId === saved.hostId).map((item): [string, string] => [item.blockId, item.createdAt]) }
       hold({ path: saved.workingPath, host: { ...facts, ...raw.content } }, { path: saved.afterPath, host: { ...facts, ...after } })

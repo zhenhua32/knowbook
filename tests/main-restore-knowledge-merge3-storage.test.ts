@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import Database from 'better-sqlite3'
-import { capsuleJson } from '../src/main/database/restore-knowledge-capsule-model'
+import { capsuleBytesHash, capsuleJson } from '../src/main/database/restore-knowledge-capsule-model'
 import { CAPSULE2_RAW_MAX_ROWS, CAPSULE2_RAW_MAX_VALUE_BYTES, capsule2ApplicationColumns,
   type Capsule2Encoding, type Capsule2RawSqlTable } from '../src/main/database/restore-knowledge-capsule2-raw-model'
 import { graph3Encode, graph3Text } from '../src/main/database/restore-knowledge-graph3-data'
@@ -72,18 +72,25 @@ test('merge3 aligns every fixed content table by column name and never grants a 
 
 test('merge3 keeps full original refs, exact bytes and stable occurrence keys through candidate patches and all TEXT encoding pairs', () => {
   for (const sourceEncoding of ['UTF-8', 'UTF-16le', 'UTF-16be'] as const) for (const targetEncoding of ['UTF-8', 'UTF-16le', 'UTF-16be'] as const) {
-    const text = '\ufeff原文\0𠮷🙂\r\n', name = 'document_database_values'
+    const text = '\ufeff原文\0𠮷🙂\r\n'.repeat(1400), name = 'document_database_values'
     const source = table(name, [valueRow('-9223372036854775808', graph3Encode('doc', sourceEncoding), graph3Encode('column', sourceEncoding), graph3Encode(text, sourceEncoding), sourceEncoding)])
     const current = table(name, [], [...source.columns].reverse())
     const candidate = table(name, [valueRow('-9223372036854775808', graph3Encode('mapped doc', sourceEncoding), graph3Encode('column', sourceEncoding), graph3Encode(text, sourceEncoding), sourceEncoding)], [...source.columns].reverse())
     const p = prepare(source, current, candidate, sourceEncoding, targetEncoding)
     const unchanged = prepare(source, current, source, sourceEncoding, targetEncoding)
+    const { preparedHash, ...prepared } = p
+    assert.equal(preparedHash, capsuleBytesHash('knowbook.restore.merge3.prepared-table.v1\0' + capsuleJson(prepared)))
+    assert.equal(p.sourceRows[0].ref.originalRowHash, capsuleBytesHash('knowbook.restore.merge3.original-row.v1\0' + capsuleJson({
+      table: name, columns: source.columns, primaryKey: source.primaryKey, encoding: sourceEncoding, ...source.rows[0]
+    })))
     assert.equal(p.sourceRows[0].key, unchanged.sourceRows[0].key)
     assert.equal(p.sourceRows[0].ref.originalRowHash, unchanged.sourceRows[0].ref.originalRowHash)
     assert.deepEqual(p.sourceRows[0].originalCells, source.rows[0].cells)
     assert.deepEqual(merge3RowValues(p, p.sourceRows[0]), { entity_id: null, updated_at: 'literal clock', value_text: text, column_id: 'column', document_id: 'mapped doc' })
     assert.deepEqual(p.sourceRows[0].cells[p.columns.indexOf('value_text')], graph3Encode(text, targetEncoding))
     const selected = [select(p.sourceRows[0])], result = finishMerge3Table(p, selected, dispositions(p, selected))
+    const { storageHash, ...finished } = result
+    assert.equal(storageHash, capsuleBytesHash('knowbook.restore.merge3.selected-table.v1\0' + capsuleJson(finished)))
     assert.equal(result.table.rows[0].targetRowId, '1')
     assert.equal(result.table.rows[0].sourceRef.sourceRowId, '-9223372036854775808')
     assert.equal(result.table.rows[0].sourceRef.side, 'source')

@@ -1,11 +1,12 @@
 import { parentPort, workerData } from 'node:worker_threads'
 import { parseMarkdownBackupDocument } from '@shared/markdown'
 import type { ParsedBackupDocument } from './importer'
-import { readBackupV3Archive } from './v3-reader'
+import { readBackupV3Archive, verifyBackupV3Archive } from './v3-reader'
 
 type RestoreParseWorkerResponse =
   | { ok: true; parsedDocuments: ParsedBackupDocument[] }
   | { ok: true; archive: ReturnType<typeof readBackupV3Archive> }
+  | { ok: true; verification: ReturnType<typeof verifyBackupV3Archive> }
   | { ok: false; message: string; stack?: string }
 
 try {
@@ -19,6 +20,9 @@ try {
       return bytes.buffer
     })
     parentPort?.postMessage({ ok: true, archive } satisfies RestoreParseWorkerResponse, buffers)
+  } else if (workerData && typeof workerData === 'object' && !Array.isArray(workerData)
+    && Object.keys(workerData).length === 2 && workerData.kind === 'verify-synced-v3' && typeof workerData.root === 'string') {
+    parentPort?.postMessage({ ok: true, verification: verifyBackupV3Archive(workerData.root) } satisfies RestoreParseWorkerResponse)
   } else {
     if (!Array.isArray(workerData) || !workerData.every((markdown) => typeof markdown === 'string')) {
       throw new Error('Restore parser worker received an invalid Markdown batch.')

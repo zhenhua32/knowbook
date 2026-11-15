@@ -91,9 +91,12 @@ test('real metadata2 source capture obeys waiting, cancellation and acknowledged
   } finally { finishShutdown(); store.destroy() }
 }))
 
-test('the production session IPC uses the same admission seam without moving its actual invoke and notification closure', () => {
+test('both production IPC paths admit mutations before using the shared session writer and notifications', () => {
   const source = readFileSync(new URL('../src/main/index.ts', import.meta.url), 'utf8')
-  assert.match(source, /import\s*\{\s*runSyncedEditingSessionWithAdmission\s*\}\s*from\s*['"]\.\/synced-editing-session-admission['"]/)
-  assert.match(source, /return runSyncedEditingSessionWithAdmission\(editorCloseBarrier, event, input\.method, invoke\)/)
-  assert.match(source, /const result=store\.invokeSyncedEditingSession\(event\.senderFrame!,input\)/)
+  const writer = source.slice(source.indexOf('function dispatchSyncedEditing(event:'), source.indexOf("ipcMain.handle('knowbook:invoke-synced-editing-session'"))
+  const handlers = source.slice(source.indexOf("ipcMain.handle('knowbook:invoke-synced-editing-session'"), source.indexOf("ipcMain.handle('knowbook:release-synced-editing-session'"))
+  assert.match(writer, /store\.invokeSyncedEditingSession\(event\.senderFrame!,\s*input\)/)
+  assert.match(writer, /event\.sender\.send\('knowbook:synced-blocks-changed',[^)]*\)\s*notifyWorkspaceMutation\(\)/)
+  assert.match(handlers, /runSyncedEditingSessionWithAdmission\(editorCloseBarrier, event, input\.method, \(\) => dispatchSyncedEditing\(event, input\)\)/)
+  assert.match(handlers, /ipcMain\.handle\(EDITOR_RECOVERY_CHANNELS\.applyCrossMove,[^\n]*=> editorCloseBarrier\.runEditorMutation\(event, \(\) =>\s*editorRecovery\(\)\.service\.applyHotCrossMove\(event, value, original => dispatchSyncedEditing\(event, original\)\)/)
 })

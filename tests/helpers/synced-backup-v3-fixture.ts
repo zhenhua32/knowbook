@@ -9,6 +9,7 @@ import { AttachmentStore } from '../../src/main/attachments'
 import { applySyncedHostCommand, applySyncedHostFinal } from '../../src/main/database/synced-host-final'
 import { createDefaultDatabaseViewConfig } from '../../src/shared/database-workspace'
 import { ordinary } from './synced-content-fixture'
+import { command as insertCommand, insertAck } from './synced-host-command-insert-fixture'
 import { createRequest, created, born, request, applied, freshBlock, logical, snapshot,
   createRestoreInput, restoreSyncedHostOperation, allTables } from './synced-host-command-create-fixture'
 
@@ -64,10 +65,74 @@ export function createV3Fixture(root: string) {
 }
 export type V3Fixture = ReturnType<typeof createV3Fixture>
 
-export async function withV3Fixture(run: (fixture: V3Fixture) => void | Promise<void>) {
+export function addV3SameGroupReference(fixture: V3Fixture, documentId: string) {
+  const input = insertCommand(fixture.db, { documentId, groupId: fixture.groupId })
+  insertAck(applySyncedHostCommand(fixture.db, input))
+  return input.action.instanceId
+}
+
+export function addV3OrdinaryListBranch(fixture: V3Fixture) {
+  const { db, hostId } = fixture, root = randomUUID(), inner = randomUUID(), leaf = randomUUID()
+  const input = request(db, [hostId], ([after]) => after.blocks.push(
+    { id: root, type: 'bulleted-list', content: 'Ordinary list root', checked: false, depth: 0, parentBlockId: null },
+    { id: inner, type: 'bulleted-list', content: 'Ordinary list child', checked: false, depth: 1, parentBlockId: root },
+    { id: leaf, type: 'bulleted-list', content: 'Ordinary list grandchild', checked: false, depth: 2, parentBlockId: inner }
+  ))
+  assert.equal(applySyncedHostFinal(db, input).status, 'applied')
+  return { root, inner, leaf }
+}
+
+export function keepOnlyV3SourceReference(fixture: V3Fixture): void {
+  const sender = Object.freeze({})
+  const { store, hostId, groupId, instanceId, hostBodyId, db } = fixture
+  const opened = store.openSyncedEditingSession(sender, { kind: 'instance', hostDocumentId: hostId, groupId, instanceId })
+  assert.equal(opened.status, 'ready')
+  const before = request(db, [hostId]), { title, summary, blocks } = before.hostsWorkingBefore[0].workingBefore
+  const result = store.invokeSyncedEditingSession(sender, { sessionId: opened.session.sessionId, method: 'applySyncedHostStructure',
+    input: { ...before, mode: 'host-final', reason: 'selection-edit', newRefSources: [],
+      finalAfter: [{ documentId: hostId, title, summary, blocks: blocks.filter(block => block.id !== hostBodyId) }] } })
+  assert.equal(result.status, 'applied', JSON.stringify(result))
+  assert.deepEqual(store.getDocumentDetail(hostId)?.blocks.map(block => block.id), [instanceId])
+}
+
+export function addV3CrossMoveDependency(fixture: V3Fixture, syntax: 'wiki' | 'markdown' | 'reference' | 'html' = 'wiki',
+  options: { title?: string; stationary?: boolean } = {}) {
+  const { store, db, instanceId } = fixture, documentId = store.createDocument(null), blockId = randomUUID()
+  const title = options.title ?? 'V6 Wiki dependency'
+  const content = (target: string) => syntax === 'wiki'
+    ? `Keep [[${target}#${instanceId}|original label]].`
+    : syntax === 'reference' ? `Keep [original label][ref].\n\n[ref]: <${encodeURIComponent(target)}.md#^${instanceId}> "original title"`
+    : syntax === 'html' ? `<a title="original title" href="${encodeURIComponent(target)}.md#^${instanceId}">original label</a>`
+    : `Keep [original label](${encodeURIComponent(target)}.md#^${instanceId}).`
+  const before = content('V3 Host'), after = content('V3 Target')
+  const childId = randomUUID()
+  const blocks = [{ id: blockId, type: 'paragraph' as const, content: before, checked: false, depth: 0 }]
+  if (options.stationary) blocks.push({ id: childId, type: 'paragraph', content: 'An unrelated shared body', checked: false, depth: 0 })
+  store.updateDocument(documentId, { title, summary: '', blocks })
+  const create = options.stationary ? createRequest(db, { documentId, selectedRootIds: [childId] }) : undefined
+  if (create) assert.equal(applySyncedHostCommand(db, create).status, 'applied')
+  const stationary = create ? { instanceId: create.action.instanceId, groupId: create.action.groupId } : undefined
+  return { documentId, blockId, title, before, after, stationary }
+}
+
+export async function withV3Fixture(run: (fixture: V3Fixture) => void | Promise<void>,
+  encoding?: 'UTF-8' | 'UTF-16le' | 'UTF-16be') {
   const root = mkdtempSync(join(tmpdir(), 'knowbook-v3-backup-'))
   let fixture: V3Fixture | undefined
-  try { fixture = createV3Fixture(root); await run(fixture) }
+  try {
+    if (encoding) {
+      const file = join(root, 'profile', 'storage', 'knowbook.db')
+      mkdirSync(dirname(file), { recursive: true })
+      const initial = new Database(file)
+      try {
+        initial.pragma("encoding='" + encoding + "'")
+        initial.exec('CREATE TABLE v3_encoding_anchor(value TEXT); DROP TABLE v3_encoding_anchor')
+      } finally { initial.close() }
+    }
+    fixture = createV3Fixture(root)
+    if (encoding) assert.equal(fixture.db.pragma('encoding', { simple: true }), encoding)
+    await run(fixture)
+  }
   finally {
     fixture?.close()
     assert.equal(dirname(resolve(root)), resolve(tmpdir()), 'Only the isolated V3 test root is removed')

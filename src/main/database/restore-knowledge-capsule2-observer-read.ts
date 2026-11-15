@@ -56,8 +56,8 @@ function assertPair(db: Database.Database, row: SyncedObservationOperationRow, p
 }
 
 
-import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
-import { readRawCapsule2ContentOwned } from './restore-knowledge-capsule2-content-raw-read'
+import { capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
+import { readRawCapsule2ObserverContentOwned } from './restore-knowledge-capsule2-content-raw-read'
 import { readRawCapsule2PhysicalGraphOwned } from './restore-knowledge-capsule2-physical-raw-read'
 import { readRawCapsule2CoverageSupportsOwned } from './restore-knowledge-capsule2-coverage-raw-read'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, type Capsule2RawCoverageSupports } from './restore-knowledge-capsule2-raw-model'
@@ -78,17 +78,14 @@ export interface RawCapsule2ObserverObservation {
   readonly attempts: number; readonly members: number; readonly remoteMarkers: number; readonly ordinaryAttempts: number
   readonly logicalDenials: number; readonly recoveryBoundaries: number; readonly pairedCoverageAnchors: number
 }
-/** Actual read-only owned transaction only. No caller roots/IDs/DTO/mode, no
- * pending fallback, no source/accepted identity. Dependencies perform early
- * FK/integrity reads; this does NOT implement metadata-before-FK scheduling. */
+/** Observe only an actual read-only owned transaction. Validate definitions
+ * and materialization limits before the content reader checks SQL integrity. */
 export function readRawCapsule2ObserverOwned(db: Database.Database): RawCapsule2ObserverObservation {
   if (!db.open || !db.readonly || !db.inTransaction || db.pragma('query_only', { simple: true }) !== 1
     || db.pragma('foreign_keys', { simple: true }) !== 1) return observationCorrupt('observer2要求readonly/query-only/FKON真实owned事务')
   // content preflights fixed full source before subsequent driver materialization.
-  // Its integrity/FK and lifecycle-metadata internal checks occur first.
-  const content = readRawCapsule2ContentOwned(db), coverage = readRawCapsule2CoverageSupportsOwned(db)
-  const physical = readRawCapsule2PhysicalGraphOwned(db), schema = content.schemaVersion
-  const rawContentHash = observationHashForContent(content)
+  const { schemaVersion: schema, rawContentHash } = readRawCapsule2ObserverContentOwned(db)
+  const coverage = readRawCapsule2CoverageSupportsOwned(db), physical = readRawCapsule2PhysicalGraphOwned(db)
   const physicalCounts = { documents: physical.documents.length, groups: physical.groups.length,
     instances: physical.instances.length, identities: physical.identities.length }
   const finish = (counts: { attempts: number; members: number; remoteMarkers: number; ordinaryAttempts: number;
@@ -218,5 +215,3 @@ export function readRawCapsule2ObserverOwned(db: Database.Database): RawCapsule2
   return finish({ attempts: attempts.length, members: members.length, remoteMarkers: checked.size, ordinaryAttempts,
     logicalDenials: logical.size, recoveryBoundaries: recovery.boundaries.size, pairedCoverageAnchors: consumedCoverage.size })
 }
-
-const observationHashForContent = (value: unknown): string => capsuleBytesHash('knowbook.capsule2.observer-content.v1\0' + capsuleJson(value))

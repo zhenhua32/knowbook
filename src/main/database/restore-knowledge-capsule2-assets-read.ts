@@ -24,6 +24,7 @@ import { validateSyncedLogicalDeletionChoiceProof } from '../sync/synced-logical
 import { RECOVERY_BOUNDARY_PREFIX, validateSyncedRecoveryHistoryBoundary } from './synced-recovery-boundary-model'
 
 type Body = { summary: string; blocks: Array<DocumentBlockDraft | SyncedStableBlockDraft> }
+type AssetOperationRow = SyncedGroupOperationRow & { created_at: string }
 type Destination = { section: 'summary' | 'body'; uri: string; raw: string; from: number; to: number; kind: string; syntax: string }
 type AssistantPart = { eventId: string; seq: number; turnId: string; text: string }
 type AssistantSource = { kind: 'message' | 'retained-stream'; sessionId: string; stepId: string;
@@ -40,6 +41,20 @@ export interface RawCapsule2AssetReferences {
 }
 const bad = (message: string): never => { throw new Error('capsule2 asset references无效：' + message + '；不访问资产文件，不授认证或安装权。') }
 const opaque = new Set(['code', 'code-block', 'math', 'frontmatter', 'database-view', 'synced-block'])
+
+function* operationRows(db: Database.Database): IterableIterator<AssetOperationRow> {
+  const pageSize = 128
+  const first = db.prepare('SELECT * FROM synced_operations ORDER BY client_operation_id LIMIT ?')
+  const next = db.prepare('SELECT * FROM synced_operations WHERE client_operation_id > ? ORDER BY client_operation_id LIMIT ?')
+  let page = first.all(pageSize) as AssetOperationRow[]
+  // Operation decoders also query the same readonly connection. Finish each
+  // statement before visiting its rows so their checks can use that snapshot.
+  while (page.length) {
+    yield* page
+    if (page.length < pageSize) return
+    page = next.all(page[page.length - 1].client_operation_id, pageSize) as AssetOperationRow[]
+  }
+}
 
 /** Known ordinary/synced/assistant Markdown holders from the same actual readonly
  * snapshot, after full source/history checks. No caller IDs, URLs, paths, asset
@@ -87,7 +102,8 @@ export function readRawCapsule2AssetReferenceSourceOwned(db: Database.Database) 
   for (const group of physical.groups) if (group.snapshot) add(['synced_groups', group.groupId], { summary: '', blocks: group.snapshot.blocks })
   // Every table/order below is a fixed local selector after the complete raw
   // SQL/history preflight, never caller-controlled SQL or a row allowlist.
-  const rows = <T = Record<string, string>>(table: string, order = 'id') => db.prepare('SELECT * FROM ' + table + ' ORDER BY ' + order).all() as T[]
+  const rows = <T = Record<string, string>>(table: string, order = 'id') =>
+    db.prepare('SELECT * FROM ' + table + ' ORDER BY ' + order).iterate() as IterableIterator<T>
   for (const row of rows('document_history')) add(['document_history', row.id, 'content_json'], JSON.parse(row.content_json) as Body)
   for (const row of rows('document_trash')) add(['document_trash', row.id, 'snapshot_json', 'content'], (JSON.parse(row.snapshot_json) as { content: Body }).content)
   for (const row of rows('document_block_moves')) for (const side of ['before_json', 'after_json'] as const) {
@@ -120,7 +136,7 @@ export function readRawCapsule2AssetReferenceSourceOwned(db: Database.Database) 
       if ('detach' in journal) group(['synced_host_history', row.id, 'action_json', 'detach', 'wire'], journal.detach.wire)
     }
   }
-  for (const row of rows<SyncedGroupOperationRow & { created_at: string }>('synced_operations', 'client_operation_id')) {
+  for (const row of operationRows(db)) {
     const value = JSON.parse(row.result_json) as { kind?: string; version?: number }
     const source = ['synced_operations', row.client_operation_id, 'result_json']
     if(value.kind===HEADING_TITLE3_OPERATION_KIND){

@@ -1,3 +1,4 @@
+import { isWorkingAssetArchive5 } from './restore-knowledge-capsule2-asset-archive'
 import { readSealedCapsule2SourceWorkingOriginals5, readSealedCapsule2SourceInputsWithWorking5 } from './restore-knowledge-capsule2-source-seal'
 import { capsule2AssetArchiveOriginalBytes3 } from './restore-knowledge-capsule2-asset-archive'
 import { randomUUID } from 'node:crypto'
@@ -196,7 +197,7 @@ async function readBoundInput(root: string, entry: NonNullable<ReturnType<typeof
     sourceManifestText: await readCapsule2AssetManifest(join(actual.source.info.directory, 'manifest.json'), root),
     assetManifestText: await readCapsule2AssetManifest(join(operation, 'knowledge-complete-assets-v2', value.capsuleId, 'manifest.json'), root) }
   const ownedContext=contexts.get(entry.context);if(!ownedContext)return bad('bound缺实际sealed source owner')
-  const working=value.assetArchive.version===5?await readSealedCapsule2SourceWorkingOriginals5(ownedContext.source):undefined
+  const working=isWorkingAssetArchive5(value.assetArchive)?await readSealedCapsule2SourceWorkingOriginals5(ownedContext.source):undefined
   const workingText=working?capsuleJson(working.manifest)+'\n':undefined
   qualifiedOriginalSide(side,binding,origin,workingText)
   if (before !== await readCapsule2AssetManifest(join(entry.directory, 'binding.json'), root, BOUND_SOURCE_MANIFEST_MAX_BYTES)
@@ -237,7 +238,7 @@ async function readBoundInputWithWorking5(root: string, entry: NonNullable<Retur
   const side: QualifiedOriginalSide = { kind: 'bound-capsule2', bindingText: before, contextText: actual.contextText,
     sourceManifestText: await readCapsule2AssetManifest(join(actual.source.info.directory, 'manifest.json'), root),
     assetManifestText: await readCapsule2AssetManifest(join(operation, 'knowledge-complete-assets-v2', value.capsuleId, 'manifest.json'), root) }
-  const working=value.assetArchive.version===5?captured.working??bad('archive5缺同次完整原件读取的Working原件'):undefined
+  const working=isWorkingAssetArchive5(value.assetArchive)?captured.working??bad('archive5缺同次完整原件读取的Working原件'):undefined
   const workingText=working?capsuleJson(working.manifest)+'\n':undefined
   const ownedContext=contexts.get(entry.context);if(!ownedContext)return bad('bound缺实际sealed source owner')
   await assertSealedCapsule2SourceOriginalBytes(ownedContext.source)

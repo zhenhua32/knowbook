@@ -1,3 +1,4 @@
+import { isWorkingAssetArchive5 } from './restore-knowledge-capsule2-asset-archive'
 import { parseSyncedPortableAssetUri, type SyncedPortableHostRecord } from '../../shared/syncedBlockPortable'
 import { isSyncedBlockId } from '../../shared/syncedBlockValidation'
 import * as exchange from '../sync/synced-exchange-model'
@@ -67,7 +68,7 @@ function singleParagraphDiff(before: SyncedPortableHostRecord, after: SyncedPort
  * original evidence only. No receipt, execution row or authority is minted. */
 export function deriveSelectedPendingLocalBody5(captured: Actual, locator: PendingLocalComponentLocator5): SelectedPendingLocalBody5 {
   const packet = captured.pair.source, working = captured.working.source, archive = packet.assetArchive
-  if (!working || archive.version !== 5 || packet.assetArchiveHash !== locator.archiveHash
+  if (!working || !isWorkingAssetArchive5(archive) || packet.assetArchiveHash !== locator.archiveHash
     || working.manifestHash !== locator.workingManifestHash || working.manifest.sourceContentHash !== archive.sourceContentHash)
     return fail('original-role')
   const raw = packet.source.sourceContent, settings = graph3Rows(raw, 'app_settings')

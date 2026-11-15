@@ -36,13 +36,14 @@ const fail=(reason:string):never=>{throw new Error('automatic working originals5
 const same=(a:unknown,b:unknown)=>capsuleJson(a)===capsuleJson(b)
 const hash=(domain:string,value:unknown)=>capsuleBytesHash(domain+'\0'+capsuleJson(value))
 const digest=(value:unknown):string=>typeof value==='string'&&/^[a-f0-9]{64}$/.test(value)?value:fail('hash无效')
-const manifestHash=workingOriginalsManifestHash5
 const locatorBinding=(locator:Root5WorkingMergeLocator5)=>({jobSettingKey:locator.jobSettingKey,sourceRowId:locator.sourceRowId,originalRowHash:locator.originalRowHash,
   locatorHash:hash('knowbook.capsule5.merge-working-locator.v1',locator)})
 const number=(value:unknown):number=>typeof value==='number'&&Number.isSafeInteger(value)&&value>=0?value:fail('有限计数无效')
 function automaticEvidence(base:Base){return deriveCapsule2WorkingPortableEvidence5({source:base.source,referenceCapture:{version:2,sourceContentHash:base.commitment.sourceContentHash,
   workspaceHistoryObservationHash:base.commitment.workspaceHistoryObservationHash,assetReferencesObservationHash:base.commitment.assetReferencesObservationHash,
-  referenceUris:base.referenceUris,tree:base.tree,referenceProvenance:base.baseProof},binding:{baseProjectionManifestHash:base.commitment.baseManifestHash,baseProjectionMaterialHash:base.commitment.baseMaterialHash}})}
+  referenceUris:base.referenceUris,tree:base.tree,referenceProvenance:base.baseProof,
+  ...(base.commitment.version===2?{installedV3:base.commitment.installedV3}:base.commitment.version===3?{installedV3Many:base.commitment.installedV3Many}:{})},
+  binding:{baseProjectionManifestHash:base.commitment.baseManifestHash,baseProjectionMaterialHash:base.commitment.baseMaterialHash}})}
 function selected(base:Base,automatic:Automatic){
   const all=requiredRoot5WorkingMergeLocators5(base.sourceContent,{includeSettled:true}),proven=new Map(automatic.jobs.map(value=>[value.jobSettingKey,value]))
   const settledBindings:SettledBinding[]=[],wanted:Root5WorkingMergeLocator5[]=[]
@@ -88,6 +89,7 @@ function captures(manifest:WorkingOriginalsManifest5,base:Base,automatic:Automat
 export const bindWorkingOriginalsToBase5 = captures
 function assertOriginalBudget(base:Base,files:WorkingOriginalsManifest5['files']){
   const total=files.reduce((n,file)=>n+file.bytes,0)+base.tree.files.reduce((n,file)=>n+file.bytes,0)+base.commitment.baseManifestFile.bytes+base.commitment.sourceInventory.reduce((n,file)=>n+file.bytes,0)
+    +(base.commitment.version===3?base.commitment.installedV3Many.transfers.reduce((n,file)=>n+file.bytes,0):0)
   if(!Number.isSafeInteger(total)||total>DURABLE_SQL_DAG_MAX_ORIGINAL_BYTES)return fail('原SQL/base/context总域超原预算')
 }
 async function verifyBytes(saved:Saved){
@@ -136,19 +138,19 @@ export async function prepareWorkingOriginals5(original:OwnedRawCapsuleOriginal,
   }
   const files=[...known.files].sort(([a],[b])=>a<b?-1:1).map(([sha256,bytes])=>({sha256,bytes})),observation=observer.finish()
   assertOriginalBudget(base,files)
-  const manifest=validateWorkingOriginalsManifest5({kind:'capsule5-merge-working-originals',version:1,scope:'all-original-merge-working-records',families:[2,3,4,5,6,7],sourceContentHash:base.commitment.sourceContentHash,
+  const manifest=validateWorkingOriginalsManifest5({kind:'capsule5-merge-working-originals',version:base.commitment.version,scope:'all-original-merge-working-records',families:[2,3,4,5,6,7],sourceContentHash:base.commitment.sourceContentHash,
     baseProjection:describeCapsule2BaseProjectionPointer4(base.commitment),workingEvidenceHash:automatic.evidenceHash,settledBindings:selection.settledBindings,captures:captured,files,
     observation:summarize(observation),allAssetScopesCaptured:false,otherHeldPayloadScopesComplete:false,acceptedCoverage:false,effective:false,installPermit:false})
   const bytes=Buffer.from(capsuleJson(manifest)+'\n');if(bytes.length>CAPSULE2_RAW_MAX_JSON_BYTES)return fail('完整manifest超原准备预算，不截断')
   await writeNew(join(directory,'manifest.json'),bytes,info.profileRoot);await syncRestoreDirectory(filesDirectory);await syncRestoreDirectory(directory);await syncRestoreDirectory(parent);await syncRestoreDirectory(info.recoveryDirectory)
-  const saved:Saved={original,base:baseOwner,root:info.profileRoot,directory,manifest,bytes,manifestHash:manifestHash(manifest),created}
+  const saved:Saved={original,base:baseOwner,root:info.profileRoot,directory,manifest,bytes,manifestHash:workingOriginalsManifestHash5(manifest),created}
   await verifyBytes(saved)
   return Object.freeze({owner:mint(saved),manifest,manifestHash:saved.manifestHash,directory,observation})
 }
 export async function reopenWorkingOriginals5(original:OwnedRawCapsuleOriginal,base:PreparedCapsule2BaseProjection4,expectedManifestHash:string,expectedPointer?:WorkingOriginalsPointer5){
   assertCapsule2BaseProjectionOriginal4(base,original);const info=readOwnedRawCapsuleOriginal(original),directory=join(info.recoveryDirectory,'knowledge-complete-assets-v2',basename(info.capsuleDirectory),'contexts')
   const text=await readCapsule2AssetManifest(join(directory,'manifest.json'),info.profileRoot),manifest=parseWorkingOriginals5(text,expectedPointer)
-  if(text!==capsuleJson(manifest)+'\n'||manifestHash(manifest)!==digest(expectedManifestHash))return fail('规范manifest/domain hash不符')
+  if(text!==capsuleJson(manifest)+'\n'||workingOriginalsManifestHash5(manifest)!==digest(expectedManifestHash))return fail('规范manifest/domain hash不符')
   const saved:Saved={original,base,root:info.profileRoot,directory,manifest,bytes:Buffer.from(text),manifestHash:expectedManifestHash}
   await rebuild(saved);return mint(saved)
 }

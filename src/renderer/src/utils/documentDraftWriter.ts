@@ -3,6 +3,7 @@ import type { DocumentBlockDraft, DocumentDetail, HomeData } from '@shared/contr
 import { hasExistingNativeHeadingTextChange } from '@shared/document-rename-admission'
 import { getMarkdownHeadingRewrites, getMarkdownHeadingTargets } from '@shared/markdownLinkMaintenance'
 import type { SyncedHostSourceCurrent } from '../features/synced-blocks/SyncedHostSourceDialog'
+import type { CanonicalInlineFlushOptions } from '../features/synced-blocks/inlineBridge'
 import { toDraftBlock } from './draftBlockShape'
 import { normalizeDraftBlocks } from './draftTreeNormalization'
 import { areDocumentDraftBlocksEqual } from './documentDraftComparison'
@@ -11,7 +12,7 @@ import { applyIncrementalDocumentUpdate } from './homeDataDocumentUpdate'
 type Ref<T> = { current: T }
 type Context = {
   documentId: string; title: string; summary: string; normalizedBlocks: DocumentBlockDraft[]
-  detail: DocumentDetail; baseTitle: string; renaming: boolean; saveFailed: string
+  detail: DocumentDetail; baseTitle: string; renaming: boolean; saveFailed: string; purpose?: CanonicalInlineFlushOptions['purpose']
   requiresSyncedWriter: boolean; syncedHost: () => SyncedHostSourceCurrent | null
   isCurrentSession: () => boolean; mountedRef: Ref<boolean>
   selectedDocumentRef: Ref<DocumentDetail | null>; draftTitleRef: Ref<string>; draftSummaryRef: Ref<string>
@@ -43,6 +44,7 @@ export async function completeDocumentDraftWrite(context: Context): Promise<bool
     useSyncedWriter = hint.requiresFencedTitle2
   }
   if (useSyncedWriter) {
+    if (context.purpose === 'move') return false
     const opening = syncedHost()
     if (!opening || opening.host.documentId !== documentId || opening.host.expectedPersistedUpdatedAt !== detail.updatedAt) throw new Error(saveFailed)
     const { persistCanonicalHostDraft } = await import('../features/synced-blocks/inlineHostPersistence')

@@ -3,7 +3,8 @@ import type { OpenEditorRecoveryDraftInput, EditorRecoveryOpened, WriteEditorRec
   EditorRecoveryPageInput, EditorRecoveryPage, EditorRecoveryExpected, EditorRecoveryCandidate,
   DecideEditorRecoveryDraftInput, EditorRecoveryRecord, RetireEditorRecoveryDraftInput,
   CompleteEditorRecoveryGroupInput, PrepareEditorRecoveryGroupInput, PreparedEditorRecoveryGroup,
-  PrepareEditorRecoveryGroupFloorInput, PreparedEditorRecoveryGroupFloor } from './editor-recovery-drafts'
+  PrepareEditorRecoveryGroupFloorInput, PreparedEditorRecoveryGroupFloor, PrepareEditorRecoveryCrossMoveInput, PreparedEditorRecoveryCrossMove,
+  ApplyEditorRecoveryCrossMoveInput, ApplyEditorRecoveryCrossMoveResult } from './editor-recovery-drafts'
 import type { LegacyEditorRecoveryPage, ParkEditorRecoveryDraftInput } from './editor-recovery-drafts'
 import type { EditorCloseRequest, EditorCloseCancelled, EditorCloseAcknowledgement } from './editor-close'
 export type { EditorCloseRequest, EditorCloseCancelled, EditorCloseAcknowledgement, EditorCloseReason } from './editor-close'
@@ -53,6 +54,7 @@ import type { OpenSyncedEditingSessionInput, OpenSyncedEditingSessionResult, Syn
 export type { SyncedEditingSession, OpenSyncedEditingSessionInput, OpenSyncedEditingSessionResult, SyncedEditingMethod, SyncedEditingRequest, SyncedEditingResult } from './synced-editing-session'
 export type { WorkspaceSearchOccurrence, WorkspaceSearchOccurrenceResult } from './workspace-search-occurrence'
 import type { ResolveSyncedHeadingAnchorInput, ResolveSyncedInlineInstanceInput, SyncedHeadingAnchorResult, SyncedInlineInstanceResult } from './workspace-search-occurrence'
+import type { ResolveSyncedStoredBlockLinkInput, SyncedStoredBlockLinkResult } from './workspace-search-occurrence'
 export type { ResolveSyncedInlineInstanceInput, SyncedInlineInstanceResult, SyncedInlineInstanceAddress } from './workspace-search-occurrence'
 import type {
   SaveWorkspaceSearchInput,
@@ -982,6 +984,8 @@ export interface ElectronApi {
   retireCleanEditorRecoveryDraft: (input: RetireEditorRecoveryDraftInput) => Promise<boolean>
   prepareEditorRecoveryGroup: (input: PrepareEditorRecoveryGroupInput) => Promise<PreparedEditorRecoveryGroup>
   prepareEditorRecoveryGroupFloor: (input: PrepareEditorRecoveryGroupFloorInput) => Promise<PreparedEditorRecoveryGroupFloor>
+  prepareEditorRecoveryCrossMove: (input: PrepareEditorRecoveryCrossMoveInput) => Promise<PreparedEditorRecoveryCrossMove>
+  applyEditorRecoveryCrossMove: (input: ApplyEditorRecoveryCrossMoveInput) => Promise<ApplyEditorRecoveryCrossMoveResult>
   completeEditorRecoveryGroup: (input: CompleteEditorRecoveryGroupInput) => Promise<boolean>
   parkEditorRecoveryDraft: (input: ParkEditorRecoveryDraftInput) => Promise<void>
   onEditorCloseCancelled: (listener: (request: EditorCloseCancelled) => void) => () => void
@@ -1037,7 +1041,9 @@ export interface ElectronApi {
   restoreBackupVersion: (versionId: string) => Promise<BackupRestoreResult | null>
   moveDocument: (documentId: string, newParentId: string | null) => Promise<void>
   getDocumentBlockMoveHistory: (documentId: string) => Promise<import('./document-block-moves').DocumentBlockMoveHistoryEntry | null>
-  moveDocumentBlocks: (input: import('./document-block-moves').MoveDocumentBlocksInput) => Promise<import('./document-block-moves').DocumentBlockMoveResult>
+  readControlledDocumentBlockMoveDependencies: (input: import('./document-block-moves').MoveDocumentBlocksInput) => Promise<import('./document-block-moves').ControlledDocumentBlockMove | null>
+  moveDocumentBlocks: (input: import('./document-block-moves').MoveDocumentBlocksInput) => Promise<
+    import('./document-block-moves').DocumentBlockMoveResult | import('./document-block-moves').ControlledDocumentBlockMove>
   undoDocumentBlockMove: (input: import('./document-block-moves').RestoreDocumentBlockMoveInput) => Promise<import('./document-block-moves').DocumentBlockMoveResult>
   redoDocumentBlockMove: (input: import('./document-block-moves').RestoreDocumentBlockMoveInput) => Promise<import('./document-block-moves').DocumentBlockMoveResult>
   updateAiConfig: (input: UpdateAiConfigInput) => Promise<AiConfig>
@@ -1092,6 +1098,7 @@ export interface ElectronApi {
   resolveWebDavSyncConflict: (input: import('./webdav-sync').ResolveWebDavSyncConflict) => Promise<import('./webdav-sync').WebDavSyncStatus>
   getWebDavSyncConflictDetails: (input: import('./webdav-sync').WebDavSyncConflictDetailsInput) => Promise<import('./webdav-sync').WebDavSyncConflictDetails>
   previewWebDavProtocol5Conflicts: () => Promise<import('./webdav-sync').WebDavSyncStatus>
+  rejoinWebDavAfterRestore: () => Promise<import('./webdav-sync').WebDavSyncStatus>
   resolveWebDavProtocol5Conflict: (input: import('./webdav-sync').ResolveWebDavProtocol5Conflict) => Promise<import('./webdav-sync').WebDavSyncStatus>
   previewWebDavProtocol5Deletions: () => Promise<import('./webdav-sync').WebDavSyncStatus>
   resolveWebDavProtocol5Deletion: (input: import('./webdav-sync').ResolveWebDavProtocol5Deletion) => Promise<import('./webdav-sync').WebDavSyncStatus>
@@ -1099,6 +1106,7 @@ export interface ElectronApi {
   onBackupHealth: (listener: (state: import('./backup-health').BackupHealth) => void) => () => void
   restoreBackupFromFolder: () => Promise<BackupRestoreResult | null>
   writeClipboardText: (text: string) => Promise<void>
+  writeSyncedBlockClipboard: (markdown: string, marker: string) => Promise<void>
   openExternalUrl: (url: string) => Promise<void>
   importAttachments: (files: import('./attachments').AttachmentInput[]) => Promise<import('./attachments').ManagedAttachment[]>
   getAttachment: (url: string) => Promise<import('./attachments').ManagedAttachment>
@@ -1130,6 +1138,7 @@ export interface ElectronApi {
   resolveWorkspaceSearchOccurrence: (input: WorkspaceSearchOccurrence) => Promise<WorkspaceSearchOccurrenceResult>
   resolveSyncedCanonicalBlockAddress: (input: string) => Promise<SyncedCanonicalBlockNavigationResult>
   resolveSyncedInlineInstance: (input: ResolveSyncedInlineInstanceInput) => Promise<SyncedInlineInstanceResult>
+  resolveSyncedStoredBlockLink: (input: ResolveSyncedStoredBlockLinkInput) => Promise<SyncedStoredBlockLinkResult>
   resolveSyncedHeadingAnchor: (input: ResolveSyncedHeadingAnchorInput) => Promise<SyncedHeadingAnchorResult>
   openSyncedEditingSession: (input: OpenSyncedEditingSessionInput) => Promise<OpenSyncedEditingSessionResult>
   invokeSyncedEditingSession: <M extends SyncedEditingMethod>(input: SyncedEditingRequest<M>) => Promise<SyncedEditingResult<M>>

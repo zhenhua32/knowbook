@@ -9,6 +9,7 @@ import type { SyncedCanonicalBlockNavigationResult } from '../shared/synced-cano
 import type { SyncedBlocksChangedEvent } from '../shared/synced-blocks'
 import type { OpenSyncedEditingSessionInput, OpenSyncedEditingSessionResult, SyncedEditingMethod, SyncedEditingRequest, SyncedEditingResult } from '../shared/synced-editing-session'
 import type { ResolveSyncedHeadingAnchorInput, ResolveSyncedInlineInstanceInput, SyncedHeadingAnchorResult, SyncedInlineInstanceResult } from '../shared/workspace-search-occurrence'
+import type { ResolveSyncedStoredBlockLinkInput, SyncedStoredBlockLinkResult } from '../shared/workspace-search-occurrence'
 import { BACKUP_HEALTH_CHANNEL, GET_BACKUP_HEALTH_CHANNEL, type BackupHealth } from '../shared/backup-health'
 import type {
   AiConfig,
@@ -153,6 +154,8 @@ const api: ElectronApi = {
   retireCleanEditorRecoveryDraft: input => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.retire, input),
   prepareEditorRecoveryGroup: input => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.prepareGroup, input),
   prepareEditorRecoveryGroupFloor: input => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.prepareGroupFloor, input),
+  prepareEditorRecoveryCrossMove: input => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.prepareGroupCrossMove, input),
+  applyEditorRecoveryCrossMove: input => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.applyCrossMove, input),
   completeEditorRecoveryGroup: input => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.completeGroup, input),
   parkEditorRecoveryDraft: input => ipcRenderer.invoke(EDITOR_RECOVERY_CHANNELS.park, input),
   onEditorCloseCancelled: listener => editorCloseDelivery.onCancelled(listener),
@@ -166,6 +169,7 @@ const api: ElectronApi = {
   resolveWebDavSyncConflict: (input) => ipcRenderer.invoke('knowbook:resolve-webdav-sync-conflict', input),
   getWebDavSyncConflictDetails: (input) => ipcRenderer.invoke('knowbook:get-webdav-sync-conflict-details', input),
   previewWebDavProtocol5Conflicts: () => ipcRenderer.invoke('knowbook:preview-webdav-protocol5-conflicts'),
+  rejoinWebDavAfterRestore: () => ipcRenderer.invoke('knowbook:rejoin-webdav-after-restore'),
   resolveWebDavProtocol5Conflict: (input) => ipcRenderer.invoke('knowbook:resolve-webdav-protocol5-conflict', input),
   previewWebDavProtocol5Deletions: () => ipcRenderer.invoke('knowbook:preview-webdav-protocol5-deletions'),
   resolveWebDavProtocol5Deletion: (input) => ipcRenderer.invoke('knowbook:resolve-webdav-protocol5-deletion', input),
@@ -262,6 +266,7 @@ const api: ElectronApi = {
   restoreBackupVersion: (versionId: string) => ipcRenderer.invoke('knowbook:restore-backup-version', versionId),
   moveDocument: (documentId: string, newParentId: string | null) => ipcRenderer.invoke('knowbook:move-document', documentId, newParentId) as Promise<void>,
   getDocumentBlockMoveHistory: (documentId) => ipcRenderer.invoke('knowbook:document-block-move-history', documentId),
+  readControlledDocumentBlockMoveDependencies: (input) => ipcRenderer.invoke('knowbook:read-controlled-document-block-move-dependencies', input),
   moveDocumentBlocks: (input) => ipcRenderer.invoke('knowbook:move-document-blocks', input),
   undoDocumentBlockMove: (input) => ipcRenderer.invoke('knowbook:undo-document-block-move', input),
   redoDocumentBlockMove: (input) => ipcRenderer.invoke('knowbook:redo-document-block-move', input),
@@ -319,6 +324,7 @@ const api: ElectronApi = {
   },
   restoreBackupFromFolder: () => ipcRenderer.invoke('knowbook:restore-backup-from-folder') as Promise<BackupRestoreResult | null>,
   writeClipboardText: (text: string) => ipcRenderer.invoke('knowbook:write-clipboard-text', text) as Promise<void>,
+  writeSyncedBlockClipboard: (markdown, marker) => ipcRenderer.invoke('knowbook:write-synced-block-clipboard', markdown, marker),
   openExternalUrl: (url: string) => ipcRenderer.invoke('knowbook:open-external-url', url) as Promise<void>,
   importAttachments: (files) => ipcRenderer.invoke('knowbook:import-attachments', files),
   getAttachment: (url) => ipcRenderer.invoke('knowbook:get-attachment', url),
@@ -332,6 +338,7 @@ const api: ElectronApi = {
   resolveWorkspaceSearchOccurrence: (input: WorkspaceSearchOccurrence) => ipcRenderer.invoke('knowbook:resolve-workspace-search-occurrence', input) as Promise<WorkspaceSearchOccurrenceResult>,
   resolveSyncedCanonicalBlockAddress: (input: string) => ipcRenderer.invoke('knowbook:resolve-synced-canonical-block-address', input) as Promise<SyncedCanonicalBlockNavigationResult>,
   resolveSyncedInlineInstance: (input: ResolveSyncedInlineInstanceInput) => ipcRenderer.invoke('knowbook:resolve-synced-inline-instance', input) as Promise<SyncedInlineInstanceResult>,
+  resolveSyncedStoredBlockLink: (input: ResolveSyncedStoredBlockLinkInput) => ipcRenderer.invoke('knowbook:resolve-synced-stored-block-link', input) as Promise<SyncedStoredBlockLinkResult>,
   resolveSyncedHeadingAnchor: (input: ResolveSyncedHeadingAnchorInput) => ipcRenderer.invoke('knowbook:resolve-synced-heading-anchor', input) as Promise<SyncedHeadingAnchorResult>,
   openSyncedEditingSession: (input: OpenSyncedEditingSessionInput) => ipcRenderer.invoke('knowbook:open-synced-editing-session', input) as Promise<OpenSyncedEditingSessionResult>,
   invokeSyncedEditingSession: <M extends SyncedEditingMethod>(input: SyncedEditingRequest<M>) => ipcRenderer.invoke('knowbook:invoke-synced-editing-session', input) as Promise<SyncedEditingResult<M>>,

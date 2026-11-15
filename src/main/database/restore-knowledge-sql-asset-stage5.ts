@@ -8,7 +8,7 @@ import { nativeAssetMetadataHash5 } from './restore-knowledge-selected-native-as
 import { syncOriginCatalogAncestors } from './restore-knowledge-origin-bundle-files'
 import { pendingLocalCellTextHash5 } from './restore-knowledge-pending-local-cell5'
 import { assertRootRestoreReferenceOriginalBytes3, readRootRestoreReferenceCopySource3, withRootRestoreStageInputs5,
-  type RootRestoreReferencePlan3 } from './restore-knowledge-reference3-read'
+  type RootRestoreReferencePlan3, type RootRestoreStageInputs5 } from './restore-knowledge-reference3-read'
 import { assertRootRestoreStage3FilesHeld3, closeRootRestoreStage3FilesHeld3, holdRootRestoreStage3Files3,
   verifyRootRestoreStage3FilesHeld3 } from './restore-knowledge-stage3-files'
 import { holdRootRestorePhysicalStageOriginalBytes3, prepareRootRestorePhysicalStage3, readRootRestorePhysicalStage3, readRootRestorePhysicalStageAssetEvidence3,
@@ -21,6 +21,7 @@ import { observeRootRestoreFinalAssetClosure5, rootRestoreFinalAssetCellKey5, ro
   rootRestoreStagedAssetSelections5 } from './restore-knowledge-final-asset-closure5'
 import { referenceContextFileKey, referenceContextObjectPath } from './restore-knowledge-reference-context-model'
 import type { OriginalFrameCopy } from './restore-knowledge-original-frame-files'
+import { observeRootRestoreRetainedAssetPolicy5 } from './restore-knowledge-retained-asset-policy5'
 
 export interface RootRestoreSqlAssetStage5 { readonly kind: 'main-root-restore-non-executable-sql-asset-stage5' }
 type Reference = Awaited<ReturnType<typeof readRootRestoreReferenceCopySource3>>
@@ -36,7 +37,7 @@ const collection = ({ location }: Reference) => join(location.profileRoot, 'back
 function combined(reference: Reference, stageId: string, sql: Sql, assets: Assets) {
   if (sql.checkedCanonicalCandidateHash !== reference.checkedCanonicalCandidateHash || assets.checkedCanonicalCandidateHash !== sql.checkedCanonicalCandidateHash
     || assets.referencePlanId !== reference.referencePlanId || assets.referenceManifestHash !== reference.referenceManifestHash
-    || !sql.actual12TablesRead || !assets.selected.length) return fail('两个实际阶段缺同一原始候选')
+    || !sql.actual12TablesRead) return fail('两个实际阶段缺同一原始候选')
   const tables = new Map(sql.tables.map(table => [table.name, { table, rows: new Map(table.rows.map(row => [row.targetRowId, row])) }]))
   if (reference.pendingCellProofHash !== (assets.version === 4 ? assets.pendingCellProofHash : undefined)) return fail('两个暂存的 pending 单元格证明不同')
   const selectedAssets = assets.version === 2 ? assets.selected.map(row => ({ ...row, context: null })) : assets.selected
@@ -126,13 +127,14 @@ function mint(saved: Saved) {
 
 /** SQL and assets derive from one fresh Reference3 reconstruction.
  * The combined handle is issued only after actual SQL and file tails. */
-export async function prepareRootRestoreSqlAssetStage5(reference: RootRestoreReferencePlan3) {
+export async function prepareRootRestoreSqlAssetStage5(reference: RootRestoreReferencePlan3, scope?: RootRestoreStageInputs5) {
   const binding = await readRootRestoreReferenceCopySource3(reference), stageId = randomUUID()
-  const { assets, sql } = await withRootRestoreStageInputs5(reference, binding.pendingCellProofHash, async scope => {
+  const prepare = async (scope: RootRestoreStageInputs5) => {
     const assets = await prepareRootRestoreWorkingAssetStage5(reference, scope)
     const sql = await prepareRootRestorePhysicalStage3(reference, scope)
     return { assets, sql }
-  })
+  }
+  const { assets, sql } = scope ? await prepare(scope) : await withRootRestoreStageInputs5(reference, binding.pendingCellProofHash, prepare)
   const body = combined(binding, stageId, sql.value, assets.value)
   const saved = { reference, stageId, expectedManifestHash: capsuleBytesHash(capsuleJson(body) + '\n'), sql: sql.stage, assets: assets.stage }
   const result = await finish(saved, binding, sql.value, assets.value, 'create')
@@ -190,6 +192,8 @@ export async function readRootRestoreSqlAssetClosureCopySource5(stage: RootResto
   })
   const referenceActual = assets.sources.captured.actual, { data, allocation } = referenceActual
   return Object.freeze({ audit, matched: Object.freeze(matched), location: binding.location, physical: sql.value, physicalStage: saved.sql,
+    coverageOriginal: assets.sources.captured.pair.originalPackage,
+    readRetainedAssetPolicy: () => observeRootRestoreRetainedAssetPolicy5(sql, assets, audit),
     referencePlanId: binding.referencePlanId, referenceManifestHash: binding.referenceManifestHash, data, allocation, referenceActual,
     combinedStageId: saved.stageId, combinedManifestHash: saved.expectedManifestHash })
 }
@@ -215,7 +219,7 @@ const manifestKeys = ['kind','version','stageId','referencePlanId','referenceMan
   'portableAssetsInstalled','acceptedCoverage','effective','installPermit']
 
 export async function reopenRootRestoreSqlAssetStage5(reference: RootRestoreReferencePlan3,
-  locator: { stageId: string; expectedManifestHash: string }) {
+  locator: { stageId: string; expectedManifestHash: string }, scope?: RootRestoreStageInputs5) {
   const binding = await readRootRestoreReferenceCopySource3(reference), address = capsuleRecord(locator, ['stageId','expectedManifestHash'])
   const stageId = durableSqlDagUuid(address.stageId), expectedManifestHash = durableSqlDagHash(address.expectedManifestHash)
   const text = await readCapsule2AssetManifest(join(collection(binding), stageId, 'manifest.json'), binding.location.profileRoot, maxManifestBytes)
@@ -225,13 +229,14 @@ export async function reopenRootRestoreSqlAssetStage5(reference: RootRestoreRefe
     || stored.referenceManifestHash !== binding.referenceManifestHash || stored.checkedCanonicalCandidateHash !== binding.checkedCanonicalCandidateHash
     || stored.selectedAssetsMatchPhysicalSql !== true || ['finalAssetClosureComplete','portableAssetsInstalled','acceptedCoverage','effective','installPermit']
       .some(key => stored[key] !== false)) return fail('未知版本、原候选或持久哈希不符')
-  const { sql, assets } = await withRootRestoreStageInputs5(reference, binding.pendingCellProofHash, async scope => {
+  const reopen = async (scope: RootRestoreStageInputs5) => {
     const sql = await reopenRootRestorePhysicalStage3(reference,
       { stageId: durableSqlDagUuid(stored.sqlStageId), expectedManifestHash: durableSqlDagHash(stored.sqlManifestHash) }, scope)
     const assets = await reopenRootRestoreWorkingAssetStage5(reference,
       { stageId: durableSqlDagUuid(stored.assetStageId), expectedManifestHash: durableSqlDagHash(stored.assetManifestHash) }, scope)
     return { sql, assets }
-  })
+  }
+  const { sql, assets } = scope ? await reopen(scope) : await withRootRestoreStageInputs5(reference, binding.pendingCellProofHash, reopen)
   const saved = { reference, stageId, expectedManifestHash, sql: sql.stage, assets: assets.stage }
   const result = await finish(saved, binding, sql.value, assets.value, 'verify')
   return Object.freeze({ ...result, stage: mint(saved), sql, assets })

@@ -1,10 +1,11 @@
 import { parseDatabaseViewPayload } from '../../shared/databaseViewBlock'
 import { capsuleBytesHash, capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
+import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
 import { CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-model'
-import { graph3Conflict, graph3Key, graph3PatchTable, graph3Rows, graph3Text, type Graph3Inputs } from './restore-knowledge-graph3-data'
+import { graph3Conflict, graph3Key, graph3PatchTable, graph3Text, graph3Value, type Graph3Inputs } from './restore-knowledge-graph3-data'
 import { applyMerge3DocumentLayout3 } from './restore-knowledge-merge3-layout'
 import { MERGE3_PHYSICAL_TABLES, selectMerge3PhysicalRows3 } from './restore-knowledge-merge3-physical'
-import { MERGE3_CONTENT_TABLES, assertMerge3JsonBudget, assertMerge3StorageTablesBudget, finishMerge3Table, merge3RowValues, prepareMerge3Table,
+import { MERGE3_CONTENT_TABLES, assertMerge3JsonBudget, assertMerge3StorageTablesBudget, finishMerge3Table, prepareMerge3Table,
   type FinishedMerge3Table, type Merge3ContentTable, type Merge3InputRow,
   type Merge3RowDisposition, type Merge3SelectedRow, type PreparedMerge3Table } from './restore-knowledge-merge3-storage'
 import { deriveRootRestoreTemplateReferences3 } from './restore-knowledge-template3-model'
@@ -35,25 +36,33 @@ function normalizeChoices(input?: Merge3Choices): Merge3Choices {
   return value.anonymousValues === 'source' || value.anonymousValues === 'current' || value.anonymousValues === 'unresolved'
     ? { anonymousValues: value.anonymousValues } : graph3Conflict('merge-anonymous-choice', value.anonymousValues)
 }
-function decoded(table: PreparedMerge3Table, side: 'source' | 'current'): Row[] {
-  return (side === 'source' ? table.sourceRows : table.currentRows).map(row => ({ row, value: merge3RowValues(table, row) }))
+function* policyRows(table: PreparedMerge3Table, side: 'source' | 'current', columns: readonly string[]): IterableIterator<Row> {
+  const indexes = columns.map(column => table.columns.indexOf(column))
+  if (indexes.includes(-1)) return graph3Conflict('merge-policy-projection-column', table.name)
+  // prepareMerge3Table validated every cell in both original and target
+  // encodings. The policy only needs coordinates in the prepared target.
+  for (const row of side === 'source' ? table.sourceRows : table.currentRows) {
+    const value = Object.fromEntries(columns.map((column, index) => [column, graph3Value(row.cells[indexes[index]], table.targetEncoding)]))
+    yield { row, value }
+  }
 }
-function byOwner(entries: readonly Row[], column: string, predicate: (row: Row) => boolean = () => true): Map<string, Row[]> {
-  const result = new Map<string, Row[]>()
+function byOwner(entries: Iterable<Row>, column: string, predicate: (row: Row) => boolean = () => true): Map<string, string[]> {
+  const result = new Map<string, string[]>()
   for (const entry of entries) {
     if (!predicate(entry)) continue
     const owner = nullableText(entry.value[column])
     if (owner === null) continue
-    const values = result.get(owner) ?? []; values.push(entry); result.set(owner, values)
+    const keys = result.get(owner) ?? []; keys.push(entry.row.key); result.set(owner, keys)
   }
   return result
 }
-function finalRows(table: FinalTable): FinalEntry[] {
-  return table.rows.map(row => ({ row, value: Object.fromEntries(table.columns.map((column, index) => {
-    const cell = row.cells[index]
-    return [column, cell[0] === 'null' ? null : cell[0] === 'text' ? graph3Text(cell, table.encoding)
-      : cell[0] === 'integer' ? BigInt(cell[1]) : cell[0] === 'real-ieee754-le' ? Buffer.from(cell[1], 'hex').readDoubleLE() : Buffer.from(cell[1], 'base64')]
-  })) }))
+function* finalRows(table: FinalTable, columns: readonly string[]): IterableIterator<FinalEntry> {
+  const indexes = columns.map(column => table.columns.indexOf(column))
+  if (indexes.includes(-1)) return graph3Conflict('merge-final-projection-column', table.name)
+  for (const row of table.rows) {
+    const value = Object.fromEntries(columns.map((column, index) => [column, graph3Value(row.cells[indexes[index]], table.encoding)]))
+    yield { row, value }
+  }
 }
 
 /** Complete current-aware BUSINESS candidate, not an installation plan. Every
@@ -87,13 +96,20 @@ export function deriveRootRestoreMergedContent3(data: Graph3Inputs, inputChoices
   // the intentionally identified source/target default catalogs. Original
   // source bytes and refs remain untouched; this is a declared candidate patch.
   for (const name of definitionTables) {
-    const target = new Map(graph3Rows(current, name).map(row => [text(row.value.id), row]))
+    const currentTable = original('current', name)
+    const idColumn = currentTable.columns.indexOf('id'), birthColumn = currentTable.columns.indexOf('created_at')
+    if (idColumn < 0 || birthColumn < 0) return graph3Conflict('merge-definition-birth-columns', name)
+    const target = new Map<string, { readonly sourceRowId: string; readonly birth: unknown }>()
+    for (const row of currentTable.rows) {
+      target.set(text(graph3Value(row.cells[idColumn], current.encoding)),
+        { sourceRowId: row.sourceRowId, birth: graph3Value(row.cells[birthColumn], current.encoding) })
+    }
     const candidate = candidateByName.get(name) ?? graph3Conflict('merge-upstream-definition-table', name)
     candidateByName.set(name, graph3PatchTable(candidate, source.encoding, (row, sourceRowId): Record<string, string | null | bigint> => {
       const old = target.get(text(row.id))
-      if (!old || row.created_at === old.value.created_at) return {}
-      const value = text(old.value.created_at)
-      birthChanges.push({ table: name, sourceRowId, currentRowId: old.original.sourceRowId, value })
+      if (!old || row.created_at === old.birth) return {}
+      const value = text(old.birth)
+      birthChanges.push({ table: name, sourceRowId, currentRowId: old.sourceRowId, value })
       return { created_at: value }
     }))
   }
@@ -101,40 +117,46 @@ export function deriveRootRestoreMergedContent3(data: Graph3Inputs, inputChoices
     sourceCandidate: candidateByName.get(name) ?? graph3Conflict('merge-upstream-table', name), currentOriginal: original('current', name),
     sourceEncoding: source.encoding, currentEncoding: current.encoding, source: sourceMaterial, current: currentMaterial }))
   const byName = new Map(prepared.map(table => [table.name, table]))
-  const rows = new Map(prepared.map(table => [table.name, { source: decoded(table, 'source'), current: decoded(table, 'current') }]))
+  const policy = (name: Merge3ContentTable, columns: readonly string[]) => {
+    const table = byName.get(name)!
+    return { source: [...policyRows(table, 'source', columns)], current: [...policyRows(table, 'current', columns)] }
+  }
   const physical = selectMerge3PhysicalRows3(data, prepared)
   const selections = new Map<Merge3ContentTable, { selectedRows: readonly Merge3SelectedRow[]; dispositions: readonly Merge3RowDisposition[] }>(
     physical.tables.map(table => [table.name, table]))
   const conflicts: Merge3Conflict[] = [...physical.conflicts]
   const replacementScopes: Merge3ReplacementScope[] = []
   function scope(table: Merge3ContentTable, ownerKind: Merge3ReplacementScope['ownerKind'], ownerId: string | null,
-    sourceRows: readonly Row[], currentRows: readonly Row[], policy: string): void {
+    sourceRowKeys: readonly string[], currentRowKeys: readonly string[], policy: string): void {
     replacementScopes.push({ key: decision('merge-scope', [table, ownerKind, ownerId, policy]), table, ownerKind, ownerId,
-      sourceRowKeys: sourceRows.map(row => row.row.key), currentRowKeys: currentRows.map(row => row.row.key), policy })
+      sourceRowKeys, currentRowKeys, policy })
   }
   const addConflict = (code: string, table: Merge3ContentTable, entries: readonly Row[], detail: unknown) =>
     conflicts.push({ code, table, rowKeys: entries.map(entry => entry.row.key), detail })
   // Definition rows use exact transformed target PKs. No source-absent
   // database/catalog definition is pruned by this new current-aware policy.
   for (const name of definitionTables) {
-    const values = rows.get(name)!, old = new Map(values.current.map(row => [pkKey(row.row)!, row]))
-    if ([...values.source, ...values.current].some(entry => entry.row.primaryKeyCells === null)) return graph3Conflict('merge-definition-null-pk', name)
-    const incoming = new Set(values.source.map(row => pkKey(row.row)!)), selectedRows: Merge3SelectedRow[] = [], dispositions: Merge3RowDisposition[] = []
-    for (const entry of values.source) {
-      const previous = old.get(pkKey(entry.row)!)
-      selectedRows.push({ rowKey: entry.row.key, replaceCurrentRowKey: previous?.row.key ?? null })
-      dispositions.push({ rowKey: entry.row.key, status: 'selected', decision: decision('source-definition-exact-target-pk', name) })
+    const { sourceRows, currentRows } = byName.get(name)!, old = new Map(currentRows.map(row => [pkKey(row)!, row]))
+    if (sourceRows.some(row => row.primaryKeyCells === null) || currentRows.some(row => row.primaryKeyCells === null))
+      return graph3Conflict('merge-definition-null-pk', name)
+    const incoming = new Set(sourceRows.map(row => pkKey(row)!)), selectedRows: Merge3SelectedRow[] = [], dispositions: Merge3RowDisposition[] = []
+    for (const row of sourceRows) {
+      const previous = old.get(pkKey(row)!)
+      selectedRows.push({ rowKey: row.key, replaceCurrentRowKey: previous?.key ?? null })
+      dispositions.push({ rowKey: row.key, status: 'selected', decision: decision('source-definition-exact-target-pk', name) })
     }
-    for (const entry of values.current) {
-      const replaced = incoming.has(pkKey(entry.row)!)
-      if (!replaced) selectedRows.push({ rowKey: entry.row.key, replaceCurrentRowKey: null })
-      dispositions.push({ rowKey: entry.row.key, status: replaced ? 'replaced' : 'selected',
+    for (const row of currentRows) {
+      const replaced = incoming.has(pkKey(row)!)
+      if (!replaced) selectedRows.push({ rowKey: row.key, replaceCurrentRowKey: null })
+      dispositions.push({ rowKey: row.key, status: replaced ? 'replaced' : 'selected',
         decision: decision(replaced ? 'source-definition-exact-target-pk' : 'unparticipating-current-definition-retained', name) })
     }
     selections.set(name, { selectedRows, dispositions })
-    scope(name, 'definition', null, values.source, values.current, 'source-exact-target-pk-current-others-retained-target-birth-preserved')
+    scope(name, 'definition', null, sourceRows.map(row => row.key), currentRows.map(row => row.key),
+      'source-exact-target-pk-current-others-retained-target-birth-preserved')
   }
-  const templateValues = rows.get('document_templates')!, currentTemplates = new Map(templateValues.current.map(row => [pkKey(row.row)!, row]))
+  const templateValues = policy('document_templates', ['id', 'created_at'])
+  const currentTemplates = new Map(templateValues.current.map(row => [pkKey(row.row)!, row]))
   const sourceTemplates = new Map(templateValues.source.map(row => [pkKey(row.row)!, row]))
   const templateRows: Merge3SelectedRow[] = [], templateDispositions: Merge3RowDisposition[] = [], replacedTemplates = new Set<string>()
   for (const entry of templateValues.source) {
@@ -152,7 +174,7 @@ export function deriveRootRestoreMergedContent3(data: Graph3Inputs, inputChoices
       if (old) replacedTemplates.add(old.row.key)
       templateDispositions.push({ rowKey: entry.row.key, status: 'selected', decision: decision(old ? 'template-source-exact-workspace-birth-row' : 'template-source-free-id-insert', text(entry.value.id)) })
     }
-    scope('document_templates', 'template', text(entry.value.id), [entry], old ? [old] : [], compatible
+    scope('document_templates', 'template', text(entry.value.id), [entry.row.key], old ? [old.row.key] : [], compatible
       ? 'explicit-source-whole-template-row-exact-workspace-id-birth' : old ? 'unallocated-template-collision-current-display-source-conflict' : 'source-free-template-id-insert')
   }
   for (const entry of templateValues.current) {
@@ -160,16 +182,18 @@ export function deriveRootRestoreMergedContent3(data: Graph3Inputs, inputChoices
     if (!replaced) templateRows.push({ rowKey: entry.row.key, replaceCurrentRowKey: null })
     templateDispositions.push({ rowKey: entry.row.key, status: replaced ? 'replaced' : 'selected',
       decision: decision(replaced ? 'template-source-exact-workspace-birth-row' : 'current-template-retained', text(entry.value.id)) })
-    if (!sourceTemplates.has(pkKey(entry.row)!)) scope('document_templates', 'template', text(entry.value.id), [], [entry], 'current-template-outside-source-retained')
+    if (!sourceTemplates.has(pkKey(entry.row)!)) scope('document_templates', 'template', text(entry.value.id), [], [entry.row.key], 'current-template-outside-source-retained')
   }
   selections.set('document_templates', { selectedRows: templateRows, dispositions: templateDispositions })
 
   const documents = new Set(physical.participatingDocumentIds)
-  const entities = new Set(rows.get('database_entities')!.source.map(entry => text(entry.value.id)))
+  const entities = new Set<string>()
+  for (const entry of policyRows(byName.get('database_entities')!, 'source', ['id'])) entities.add(text(entry.value.id))
   selectEntityValues()
   selectDocumentAndLegacyValues()
   function selectEntityValues(): void {
-    const name = 'database_entity_values', values = rows.get(name)!, currentByPk = new Map(values.current.map(entry => [pkKey(entry.row)!, entry]))
+    const name = 'database_entity_values', values = policy(name, ['entity_id'])
+    const currentByPk = new Map(values.current.map(entry => [pkKey(entry.row)!, entry]))
     const selectedRows: Merge3SelectedRow[] = [], dispositions: Merge3RowDisposition[] = []
     for (const entry of values.source) {
       const owner = text(entry.value.entity_id)
@@ -190,7 +214,8 @@ export function deriveRootRestoreMergedContent3(data: Graph3Inputs, inputChoices
     selections.set(name, { selectedRows, dispositions })
   }
   function selectDocumentAndLegacyValues(): void {
-    const name = 'document_database_values', values = rows.get(name)!, selectedRows: Merge3SelectedRow[] = [], dispositions: Merge3RowDisposition[] = []
+    const name = 'document_database_values', values = policy(name, ['document_id', 'entity_id'])
+    const selectedRows: Merge3SelectedRow[] = [], dispositions: Merge3RowDisposition[] = []
     const anonymous = (entry: Row) => entry.value.document_id === null && entry.value.entity_id === null
     const sourceAnonymous = values.source.filter(anonymous), currentAnonymous = values.current.filter(anonymous)
     const anonymousSide = choices.anonymousValues !== 'unresolved' ? choices.anonymousValues
@@ -241,7 +266,8 @@ export function deriveRootRestoreMergedContent3(data: Graph3Inputs, inputChoices
     if (anonymousSide === 'unresolved') addConflict('anonymous-value-collections-require-explicit-whole-choice', name,
       [...sourceAnonymous, ...currentAnonymous], { sourceOccurrences: sourceAnonymous.length, currentOccurrences: currentAnonymous.length,
         currentDisplayed: true, sourceCurrentOccurrencesComparedByValue: false, preserveUnresolved: true })
-    scope(name, 'anonymous-collection', null, sourceAnonymous, currentAnonymous, 'whole-anonymous-family-' + anonymousSide)
+    scope(name, 'anonymous-collection', null, sourceAnonymous.map(entry => entry.row.key), currentAnonymous.map(entry => entry.row.key),
+      'whole-anonymous-family-' + anonymousSide)
     const sourceByDocument = byOwner(values.source, 'document_id'), currentByDocument = byOwner(values.current, 'document_id')
     const sourceByEntity = byOwner(values.source, 'entity_id', row => row.value.document_id === null)
     const currentByEntity = byOwner(values.current, 'entity_id', row => row.value.document_id === null)
@@ -253,17 +279,19 @@ export function deriveRootRestoreMergedContent3(data: Graph3Inputs, inputChoices
   }
   // Physical forests have the same explicit owner scopes as their selector.
   for (const name of MERGE3_PHYSICAL_TABLES) {
-    const values = rows.get(name)!
+    const table = byName.get(name)!
     if (name === 'blocks' || name === 'synced_instances') {
       const column = name === 'blocks' ? 'document_id' : 'host_document_id'
-      const sourceByHost = byOwner(values.source, column), currentByHost = byOwner(values.current, column)
+      const sourceByHost = byOwner(policyRows(table, 'source', [column]), column), currentByHost = byOwner(policyRows(table, 'current', [column]), column)
       for (const owner of documents) scope(name, 'document', owner, sourceByHost.get(owner) ?? [], currentByHost.get(owner) ?? [], 'source-whole-host-forest')
     } else if (name === 'synced_group_blocks') {
-      const sourceByGroup = byOwner(values.source, 'group_id'), currentByGroup = byOwner(values.current, 'group_id')
+      const column = 'group_id'
+      const sourceByGroup = byOwner(policyRows(table, 'source', [column]), column), currentByGroup = byOwner(policyRows(table, 'current', [column]), column)
       for (const owner of physical.participatingGroupIds)
         scope(name, 'group', owner, sourceByGroup.get(owner) ?? [], currentByGroup.get(owner) ?? [], 'source-whole-canonical-forest')
     }
-    else scope(name, name === 'documents' ? 'document' : 'group', null, values.source, values.current, 'source-exact-header-current-unparticipating-retained')
+    else scope(name, name === 'documents' ? 'document' : 'group', null, table.sourceRows.map(row => row.key),
+      table.currentRows.map(row => row.key), 'source-exact-header-current-unparticipating-retained')
   }
   const finished = prepared.map(table => {
     const selection = selections.get(table.name) ?? graph3Conflict('merge-missing-table-dispositions', table.name)
@@ -314,25 +342,30 @@ export function deriveRootRestoreMergedContent3(data: Graph3Inputs, inputChoices
     catalogNameNativeCheckPending: true as const, referenceRewriteComplete: false as const,
     semanticValidationComplete: false as const, acceptedCoverage: false as const, effective: false as const, permit: false as const }
   assertMerge3JsonBudget(body)
-  const encoded = capsuleJson(body)
-  if (Buffer.byteLength(encoded) > CAPSULE2_RAW_MAX_JSON_BYTES) return graph3Conflict('complete-merged-content-budget', null)
-  return freezeCapsuleValue({ ...body, mergedContentHash: capsuleBytesHash('knowbook.restore.merge3.content.v1\0' + encoded) })
+  const mergedContentHash = hashBoundedCapsuleJson(body, CAPSULE2_RAW_MAX_JSON_BYTES, 'knowbook.restore.merge3.content.v1\0')
+    ?? graph3Conflict('complete-merged-content-budget', null)
+  return freezeCapsuleValue({ ...body, mergedContentHash })
 }
 
 function validateCatalogRelations(tables: readonly FinalTable[], catalogId: string): Merge3Conflict[] {
-  const byName = new Map(tables.map(table => [table.name, finalRows(table)])), conflicts: Merge3Conflict[] = []
-  const definitions = (name: 'documents' | 'databases' | 'document_database_columns' | 'database_saved_views' | 'database_entities') => {
-    const rows = byName.get(name)!, values = new Map(rows.map(row => [text(row.value.id), row]))
-    if (values.size !== rows.length) return graph3Conflict('merge-final-definition-pk', name)
+  const byName = new Map(tables.map(table => [table.name, table])), conflicts: Merge3Conflict[] = []
+  const definitions = (name: 'documents' | typeof definitionTables[number], columns: readonly string[] = []) => {
+    const table = byName.get(name)!, values = new Map<string, FinalEntry>()
+    for (const entry of finalRows(table, ['id', ...columns])) values.set(text(entry.value.id), entry)
+    if (values.size !== table.rows.length) return graph3Conflict('merge-final-definition-pk', name)
     return values
   }
-  const documents = definitions('documents'), databases = definitions('databases'), columns = definitions('document_database_columns')
-  const views = definitions('database_saved_views'), entities = definitions('database_entities')
+  const documents = definitions('documents'), databases = definitions('databases')
+  const columns = definitions('document_database_columns', ['database_id']), views = definitions('database_saved_views', ['database_id'])
+  const entities = definitions('database_entities', ['database_id', 'document_id'])
   const conflict = (code: string, table: Merge3ContentTable, rows: readonly FinalEntry[], detail: unknown) =>
     conflicts.push({ code, table, rowKeys: rows.map(row => row.row.key), detail })
   if (!databases.has(catalogId)) conflict('merged-default-catalog-missing', 'databases', [], { catalogId })
-  for (const name of ['document_database_columns', 'database_saved_views', 'database_entities'] as const) for (const entry of byName.get(name)!) {
-    if (!databases.has(text(entry.value.database_id))) conflict('merged-catalog-definition-database-missing', name, [entry], { databaseId: text(entry.value.database_id) })
+  for (const [name, definitions] of [['document_database_columns', columns], ['database_saved_views', views], ['database_entities', entities]] as const) {
+    for (const entry of definitions.values()) {
+      const databaseId = text(entry.value.database_id)
+      if (!databases.has(databaseId)) conflict('merged-catalog-definition-database-missing', name, [entry], { databaseId })
+    }
   }
   const linkedDocuments = new Map<string, FinalEntry>()
   for (const entry of entities.values()) {
@@ -343,7 +376,8 @@ function validateCatalogRelations(tables: readonly FinalTable[], catalogId: stri
     if (old) conflict('merged-entity-document-owner-not-unique', 'database_entities', [old, entry], { databaseId: text(entry.value.database_id), documentId })
     else linkedDocuments.set(key, entry)
   }
-  for (const name of ['database_entity_values', 'document_database_values'] as const) for (const entry of byName.get(name)!) {
+  for (const name of ['database_entity_values', 'document_database_values'] as const) for (const entry of finalRows(byName.get(name)!,
+    name === 'document_database_values' ? ['column_id', 'entity_id', 'document_id'] : ['column_id', 'entity_id'])) {
     const fieldId = text(entry.value.column_id), field = columns.get(fieldId), entityId = nullableText(entry.value.entity_id)
     if (!field) conflict('merged-value-column-missing', name, [entry], { columnId: fieldId })
     if (name === 'document_database_values') {
@@ -360,11 +394,15 @@ function validateCatalogRelations(tables: readonly FinalTable[], catalogId: stri
   }
   // Missing authored targets stay missing. Only an actually present saved view
   // with another database owner is contradictory, exactly as the raw reader.
-  for (const name of ['blocks', 'synced_group_blocks'] as const) for (const entry of byName.get(name)!) if (entry.value.type === 'database-view') {
-    const atom = parseDatabaseViewPayload(text(entry.value.content)), view = atom.viewId === null ? undefined : views.get(atom.viewId)
-    if (view && view.value.database_id !== atom.databaseId) conflict('merged-physical-view-database-owner-mismatch', name, [entry, view], {
-      databaseId: atom.databaseId, viewId: atom.viewId
-    })
+  for (const name of ['blocks', 'synced_group_blocks'] as const) {
+    const table = byName.get(name)!, content = table.columns.indexOf('content')
+    for (const entry of finalRows(table, ['type'])) if (entry.value.type === 'database-view') {
+      const atom = parseDatabaseViewPayload(text(graph3Value(entry.row.cells[content], table.encoding)))
+      const view = atom.viewId === null ? undefined : views.get(atom.viewId)
+      if (view && view.value.database_id !== atom.databaseId) conflict('merged-physical-view-database-owner-mismatch', name, [entry, view], {
+        databaseId: atom.databaseId, viewId: atom.viewId
+      })
+    }
   }
   return conflicts
 }

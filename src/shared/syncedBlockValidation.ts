@@ -149,6 +149,22 @@ export function syncedCanonicalEdits(blocks: readonly SyncedCanonicalWire[]): Sy
   return validateSyncedCanonicalEdit(blocks.map(({ createdAt: _createdAt, ...block }) => block))
 }
 
+/** Find the sole moved occurrence in an ordered, validated host forest. */
+export function readSingleMovedSyncedReference<T extends Pick<SyncedStableBlockDraft, 'type' | 'depth'> & { id?: string }>(
+  forest: readonly T[], rootId: string): T | undefined {
+  const start = forest.findIndex(block => block.id === rootId), root = forest[start]
+  if (root?.type === 'synced-block') return root
+  if (!root || !isListBlockType(root.type)) return undefined
+  let reference: T | undefined
+  for (let index = start + 1; index < forest.length && forest[index].depth > root.depth; index++) {
+    const block = forest[index]
+    if (block.type !== 'synced-block') continue
+    if (reference) return undefined
+    reference = block
+  }
+  return reference
+}
+
 /** Projection depth is transparent: the instance consumes no extra child level. */
 export function validateSyncedCanonicalProjection(blocks: readonly SyncedCanonicalEdit[], instances: readonly SyncedInstancePosition[]): void {
   if (!blocks.length) return fail('forest')

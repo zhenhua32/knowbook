@@ -20,8 +20,8 @@ export function normalizeComparableDocumentTitle(title: string): string {
 }
 
 export function areDocumentDraftBlocksEqual(
-  left: DocumentBlockDraft[],
-  right: DocumentBlockDraft[]
+  left: readonly DocumentBlockDraft[],
+  right: readonly DocumentBlockDraft[]
 ): boolean {
   if (left === right) {
     return true

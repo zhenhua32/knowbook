@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3'
-import type { SyncedGroupListResult, SyncedGroupSnapshotsResult, SyncedHistoryState } from '../../shared/synced-blocks'
+import type { SyncedGroupIdentityListResult, SyncedGroupListResult, SyncedGroupSnapshotsResult, SyncedHistoryState } from '../../shared/synced-blocks'
 import { assertSyncedShape, isSyncedBlockId, isSyncedUuid, SYNCED_MAX_BLOCKS, SyncedValidationError } from '../../shared/syncedBlockValidation'
 import { assertSyncedLifecycleCoverage } from './synced-lifecycle-state'
 import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-read'
@@ -29,13 +29,14 @@ export function getSyncedGroupSnapshots(db: Database.Database, input: unknown): 
   })()
 }
 
-export function listSyncedGroups(db: Database.Database, input: unknown): SyncedGroupListResult {
-  assertSyncedShape(input, ['query', 'offset', 'limit'])
+export function listSyncedGroups(db: Database.Database, input: unknown): SyncedGroupListResult | SyncedGroupIdentityListResult {
+  assertSyncedShape(input, ['query', 'offset', 'limit'], ['includeCreationId'])
   if (typeof input.query !== 'string' || typeof input.offset !== 'number' || !Number.isSafeInteger(input.offset) || input.offset < 0
-    || typeof input.limit !== 'number' || !Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100) {
+    || typeof input.limit !== 'number' || !Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > 100
+    || Object.hasOwn(input, 'includeCreationId') && input.includeCreationId !== true) {
     return invalid('forest', '同步组搜索或分页参数无效。')
   }
-  const { query, offset, limit } = input
+  const { query, offset, limit, includeCreationId } = input
   return db.transaction(() => {
     workspaceScope(db)
     const lifecycle = (db.pragma('user_version', { simple: true }) as number) >= 27
@@ -55,7 +56,8 @@ export function listSyncedGroups(db: Database.Database, input: unknown): SyncedG
     return { total, items: page.map(({ id }) => {
       const snapshot = snapshots.get(id)
       if (!snapshot) throw new Error('同一读取事务中的同步组消失。')
-      return { groupId: id, originPath: snapshot.origin.pathAtCreation, liveInstances: snapshot.instances.length,
+      return { groupId: id, ...(includeCreationId ? { creationId: snapshot.creationId } : {}),
+        originPath: snapshot.origin.pathAtCreation, liveInstances: snapshot.instances.length,
         preview: snapshot.blocks.filter(block => !['columns', 'column', 'database-view'].includes(block.type))
           .map(block => block.content).join('\n').replace(/\s+/g, ' ').trim().slice(0, 200) }
     }) }

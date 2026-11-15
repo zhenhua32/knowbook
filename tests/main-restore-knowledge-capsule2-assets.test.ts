@@ -12,7 +12,8 @@ import { readRawCapsule2AssetReferencesOwned, type RawCapsule2AssetReferences } 
 import { readRawCapsule2ContentOwned } from '../src/main/database/restore-knowledge-capsule2-content-raw-read'
 import { readRawCapsule2WorkspaceHistoryOwned } from '../src/main/database/restore-knowledge-capsule2-workspace-history-read'
 import { withCapsule2RawCopy } from './helpers/capsule2-raw-fixture'
-import { created, createRequest, applySyncedHostCommand, snapshot, withV3Fixture, type V3Fixture } from './helpers/synced-backup-v3-fixture'
+import { addV3Assets, created, createRequest, applySyncedHostCommand, snapshot, withV3Fixture, type V3Fixture } from './helpers/synced-backup-v3-fixture'
+import { editCreatedGroup } from './helpers/synced-host-command-create-fixture'
 
 const block = (id: string, content: string, type = 'paragraph'): DocumentBlockDraft => ({ id, type, content, checked: false, depth: 0, parentBlockId: null })
 const urls = (value: RawCapsule2AssetReferences) => value.scopes.flatMap(scope => scope.destinations.map(item => item.uri))
@@ -63,6 +64,22 @@ test('capsule2 asset discovery reads real ordinary and canonical scopes with bot
     assert.equal(value.kind, 'capsule2-known-markdown-asset-references')
     assert.equal(value.version, 3)
     assert.ok(value.unresolved.includes('remaining-policy-held-payload-asset-scopes'))
+  })
+}))
+
+test('capsule2 asset discovery keeps every genuine operation across SQLite page boundaries', () => withV3Fixture(async f => {
+  const { groupId, ids, attachments } = await addV3Assets(f)
+  const expected = new Set<string>()
+  for (let index = 0; index < 130; index++) {
+    const next = snapshot(f.db, groupId).blocks.map(({ createdAt: _birth, ...block }) =>
+      block.id === ids[4] ? { ...block, content: 'Edition ' + index } : block)
+    expected.add(editCreatedGroup(f.db, groupId, next).operationId)
+  }
+  await observe(f, value => {
+    const snapshots = value.scopes.filter(scope => scope.source[0] === 'synced_operations' && scope.source[3] === 'snapshot')
+    assert.deepEqual(new Set(snapshots.map(scope => scope.source[1])), expected)
+    for (const scope of snapshots) for (const attachment of attachments)
+      assert.ok(scope.destinations.some(destination => destination.uri === attachment.url))
   })
 }))
 

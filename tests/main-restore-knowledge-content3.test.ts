@@ -46,6 +46,8 @@ test('Main content plan selects every exact incoming business table, binds both 
   }
   assert.equal(value.sourceMaterialHash, f.sourcePacket.materialHash); assert.equal(value.currentMaterialHash, f.currentPacket.materialHash)
   assert.equal(value.sourceAssetArchiveHash, f.sourcePacket.assetArchiveHash); assert.equal(value.currentAssetArchiveHash, f.currentPacket.assetArchiveHash)
+  const { selectionHash, ...selection } = value
+  assert.equal(selectionHash, capsuleBytesHash('knowbook.restore.content3.selection.v1\0' + capsuleJson(selection)))
   assert.notEqual(value.selectionHash, value.conservationHash)
   assert.equal(value.originalInputClosureAuthenticated, true)
   for (const flag of ['sourcePolicyReplayAllowed', 'semanticValidationComplete', 'acceptedCoverage', 'effective', 'permit'] as const) assert.equal(value[flag], false)

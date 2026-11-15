@@ -50,12 +50,16 @@ export function readProtocol5DeletionSelection(value: unknown): ResolveWebDavPro
 export function protocol5ModeKey(target: WebDavSyncConfig): string {
   return CLIENT_SETTINGS_PREFIX + 'opt-in.v1.' + exchangeTargetFingerprint(target)
 }
-function routeKey(target: WebDavSyncConfig): string {
+export function protocol5RouteKey(target: WebDavSyncConfig): string {
   return CLIENT_SETTINGS_PREFIX + 'route.v1.' + exchangeTargetFingerprint(target)
 }
 
 function loadRoute(store: KnowbookStore, target: WebDavSyncConfig): Route | null {
-  const raw = store.getSettingPublic(routeKey(target))
+  const raw = store.getSettingPublic(protocol5RouteKey(target))
+  return decodeProtocol5Route(raw, target)
+}
+
+export function decodeProtocol5Route(raw: string | null, target: WebDavSyncConfig): Route | null {
   if (raw === null) return null
   const value = parseStrictJson(raw, { maxBytes: 16 * 1024, maxDepth: 4 })
   assertSyncedShape(value, ['workspace', 'lastSyncAt', 'pending'])
@@ -102,6 +106,14 @@ export function protocol5LastSyncAt(store: KnowbookStore, target: WebDavSyncConf
   try { return loadRoute(store, target)?.lastSyncAt ?? null } catch { return null }
 }
 
+export function protocol5NeedsRestoreRejoin(store: KnowbookStore, target: WebDavSyncConfig): boolean {
+  try {
+    const route = loadRoute(store, target), current = store.getEditorRecoveryWorkspace()
+    return !!route?.lastSyncAt && !route.pending && current.workspaceScope === route.workspace.workspaceScope
+      && current.recoveryEpoch !== route.workspace.recoveryEpoch
+  } catch { return false }
+}
+
 function bindRoute(store: KnowbookStore, target: WebDavSyncConfig) {
   const workspace = store.getEditorRecoveryWorkspace()
   const route = loadRoute(store, target) ?? { workspace, lastSyncAt: null, pending: null }
@@ -113,7 +125,7 @@ function bindRoute(store: KnowbookStore, target: WebDavSyncConfig) {
   }
   const persist = (pending: Pending | null, lastSyncAt = route.lastSyncAt) => {
     assertCurrent()
-    store.saveSetting(routeKey(target), JSON.stringify({ ...route, pending, lastSyncAt }))
+    store.saveSetting(protocol5RouteKey(target), JSON.stringify({ ...route, pending, lastSyncAt }))
   }
   assertCurrent()
   return { route, assertCurrent, persist }

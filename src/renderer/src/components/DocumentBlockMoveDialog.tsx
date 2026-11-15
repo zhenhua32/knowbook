@@ -1,11 +1,15 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import type { DocumentTreeNode } from '@shared/contracts'
+import type { DocumentBlockDraft, DocumentDetail, DocumentTreeNode } from '@shared/contracts'
+import { isListBlockType } from '@shared/blockTypes'
+import { planDocumentBlockTransfer } from '@shared/documentBlockTransfer'
+import { readSingleMovedSyncedReference, SYNCED_MAX_DEPTH } from '@shared/syncedBlockValidation'
 import { useDialogActionFocus } from '../hooks/useDialogActionFocus'
 import { useDialogCloseFocus } from '../hooks/useDialogCloseFocus'
 import { trapFocusWithinDialog } from '../utils/dialogFocus'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 import { getErrorMessage } from '../utils/errorMessage'
+import { clearStagedCrossPageMove, readStagedCrossPageMove, type BlockMoveDestination, type CrossPageMoveMode } from '../utils/blockMoveActions'
 import './document-capture.css'
 import './document-block-move.css'
 
@@ -13,12 +17,12 @@ export type DocumentBlockMoveDialogProps = {
   isZh: boolean
   sourceDocumentId: string
   sourceDocumentTitle: string
-  selectedBlockCount: number
+  selection: { blocks: DocumentBlockDraft[]; blockIds: readonly string[] }
   documents: DocumentTreeNode[]
   busy: boolean
   error?: string | null
   onClose: () => void
-  onMove: (targetDocumentId: string) => Promise<boolean> | boolean
+  onMove: (destination: BlockMoveDestination) => Promise<boolean> | boolean
   opener?: HTMLElement | null
   canOpen?: () => boolean
   canReturnFocus?: () => boolean
@@ -29,13 +33,15 @@ function flattenDocuments(nodes: DocumentTreeNode[]): DocumentTreeNode[] {
 }
 
 export default function DocumentBlockMoveDialog(props: DocumentBlockMoveDialogProps) {
-  const { isZh, sourceDocumentId, sourceDocumentTitle, selectedBlockCount, documents, busy, error, onMove } = props
+  const { isZh, sourceDocumentId, sourceDocumentTitle, selection, documents, busy, error, onMove } = props
   const currentProps = useRef(props)
   currentProps.current = props
   const dialog = useRef<HTMLDialogElement>(null), search = useRef<HTMLInputElement>(null)
   const selectedControl = useRef<HTMLInputElement | null>(null)
   const mounted = useRef(false), submittingLock = useRef(false), composing = useRef(false)
   const [query, setQuery] = useState(''), [targetId, setTargetId] = useState('')
+  const [targetDetail, setTargetDetail] = useState<DocumentDetail | null>(null), [parentId, setParentId] = useState('')
+  const [staged, setStaged] = useState(readStagedCrossPageMove)
   const [submitting, setSubmitting] = useState(false), [localError, setLocalError] = useState('')
   const labelId = useId(), hintId = useId(), formId = useId(), destinationsId = useId()
   const actionFocus = useDialogActionFocus(dialog), trackCloseFocus = useDialogCloseFocus()
@@ -45,7 +51,23 @@ export default function DocumentBlockMoveDialog(props: DocumentBlockMoveDialogPr
     return available.filter(node => !filter || `${node.title}\n${node.path}`.toLocaleLowerCase().includes(filter))
   }, [available, query])
   const target = available.find(node => node.id === targetId)
+  const selectedBlockCount = useMemo(() => planDocumentBlockTransfer({ from: selection.blocks, to: [], selectedIds: selection.blockIds,
+    allowSyncedPlaceholders: true })?.movedIds.length ?? selection.blockIds.length, [selection])
+  const selected = useMemo(() => selection.blockIds.length === 1
+    ? readSingleMovedSyncedReference(selection.blocks, selection.blockIds[0]) : undefined, [selection])
+  const listTarget = selected && selected.depth > 0 ? target?.id : undefined
+  const parents = targetDetail && listTarget === targetDetail.id
+    ? targetDetail.blocks.filter(block => isListBlockType(block.type) && block.depth < SYNCED_MAX_DEPTH) : []
   const disabled = busy || submitting
+
+  useEffect(() => {
+    if (!listTarget) return
+    let current = true
+    void window.knowbook.getDocumentDetail(listTarget).then(detail => {
+      if (current && detail?.id === listTarget) setTargetDetail(detail)
+    }).catch(() => { if (current) setTargetDetail(null) })
+    return () => { current = false }
+  }, [listTarget])
 
   useEffect(() => {
     const opening = currentProps.current
@@ -62,15 +84,17 @@ export default function DocumentBlockMoveDialog(props: DocumentBlockMoveDialogPr
   const close = () => {
     if (!submittingLock.current && !currentProps.current.busy && !composing.current) currentProps.current.onClose()
   }
-  const move = async () => {
+  const move = async (mode?: CrossPageMoveMode) => {
     if (submittingLock.current || currentProps.current.busy || composing.current || !target) return
+    if (parentId && (mode || !targetDetail || !parents.some(parent => parent.id === parentId))) return
     const operation = actionFocus.begin()
     if (!operation) return
     submittingLock.current = true
     setSubmitting(true)
     setLocalError('')
     try {
-      const completed = await onMove(target.id)
+      const completed = await onMove(mode ? { mode, documentId: target.id } : parentId && targetDetail
+        ? { mode: 'list', documentId: target.id, parentBlockId: parentId, expectedUpdatedAt: targetDetail.updatedAt } : target.id)
       if (!mounted.current || !actionFocus.isCurrent(operation)) return
       if (completed) { actionFocus.cancel(operation); currentProps.current.onClose() }
     } catch (cause) {
@@ -102,7 +126,7 @@ export default function DocumentBlockMoveDialog(props: DocumentBlockMoveDialogPr
       trapFocusWithinDialog(event.nativeEvent, event.currentTarget)
     }}>
     <header className="document-capture-header"><div><h2 id={labelId}>{isZh ? '移动内容块' : 'Move blocks'}</h2>
-      <p id={hintId}>{isZh ? `将「${sourceDocumentTitle}」中的 ${selectedBlockCount} 个内容块移动到目标文档末尾。` : `Move ${selectedBlockCount} block${selectedBlockCount === 1 ? '' : 's'} from “${sourceDocumentTitle}” to the end of the destination document.`}</p>
+      <p id={hintId}>{isZh ? `将「${sourceDocumentTitle}」中的 ${selectedBlockCount} 个内容块移动到${parentId ? '所选列表项下' : '目标文档末尾'}。` : `Move ${selectedBlockCount} block${selectedBlockCount === 1 ? '' : 's'} from “${sourceDocumentTitle}” ${parentId ? 'under the selected list item' : 'to the end of the destination document'}.`}</p>
     </div></header>
     <form id={formId} className="document-capture-body" onSubmit={event => { event.preventDefault(); void move() }}>
       <fieldset disabled={disabled}>
@@ -114,17 +138,34 @@ export default function DocumentBlockMoveDialog(props: DocumentBlockMoveDialogPr
           <p id={destinationsId} className="document-block-move-label">{isZh ? '目标文档' : 'Destination document'}</p>
           {matches.map(node => <label key={node.id} className={`document-block-move-option${node.id === targetId ? ' document-block-move-option-selected' : ''}`}>
             <input ref={element => { if (node.id === targetId) selectedControl.current = element }} type="radio" name="block-move-destination"
-              value={node.id} checked={node.id === targetId} onChange={() => { setTargetId(node.id); setLocalError('') }} />
+              value={node.id} checked={node.id === targetId} onChange={() => { setTargetId(node.id); setTargetDetail(null); setParentId(''); setLocalError('') }} />
             <span><strong>{node.title}</strong><small>{node.path}</small></span>
           </label>)}
           {!matches.length ? <p className="mini-hint" role="status">{available.length ? (isZh ? '没有匹配的文档。' : 'No matching documents.') : (isZh ? '请先创建另一个文档。' : 'Create another document first.')}</p> : null}
         </div>
+        {parents.length ? <label className="document-capture-field">{isZh ? '放置位置' : 'Placement'}
+          <select value={parentId} onChange={event => { setParentId(event.target.value); setLocalError('') }}>
+            <option value="">{isZh ? '目标文档末尾' : 'End of document'}</option>
+            {parents.map(parent => <option key={parent.id} value={parent.id}>{parent.content.trim() || (isZh ? '空列表项' : 'Empty list item')}</option>)}
+          </select>
+        </label> : null}
       </fieldset>
       {target ? <p className="document-capture-hint">{isZh ? '将移动到：' : 'Move to: '}{target.path}</p> : null}
+      {staged ? <p className="document-capture-hint">{isZh ? `已暂存「${staged.sourceTitle}」到「${staged.targetTitle}」的移动。` : `Queued move from “${staged.sourceTitle}” to “${staged.targetTitle}”.`}</p> : null}
       {localError || error ? <p className="document-capture-error" role="alert">{localError || error}</p> : null}
     </form>
     <footer className="document-capture-footer"><span role="status">{disabled ? (isZh ? '正在移动…' : 'Moving…') : ''}</span>
       <button type="button" className="secondary-button" disabled={disabled} onClick={close}>{isZh ? '取消' : 'Cancel'}</button>
+      {staged ? <>
+        <button type="button" className="secondary-button" disabled={disabled} onClick={() => { void clearStagedCrossPageMove().then(cleared => {
+          if (!mounted.current) return
+          if (cleared) setStaged(null)
+          else setLocalError(isZh ? '请先确认原批量移动结果。' : 'Resolve the original batch move first.')
+        }) }}>{isZh ? '清除批量' : 'Clear batch'}</button>
+        <button type="button" className="secondary-button" disabled={disabled || !target || !!parentId || staged.sourceId === sourceDocumentId}
+          onClick={() => { void move('batch') }}>{isZh ? '移动批量' : 'Move batch'}</button>
+      </> : <button type="button" className="secondary-button" disabled={disabled || !target || !!parentId}
+        onClick={() => { void move('stage') }}>{isZh ? '加入批量' : 'Add to batch'}</button>}
       <button type="submit" form={formId} className="primary-button" disabled={disabled || !target}>{isZh ? '移动' : 'Move'}</button>
     </footer>
   </dialog>, document.body)

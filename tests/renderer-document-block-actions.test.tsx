@@ -105,7 +105,7 @@ const tree: DocumentTreeNode[] = [
   ] }
 ]
 function moveProps(overrides: Partial<MoveProps> = {}): MoveProps {
-  return { isZh: false, sourceDocumentId: 'source', sourceDocumentTitle: 'Source', selectedBlockCount: 2, documents: tree,
+  return { isZh: false, sourceDocumentId: 'source', sourceDocumentTitle: 'Source', selection: { blocks: [], blockIds: ['first', 'second'] }, documents: tree,
     busy: false, onClose: noop, onMove: () => false, ...overrides }
 }
 
@@ -169,7 +169,7 @@ test('shared menu actions honor disabled state and keyboard Escape preserves an 
 test('move picker excludes its source, searches nested paths and retains a failed destination with a synchronous submit lock', async () => withDom(async context => {
   const pending = deferred<boolean>(), requests: string[] = []
   let closes = 0
-  const props = moveProps({ onMove: id => { requests.push(id); return pending.promise }, onClose: () => { closes++ } })
+  const props = moveProps({ onMove: id => { assert.equal(typeof id, 'string'); if (typeof id === 'string') requests.push(id); return pending.promise }, onClose: () => { closes++ } })
   await context.render(createElement(DocumentBlockMoveDialog, props))
   assert.equal(context.document.activeElement!.tagName, 'INPUT')
   assert.equal(context.document.querySelector('input[value="source"]'), null)

@@ -1,3 +1,4 @@
+import Database from 'better-sqlite3'
 import type { SyncedStableBlockDraft } from '../../shared/synced-blocks'
 import { canBlockNestUnder } from '../../shared/blockTypes'
 import { isSyncedUuid, parseSyncedBlockPayload, SYNCED_MAX_DEPTH, SyncedValidationError,
@@ -5,7 +6,7 @@ import { isSyncedUuid, parseSyncedBlockPayload, SYNCED_MAX_DEPTH, SyncedValidati
 import { parseStrictJson } from '../../shared/strictJson'
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_RAW_MAX_ROWS } from './restore-knowledge-capsule2-raw-model'
-import { graph3Conflict, graph3Key, graph3Rows, type Graph3Inputs } from './restore-knowledge-graph3-data'
+import { graph3Conflict, graph3Key, graph3Value, type Graph3Inputs } from './restore-knowledge-graph3-data'
 import { assertMerge3JsonBudget, merge3RowValues, type Merge3InputRow, type Merge3OriginalRowRef, type Merge3RowDisposition,
   type Merge3SelectedRow, type PreparedMerge3Table } from './restore-knowledge-merge3-storage'
 
@@ -21,7 +22,7 @@ export interface Merge3PhysicalConflict {
   readonly detail: unknown
 }
 type Values = Record<string, unknown>
-type Row = { row: Merge3InputRow; value: Values }
+type Row = { row: Merge3InputRow; value: Values; originalIndex: number }
 type PhysicalGroup = Graph3Inputs['inputs']['source']['source']['physical']['groups'][number]
 type GroupState = { side: 'source' | 'current'; sourceGroupId: string; targetGroupId: string;
   absence: PhysicalGroup['absence']; active: boolean; originalLifecycle: PhysicalGroup['lifecycle']; sourceRef: Merge3OriginalRowRef }
@@ -32,12 +33,7 @@ const integer = (value: unknown): number => typeof value === 'bigint' && Number.
   ? Number(value) : graph3Conflict('merge-physical-integer', typeof value)
 const decision = (kind: string, owner: unknown) => kind + ':' + capsuleBytesHash(capsuleJson(owner))
 
-/** Fixed current-aware candidate policy, not a caller-selectable merge mode.
- * Incoming rows have already passed the source identity/reference transforms.
- * Each participating host/group replaces its WHOLE corresponding forest;
- * absent incoming children never accidentally retain current children. Other
- * current rows stay exact. No history, guard, lifecycle or prune is installed. */
-export function selectMerge3PhysicalRows3(data: Graph3Inputs, prepared: readonly PreparedMerge3Table[]) {
+function readPhysicalRows(data: Graph3Inputs, prepared: readonly PreparedMerge3Table[]) {
   const source = data.inputs.source.source, current = data.inputs.current.source
   const byTable = new Map<Merge3PhysicalTable, PreparedMerge3Table>()
   for (const table of prepared) if (MERGE3_PHYSICAL_TABLES.includes(table.name as Merge3PhysicalTable)) {
@@ -45,43 +41,78 @@ export function selectMerge3PhysicalRows3(data: Graph3Inputs, prepared: readonly
     if (byTable.has(name)) return graph3Conflict('merge-duplicate-physical-table', name)
     byTable.set(name, table)
   }
-  const sourceOriginals = new Map<Merge3PhysicalTable, Map<string, Values>>()
-  const decoded = new Map<Merge3PhysicalTable, { source: Row[]; current: Row[] }>()
-  for (const name of MERGE3_PHYSICAL_TABLES) {
-    const table = byTable.get(name) ?? graph3Conflict('merge-missing-physical-table', name)
-    if (table.sourceEncoding !== source.sourceContent.encoding || table.currentEncoding !== current.sourceContent.encoding
-      || table.targetEncoding !== current.sourceContent.encoding) return graph3Conflict('merge-physical-encoding', name)
-    const sides = [['source', source, table.sourceRows], ['current', current, table.currentRows]] as const
-    const values = { source: [] as Row[], current: [] as Row[] }
-    for (const [side, packet, rows] of sides) {
-      const originals = graph3Rows(packet.sourceContent, name), index = new Map(originals.map(row => [row.original.sourceRowId, row]))
-      const payloads = data.inputs.knowledge.constraints.payloads.filter(payload => !payload.witness.domain.length && payload.witness.side === side)
-      const originalTable = packet.sourceContent.tables.find(table => table.name === name)!
-      if (payloads.length !== 1 || rows.length !== originals.length || !same(table.originalColumns[side], originalTable.columns)
-        || side === 'current' && !same(table.columns, originalTable.columns)) return graph3Conflict('merge-physical-original-closure', { name, side })
-      const seen = new Set<string>()
-      for (const row of rows) {
-        const original = index.get(row.ref.sourceRowId)
-        if (!original || seen.has(row.ref.sourceRowId) || !same(row.originalCells, original.original.cells)
-          || side === 'current' && !same(row.cells, original.original.cells)
-          || row.ref.side !== side || row.ref.table !== name || row.ref.payload !== payloads[0].key
-          || row.ref.materialHash !== data.inputs[side].materialHash || !same(row.ref.witness, payloads[0].witness))
-          return graph3Conflict('merge-physical-original-row', { name, side, sourceRowId: row.ref.sourceRowId })
-        seen.add(row.ref.sourceRowId)
-        values[side].push({ row, value: merge3RowValues(table, row) })
+  // Only row IDs and array coordinates enter the private temp schema. The
+  // validated original cells stay in their sealed, encoding-qualified packet.
+  const db = new Database(':memory:')
+  try {
+    db.pragma('temp_store=FILE')
+    if (db.pragma('temp_store', { simple: true }) !== 1) return graph3Conflict('merge-physical-file-index-unavailable', null)
+    db.exec('CREATE TEMP TABLE original_rows (row_id TEXT PRIMARY KEY, ordinal INTEGER NOT NULL) WITHOUT ROWID')
+    db.pragma('temp.cache_size=-2048')
+    const insert = db.prepare('INSERT OR IGNORE INTO original_rows(row_id,ordinal) VALUES (?,?)')
+    const take = db.prepare('DELETE FROM original_rows WHERE row_id=? RETURNING ordinal').pluck()
+    return db.transaction(() => {
+      const decoded = new Map<Merge3PhysicalTable, { source: Row[]; current: Row[] }>()
+      for (const name of MERGE3_PHYSICAL_TABLES) {
+        const table = byTable.get(name) ?? graph3Conflict('merge-missing-physical-table', name)
+        if (table.sourceEncoding !== source.sourceContent.encoding || table.currentEncoding !== current.sourceContent.encoding
+          || table.targetEncoding !== current.sourceContent.encoding) return graph3Conflict('merge-physical-encoding', name)
+        const sides = [['source', source, table.sourceRows], ['current', current, table.currentRows]] as const
+        const values = { source: [] as Row[], current: [] as Row[] }
+        for (const [side, packet, rows] of sides) {
+          const originalTable = packet.sourceContent.tables.find(table => table.name === name)
+            ?? graph3Conflict('missing-source-table', name)
+          const originals = originalTable.rows
+          const payloads = data.inputs.knowledge.constraints.payloads.filter(payload => !payload.witness.domain.length && payload.witness.side === side)
+          if (payloads.length !== 1 || rows.length !== originals.length || !same(table.originalColumns[side], originalTable.columns)
+            || side === 'current' && !same(table.columns, originalTable.columns)) return graph3Conflict('merge-physical-original-closure', { name, side })
+          for (const [index, original] of originals.entries())
+            if (insert.run(original.sourceRowId, index).changes !== 1) return graph3Conflict('merge-physical-original-closure', { name, side })
+          for (const row of rows) {
+            const originalIndex = take.get(row.ref.sourceRowId) as number | undefined
+            const original = originalIndex === undefined ? undefined : originals[originalIndex]
+            if (originalIndex === undefined || !original || original.sourceRowId !== row.ref.sourceRowId
+              || !same(row.originalCells, original.cells)
+              || side === 'current' && !same(row.cells, original.cells)
+              || row.ref.side !== side || row.ref.table !== name || row.ref.payload !== payloads[0].key
+              || row.ref.materialHash !== data.inputs[side].materialHash || !same(row.ref.witness, payloads[0].witness))
+              return graph3Conflict('merge-physical-original-row', { name, side, sourceRowId: row.ref.sourceRowId })
+            values[side].push({ row, value: merge3RowValues(table, row), originalIndex })
+          }
+          // Same count plus consuming each distinct row proves the index is
+          // empty, so the next role/table cannot borrow an earlier ordinal.
+        }
+        decoded.set(name, values)
       }
-      if (side === 'source') sourceOriginals.set(name, new Map(originals.map(row => [row.original.sourceRowId, row.value])))
+      return decoded
+    })()
+  } finally { db.close() }
+}
+
+/** Fixed current-aware candidate policy, not a caller-selectable merge mode.
+ * Incoming rows have already passed the source identity/reference transforms.
+ * Each participating host/group replaces its WHOLE corresponding forest;
+ * absent incoming children never accidentally retain current children. Other
+ * current rows stay exact. No history, guard, lifecycle or prune is installed. */
+export function selectMerge3PhysicalRows3(data: Graph3Inputs, prepared: readonly PreparedMerge3Table[]) {
+  const source = data.inputs.source.source, current = data.inputs.current.source
+  const decoded = readPhysicalRows(data, prepared)
+  function originalValue(name: Merge3PhysicalTable, entry: Row) {
+    const table = source.sourceContent.tables.find(table => table.name === name)!
+    const original = table.rows[entry.originalIndex]
+    return (column: string) => {
+      const index = table.columns.indexOf(column)
+      return index < 0 ? undefined : graph3Value(original.cells[index], source.sourceContent.encoding)
     }
-    decoded.set(name, values)
   }
   const assignments = new Map<string, typeof data.value.assignments>()
   for (const slot of data.value.assignments) {
     const key = graph3Key(slot.kind, slot.sourceId), slots = assignments.get(key) ?? []
     slots.push(slot); assignments.set(key, slots)
   }
-  function slot(kind: 'document' | 'block' | 'group', row: Values, ownerKind: 'document' | 'group' | null, ownerId: string | null) {
-    const id = text(row.id), slots = (assignments.get(graph3Key(kind, id)) ?? []).filter(item => item.physical && !item.ambiguous
-      && item.birth === row.created_at && item.ownerKind === ownerKind && item.ownerId === ownerId)
+  function slot(kind: 'document' | 'block' | 'group', id: string, birth: unknown, ownerKind: 'document' | 'group' | null, ownerId: string | null) {
+    const slots = (assignments.get(graph3Key(kind, id)) ?? []).filter(item => item.physical && !item.ambiguous
+      && item.birth === birth && item.ownerKind === ownerKind && item.ownerId === ownerId)
     if (slots.length !== 1) return graph3Conflict('merge-physical-allocation', { kind, id, ownerKind, ownerId })
     return slots[0]
   }
@@ -95,25 +126,25 @@ export function selectMerge3PhysicalRows3(data: Graph3Inputs, prepared: readonly
     if (rows.length !== (name === 'documents' ? sourceDocuments.size : sourceGroups.size)) return graph3Conflict('merge-physical-header-closure', name)
     const claimed = new Set<string>()
     for (const entry of rows) {
-      const original = sourceOriginals.get(name)!.get(entry.row.ref.sourceRowId)!, id = text(original.id)
+      const original = originalValue(name, entry), id = text(original('id')), birth = original('created_at')
       const fact = name === 'documents' ? sourceDocuments.get(id) : sourceGroups.get(id)
-      if (!fact || name === 'documents' && sourceDocuments.get(id)!.createdAt !== original.created_at)
+      if (!fact || name === 'documents' && sourceDocuments.get(id)!.createdAt !== birth)
         return graph3Conflict('merge-physical-source-header', { name, id })
-      const mapped = slot(name === 'documents' ? 'document' : 'group', original, null, null), targetId = text(entry.value.id)
+      const mapped = slot(name === 'documents' ? 'document' : 'group', id, birth, null, null), targetId = text(entry.value.id)
       if (targetId !== mapped.targetId || claimed.has(targetId)) return graph3Conflict('merge-physical-target-header', { name, id, targetId })
       claimed.add(targetId)
       if (name === 'documents') documentTargets.set(id, targetId)
       else {
-        if (mapped.incarnation !== knowledgeGroups.get(id)?.comparisonKey || entry.value.creation_id !== mapped.targetCreationId || entry.value.origin_json !== original.origin_json
-          || entry.value.bindings_json !== original.bindings_json) return graph3Conflict('merge-physical-group-provenance', id)
+        if (mapped.incarnation !== knowledgeGroups.get(id)?.comparisonKey || entry.value.creation_id !== mapped.targetCreationId || entry.value.origin_json !== original('origin_json')
+          || entry.value.bindings_json !== original('bindings_json')) return graph3Conflict('merge-physical-group-provenance', id)
         groupTargets.set(id, targetId)
       }
     }
   }
   for (const name of ['blocks', 'synced_group_blocks'] as const) for (const entry of decoded.get(name)!.source) {
-    const original = sourceOriginals.get(name)!.get(entry.row.ref.sourceRowId)!, id = text(original.id)
-    const ownerKind = name === 'blocks' ? 'document' : 'group', ownerId = text(original[name === 'blocks' ? 'document_id' : 'group_id'])
-    const mapped = slot('block', original, ownerKind, ownerId)
+    const original = originalValue(name, entry), id = text(original('id'))
+    const ownerKind = name === 'blocks' ? 'document' : 'group', ownerId = text(original(name === 'blocks' ? 'document_id' : 'group_id'))
+    const mapped = slot('block', id, original('created_at'), ownerKind, ownerId)
     if (entry.value.id !== mapped.targetId || blockTargets.has(id)) return graph3Conflict('merge-physical-source-block', id)
     blockTargets.set(id, mapped.targetId)
   }
@@ -121,27 +152,27 @@ export function selectMerge3PhysicalRows3(data: Graph3Inputs, prepared: readonly
     index.get(text(id)) ?? graph3Conflict('merge-physical-missing-source-owner', { kind, id })
   const mappedParent = (id: unknown) => id === null ? null : requiredTarget(blockTargets, id, 'parent')
   for (const entry of decoded.get('documents')!.source) {
-    const original = sourceOriginals.get('documents')!.get(entry.row.ref.sourceRowId)!
-    if (entry.value.parent_id !== (original.parent_id === null ? null : requiredTarget(documentTargets, original.parent_id, 'document-parent')))
-      return graph3Conflict('merge-physical-document-parent-map', original.id)
+    const original = originalValue('documents', entry), parent = original('parent_id')
+    if (entry.value.parent_id !== (parent === null ? null : requiredTarget(documentTargets, parent, 'document-parent')))
+      return graph3Conflict('merge-physical-document-parent-map', original('id'))
   }
   for (const name of ['blocks', 'synced_group_blocks'] as const) for (const entry of decoded.get(name)!.source) {
-    const original = sourceOriginals.get(name)!.get(entry.row.ref.sourceRowId)!, owner = name === 'blocks' ? 'document_id' : 'group_id'
-    if (entry.value[owner] !== requiredTarget(name === 'blocks' ? documentTargets : groupTargets, original[owner], owner)
-      || entry.value.parent_block_id !== mappedParent(original.parent_block_id) || entry.value.type !== original.type
-      || entry.value.depth !== original.depth || entry.value.sort_order !== original.sort_order)
-      return graph3Conflict('merge-physical-block-owner-map', original.id)
+    const original = originalValue(name, entry), owner = name === 'blocks' ? 'document_id' : 'group_id'
+    if (entry.value[owner] !== requiredTarget(name === 'blocks' ? documentTargets : groupTargets, original(owner), owner)
+      || entry.value.parent_block_id !== mappedParent(original('parent_block_id')) || entry.value.type !== original('type')
+      || entry.value.depth !== original('depth') || entry.value.sort_order !== original('sort_order'))
+      return graph3Conflict('merge-physical-block-owner-map', original('id'))
     if (entry.value.type === 'synced-block') {
-      const before = parseSyncedBlockPayload(text(original.content)), after = parseSyncedBlockPayload(text(entry.value.content))
-      if (after.groupId !== requiredTarget(groupTargets, before.groupId, 'payload-group')) return graph3Conflict('merge-physical-payload-map', original.id)
+      const before = parseSyncedBlockPayload(text(original('content'))), after = parseSyncedBlockPayload(text(entry.value.content))
+      if (after.groupId !== requiredTarget(groupTargets, before.groupId, 'payload-group')) return graph3Conflict('merge-physical-payload-map', original('id'))
     }
   }
   for (const entry of decoded.get('synced_instances')!.source) {
-    const original = sourceOriginals.get('synced_instances')!.get(entry.row.ref.sourceRowId)!
-    if (entry.value.instance_id !== requiredTarget(blockTargets, original.instance_id, 'instance')
-      || entry.value.host_document_id !== requiredTarget(documentTargets, original.host_document_id, 'instance-host')
-      || entry.value.group_id !== requiredTarget(groupTargets, original.group_id, 'instance-group')
-      || entry.value.parent_block_id !== mappedParent(original.parent_block_id)) return graph3Conflict('merge-physical-instance-map', original.instance_id)
+    const original = originalValue('synced_instances', entry), instanceId = original('instance_id')
+    if (entry.value.instance_id !== requiredTarget(blockTargets, instanceId, 'instance')
+      || entry.value.host_document_id !== requiredTarget(documentTargets, original('host_document_id'), 'instance-host')
+      || entry.value.group_id !== requiredTarget(groupTargets, original('group_id'), 'instance-group')
+      || entry.value.parent_block_id !== mappedParent(original('parent_block_id'))) return graph3Conflict('merge-physical-instance-map', instanceId)
   }
 
   const participatingDocumentIds = [...documentTargets.values()], participatingGroupIds = [...groupTargets.values()]
@@ -185,8 +216,8 @@ export function selectMerge3PhysicalRows3(data: Graph3Inputs, prepared: readonly
     selected.set(name, rows); tables.push({ name, selectedRows, dispositions })
   }
   const groupStates: GroupState[] = selected.get('synced_groups')!.map(entry => {
-    const original = entry.row.ref.side === 'source' ? sourceOriginals.get('synced_groups')!.get(entry.row.ref.sourceRowId)! : entry.value
-    const id = text(original.id), fact = (entry.row.ref.side === 'source' ? sourceGroups : currentGroups).get(id)
+    const id = text(entry.row.ref.side === 'source' ? originalValue('synced_groups', entry)('id') : entry.value.id)
+    const fact = (entry.row.ref.side === 'source' ? sourceGroups : currentGroups).get(id)
     if (!fact || (fact.snapshot !== null) !== (fact.absence === null)) return graph3Conflict('merge-physical-original-group-activity', id)
     return { side: entry.row.ref.side, sourceGroupId: id, targetGroupId: text(entry.value.id), absence: fact.absence,
       active: fact.snapshot !== null, originalLifecycle: fact.lifecycle, sourceRef: entry.row.ref }

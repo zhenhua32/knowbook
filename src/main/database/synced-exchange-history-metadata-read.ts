@@ -12,6 +12,7 @@ import { readSyncedExchangeDenialEvidenceById } from './synced-exchange-receipt'
 import { assertSyncedExchangeHostCutRecords } from './synced-exchange-host-cut'
 import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-read'
 import { knowledgePreviewKey, validateKnowledgePreviewIndex } from './synced-exchange-knowledge-read'
+import { exchangeRejoinBaseline, exchangeRejoinKey, exchangeRejoinPrefix, readExchangeRejoinSupport, validateExchangeRejoin } from './synced-exchange-rejoin-model'
 import { deletionChoicePreviewKey, validateDeletionChoicePreviewIndex } from './synced-exchange-deletion-choice-read'
 import { assertHistoricalEvidenceOwned, historicalEvidenceInvalid, historicalFact, historicalHash, historicalMetadataLocator,
   historicalOperationLocator, historicalRowLocator, historicalTime, readHistoricalExactRows, readHistoricalMetadata, readHistoricalOperations, readHistoricalRowLocator,
@@ -57,6 +58,7 @@ export function assertRawSyncedExchangeHistoricalMetadataOwned(db: Database.Data
   const heads = new Map<string, { row: HistoricalMetadataRow; value: Head }>()
   const phases = new Map<string, Array<{ row: HistoricalMetadataRow; value: ReturnType<typeof validateExchangeJobPhase> }>>()
   const states: Array<{ row: HistoricalMetadataRow; value: AnyExchangeState }> = []
+  const rejoins: Array<{ row: HistoricalMetadataRow; value: ReturnType<typeof validateExchangeRejoin> }> = []
   const indexes: HistoricalMetadataRow[] = [], archiveRows = new Map<string, HistoricalMetadataRow>()
   const cutRows: HistoricalMetadataRow[] = []
   for (const row of selected) {
@@ -76,6 +78,11 @@ export function assertRawSyncedExchangeHistoricalMetadataOwned(db: Database.Data
       if (row.key !== exchangeStateKey(value.targetFingerprint) || row.updated_at !== value.lastSyncAt || !isSyncedUuid(value.currentOperationId))
         return historicalEvidenceInvalid('exchange state原key/接受时点/operation损坏。')
       states.push({ row, value })
+    } else if (row.key.startsWith(exchangeRejoinPrefix)) {
+      const value = validateExchangeRejoin(raw)
+      if (row.key !== exchangeRejoinKey(value.targetFingerprint, value.restoreOperationId) || row.value !== publicationJson(value)
+        || row.updated_at !== value.confirmedAt) return historicalEvidenceInvalid('恢复续接原行 key/hash/时间不闭合。')
+      rejoins.push({ row, value })
     } else if (row.key.startsWith(prefix + 'exchange-job.v1.')) {
       const job = validateExchangeJob(raw), key = exchangeJobKey(job.request.operationId, job.attemptId)
       if (row.key !== key || row.updated_at !== job.preparedAt || row.value !== publicationJson(job)) return historicalEvidenceInvalid('原immutable job/key/bytes/时点损坏。')
@@ -162,8 +169,24 @@ export function assertRawSyncedExchangeHistoricalMetadataOwned(db: Database.Data
     facts.push(historicalFact('exchange-job-head', 1, historicalMetadataLocator(current.row), chain.map(item => historicalMetadataLocator(item.row)), 'index-attempt-only'))
   }
   for (const id of heads.keys()) if (!byOperation.has(id)) return historicalEvidenceInvalid('原head缺job链。')
+  const inherited = new Map<string, { locator: RawHistoricalEvidenceLocator; old: AnyExchangeState }>()
+  for (const { row, value } of rejoins) {
+    const support = readExchangeRejoinSupport(db, value), locator = historicalMetadataLocator(row)
+    const key = publicationJson([value.targetFingerprint, value.newEpoch])
+    if (inherited.has(key)) return historicalEvidenceInvalid('同目标与恢复世代存在重复续接。')
+    inherited.set(key, { locator, old: support.old })
+    const coverage = support.requirement.supports
+    const publication = support.publication ? [readHistoricalRowLocator(db, 'synced_exposure_attempts', [support.publication.exposure.id]),
+      ...support.publication.members.map(member => readHistoricalRowLocator(db, 'synced_group_exposure_members', [member.attempt_id, member.group_id]))] : []
+    facts.push(historicalFact('exchange-rejoin', value.version, locator, [...support.receipts.map(item => operationSupport(item.operationId)), ...publication,
+      coverage.coverage, coverage.link, coverage.receipt, coverage.anchor, ...(coverage.boundary ? [coverage.boundary] : []),
+      ...(coverage.epoch ? [coverage.epoch] : [])]))
+  }
   for (const { row, value } of states) {
     const current = receipt(value.currentOperationId!), supports = [operationSupport(current.request.operationId)]
+    const bridge = inherited.get(publicationJson([value.targetFingerprint, value.recoveryEpoch]))
+    const bridgeRows = bridge ? exchangeRejoinBaseline(bridge.old, value.version) : undefined
+    if (bridge) supports.push(bridge.locator)
     if (current.request.databasePath !== value.databasePath || current.request.targetFingerprint !== value.targetFingerprint
       || current.provenance.afterStateHash !== publicationHash(publicationJson(value)) || current.result.acceptedAt !== value.lastSyncAt
       || current.result.workspaceScope !== value.workspaceScope || current.result.recoveryEpoch !== value.recoveryEpoch
@@ -175,8 +198,10 @@ export function assertRawSyncedExchangeHistoricalMetadataOwned(db: Database.Data
       const local = accepted && ('local' in accepted ? accepted.local : { kind: 'live', hash: accepted.afterHash })
       const expected = value.version === 2 && 'local' in entry ? entry.local : 'localHash' in entry ? { kind: 'live', hash: entry.localHash } : null
       const common = accepted && ('local' in accepted ? accepted.commonHash : accepted.afterHash)
+      const exactInherited = !!bridge && original.result.recoveryEpoch === bridge.old.recoveryEpoch && bridgeRows?.has(entry.key)
+        && same(bridgeRows.get(entry.key), entry)
       if (!accepted || original.request.databasePath !== value.databasePath || original.request.targetFingerprint !== value.targetFingerprint
-        || original.result.workspaceScope !== value.workspaceScope || original.result.recoveryEpoch !== value.recoveryEpoch
+        || original.result.workspaceScope !== value.workspaceScope || original.result.recoveryEpoch !== value.recoveryEpoch && !exactInherited
         || original.result.remoteWorkspaceId !== value.remoteWorkspaceId || common !== entry.remoteHash || common !== entry.commonHash
         || !same(local, expected) || entry.dependencySignature !== accepted.dependencySignature || !same(entry.dependencyKeys, accepted.dependencyKeys)
         || !same(value.source, original.provenance.source)) return historicalEvidenceInvalid('历史baseline缺准确原accepted receipt。')
@@ -189,6 +214,7 @@ export function assertRawSyncedExchangeHistoricalMetadataOwned(db: Database.Data
       if (source.request_hash !== initialIncomingRequestHash(seed.request) || source.created_at !== seed.result.acceptedAt
         || seed.request.operationId !== source.client_operation_id || seed.request.databasePath !== value.databasePath
         || seed.result.workspaceScope !== value.workspaceScope || seed.result.recoveryEpoch !== value.recoveryEpoch
+          && (!bridge || seed.result.recoveryEpoch !== bridge.old.recoveryEpoch || !same(value.source, bridge.old.source))
         || seed.result.remoteWorkspaceId !== value.remoteWorkspaceId || seed.result.manifestHash !== value.source.manifestHash
         || seed.provenance.portableDigest !== value.source.portableDigest) return historicalEvidenceInvalid('state原initial seed损坏。')
       supports.push(historicalOperationLocator(source))

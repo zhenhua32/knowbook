@@ -1,4 +1,4 @@
-import { isTaskBlockType, isOrderedListBlockType, canBlockHaveParent, canBlockNestUnder } from '@shared/blockTypes'
+import { isTaskBlockType, isOrderedListBlockType, canBlockHaveParent, canBlockNestUnder, isListBlockType } from '@shared/blockTypes'
 import { normalizeListStart } from '@shared/markdown'
 import { normalizeMarkdownFormat } from '@shared/markdownFormat'
 import { detectCodeLanguage } from '@shared/code'
@@ -6,6 +6,10 @@ import type { DocumentBlockDraft } from '@shared/contracts'
 import { createDraftBlockId } from './draftTreeFragment'
 import { resolveDraftBlockRelationship } from './draftTreePlacement'
 import { getNormalizedBlockId, getNormalizedParentBlockId } from './draftTreeMove'
+
+function isListReference(type: string, parentType: string | undefined): boolean {
+  return type === 'synced-block' && parentType !== undefined && isListBlockType(parentType)
+}
 
 export function normalizeDraftBlocks(blocks: DocumentBlockDraft[]): DocumentBlockDraft[] {
   const seenIds = new Set<string>()
@@ -21,7 +25,13 @@ export function normalizeDraftBlocks(blocks: DocumentBlockDraft[]): DocumentBloc
     const type = block.type.trim() || 'paragraph'
     const checked = isTaskBlockType(type) ? Boolean(block.checked) : false
 
-    const { depth, parentBlockId } = resolveDraftBlockRelationship(
+    const explicitParentId = block.parentBlockId
+    const explicitParentDepth = block.depth - 1
+    // Main validates the canonical roots. Keep only an exact existing edge,
+    // without inferring list placement for a reference from its depth alone.
+    const preserveListReference = explicitParentId && explicitParentId !== id && block.depth > 0 && block.depth <= 6
+      && depthStack[explicitParentDepth] === explicitParentId && isListReference(type, resolvedTypeById.get(explicitParentId))
+    const { depth, parentBlockId } = preserveListReference ? { depth: block.depth, parentBlockId: explicitParentId } : resolveDraftBlockRelationship(
       type,
       block.depth ?? 0,
       block.parentBlockId,
@@ -61,6 +71,7 @@ export function validateBlockTreeStructure(blocks: DocumentBlockDraft[]): { vali
   const seenIds = new Set<string>()
   const resolvedDepthById = new Map<string, number>()
   const resolvedTypeById = new Map<string, string>()
+  const ancestors: Array<string | null> = []
 
   for (let index = 0; index < blocks.length; index += 1) {
     const block = blocks[index]
@@ -111,7 +122,8 @@ export function validateBlockTreeStructure(blocks: DocumentBlockDraft[]): { vali
             errors.push(`Block ${index}: depth ${block.depth} does not match parent depth ${parentDepth} + 1`)
           }
 
-          if (parentType && !canBlockNestUnder(parentType, block.type)) {
+          const explicitListReference = isListReference(block.type, parentType) && ancestors[parentDepth] === parentBlockId
+          if (parentType && !canBlockNestUnder(parentType, block.type) && !explicitListReference) {
             errors.push(`Block ${index}: parentBlockId "${parentBlockId}" points to non-nestable type "${parentType}"`)
           }
         }
@@ -123,6 +135,10 @@ export function validateBlockTreeStructure(blocks: DocumentBlockDraft[]): { vali
     if (blockId) {
       resolvedDepthById.set(blockId, block.depth)
       resolvedTypeById.set(blockId, block.type)
+    }
+    if (Number.isInteger(block.depth) && block.depth >= 0 && block.depth <= 6) {
+      ancestors.length = block.depth + 1
+      ancestors[block.depth] = blockId ?? null
     }
   }
 

@@ -5,6 +5,7 @@ import { CAPSULE2_RAW_MAX_JSON_BYTES, type Capsule2RawSqlTable } from './restore
 import { selectRootRestoreContent3 } from './restore-knowledge-content3-model'
 import type { readRootKnowledgeConservationContent3 } from './restore-knowledge-root3-read'
 import type { KnowledgeOccupancy } from './restore-knowledge-payload-model'
+import type { ExactV3RepeatProof } from './restore-knowledge-v3-repeat-proof'
 
 export type Identity3Inputs = Awaited<ReturnType<typeof readRootKnowledgeConservationContent3>>
 export interface Identity3Kernel { readonly seed: string; readonly preparedAt: string }
@@ -14,7 +15,7 @@ type Demand = { key: string; kind: Kind; sourceId: string; birth: string | null;
   ownerKind: KnowledgeOccupancy['ownerKind']; ownerId: string | null }
 export interface Identity3Assignment extends Demand {
   targetId: string; targetCreationId: string | null
-  reason: 'catalog' | 'same-physical-incarnation' | 'lineage' | 'preserved-free' | 'forked-collision'
+  reason: 'catalog' | 'same-physical-incarnation' | 'lineage' | 'preserved-free' | 'forked-collision' | 'exact-installed-v3'
   state: 'physical' | 'missing-reservation'; requiresExplicitForkDecision: boolean
 }
 export const identity3Invalid = (message: string): never => { throw new Error('完整恢复身份规划无效：' + message + '；尚不授引用重写、历史执行、coverage接受或安装权。') }
@@ -82,7 +83,7 @@ function demands(input: Identity3Inputs): Demand[] {
 /** Candidate allocation only. Qualified original witnesses stay intact in K;
  * only this root's source is assigned to the actual root-current workspace.
  * Ancestor UUIDs are never interpreted as target-profile live occupants. */
-export function deriveRootRestoreIdentityPlan3(input: Identity3Inputs, kernel: Identity3Kernel) {
+export function deriveRootRestoreIdentityPlan3(input: Identity3Inputs, kernel: Identity3Kernel, repeat?: ExactV3RepeatProof) {
   if (!/^[0-9a-f]{64}$/.test(kernel.seed) || !Number.isFinite(Date.parse(kernel.preparedAt)) || new Date(kernel.preparedAt).toISOString() !== kernel.preparedAt) return identity3Invalid('Main规划kernel无效')
   const selected = selectRootRestoreContent3(input), sourcePayload = input.knowledge.constraints.payloads.find(payload => !payload.witness.domain.length && payload.witness.side === 'source')!
   const current = input.current.knowledge, source = input.source.knowledge
@@ -149,6 +150,7 @@ export function deriveRootRestoreIdentityPlan3(input: Identity3Inputs, kernel: I
     return identity3Invalid('Main身份熵碰撞预算耗尽，不覆盖占用')
   }
   const assignments: Identity3Assignment[] = [], claimed = new Set<string>(), physicalTargets = new Map<string, string>()
+  const installed = new Map(repeat?.assignments.map(assignment => [assignment.key, assignment]))
   for (const demand of demands(input)) {
     const originalKey = key(demand.kind, demand.sourceId)
     const owner = demand.ownerKind === 'document' ? physicalTargets.get(key('document', demand.ownerId))
@@ -187,8 +189,16 @@ export function deriveRootRestoreIdentityPlan3(input: Identity3Inputs, kernel: I
     // A forked canonical owner must fork every child, even where the child's
     // old ID happens to be free in current. Instance and block roles share it.
     const forkedOwner = demand.ownerKind === 'group' && owner !== demand.ownerId
+    const pinned = installed.get(demand.key)
     let target: string | undefined, reason: Identity3Assignment['reason'] = 'preserved-free'
-    if (demand.kind === 'database' && demand.sourceId === sourceCatalogId && demand.physical) { target = targetCatalogId; reason = 'catalog' }
+    if (pinned) {
+      if (!demand.physical || demand.ambiguous || demand.kind === 'database' && demand.sourceId === sourceCatalogId && pinned.targetId !== targetCatalogId
+        || (lineageTargets.get(key(demand.kind, pinned.targetId)) ?? []).some(row => row !== lineage[0]))
+        return identity3Invalid('已安装 V3 映射与实际身份或其他来源保留冲突')
+      installed.delete(demand.key)
+      target = pinned.targetId; reason = 'exact-installed-v3'
+    }
+    else if (demand.kind === 'database' && demand.sourceId === sourceCatalogId && demand.physical) { target = targetCatalogId; reason = 'catalog' }
     else if (!demand.ambiguous && !forkedOwner && lineage[0] && available(lineage[0].targetId, true)) { target = lineage[0].targetId; reason = 'lineage' }
     else if (!demand.ambiguous && !forkedOwner && available(demand.sourceId)) {
       target = demand.sourceId; reason = currentOccupancy.has(originalKey) ? 'same-physical-incarnation' : 'preserved-free'
@@ -196,13 +206,14 @@ export function deriveRootRestoreIdentityPlan3(input: Identity3Inputs, kernel: I
     if (!target) { target = fresh('identity:' + demand.key); reason = 'forked-collision' }
     if (claimed.has(key(demand.kind, target))) return identity3Invalid('目标身份重复认领')
     claimed.add(key(demand.kind, target))
-    const forkGroup = demand.kind === 'group' && target !== demand.sourceId
+    const forkGroup = demand.kind === 'group' && !pinned && target !== demand.sourceId
     const assignment: Identity3Assignment = { ...demand, targetId: target, reason, state: demand.physical ? 'physical' : 'missing-reservation',
-      targetCreationId: group ? forkGroup ? fresh('creation:' + demand.key) : group.tuple.creationId : null,
+      targetCreationId: pinned ? pinned.targetCreationId : group ? forkGroup ? fresh('creation:' + demand.key) : group.tuple.creationId : null,
       requiresExplicitForkDecision: forkGroup }
     assignments.push(assignment)
     if (demand.physical) physicalTargets.set(originalKey, target)
   }
+  if (installed.size) return identity3Invalid('已安装 V3 映射未能覆盖实际原需求')
   if (newestDocument >= 8_640_000_000_000_000) return identity3Invalid('无法在全部旧文档版本之后分配有限时间戳')
   let updatedAt = new Date(newestDocument + 1).toISOString()
   while (retainedDocumentTimes.has(updatedAt)) {
@@ -226,7 +237,7 @@ export function deriveRootRestoreIdentityPlan3(input: Identity3Inputs, kernel: I
   const body = { kind: 'complete-root-restore-identity-allocation' as const, version: 3 as const,
     sourceWitness: sourcePayload.witness, sourcePayload: sourcePayload.key, conservationHash: input.knowledge.conservationHash,
     contentSelectionHash: selected.selectionHash, sourceMaterialHash: input.source.materialHash, currentMaterialHash: input.current.materialHash,
-    sourceCatalogId, targetCatalogId, assignments, execution,
+    sourceCatalogId, targetCatalogId, assignments, execution, ...(repeat ? { exactV3RepeatProofHash: repeat.proofHash } : {}),
     unresolvedIncarnations: assignments.filter(item => item.ambiguous).map(item => item.key),
     qualifiedCoverageAcceptanceStillRequired: input.knowledge.constraints.coverageAcceptanceRequired,
     referenceRewriteComplete: false as const, semanticValidationComplete: false as const, acceptedCoverage: false as const, effective: false as const, permit: false as const }

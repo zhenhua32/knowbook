@@ -295,7 +295,7 @@ for (const language of ['en-US', 'zh-CN'] as const) for (const theme of ['light'
       const writes = await app.evaluate(() => (globalThis as ProbeGlobal).__databaseHeaderDensityWrites!)
       writeFileSync(info.outputPath('persistence.json'), JSON.stringify({ before, after, writes }, null, 2))
       expect(writes).toEqual([]); expect(after).toEqual(before); expect(errors).toEqual([])
-    }, { PLAYWRIGHT_ELECTRON_LOCALE: language })
+    }, { PLAYWRIGHT_ELECTRON_LOCALE: language }, { deviceScaleFactor: 1 })
   })
 }
 
@@ -325,5 +325,5 @@ test('database header keeps its native layout in all six built-in palettes @elec
     const after = await readStored(page, app, 'en-US'), writes = await app.evaluate(() => (globalThis as ProbeGlobal).__databaseHeaderDensityWrites!)
     writeFileSync(info.outputPath('persistence.json'), JSON.stringify({ before, after, writes }, null, 2))
     expect(writes).toEqual([]); expect(after).toEqual(before)
-  })
+  }, {}, { deviceScaleFactor: 1 })
 })

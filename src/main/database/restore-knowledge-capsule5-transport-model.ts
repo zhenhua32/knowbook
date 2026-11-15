@@ -1,5 +1,5 @@
 import { capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
-import type { Capsule2AssetArchiveManifest } from './restore-knowledge-capsule2-asset-archive'
+import { isWorkingAssetArchive5, type Capsule2AssetArchiveManifest } from './restore-knowledge-capsule2-asset-archive'
 import { parseWorkingOriginals5, type WorkingOriginalsPointer5 } from './restore-knowledge-capsule5-working-model'
 import { originBundleInvalid as bad, type OriginBundleFile } from './restore-knowledge-origin-bundle-model'
 
@@ -10,7 +10,7 @@ export interface TransportWorkingIndex5 {
   readonly side: 'source' | 'current'; readonly path: string; readonly pointer: WorkingOriginalsPointer5
 }
 export function capsule5WorkingIndex(archive: Capsule2AssetArchiveManifest, assets: string) {
-  return archive.version === 5 ? freezeCapsuleValue({ path: assets + '/contexts/manifest.json', pointer: archive.workingOriginals }) : null
+  return isWorkingAssetArchive5(archive) ? freezeCapsuleValue({ path: assets + '/contexts/manifest.json', pointer: archive.workingOriginals }) : null
 }
 export function capsule5TransportFiles(archive: Capsule2AssetArchiveManifest, assets: string, workingText?: string): readonly OriginBundleFile[] {
   const index = capsule5WorkingIndex(archive, assets)
@@ -20,7 +20,7 @@ export function capsule5TransportFiles(archive: Capsule2AssetArchiveManifest, as
   }
   if (workingText === undefined) return bad('working5完整运输清单缺本side实际索引原字节')
   const manifest = parseWorkingOriginals5(workingText, index.pointer)
-  if (workingText !== capsuleJson(manifest) + '\n' || archive.version !== 5
+  if (workingText !== capsuleJson(manifest) + '\n' || !isWorkingAssetArchive5(archive)
     || manifest.sourceContentHash !== archive.sourceContentHash
     || capsuleJson(manifest.baseProjection) !== capsuleJson(archive.baseProjection)
     || manifest.workingEvidenceHash !== archive.assetScopeSupplement.workingEvidenceHash

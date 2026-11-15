@@ -78,6 +78,15 @@ export class LegacyEditorRecoveryDraftStore {
 
   exists(): boolean { return withLegacySnapshot(this.file, () => true) ?? false }
 
+  hasHostDraft(documentId: string): boolean {
+    return withLegacySnapshot(this.file, db => {
+      // Old Source target addresses are not a typed host owner. Block them
+      // conservatively until the legacy Source adapter can prove the owner.
+      return Boolean(db.prepare("SELECT 1 FROM drafts WHERE payload IS NOT NULL AND (kind='source' OR kind='document' AND target_id=?) LIMIT 1")
+        .get(Buffer.from(documentId, 'utf16le')))
+    }) ?? editorRecoveryInvalid('previously recognized legacy draft database is unavailable')
+  }
+
   list({ afterRecordId, limit }: { afterRecordId?: string; limit: number }): LegacyEditorRecoveryPage {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100 || (afterRecordId !== undefined && !isSyncedUuid(afterRecordId))) {
       return editorRecoveryInvalid('invalid legacy draft page')

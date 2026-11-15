@@ -1,5 +1,5 @@
-import { canBlockOwnChildren, canBlockNestUnder } from './blockTypes'
-import { validColumnStructure } from './columnStructure'
+import { canBlockOwnChildren, canBlockNestUnder, isListBlockType } from './blockTypes'
+import { columnStructureErrorCode } from './columnStructure'
 import type { DocumentBlockDraft } from './contracts'
 
 export interface DocumentBlockTransferInput {
@@ -12,6 +12,8 @@ export interface DocumentBlockTransferInput {
   beforeBlockId?: string
   /** Omit for root-level insertion; without beforeBlockId, append to this parent's children. */
   parentBlockId?: string | null
+  /** Synced hosts validate the referenced canonical roots against the destination before writing. */
+  allowSyncedPlaceholders?: true
 }
 
 export interface DocumentBlockTransferPlan {
@@ -33,8 +35,8 @@ function parentId(block: DocumentBlockDraft): string | null {
 }
 
 /** Validate the active ancestor stack rather than accepting a parent in a closed subtree. */
-function indexTree(blocks: readonly DocumentBlockDraft[]): TreeIndex | null {
-  if (!validColumnStructure(blocks, { checkParentIds: true })) return null
+function indexTree(blocks: readonly DocumentBlockDraft[], allowSyncedPlaceholders: boolean): TreeIndex | null {
+  if (columnStructureErrorCode(blocks, { checkParentIds: true, allowSyncedPlaceholders })) return null
   const byId = new Map<string, number>(), subtreeEnds: number[] = []
   const ancestors: DocumentBlockDraft[] = [], openSubtrees: number[] = []
   for (let index = 0; index < blocks.length; index++) {
@@ -42,8 +44,9 @@ function indexTree(blocks: readonly DocumentBlockDraft[]): TreeIndex | null {
     if (!validId(block.id) || byId.has(block.id) || !Number.isInteger(block.depth)
       || block.depth < 0 || block.depth > MAX_DEPTH) return null
     const ownerId = parentId(block), owner = ancestors[block.depth - 1]
+    const deferredReference = allowSyncedPlaceholders && block.type === 'synced-block' && owner && isListBlockType(owner.type)
     if (block.depth === 0 ? ownerId !== null
-      : !owner || !canBlockNestUnder(owner.type, block.type) || owner.id !== ownerId) return null
+      : !owner || owner.id !== ownerId || !canBlockNestUnder(owner.type, block.type) && !deferredReference) return null
     while (openSubtrees.length && blocks[openSubtrees.at(-1)!].depth >= block.depth) {
       subtreeEnds[openSubtrees.pop()!] = index
     }
@@ -70,7 +73,8 @@ function cloneBlock(block: DocumentBlockDraft): DocumentBlockDraft {
  */
 export function planDocumentBlockTransfer(input: DocumentBlockTransferInput): DocumentBlockTransferPlan | null {
   const { from, to, selectedIds, beforeBlockId } = input
-  const source = indexTree(from), target = indexTree(to)
+  const allowSyncedPlaceholders = input.allowSyncedPlaceholders === true
+  const source = indexTree(from, allowSyncedPlaceholders), target = indexTree(to, allowSyncedPlaceholders)
   if (!source || !target || !selectedIds.length || [...source.byId.keys()].some(id => target.byId.has(id))) return null
   const ranges: Array<{ start: number; end: number }> = []
   for (const id of new Set(selectedIds)) {
@@ -113,6 +117,6 @@ export function planDocumentBlockTransfer(input: DocumentBlockTransferInput): Do
   // The insertion boundary is between direct sibling subtrees. Keeping suffix
   // depth and parent IDs intact prevents its first child being adopted by a move.
   const targetBlocks = [...to.slice(0, insertionIndex).map(cloneBlock), ...moved, ...to.slice(insertionIndex).map(cloneBlock)]
-  if (!indexTree(sourceBlocks) || !indexTree(targetBlocks)) return null
+  if (!indexTree(sourceBlocks, allowSyncedPlaceholders) || !indexTree(targetBlocks, allowSyncedPlaceholders)) return null
   return { sourceBlocks, targetBlocks, movedIds: fragment.map(block => block.id!) }
 }

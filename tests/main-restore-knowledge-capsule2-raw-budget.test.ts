@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { capsuleJson } from '../src/main/database/restore-knowledge-capsule-model'
-import { readRawCapsule2ContentOwned } from '../src/main/database/restore-knowledge-capsule2-content-raw-read'
+import { readRawCapsule2ContentOwned, readRawCapsule2ObserverContentOwned } from '../src/main/database/restore-knowledge-capsule2-content-raw-read'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_RAW_MAX_VALUE_BYTES, capsule2RawContentHash,
   validateCapsule2RawContent, type Capsule2RawContent } from '../src/main/database/restore-knowledge-capsule2-raw-model'
 import { rawRestoreSqlCell } from '../src/main/database/restore-knowledge-sql-cell'
@@ -34,6 +34,7 @@ test('capsule2 raw real SQL content enforces the actual 64MiB boundary in prefli
   f.store.saveSetting(key, 'A'.repeat(paddingBytes + 1))
   await withCapsule2RawCopy(f, db => {
     assert.throws(() => db.transaction(() => readRawCapsule2ContentOwned(db))(), /超准备预算/)
+    assert.throws(() => db.transaction(() => readRawCapsule2ObserverContentOwned(db))(), /超准备预算/)
     const source = db.prepare('SELECT _rowid_ AS rowid,typeof(value) AS storage,CAST(value AS BLOB) AS bytes FROM app_settings WHERE key=?')
       .safeIntegers(true).get(key) as { rowid: bigint; storage: string; bytes: Buffer }
     assert.equal(source.bytes.length, paddingBytes + 1)

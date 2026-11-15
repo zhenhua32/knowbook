@@ -12,6 +12,7 @@ import { captureEditorHistoryBookmark, restoreEditorHistoryBookmark } from '../u
 import { getErrorMessage } from '../utils/errorMessage'
 import { createColdBlockPopup, type ColdBlockPopup } from '../utils/coldBlockPopup'
 import { canAiEditBlockText } from '@shared/blockAiEligibility'
+import { changesCanonicalHostReferences, deleteCanonicalHostBlocks } from '../features/synced-blocks/inlineBridge'
 
 type Opening = { target: DocumentBlockActionTarget; opener: HTMLElement | null; x: number; y: number; cold?: ColdBlockPopup }
 function canAiEditOpening(opening: Opening): boolean {
@@ -69,9 +70,9 @@ export function useDocumentBlockActions({ documents, documentTree, isZh, ui, onO
     currentMove.current = null; setMove(null); setMoveError(null)
     if (closing) restore(closing)
   }
-  const selectedBlockActionIds = () => {
+  const selectedBlockActionIds = (allowCompleteSubtrees?: true) => {
     const current = live.current, range = current.selectedBlockRange
-    if (!range || !current.isSelectionCoherent(range)) return []
+    if (!range || !allowCompleteSubtrees && !current.isSelectionCoherent(range)) return []
     return current.getVisibleBlockEntries(current.getDraftBlocks())
       .filter(entry => entry.index >= range.start && entry.index <= range.end)
       .flatMap(entry => entry.block.id ? [entry.block.id] : [])
@@ -89,11 +90,49 @@ export function useDocumentBlockActions({ documents, documentTree, isZh, ui, onO
     const guarded = { ...opening, cold: createColdBlockPopup(opening.opener) }
     currentMenu.current = guarded; setMenu(guarded)
   }
+  const duplicateSynced = async (target: DocumentBlockActionTarget, opener: HTMLElement | null,
+    selection: Parameters<typeof import('../features/synced-blocks/blockClipboard').duplicateSyncedBlocks>[1],
+    active: () => boolean, accepted: Parameters<typeof import('../features/synced-blocks/blockClipboard').duplicateSyncedBlocks>[4]) => {
+    const blocks = live.current.getDraftBlocks()
+    const current = () => active() && live.current.isBlockActionTargetCurrent(target)
+    try {
+      const { duplicateSyncedBlocks } = await import('../features/synced-blocks/blockClipboard')
+      if (current()) await duplicateSyncedBlocks({ blocks, documentId: target.documentId, getDraftBlocks: () => live.current.getDraftBlocks() },
+        selection, current, opener, accepted)
+    } catch (error) {
+      if (current()) live.current.notifyBlockAction(getErrorMessage(error, ui.invalidVisibleTreeSlice), 'warning')
+    }
+  }
+  const duplicateSelectedBlocks = () => {
+    const current = live.current, selected = current.selectedBlockRange
+    if (!selected) return current.duplicateSelectedBlocks()
+    const range = current.getMultiBlockOperationRange(selected), blocks = current.getDraftBlocks()
+    if (!blocks.slice(range.start, range.end + 1).some(block => block.type === 'synced-block')) return current.duplicateSelectedBlocks()
+    const opening = openingFor(blocks.slice(range.start, range.end + 1).flatMap(block => block.id ? [block.id] : []))
+    if (!opening) return
+    void duplicateSynced(opening.target, opening.opener, range, () => {
+      const active = live.current.selectedBlockRange
+      return active?.start === selected.start && active.end === selected.end && document.activeElement === opening.opener
+    }, duplicated => {
+      const current = live.current, start = range.end + 1, cursor = duplicated[0].content.length
+      current.setSelectionAnchorBlockId(duplicated[0].id ?? null)
+      current.setSelectedBlockRange({ start, end: range.end + duplicated.length })
+      current.setActiveBlockIndex(start); current.setActiveCursorPosition(cursor); current.setPendingFocusBlockIndex(start)
+      current.endBlockDrag(); current.notifyBlockAction(ui.duplicatedBlocks(duplicated.length))
+    })
+  }
   const apply = (opening: Opening, action: 'convert' | 'duplicate' | 'delete', type?: string, preserveSelection = false) => {
     const current = live.current
     if (!current.isBlockActionTargetCurrent(opening.target) || current.isBlockMoveBusy) return
     const next = planBlockAction(opening.target.blocks, opening.target.blockIds, action, type)
     if (!next) return
+    if (action !== 'convert' && changesCanonicalHostReferences(opening.target.blocks, next)) {
+      const { target } = opening
+      if (action === 'duplicate') return void duplicateSynced(target, opening.opener, target.blockIds, () => attention(opening),
+        () => { live.current.clearBlockSelection(); restore(opening) })
+      return deleteCanonicalHostBlocks(target.blocks, next, target.bookmark?.index ?? 0, () => live.current.isBlockActionTargetCurrent(target),
+        () => { live.current.clearBlockSelection(); restore(opening) })
+    }
     const selected = preserveSelection ? current.selectedBlockRange : null
     const selectedIds = selected ? selectedBlockActionIds() : []
     const keepRange = selected && selectedIds.length === opening.target.blockIds.length
@@ -129,8 +168,9 @@ export function useDocumentBlockActions({ documents, documentTree, isZh, ui, onO
     } catch (error) { live.current.notifyBlockAction(getErrorMessage(error, isZh ? '复制链接失败' : 'Could not copy links'), 'error') }
     finally { copyLock.current = false; setCopying(false) }
   }
-  const moveReason = (opening: Opening) => planDocumentBlockTransfer({ from: opening.target.blocks, to: [],
-    selectedIds: opening.target.blockIds }) ? null
+  const planMoveSelection = (opening: Opening) => planDocumentBlockTransfer({ from: opening.target.blocks, to: [],
+    selectedIds: opening.target.blockIds, allowSyncedPlaceholders: true })
+  const moveReason = (opening: Opening) => planMoveSelection(opening) ? null
     : isZh ? '请选择连续同级的完整内容块；子块会一起移动。' : 'Select consecutive sibling blocks; children move with them.'
   const openMove = (opening: Opening) => {
     if (!live.current.isBlockActionTargetCurrent(opening.target) || moveReason(opening)) return
@@ -154,7 +194,7 @@ export function useDocumentBlockActions({ documents, documentTree, isZh, ui, onO
   }
   const wrapSelectedInColumns = () => { const opening = openingFor(selectedBlockActionIds()); if (opening) void wrapInColumns(opening) }
   const copySelectedBlockLinks = () => { const opening = openingFor(selectedBlockActionIds()); if (opening) void copy(opening) }
-  const openSelectedBlocksMove = () => { const opening = openingFor(selectedBlockActionIds()); if (opening) openMove(opening) }
+  const openSelectedBlocksMove = () => { const opening = openingFor(selectedBlockActionIds(true)); if (opening) openMove(opening) }
   useEffect(() => {
     if (documents.isBlockMoveBusy) return
     if (menu && !documents.isBlockActionTargetCurrent(menu.target)) { menu.cold?.dispose(); currentMenu.current = null; setMenu(null) }
@@ -216,11 +256,11 @@ export function useDocumentBlockActions({ documents, documentTree, isZh, ui, onO
   const moveDialogProps: DocumentBlockMoveDialogProps | null = move ? {
     documents: documentTree, sourceDocumentId: move.target.documentId,
     sourceDocumentTitle: documents.selectedDocument?.title ?? '',
-    selectedBlockCount: planDocumentBlockTransfer({ from: move.target.blocks, to: [], selectedIds: move.target.blockIds })?.movedIds.length ?? move.target.blockIds.length,
+    selection: move.target,
     isZh, busy: documents.isBlockMoveBusy, error: moveError, opener: move.opener,
     canOpen: () => canOpen(move), canReturnFocus: () => canReturnFocus(move),
-    onClose: closeMove, onMove: async targetId => {
-      const completed = await live.current.moveDraftBlocksToDocument(move.target, targetId)
+    onClose: closeMove, onMove: async destination => {
+      const completed = await live.current.moveDraftBlocksToDocument(move.target, destination)
       if (completed) {
         live.current.clearBlockSelection()
         move.cold?.dispose()
@@ -228,11 +268,13 @@ export function useDocumentBlockActions({ documents, documentTree, isZh, ui, onO
         restore(move)
         return true
       }
-      if (sameSession(move.target)) setMoveError(isZh ? '移动未完成，请检查文档是否已变化后重试。' : 'Move was not completed; check whether a document changed.')
+      if (sameSession(move.target)) setMoveError(typeof destination !== 'string' && destination.mode !== 'list'
+        ? (isZh ? '批量移动未完成。请检查参与文档是否已变化、还有受保护的草稿，或重新选择。' : 'Batch move did not complete. Check for changed documents or protected drafts, or select the blocks again.')
+        : (isZh ? '移动未完成，请检查文档是否已变化后重试。' : 'Move was not completed; check whether a document changed.'))
       return false
     }
   } : null
-  const selectedOpening = openingFor(selectedBlockActionIds())
+  const selectedOpening = openingFor(selectedBlockActionIds(true))
   const selectedMoveDisabledReason = selectedOpening ? moveReason(selectedOpening) : null
-  return { selectedMoveDisabledReason, convertSelectedBlocks, wrapSelectedInColumns, openBlockActions, copySelectedBlockLinks, openSelectedBlocksMove, selectedBlockActionIds, contextMenuProps, moveDialogProps }
+  return { selectedMoveDisabledReason, convertSelectedBlocks, duplicateSelectedBlocks, wrapSelectedInColumns, openBlockActions, copySelectedBlockLinks, openSelectedBlocksMove, selectedBlockActionIds, contextMenuProps, moveDialogProps }
 }

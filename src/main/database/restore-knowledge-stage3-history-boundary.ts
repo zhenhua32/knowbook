@@ -2,25 +2,29 @@ import Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
 import { readdir, rmdir, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
+import { parseSyncedBlockPayload } from '../../shared/syncedBlockValidation'
 import { readCapsule2AssetManifest, writeCapsule2AssetCopy } from './restore-knowledge-capsule2-assets-files'
 import { readRawCapsule2ContentOwned } from './restore-knowledge-capsule2-content-raw-read'
 import { CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-model'
 import { capsuleBytesHash, capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { durableSqlDagHash, durableSqlDagUuid } from './restore-knowledge-dag-model'
-import { graph3Rows } from './restore-knowledge-graph3-data'
+import { graph3Rows, graph3Text } from './restore-knowledge-graph3-data'
 import { assertOriginCatalogDirectory, syncOriginCatalogAncestors } from './restore-knowledge-origin-bundle-files'
 import { assertRootRestoreStage3FilesHeld3, closeRootRestoreStage3FilesHeld3, holdRootRestoreStage3DatabaseFiles3,
   verifyRootRestoreStage3FilesHeld3 } from './restore-knowledge-stage3-files'
 import { assertRootRestoreStage3DatabaseReadonly3, copyRootRestoreStage3Database3,
   holdRootRestorePhysicalStageOriginalBytes3, readRootRestoreStage3HistoryPreimage3,
-  type RootRestorePhysicalStage3 } from './restore-knowledge-stage3-physical'
+  type RootRestorePhysicalStage3, type PreparedRestoreHistoryScope3 } from './restore-knowledge-stage3-physical'
 import { assertRestorePath, restoreDirectory, syncRestoreDirectory } from './restore-safety-files'
 import { restoreSqliteFilename } from './restore-safety-sqlite-path'
+import { assertEmptyRestoreKnowledge, auditRestoreKnowledgeConnection, readRestoreKnowledgeCapture } from './restore-safety-knowledge'
+import { readRawPriorKnowledgeCoverageOwned } from './restore-knowledge-coverage-raw-read'
+import type { CoverageCutReference } from './restore-knowledge-coverage-model'
 import { readSyncedExchangeCutJournal } from './synced-exchange-host-cut'
 import { readSyncedGroupLifecycles } from './synced-lifecycle-state'
 import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-read'
 import { recoveryBoundaryHash, recoveryEpochRequestHash, recoveryOperationRowHash, validateSyncedRecoveryEpochReceipt,
-  validateSyncedRecoveryHistoryBoundary } from './synced-recovery-boundary-model'
+  validateSyncedRecoveryHistoryBoundary, type SyncedRecoveryRemovedInstance } from './synced-recovery-boundary-model'
 import { assertSyncedRecoveryBoundaryRecords } from './synced-recovery-boundary-read'
 
 type Preimage = Awaited<ReturnType<typeof readRootRestoreStage3HistoryPreimage3>>
@@ -44,7 +48,8 @@ function allocatedGuard(guard: Omit<GroupGuard, 'historyPosition'> & { historyPo
   return { ...guard, historyPosition: position(BigInt(guard.historyPosition)) }
 }
 
-function observe(db: Database.Database, { copy, retainedCut, value, stageManifestHash }: Preimage) {
+function observe(db: Database.Database, { copy, retainedCut, value, stageManifestHash }: Preimage,
+  allowInstanceRemoval: boolean, allowOrdinaryCut: boolean) {
   const raw = readRawCapsule2ContentOwned(db)
   if (raw.schemaVersion !== 27 || raw.encoding !== retainedCut.encoding) return fail('原 current schema/encoding 不同')
   const originalTables = new Map(raw.tables.map(table => [table.name, table]))
@@ -120,12 +125,16 @@ function observe(db: Database.Database, { copy, retainedCut, value, stageManifes
       || after.afterUpdatedAt !== allocation.documentBoundary) return fail('文档原行/CAS 与切点不闭合')
     return [{ documentId, beforeUpdatedAt, afterUpdatedAt: after.afterUpdatedAt }]
   })
+  const retainedDeletedHostIds = new Set(retainedCut.retainedDeletedHostIds)
   const oldHosts = [...originalHosts].sort(([a], [b]) => compare(a, b)).flatMap(([documentId, before]) => {
     const after = hosts.get(documentId)
     if (!after) return []
     const beforeCursor = text(before.value.cursor), beforePosition = position(before.value.position)
     if (after.targetRowId !== before.original.sourceRowId || after.beforeCursor !== beforeCursor
       || after.beforePosition !== String(beforePosition) || after.afterPosition !== '0') return fail('原宿主 rowid/cursor/position 与切点不闭合')
+    if (retainedDeletedHostIds.has(documentId)
+      && (!deletions.has('doc:' + documentId) || originalDocuments.has(documentId) || documents.has(documentId)))
+      return fail('保留墓碑宿主缺准确原 SQLite 删除证明')
     return [{ documentId, beforeCursor, beforePosition, afterCursor: after.afterCursor }]
   })
   const changedGroupDispositions: string[] = []
@@ -156,20 +165,56 @@ function observe(db: Database.Database, { copy, retainedCut, value, stageManifes
     return [{ instanceId, groupId: text(row.value.group_id), hostDocumentId: text(row.value.host_document_id),
       beforeBindingVersion, afterBindingVersion: target.afterBindingVersion }]
   })
+  const instanceChanges: SyncedRecoveryRemovedInstance[] = []
+  const removedInstances = uncovered.find(row => row.family === 'instances')?.removed ?? []
+  if (allowInstanceRemoval && removedInstances.length) {
+    const originalBlocks = originalRows('blocks', 'id')
+    const originalLedger = originalRows('block_identities', 'id')
+    const stageInstances = value.tables.find(table => table.name === 'synced_instances') ?? fail('缺已验证的 Stage3 实例表')
+    const remainingIds = new Set(stageInstances.rows.map(row => graph3Text(row.cells[stageInstances.columns.indexOf('instance_id')], raw.encoding)))
+    for (const instanceId of removedInstances) {
+      const instance = originalInstances.get(instanceId) ?? fail('移除实例缺原 SQL 行')
+      const block = originalBlocks.get(instanceId)?.value, ledger = originalLedger.get(instanceId)?.value
+      const groupId = text(instance.value.group_id), hostDocumentId = text(instance.value.host_document_id)
+      if (!block || block.type !== 'synced-block' || block.document_id !== hostDocumentId || block.depth !== instance.value.depth
+        || block.parent_block_id !== instance.value.parent_block_id || parseSyncedBlockPayload(text(block.content)).groupId !== groupId
+        || !ledger || ledger.last_owner_kind !== 'document' || ledger.last_owner_id !== hostDocumentId || ledger.state !== 'live'
+        || ledger.created_at !== block.created_at || remainingIds.has(instanceId)) return fail('移除实例的原镜像、出生或目标 SQL 不闭合')
+      instanceChanges.push({ instanceId, createdAt: text(block.created_at), before: { groupId, hostDocumentId,
+        bindingVersion: text(instance.value.binding_version), rowId: instance.original.sourceRowId,
+        parentBlockId: instance.value.parent_block_id === null ? null : text(instance.value.parent_block_id),
+        depth: position(instance.value.depth) }, after: null })
+    }
+  }
   const currentHistory = { documents: oldDocuments, hosts: oldHosts, hostCuts, groups: oldGroups, instances: oldInstances,
     retainedOperations, retainedPins }
-  const canRepresentCurrent = !uncovered.some(row => row.removed.length) && !scopeChanged.length && !changedGroupDispositions.length
+  const canRepresentCurrent = !uncovered.some(row => row.removed.length && (row.family !== 'instances' || !allowInstanceRemoval))
+    && !scopeChanged.length && !changedGroupDispositions.length
     && Boolean(oldHosts.length || hostCuts.length || oldGroups.length || oldInstances.length)
   const boundary = canRepresentCurrent ? validateSyncedRecoveryHistoryBoundary({
-    kind: 'synced-recovery-history-boundary', version: 1, operationId: copy.operationId,
+    kind: 'synced-recovery-history-boundary', operationId: copy.operationId,
     ...allocation.workspace, acceptedAt: retainedCut.context.preparedAt, documentBoundary: allocation.documentBoundary,
-    ...currentHistory
+    ...currentHistory, ...(instanceChanges.length ? { version: 2, instanceChanges } : { version: 1 })
   }) : null
   const receipt = boundary ? validateSyncedRecoveryEpochReceipt({
     kind: 'synced-recovery-epoch', version: 1, operationId: boundary.operationId, workspaceScope: boundary.workspaceScope,
     beforeEpoch: boundary.beforeEpoch, afterEpoch: boundary.afterEpoch, boundaryHash: recoveryBoundaryHash(boundary),
     acceptedAt: boundary.acceptedAt
   }) : null
+  let ordinaryCut: Extract<CoverageCutReference, { kind: 'ordinary-empty-epoch-cut' }> | undefined
+  const noCurrentSyncHistory = !originalHosts.size && !hostCuts.length && !originalGroups.size && !originalInstances.size
+  if (allowOrdinaryCut && noCurrentSyncHistory) {
+    const capture = auditRestoreKnowledgeConnection(db)
+    assertEmptyRestoreKnowledge(db, capture)
+    const diagnostic = readRestoreKnowledgeCapture(capture), coverage = readRawPriorKnowledgeCoverageOwned(db)
+    if (!diagnostic || diagnostic.schemaVersion !== raw.schemaVersion || diagnostic.workspaceScope !== raw.workspaceScope
+      || diagnostic.recoveryEpoch !== raw.recoveryEpoch || prior.boundaries.size || coverage.entries.length)
+      return fail('普通切点必须由真实原 current 空史和原 scope/epoch 证明')
+    ordinaryCut = { kind: 'ordinary-empty-epoch-cut', version: 1, operationId: copy.operationId,
+      beforeWorkspaceScope: allocation.workspace.workspaceScope, afterWorkspaceScope: allocation.workspace.workspaceScope,
+      beforeEpoch: allocation.workspace.beforeEpoch, afterEpoch: allocation.workspace.afterEpoch,
+      documentBoundary: allocation.documentBoundary, acceptedAt: retainedCut.context.preparedAt }
+  }
   return {
     operationId: copy.operationId, stageId: retainedCut.context.stageId, stageManifestHash,
     physicalObservationHash: value.physicalObservationHash, currentCopyManifestHash: copy.manifestHash,
@@ -177,7 +222,7 @@ function observe(db: Database.Database, { copy, retainedCut, value, stageManifes
     retainedCutRecordHash: retainedCut.record.hash, retainedArchiveTables: retainedCut.archiveTables,
     proposedBoundary: boundary, proposedReceipt: receipt, proposedEpochRequestHash: receipt ? recoveryEpochRequestHash(receipt) : null,
     unresolvedCurrentHistory: boundary ? null : currentHistory, uncovered, changedInstanceOwners: scopeChanged, changedGroupDispositions,
-    noCurrentSyncHistory: !originalHosts.size && !hostCuts.length && !originalGroups.size && !originalInstances.size,
+    noCurrentSyncHistory, ...(ordinaryCut ? { ordinaryCut } : {}),
     historyCutComplete: false as const, acceptedCoverage: false as const, effective: false as const, installPermit: false as const
   }
 }
@@ -188,7 +233,7 @@ function readGroupHistory(row: Record<string, unknown>) {
     after_hash: text(row.after_hash), created_at: text(row.created_at) }
 }
 
-async function readCurrent(preimage: Preimage) {
+async function readCurrent(preimage: Preimage, allowInstanceRemoval: boolean, allowOrdinaryCut: boolean) {
   const { copy } = preimage, { profileRoot, databaseDirectory } = copy, inventory = copy.value.originalInventory
   const probe = join(profileRoot, 'backups', 'database-restore', copy.operationId, 'history-evidence-probe-' + randomUUID())
   await copyRootRestoreStage3Database3(databaseDirectory, probe, profileRoot, inventory)
@@ -198,7 +243,7 @@ async function readCurrent(preimage: Preimage) {
   try {
     db.pragma('query_only=ON')
     db.pragma('foreign_keys=ON')
-    result = db.transaction(() => observe(db, preimage))()
+    result = db.transaction(() => observe(db, preimage, allowInstanceRemoval, allowOrdinaryCut))()
   } finally { db.close() }
   // Readonly SQLite can create an empty WAL and a shared-memory sidecar.
   // Only clean the validated post-read inventory of a successful probe.
@@ -214,10 +259,11 @@ async function readCurrent(preimage: Preimage) {
   return result
 }
 
-async function evidence(stage: RootRestorePhysicalStage3, evidenceId: string, expectedHash?: string) {
+async function evidence(stage: RootRestorePhysicalStage3, evidenceId: string, expectedHash?: string, allowOrdinaryCut = false,
+  historyScope?: PreparedRestoreHistoryScope3) {
   const physical = await holdRootRestorePhysicalStageOriginalBytes3(stage)
   try {
-    const preimage = await readRootRestoreStage3HistoryPreimage3(stage)
+    const preimage = await readRootRestoreStage3HistoryPreimage3(stage, historyScope)
     const { copy } = preimage, root = copy.profileRoot, base = collection(preimage)
     const directory = join(base, evidenceId), path = join(directory, 'manifest.json')
     const stored = expectedHash === undefined ? null : await readCapsule2AssetManifest(path, root, CAPSULE2_RAW_MAX_JSON_BYTES)
@@ -225,8 +271,14 @@ async function evidence(stage: RootRestorePhysicalStage3, evidenceId: string, ex
     const current = await holdRootRestoreStage3DatabaseFiles3({ profileRoot: root, databaseDirectory: copy.databaseDirectory,
       inventory: copy.value.originalInventory })
     try {
-      const facts = await readCurrent(preimage)
-      const value = freezeCapsuleValue({ kind: 'root-restore-non-executable-history-evidence-v1' as const, version: 1 as const, evidenceId, ...facts })
+      // Persisted v1 previews can include unsupported instance removals. Their
+      // old locator must still re-read exactly the same evidence after upgrade.
+      const allowInstanceRemoval = stored === null || JSON.parse(stored).version === 2
+      const facts = await readCurrent(preimage, allowInstanceRemoval, allowOrdinaryCut)
+      const version = facts.ordinaryCut ? 3 : facts.proposedBoundary?.version ?? 1
+      const kind = version === 3 ? 'root-restore-non-executable-ordinary-evidence-v3'
+        : version === 2 ? 'root-restore-non-executable-history-evidence-v2' : 'root-restore-non-executable-history-evidence-v1'
+      const value = freezeCapsuleValue({ kind, version, evidenceId, ...facts })
       const text = capsuleJson(value) + '\n', manifestHash = capsuleBytesHash(text)
       if (Buffer.byteLength(text) > CAPSULE2_RAW_MAX_JSON_BYTES) return fail('完整切点证据超预算，不能截断')
       if (stored === null) {
@@ -255,4 +307,12 @@ export function prepareRootRestoreHistoryBoundaryCandidate3(stage: RootRestorePh
 export function reopenRootRestoreHistoryBoundaryCandidate3(stage: RootRestorePhysicalStage3, input: Locator) {
   const locator = capsuleRecord(input, ['evidenceId', 'expectedManifestHash'])
   return evidence(stage, durableSqlDagUuid(locator.evidenceId), durableSqlDagHash(locator.expectedManifestHash))
+}
+
+/** Only C consumes an ordinary empty-history cut; earlier history APIs keep
+ * their original manifest format and admission. */
+export function readRootRestoreCoverageCutEvidence3(stage: RootRestorePhysicalStage3, input?: Locator, historyScope?: PreparedRestoreHistoryScope3) {
+  if (!input) return evidence(stage, randomUUID(), undefined, true, historyScope)
+  const locator = capsuleRecord(input, ['evidenceId', 'expectedManifestHash'])
+  return evidence(stage, durableSqlDagUuid(locator.evidenceId), durableSqlDagHash(locator.expectedManifestHash), true)
 }

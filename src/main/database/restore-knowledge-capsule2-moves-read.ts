@@ -63,7 +63,7 @@ export function assertRawCapsule2MovesOwned(db: Database.Database): void {
     .safeIntegers(true).raw(true).get() as unknown[]
   if (typeof measured[0] !== 'bigint' || typeof measured[1] !== 'bigint' || measured[0] < 0n || measured[1] < 0n
     || measured[0] > BigInt(CAPSULE2_RAW_MAX_ROWS) || measured[1] > BigInt(CAPSULE2_RAW_MAX_VALUE_BYTES)) return bad('完整来源超raw准备预算，不截断')
-  for (const row of db.prepare('SELECT * FROM document_block_moves ORDER BY _rowid_').all() as Row[]) {
+  for (const row of db.prepare('SELECT * FROM document_block_moves ORDER BY _rowid_').iterate() as IterableIterator<Row>) {
     if (!isSyncedUuid(row.id) || row.state !== 'applied' && row.state !== 'undone') return bad('原移动身份/状态无效')
     const source = id(row.source_document_id), target = id(row.target_document_id)
     if (source === target) return bad('原移动两端相同')

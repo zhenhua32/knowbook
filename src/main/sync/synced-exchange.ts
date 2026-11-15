@@ -21,6 +21,8 @@ import { observationDatabasePath } from '../database/synced-remote-observation-p
 import { readSyncedExchangeCutJournal } from '../database/synced-exchange-host-cut'
 import { readSyncedExchangeLocal, readSyncedExchangeReceipt, type SyncedExchangeLocal } from '../database/synced-exchange-read'
 import { readSyncedExchangeReceiptById } from '../database/synced-exchange-receipt'
+import { readActiveExchangeRejoin } from '../database/synced-exchange-rejoin-model'
+import { readRejoinedPublicationSnapshot } from './synced-exchange-rejoin-publication'
 import { readSyncedExchangeConflictPreviewIndex } from '../database/synced-exchange-conflict-read'
 import { WebDavClient, WebDavHttpError, normalizeWebDavConfig } from './webdav-client'
 import { assertProtocol5ManifestLineage, preserveProtocol5Predecessor } from './synced-manifest-history'
@@ -77,6 +79,8 @@ type Context = { root: string; databasePath: string; target: WebDavSyncConfig; r
   resolution: C.ExchangeResolutionBinding | null; selections: NonNullable<ExchangePlanInput['conflictSelections']>; both: BothSource | null; knowledgeMode: 5 | 6 | null;
   deletionChoice: {resolution:DC.DeletionChoiceResolution;selections:NonNullable<DC.DeletionChoicePlanInput['selections']>} | null
   expectedDeletionPreviewHash?: string }
+type PreviewTargetContext = { request: Pick<M.ExchangeRequest, 'targetFingerprint'> }
+type PreviewReadContext = Pick<Context, 'databasePath' | 'target' | 'workspaceScope' | 'recoveryEpoch'> & PreviewTargetContext
 type Prepared = { context: Context; local: SyncedExchangeLocal; localMaterial: SyncedExchangeLocalMaterial;
   localWire: SyncedProtocol5Snapshot; source: SyncedExchangeRemoteSource; remote: SyncedExchangeRemoteFacts;
   state: M.AnyExchangeState; baseRecords: SyncedProtocol5Snapshot['records']; plan: RuntimePlan; planningAuthority: ReturnType<typeof authority> | ReturnType<typeof knowledgeAuthority>; engine: Engine; bothLinks: T.SyncedBothOwnerSourceLinks[];
@@ -269,10 +273,16 @@ async function assertKnownRemoteLineage(db: Database.Database, c: Context, clien
   if (!origin?.history || !remote.history || origin.history.previousHash !== null
     || publicationHash(publicationJson(origin)) !== state.source.manifestHash) return unavailable('远端历史方言与原工作区首发不同，已暂停同步。')
   const latest = state.currentOperationId ? db.transaction(() => readSyncedExchangeReceiptById(db, state.currentOperationId!))() : null
+  const inheritedHead = latest && latest.result.recoveryEpoch !== c.recoveryEpoch ? db.transaction(() => {
+    const bridge = readActiveExchangeRejoin(db, c.databasePath, c.request.targetFingerprint)
+    return !!bridge && bridge.old.currentOperationId === latest.request.operationId
+      && bridge.old.recoveryEpoch === latest.result.recoveryEpoch && bridge.value.acceptedHead.hash === latest.result.afterManifestHash
+      && bridge.value.acceptedHead.etag === latest.provenance.afterManifestEtag ? bridge.value.observedHead.hash : null
+  })() : null
   if (state.currentOperationId && (!latest || latest.request.targetFingerprint !== c.request.targetFingerprint
-    || latest.result.workspaceScope !== c.workspaceScope || latest.result.recoveryEpoch !== c.recoveryEpoch
+    || latest.result.workspaceScope !== c.workspaceScope || latest.result.recoveryEpoch !== c.recoveryEpoch && !inheritedHead
     || latest.result.remoteWorkspaceId !== remote.workspaceId)) return publicationInvalid('原历史链的本机接受回执不符。')
-  await network(() => assertProtocol5ManifestLineage(client, c.target, remote, latest?.result.afterManifestHash ?? state.source.manifestHash))
+  await network(() => assertProtocol5ManifestLineage(client, c.target, remote, inheritedHead ?? latest?.result.afterManifestHash ?? state.source.manifestHash))
 }
 
 function authority(local: SyncedExchangeLocal, missingBaseKeys: string[], deferredKeys: string[] = []) {
@@ -326,11 +336,8 @@ async function prepare(db: Database.Database, c: Context, runtime: SyncedExchang
   if (local.state && state.source.kind !== 'current-equality') {
     let original: SyncedProtocol5Snapshot | undefined
     if (state.source.kind === 'confirmed-publication') {
-      const seeds = await readConfirmedSyncedPublicationSeeds(db, { userDataRoot: c.root, target: c.target })
-      const seed = seeds.find(row => row.operationId === state.source.operationId)
-      if (!seed || publicationHash(publicationJson(seed.manifest)) !== state.source.manifestHash) return publicationInvalid('exchange seed原confirmed spool缺失/变更。')
-      origin = seed.manifest
-      original = validateSyncedProtocol5Snapshot(seed.manifest, seed.records.map(row => ({ key: row.key, record: row.record })))
+      original = await confirmedExchangeSeed(db, c, client, local, state, remote.manifest)
+      origin = original.manifest
     } else if (!local.initialBaseline || local.initialBaseline.result.operationId !== state.source.operationId
       || local.initialBaseline.result.manifestHash !== state.source.manifestHash) return publicationInvalid('exchange seed原initial receipt缺失/不符。')
     else {
@@ -356,6 +363,19 @@ async function prepare(db: Database.Database, c: Context, runtime: SyncedExchang
   return { context: c, local, localMaterial, localWire, source, remote, state, baseRecords: common.records, plan, planningAuthority, engine, bothLinks }
 }
 type TombstonePlanningMode = 'tombstone' | 'tombstone-or-legacy' | 'deletion-choice'
+async function confirmedExchangeSeed(db: Database.Database, c: Context, client: WebDavClient, local: SyncedExchangeLocal,
+  state: M.AnyExchangeState, remote: SyncedInitialManifest5) {
+  const bridge = local.rejoin
+  if (bridge?.publication && same(bridge.old.source, state.source)) {
+    await network(() => assertProtocol5ManifestLineage(client, c.target, remote, state.source.manifestHash))
+    return readRejoinedPublicationSnapshot(client, c.target, remote, bridge.old, bridge.publication, c.root)
+  }
+  const seeds = await readConfirmedSyncedPublicationSeeds(db, { userDataRoot: c.root, target: c.target })
+  const seed = seeds.find(row => row.operationId === state.source.operationId)
+  if (!seed || publicationHash(publicationJson(seed.manifest)) !== state.source.manifestHash)
+    return publicationInvalid('exchange seed原confirmed spool缺失/变更。')
+  return validateSyncedProtocol5Snapshot(seed.manifest, seed.records.map(row => ({ key: row.key, record: row.record })))
+}
 async function prepareTombstone(db: Database.Database, c: Context, runtime: SyncedExchangeRuntime, deferredKeys: string[],
   mode: TombstonePlanningMode = 'tombstone'): Promise<Prepared | M.SyncedExchangeResult> {
   const loaded = await readObservedSyncedProtocol5(db, { userDataRoot: c.root, target: c.target }, runtime)
@@ -388,10 +408,8 @@ async function prepareTombstone(db: Database.Database, c: Context, runtime: Sync
   if (local.state && state.source.kind !== 'current-equality') {
     let original: SyncedProtocol5Snapshot | undefined
     if (state.source.kind === 'confirmed-publication') {
-      const seeds = await readConfirmedSyncedPublicationSeeds(db, { userDataRoot: c.root, target: c.target }), seed = seeds.find(row => row.operationId === state.source.operationId)
-      if (!seed || publicationHash(publicationJson(seed.manifest)) !== state.source.manifestHash) return publicationInvalid('删除planner原confirmed seed缺失/被改。')
-      origin = seed.manifest
-      original = validateSyncedProtocol5Snapshot(seed.manifest, seed.records.map(row => ({ key: row.key, record: row.record })))
+      original = await confirmedExchangeSeed(db, c, client, local, state, remote.manifest)
+      origin = original.manifest
     } else if (!local.initialBaseline || local.initialBaseline.result.operationId !== state.source.operationId || local.initialBaseline.result.manifestHash !== state.source.manifestHash)
       return publicationInvalid('删除planner原initial seed缺失/被改。')
     else {
@@ -1109,6 +1127,14 @@ async function loadPreview(db:Database.Database,c:Context,previewId:string):Prom
   const dir=previewDirectory(c,previewId),file=join(dir,'preview.json');safe(dir,c.root);safe(file,dir)
   if(!lstatSync(file).isFile())return publicationInvalid('原preview不是私有regular file。')
   const bytes=await readFile(file)
+  const decoded = decodeConflictPreview(bytes, c, index)
+  // Re-read the exact immutable DB index after file awaits; it is a denial guard, not new authority.
+  const final=db.transaction(()=>{current(db,c);return readSyncedExchangeConflictPreviewIndex(db,previewId,c.request)})()
+  if(!same(final,index))return publicationInvalid('读取preview期间原index被删除/改写。')
+  return decoded
+}
+function decodeConflictPreview(bytes: Buffer, c: PreviewReadContext, index: C.ConflictPreviewIndex): StoredPreview {
+  const previewId=index.previewId
   if(publicationHash(bytes)!==index.previewHash)return publicationInvalid('原preview bytes/index hash不闭合。')
   const value=M.parseExchangeStored(bytes.toString('utf8'))
   assertSyncedShape(value,['kind','version','previewId','databasePath','target','workspaceScope','recoveryEpoch','remoteWorkspaceId','stateGeneration','remoteManifestHash','remoteEtag','createdAt','local','remote','baseRecords','state','authority','keyGuards','stateRaw','localFingerprint','components'])
@@ -1137,9 +1163,6 @@ async function loadPreview(db:Database.Database,c:Context,previewId:string):Prom
   const originalAuthority=value.authority as unknown as ReturnType<typeof authority>
   const checked=planSyncedExchange({operationId:previewId,local,remote,baseRecords,state,localFingerprint:value.localFingerprint,authority:originalAuthority})
   if(!same(checked.conflictPreviews??[],facts.components))return publicationInvalid('preview原展示和真实原plan不闭合。')
-  // Re-read the exact immutable DB index after file awaits; it is a denial guard, not new authority.
-  const final=db.transaction(()=>{current(db,c);return readSyncedExchangeConflictPreviewIndex(db,previewId,c.request)})()
-  if(!same(final,index))return publicationInvalid('读取preview期间原index被删除/改写。')
   return {index,facts}
 }
 async function attachPreview(db:Database.Database,c:Context,request:M.ExchangeResolveRequest):Promise<void> {
@@ -1499,7 +1522,15 @@ async function loadBothPreview(db:Database.Database,c:Context,previewId:string):
   if(index.workspaceScope!==c.workspaceScope||index.recoveryEpoch!==c.recoveryEpoch)return unavailable('both原preview属于其它scope/epoch。')
   const dir=bothDirectory(c,previewId),file=join(dir,'preview.json');safe(file,c.root)
   if(!lstatSync(file).isFile())return publicationInvalid('both原preview不是regular文件。')
-  const bytes=await readFile(file);if(publicationHash(bytes)!==index.previewHash)return publicationInvalid('both原preview bytes/index不闭合。')
+  const bytes=await readFile(file)
+  const decoded = decodeBothPreview(bytes, c, index)
+  const final=db.transaction(()=>{current(db,c);return readSyncedBothPreviewIndex(db,previewId,c.request)})()
+  if(!same(final,index))return publicationInvalid('both读取期间原index变更。')
+  return decoded
+}
+function decodeBothPreview(bytes: Buffer, c: PreviewReadContext, index: B.BothPreviewIndex): BothStoredPreview {
+  const previewId=index.previewId
+  if(publicationHash(bytes)!==index.previewHash)return publicationInvalid('both原preview bytes/index不闭合。')
   const value=M.parseExchangeStored(bytes.toString('utf8'))
   assertSyncedShape(value,['kind','version','previewId','databasePath','target','workspaceScope','recoveryEpoch','createdAt','local','remote','baseRecords','state','authority','keyGuards','stateRaw','localFingerprint','components','allocation','sourceLinks','componentFacts'])
   if(value.kind!=='synced-exchange-both-preview-inputs'||value.version!==1||value.previewId!==previewId||value.databasePath!==c.databasePath||!same(value.target,c.target)
@@ -1521,8 +1552,6 @@ async function loadBothPreview(db:Database.Database,c:Context,previewId:string):
     return {preview,decision:{componentId:preview.componentId,copyDocumentIds:[],groups:[]},component:facts.component,allocation,poolAllocation:allocation,sourceLinks,conflictedKeys:facts.conflictedKeys}})
   const facts=B.validateBothPreview({kind:'synced-exchange-both-preview',version:1,previewId,previewHash:index.previewHash,workspaceScope:index.workspaceScope,recoveryEpoch:index.recoveryEpoch,
     remoteWorkspaceId:remote.manifest.workspaceId,targetFingerprint:index.targetFingerprint,stateGeneration:state.generation,remoteManifestHash:publicationHash(publicationJson(remote.manifest)),createdAt:index.createdAt,components})
-  const final=db.transaction(()=>{current(db,c);return readSyncedBothPreviewIndex(db,previewId,c.request)})()
-  if(!same(final,index))return publicationInvalid('both读取期间原index变更。')
   return {index,facts,allocation,selections}
 }
 async function attachBothPreview(db:Database.Database,c:Context,request:B.BothRequest):Promise<void> {
@@ -1707,6 +1736,12 @@ async function loadKnowledgePreviewData(db:Database.Database,c:Context,index:Kno
   const dir=knowledgePreviewDirectory(c,mode,index.previewId),file=join(dir,'preview.json');safe(dir,c.root);safe(file,dir)
   if(!lstatSync(file).isFile())return publicationInvalid('knowledge preview原文件不是regular。')
   const bytes=await readFile(file)
+  const decoded=decodeKnowledgePreviewData(bytes,c,index,mode)
+  const final=db.transaction(()=>{current(db,c);return readKnowledgePreviewIndex(db,mode,index.previewId,c.request)})()
+  if(!same(final,index))return publicationInvalid('读取knowledge preview期间原index改变。')
+  return decoded
+}
+function decodeKnowledgePreviewData(bytes:Buffer,c:PreviewReadContext,index:KnowledgePreviewIndex,mode:KnowledgePreviewMode): KnowledgePreviewData {
   if(publicationHash(bytes)!==index.previewHash)return publicationInvalid('knowledge preview原bytes/index不闭合。')
   const value=M.parseExchangeStored(bytes.toString('utf8'))
   assertSyncedShape(value,['kind','version','previewId','databasePath','target','workspaceScope','recoveryEpoch','createdAt','local','localPhysical','remote','baseRecords','state',
@@ -1729,21 +1764,23 @@ async function loadKnowledgePreviewData(db:Database.Database,c:Context,index:Kno
   if(value.stateRaw!==null&&typeof value.stateRaw!=='string')return publicationInvalid('knowledge preview原stateRaw无效。')
   const expectedGuards=Object.fromEntries((input.authority.keyGuards??[]).map(row=>[row.key,row.fingerprint]))
   if(!same(value.keyGuards,expectedGuards))return publicationInvalid('knowledge preview原keyguards两处来源不一致。')
-  const final=db.transaction(()=>{current(db,c);return readKnowledgePreviewIndex(db,mode,index.previewId,c.request)})()
-  if(!same(final,index))return publicationInvalid('读取knowledge preview期间原index改变。')
   return {index,input,plan,value,sourceLinks}
 }
-function knowledgeConflictFacts(c:Context,index:KnowledgePreviewIndex,input:K.KnowledgePlanInput,components:C.ConflictPreviewComponent[]):C.SyncedExchangeConflictPreview {
+function knowledgeConflictFacts(c:PreviewTargetContext,index:KnowledgePreviewIndex,input:K.KnowledgePlanInput,components:C.ConflictPreviewComponent[]):C.SyncedExchangeConflictPreview {
   return C.validateConflictPreview({kind:'synced-exchange-conflict-preview',version:1,previewId:index.previewId,previewHash:index.previewHash,
     workspaceScope:index.workspaceScope,recoveryEpoch:index.recoveryEpoch,remoteWorkspaceId:input.remote.manifest.workspaceId,targetFingerprint:c.request.targetFingerprint,
     stateGeneration:input.state.generation,remoteManifestHash:publicationHash(publicationJson(input.remote.manifest)),createdAt:index.createdAt,components})
 }
 async function loadKnowledgeConflictPreview(db:Database.Database,c:Context,index:KnowledgePreviewIndex):Promise<StoredPreview> {
   const loaded=await loadKnowledgePreviewData(db,c,index,'conflicts')
+  return decodeKnowledgeConflictResult(c,loaded)
+}
+function decodeKnowledgeConflictResult(c:PreviewTargetContext,loaded:KnowledgePreviewData):StoredPreview {
+  const {index}=loaded
   if(!same(loaded.plan.conflictPreviews,loaded.value.components))return publicationInvalid('knowledge conflict展示与完整原plan不符。')
   return {index,facts:knowledgeConflictFacts(c,index,loaded.input,loaded.plan.conflictPreviews)}
 }
-function knowledgeBothFacts(c:Context,index:KnowledgePreviewIndex,input:K.KnowledgePlanInput,components:T.SyncedExchangeBothPreviewComponent[]):T.SyncedExchangeBothPreview {
+function knowledgeBothFacts(c:PreviewTargetContext,index:KnowledgePreviewIndex,input:K.KnowledgePlanInput,components:T.SyncedExchangeBothPreviewComponent[]):T.SyncedExchangeBothPreview {
   return B.validateBothPreview({kind:'synced-exchange-both-preview',version:1,previewId:index.previewId,previewHash:index.previewHash,workspaceScope:index.workspaceScope,
     recoveryEpoch:index.recoveryEpoch,remoteWorkspaceId:input.remote.manifest.workspaceId,targetFingerprint:c.request.targetFingerprint,stateGeneration:input.state.generation,
     remoteManifestHash:publicationHash(publicationJson(input.remote.manifest)),createdAt:index.createdAt,components})
@@ -1752,7 +1789,10 @@ function storedKnowledgeBothFacts(input:K.KnowledgePlanInput,links:T.SyncedBothO
   return deriveKnowledgeBothComponents(input,links).map(row=>({component:row.component,records:row.records,conflictedKeys:row.conflictedKeys,reason:row.reason,fence:row.fence}))
 }
 async function loadKnowledgeBothPreview(db:Database.Database,c:Context,index:KnowledgePreviewIndex):Promise<BothStoredPreview> {
-  const loaded=await loadKnowledgePreviewData(db,c,index,'both'),{input,value,sourceLinks}=loaded
+  return decodeKnowledgeBothResult(c,await loadKnowledgePreviewData(db,c,index,'both'))
+}
+function decodeKnowledgeBothResult(c:PreviewTargetContext,loaded:KnowledgePreviewData):BothStoredPreview {
+  const {index,input,value,sourceLinks}=loaded
   const allocation=B.validateBothAllocation(value.allocation)
   if(B.bothAllocationHash(allocation)!==index.allocationHash||!same(value.componentFacts,storedKnowledgeBothFacts(input,sourceLinks))||!Array.isArray(value.components))return publicationInvalid('knowledge both原pool/完整组件来源损坏。')
   const components=value.components.map(B.validateBothPreviewComponent).sort((a,b)=>publicationCompare(a.componentId,b.componentId))
@@ -1820,7 +1860,7 @@ function readDeletionSelections(value:unknown,request:M.ExchangeRequest):NonNull
   return selections
 }
 function deletionPreviewDirectory(c:Context,id:string):string{return join(c.root,'storage','synced-exchange-deletion-previews-v1',id)}
-function deletionPreviewFacts(c:Context,index:DeletionChoicePreviewIndex,source:DC.DeletionDecisionSource,components:DC.DeletionChoicePreviewComponent[]):DC.SyncedExchangeDeletionPreview {
+function deletionPreviewFacts(c:PreviewTargetContext,index:DeletionChoicePreviewIndex,source:DC.DeletionDecisionSource,components:DC.DeletionChoicePreviewComponent[]):DC.SyncedExchangeDeletionPreview {
   return DC.validateDeletionChoicePreview({kind:'synced-exchange-deletion-preview',version:1,previewId:index.previewId,previewHash:index.previewHash,workspaceScope:index.workspaceScope,
     recoveryEpoch:index.recoveryEpoch,remoteWorkspaceId:source.remoteWorkspaceId,targetFingerprint:c.request.targetFingerprint,stateGeneration:source.state.generation,
     remoteManifestHash:source.remoteSource.manifestHash,createdAt:index.createdAt,components})
@@ -1832,6 +1872,13 @@ async function loadDeletionPreview(db:Database.Database,c:Context,id:string):Pro
   const dir=deletionPreviewDirectory(c,id),file=join(dir,'preview.json');safe(dir,c.root);safe(file,dir)
   if(!lstatSync(file).isFile())return publicationInvalid('删除预览不是私有regular file。')
   const bytes=await readFile(file)
+  const decoded = decodeDeletionPreview(bytes, c, index)
+  const final=db.transaction(()=>{current(db,c);return readDeletionChoicePreviewIndex(db,id,c.request)})()
+  if(!same(final,index))return publicationInvalid('读取删除预览期间原index变化。')
+  return decoded
+}
+function decodeDeletionPreview(bytes:Buffer,c:PreviewReadContext,index:DeletionChoicePreviewIndex) {
+  const id=index.previewId
   if(publicationHash(bytes)!==index.previewHash)return publicationInvalid('删除预览原bytes/index不闭合。')
   const value=M.parseExchangeStored(bytes.toString('utf8'))
   assertSyncedShape(value,['kind','version','previewId','databasePath','target','workspaceScope','recoveryEpoch','createdAt','decisionSource','decisionSourceHash','keyGuards','stateRaw','components'])
@@ -1843,10 +1890,36 @@ async function loadDeletionPreview(db:Database.Database,c:Context,id:string):Pro
   const plan=planSyncedDeletionChoicesFromSource(source,id)
   if(!same(plan.deletionPreviews,value.components)||!same(value.keyGuards,Object.fromEntries((source.authority.keyGuards??[]).map(row=>[row.key,row.fingerprint])))
     ||value.stateRaw!==null&&typeof value.stateRaw!=='string')return publicationInvalid('删除预览原全图展示/guards不可重现。')
-  const final=db.transaction(()=>{current(db,c);return readDeletionChoicePreviewIndex(db,id,c.request)})()
-  if(!same(final,index))return publicationInvalid('读取删除预览期间原index变化。')
   return {index,facts:deletionPreviewFacts(c,index,source,plan.deletionPreviews),source}
 }
+type HistoricalPreview =
+  | { family: 'conflict-v1'; index: C.ConflictPreviewIndex }
+  | { family: 'both-v1'; index: B.BothPreviewIndex }
+  | { family: 'conflict-v2' | 'both-v2'; index: KnowledgePreviewIndex }
+  | { family: 'deletion-v1'; index: DeletionChoicePreviewIndex }
+
+/** Verify retained original bytes against their immutable historical index.
+ * This only reconstructs the original display. It grants no current options. */
+export function assertOriginalSyncedExchangePreview(bytes: Buffer, original: HistoricalPreview): void {
+  const { index } = original
+  if (publicationHash(bytes) !== index.previewHash) return publicationInvalid('原预览 bytes 与历史 index 不符。')
+  const payload = decodePublicationJson(bytes,bytes.length)
+  if (!payload || typeof payload !== 'object' || !('target' in payload)) return publicationInvalid('原预览缺准确目标。')
+  assertSyncedShape(payload.target, ['enabled','url','username','directory','intervalMinutes','allowInsecureHttp'])
+  const target = normalizeWebDavConfig(payload.target as unknown as WebDavSyncConfig)
+  if (!same(target,payload.target) || M.exchangeTargetFingerprint(target) !== index.targetFingerprint)
+    return publicationInvalid('原预览目标与历史 index 不符。')
+  const {databasePath,workspaceScope,recoveryEpoch} = index
+  const context = { databasePath, workspaceScope, recoveryEpoch, target, request: { targetFingerprint: index.targetFingerprint } }
+  switch (original.family) {
+    case 'conflict-v1': decodeConflictPreview(bytes,context,original.index); break
+    case 'both-v1': decodeBothPreview(bytes,context,original.index); break
+    case 'conflict-v2': decodeKnowledgeConflictResult(context,decodeKnowledgePreviewData(bytes,context,original.index,'conflicts')); break
+    case 'both-v2': decodeKnowledgeBothResult(context,decodeKnowledgePreviewData(bytes,context,original.index,'both')); break
+    case 'deletion-v1': decodeDeletionPreview(bytes,context,original.index); break
+  }
+}
+
 function assertExpectedDeletionPreview(c: Context, actual: string): void {
   if (c.expectedDeletionPreviewHash !== undefined && c.expectedDeletionPreviewHash !== actual) {
     return publicationInvalid('删除冲突预览已变化，请重新读取。')

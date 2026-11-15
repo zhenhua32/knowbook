@@ -44,6 +44,83 @@ export interface Capsule2RawCoverageSupports {
 }
 export function capsule2RawInvalid(message: string): never { throw new Error('capsule2原SQL接缝无效：' + message + '；仅raw数据，不授认证/empty/安装权。') }
 const hash = (domain: string, value: unknown): string => createHash('sha256').update(domain + '\0' + capsuleJson(value)).digest('hex')
+type RawJsonWrite = (text: string) => void
+export type Capsule2RawStreamTable = Omit<Capsule2RawSqlTable, 'rows'> & { rows: Iterable<Capsule2RawSqlRow> }
+export type Capsule2RawContentStream = Omit<Capsule2RawContent, 'tables'> & { tables: readonly Capsule2RawStreamTable[] }
+
+/** The validated raw schema has fixed, non-index property names. Keep the
+ * canonical property order and use the original codec for every leaf and
+ * row, while emitting the two potentially large arrays incrementally. */
+function writeRawObject<T extends Capsule2RawContentStream | Capsule2RawStreamTable>(
+  value: T, collection: keyof T, writeCollection: () => void, write: RawJsonWrite) {
+  const keys = Object.keys(value).sort() as Array<keyof T>
+  write('{')
+  for (const [index, key] of keys.entries()) {
+    if (index) write(',')
+    write(capsuleJson(key) + ':')
+    if (key === collection) writeCollection()
+    else write(capsuleJson(value[key]))
+  }
+  write('}')
+}
+
+function writeRawTable(table: Capsule2RawStreamTable, write: RawJsonWrite): void {
+  writeRawObject(table, 'rows', () => {
+    write('[')
+    let first = true
+    for (const row of table.rows) {
+      if (!first) write(',')
+      first = false
+      write(capsuleJson(row))
+    }
+    write(']')
+  }, write)
+}
+
+function writeRawContent(value: Capsule2RawContentStream, write: RawJsonWrite): void {
+  writeRawObject(value, 'tables', () => {
+    write('[')
+    for (const [index, table] of value.tables.entries()) {
+      if (index) write(',')
+      writeRawTable(table, write)
+    }
+    write(']')
+  }, write)
+}
+
+/** Hash the existing canonical JSON preimage of an already validated raw DTO. */
+export function hashValidatedCapsule2RawContent(domain: string, value: Capsule2RawContent): string {
+  const digest = createHash('sha256').update(domain + '\0')
+  writeRawContent(value, text => { digest.update(text) })
+  return digest.digest('hex')
+}
+
+export function hashValidatedCapsule2RawSqlTable(domain: string, value: Capsule2RawStreamTable): string {
+  const digest = createHash('sha256').update(domain + '\0')
+  writeRawTable(value, text => { digest.update(text) })
+  return digest.digest('hex')
+}
+
+/** Hash two views of one inspected table without rereading or storing rows. */
+export function hashValidatedCapsule2RawSqlTablePair(domain: string, table: Capsule2RawStreamTable,
+  include: (row: Capsule2RawSqlRow) => readonly [boolean, boolean]): readonly [string, string] {
+  const left = createHash('sha256').update(domain + '\0'), right = createHash('sha256').update(domain + '\0')
+  const write = (text: string) => { left.update(text); right.update(text) }
+  writeRawObject(table, 'rows', () => {
+    write('[')
+    let firstLeft = true, firstRight = true
+    for (const row of table.rows) {
+      const [keepLeft, keepRight] = include(row)
+      if (!keepLeft && !keepRight) continue
+      const text = capsuleJson(row)
+      if (keepLeft) { if (!firstLeft) left.update(','); left.update(text); firstLeft = false }
+      if (keepRight) { if (!firstRight) right.update(','); right.update(text); firstRight = false }
+    }
+    write(']')
+  }, write)
+  return [left.digest('hex'), right.digest('hex')]
+}
+
 const qname = (value: unknown): value is string => typeof value === 'string' && /^[a-z_][a-z0-9_]*$/.test(value)
 const digest = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value)
 const uuid = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value)
@@ -149,13 +226,43 @@ export function capsule2TableRole(name: string): Capsule2TableRole {
     : name.startsWith('synced_') || name === 'document_history' || name === 'document_trash' || name === 'document_block_moves'
       ? 'execution-history-evidence' : 'policy-unresolved'
 }
-export function validateCapsule2RawContent(input: unknown): Capsule2RawContent {
+function rawContentHeader(input: unknown): Record<string, unknown> & { schemaVersion: 26 | 27 } {
   const value = capsuleRecord(input, ['kind', 'version', 'forReader', 'schemaVersion', 'encoding', 'workspaceScope', 'recoveryEpoch', 'schemaHash',
     'legacyInventoryHash', 'derivedTablesNotRepeated', 'tables', 'state', 'semanticValidationComplete', 'certified'])
   if (value.kind !== 'restore-knowledge-capsule2-raw-content' || value.version !== 1 || value.forReader !== CAPSULE2_READER
     || value.schemaVersion !== 26 && value.schemaVersion !== 27 || !['UTF-8', 'UTF-16le', 'UTF-16be'].includes(value.encoding as string)
     || !uuid(value.workspaceScope) || !uuid(value.recoveryEpoch) || !digest(value.schemaHash) || !digest(value.legacyInventoryHash)
     || value.state !== 'raw-storage-only' || value.semanticValidationComplete !== false || value.certified !== false) return capsule2RawInvalid('raw content格式或非授权状态变化')
+  return { ...value, schemaVersion: value.schemaVersion }
+}
+function assertRawTableNames(tableNames: readonly string[], derivedNames: readonly string[], schemaVersion: 26 | 27) {
+  if (capsuleJson(tableNames) !== capsuleJson(capsule2FixedDataTables(schemaVersion))) return capsule2RawInvalid('原表全集有未知/缺失/重复或未排序')
+  if (capsuleJson(derivedNames) !== capsuleJson(capsule2DerivedFtsTables())) return capsule2RawInvalid('derived FTS原闭集未知/缺失/未排序')
+}
+function writeBoundedRawContent(content: Capsule2RawContentStream, write?: RawJsonWrite) {
+  let jsonBytes = 0
+  writeRawContent(content, text => {
+    jsonBytes += Buffer.byteLength(text)
+    if (jsonBytes > CAPSULE2_RAW_MAX_JSON_BYTES) return capsule2RawInvalid('完整raw JSON超预算，不截断')
+    write?.(text)
+  })
+}
+
+export function assertCapsule2RawContentStreamHeader(content: Capsule2RawContentStream): void {
+  rawContentHeader(content)
+  assertRawTableNames(content.tables.map(table => table.name), content.derivedTablesNotRepeated, content.schemaVersion)
+}
+
+/** Stream previously inspected native SQL rows through the existing hash domain. */
+export function hashCapsule2RawContentStream(domain: string, content: Capsule2RawContentStream): string {
+  assertCapsule2RawContentStreamHeader(content)
+  const digest = createHash('sha256').update(domain + '\0')
+  writeBoundedRawContent(content, text => { digest.update(text) })
+  return digest.digest('hex')
+}
+
+export function validateCapsule2RawContent(input: unknown): Capsule2RawContent {
+  const value = rawContentHeader(input)
   const encoding = value.encoding as Capsule2Encoding
   const budget: RawBudget = { rows: 0, valueBytes: 0 }
   const tables = list(value.tables, 128).map(source => {
@@ -168,14 +275,14 @@ export function validateCapsule2RawContent(input: unknown): Capsule2RawContent {
       return capsule2RawInvalid('原rowid顺序/完整行总预算不闭合')
     return { name: table.name, role: capsule2TableRole(table.name), columns, primaryKey, rows }
   })
-  if (capsuleJson(tables.map(table => table.name)) !== capsuleJson(capsule2FixedDataTables(value.schemaVersion))) return capsule2RawInvalid('原表全集有未知/缺失/重复或未排序')
   const derivedTablesNotRepeated = names(value.derivedTablesNotRepeated)
-  if (capsuleJson(derivedTablesNotRepeated) !== capsuleJson(capsule2DerivedFtsTables())) return capsule2RawInvalid('derived FTS原闭集未知/缺失/未排序')
+  assertRawTableNames(tables.map(table => table.name), derivedTablesNotRepeated, value.schemaVersion)
   const result = { ...value, tables, derivedTablesNotRepeated } as unknown as Capsule2RawContent
-  if (Buffer.byteLength(capsuleJson(result)) > CAPSULE2_RAW_MAX_JSON_BYTES) return capsule2RawInvalid('完整raw JSON超预算，不截断')
+  writeBoundedRawContent(result)
   return freezeCapsuleValue(result)
 }
-export const capsule2RawContentHash = (value: Capsule2RawContent): string => hash('knowbook.capsule2.raw-content.v1', validateCapsule2RawContent(value))
+export const capsule2RawContentHash = (value: Capsule2RawContent): string =>
+  hashValidatedCapsule2RawContent('knowbook.capsule2.raw-content.v1', validateCapsule2RawContent(value))
 export function validateCapsule2RawCoverageSupports(input: unknown): Capsule2RawCoverageSupports {
   const value = capsuleRecord(input, ['kind', 'version', 'forReader', 'encoding', 'requirements', 'supports', 'state', 'certified', 'acceptedCoverage'])
   if (value.kind !== 'restore-knowledge-capsule2-raw-coverage-supports' || value.version !== 1 || value.forReader !== CAPSULE2_READER

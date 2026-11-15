@@ -1,14 +1,15 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { StructureCommandView, SyncedStructureCommands } from './structureCommands'
-import { useDialogCloseFocus } from '../../hooks/useDialogCloseFocus'
+import { registerModalFamily, useDialogCloseFocus } from '../../hooks/useDialogCloseFocus'
 import { trapFocusWithinDialog } from '../../utils/dialogFocus'
 import { isImeKeyboardEvent } from '../../utils/imeKeyboard'
 import '../../components/document-capture.css'
 import '../../components/document-block-move.css'
 
-export function SyncedStructureDialog({ commands, view, isZh }: {
-  commands: SyncedStructureCommands; view: Readonly<StructureCommandView>; isZh: boolean
+export function SyncedStructureDialog({ commands, view, isZh, parent }: {
+  commands: Pick<SyncedStructureCommands, 'cancel' | 'query' | 'choose' | 'apply'>
+  view: Readonly<StructureCommandView>; isZh: boolean; parent?: HTMLDialogElement | null
 }) {
   const dialog = useRef<HTMLDialogElement>(null), search = useRef<HTMLInputElement>(null), composing = useRef(false)
   const current = useRef(view); current.current = view
@@ -16,8 +17,10 @@ export function SyncedStructureDialog({ commands, view, isZh }: {
   const closeFocus = useDialogCloseFocus()
   useEffect(() => {
     const element = dialog.current!
-    element.showModal(); search.current?.focus({ preventScroll: true })
-    return closeFocus(element, view.opener, view.canReturnFocus)
+    const family = parent ? registerModalFamily(element, parent) : undefined
+    element.showModal(); family?.opened(); search.current?.focus({ preventScroll: true })
+    const close = closeFocus(element, view.opener, view.canReturnFocus)
+    return () => { family?.closing(); close(); family?.release() }
   }, [view.id, closeFocus])
   const close = () => { if (!composing.current) commands.cancel() }
   const busy = view.busy || view.loading
@@ -34,12 +37,14 @@ export function SyncedStructureDialog({ commands, view, isZh }: {
     }}>
     <header className="document-capture-header"><div><h2 id={titleId}>{view.kind === 'create'
       ? isZh ? '创建同步块' : 'Create synced block' : view.kind === 'detach'
-        ? isZh ? '解除同步' : 'Detach synced block' : isZh ? '插入同步块' : 'Insert synced block'}</h2>
+        ? isZh ? '解除同步' : 'Detach synced block' : view.kind === 'host-edit' ? isZh ? '正文块编辑' : 'Block edit'
+          : isZh ? '插入同步块' : 'Insert synced block'}</h2>
       <p id={hintId}>{view.kind === 'create'
         ? isZh ? `将所选 ${view.blockCount} 个完整内容块转为同一份共享正文，宿主保留真实引用。` : `Turn the selected ${view.blockCount} complete blocks into one shared body; the host keeps its reference.`
         : view.kind === 'detach'
           ? isZh ? `将此处引用替换为 ${view.blockCount} 个可独立编辑的正文块。` : `Replace this reference with ${view.blockCount} independent editable blocks.`
-          : isZh ? '选择已有共享正文，在原位置插入引用；不会复制共享正文到宿主。' : 'Choose an existing shared body and insert its reference at the original position.'}</p>
+          : view.kind === 'host-edit' ? isZh ? '当前正文草稿已保留，可以重试这次编辑。' : 'Your current draft is retained. You can retry this edit.'
+            : isZh ? '选择已有共享正文，在原位置插入引用；不会复制共享正文到宿主。' : 'Choose an existing shared body and insert its reference at the original position.'}</p>
     </div></header>
     <div className="document-capture-body">
       {view.kind === 'insert' && <>
@@ -72,7 +77,8 @@ export function SyncedStructureDialog({ commands, view, isZh }: {
       <button type="button" className="primary-button" disabled={busy || view.kind === 'insert' && !view.selectedGroupId}
         onClick={() => { if (!composing.current && current.current.id === view.id) void commands.apply() }}>{view.hasRequest
           ? isZh ? '重试原操作' : 'Retry original operation' : view.kind === 'create' ? isZh ? '创建同步块' : 'Create synced block'
-            : view.kind === 'detach' ? isZh ? '解除同步' : 'Detach' : isZh ? '插入引用' : 'Insert reference'}</button>
+            : view.kind === 'detach' ? isZh ? '解除同步' : 'Detach'
+              : view.kind === 'host-edit' ? isZh ? '重试编辑' : 'Retry edit' : isZh ? '插入引用' : 'Insert reference'}</button>
     </footer>
   </dialog>, document.body)
 }

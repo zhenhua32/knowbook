@@ -1,4 +1,4 @@
-import type { SyncedBindingSource, SyncedGroupSnapshot, SyncedGroupSaved, SyncedGroupSnapshotsResult, SyncedGroupListResult,
+import type { SyncedBindingSource, SyncedGroupSnapshot, SyncedGroupSaved, SyncedGroupSnapshotsResult, SyncedGroupListResult, SyncedGroupIdentityListResult,
   SyncedGroupMutationResult, SyncedUpdateGroupInput, SyncedRestoreGroupInput, SyncedStructureInput, SyncedStructureResult,
   SyncedRestoreHostInput, SyncedOperationResult, SyncedHistoryState } from './synced-blocks'
 import type { SyncedInlineInstanceAddress } from './workspace-search-occurrence'
@@ -22,17 +22,28 @@ export type SyncedEditingOwnedOperationResult=
   | {status:'committed';workspaceScope:string;result:SyncedGroupSaved;bindingSource:SyncedBindingSource}
 export interface SyncedEditingMethods {
   getSyncedGroupSnapshots:{input:{groupIds:string[]};result:SyncedGroupSnapshotsResult}
-  listSyncedGroups:{input:{query:string;offset:number;limit:number};result:SyncedGroupListResult}
+  listSyncedGroups:{input:{query:string;offset:number;limit:number;includeCreationId?:true};result:SyncedGroupListResult|SyncedGroupIdentityListResult}
   updateSyncedBlockGroup:{input:SyncedUpdateGroupInput;result:SyncedGroupMutationResult}
   restoreSyncedGroupOperation:{input:SyncedRestoreGroupInput;result:SyncedGroupMutationResult}
   getSyncedOperation:{input:{clientOperationId:string};result:SyncedOperationResult}
   applySyncedHostStructure:{input:SyncedStructureInput;result:SyncedEditingHostResult}
+  prepareSyncedCrossHostMove:{input:SyncedStructureInput;result:{status:'ready';dependencies: Array<{documentId:string;updatedAt:string}>} | {status:'unsupported'}}
   restoreSyncedHostOperation:{input:SyncedRestoreHostInput;result:SyncedEditingHostResult}
   getSyncedHostHistory:{input:{documentId:string};result:SyncedHistoryState}
+  getSyncedCrossHostMoveHistory:{input:{documentId:string};result:SyncedCrossHostMoveHistory[]}
   captureBaseline:{input:{groupId:string};result:SyncedEditingBaselineResult}
   ownedOperation:{input:{readOwnerId:string;clientOperationId:string};result:SyncedEditingOwnedOperationResult}
   validateOwner:{input:{readOwnerId:string};result:SyncedEditingOwnerResult}
   releaseOwner:{input:{readOwnerId:string};result:void}
+}
+export type SyncedCrossHostMoveHistory = {
+  operationId: string
+  historyToken: string
+  direction: 'undo' | 'redo'
+  versions: Record<string, string>
+  groupIds: string[]
+  before: import('./synced-blocks').SyncedHostWorkingBefore['workingBefore']
+  after: import('./synced-blocks').SyncedHostWorkingBefore['workingBefore']
 }
 export type SyncedEditingMethod=keyof SyncedEditingMethods
 export type SyncedEditingRequest<M extends SyncedEditingMethod=SyncedEditingMethod>=

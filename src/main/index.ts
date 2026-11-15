@@ -1,6 +1,7 @@
 import { createEditorCloseBarrier } from './editor-close-barrier'
 import { EditorRecoveryDraftStore } from './editor-recovery/draft-store'
 import { EditorRecoveryDraftService } from './editor-recovery/draft-service'
+import { withCrossMoveDraftCheck } from './database/synced-cross-move-draft-guard'
 import { EditorRecoveryCloseReceipts } from './editor-recovery/close-receipts'
 import { EDITOR_RECOVERY_CHANNELS } from '../shared/editor-recovery-channels'
 import { validateEditorRecoveryWriteInput, validateEditorRecoveryPageInput,
@@ -17,7 +18,7 @@ import { isWebClipBridgePort } from '@shared/web-clip-bridge-settings'
 import type { WorkspaceSearchOccurrence, WorkspaceSearchOccurrenceResult } from '../shared/workspace-search-occurrence'
 import type { ResolveSyncedInlineInstanceInput, SyncedInlineInstanceResult } from '../shared/workspace-search-occurrence'
 import { resolveSyncedHeadingAnchor } from './database/synced-heading-projection2'
-import type { OpenSyncedEditingSessionInput, OpenSyncedEditingSessionResult, SyncedEditingRequest } from '../shared/synced-editing-session'
+import type { OpenSyncedEditingSessionInput, OpenSyncedEditingSessionResult, SyncedEditingMethod, SyncedEditingRequest, SyncedEditingResult } from '../shared/synced-editing-session'
 import type { SyncedBlocksChangedEvent, SyncedGroupSnapshot } from '../shared/synced-blocks'
 import { canAiEditBlockText } from '@shared/blockAiEligibility'
 import electron from 'electron'
@@ -142,8 +143,11 @@ import { writeMarkdownFile } from './backup/markdown-file'
 import { checkMarkdownAttachment } from './markdown-attachment-check'
 import { runBackupExportInWorker } from './backup/worker-client'
 import { MarkdownRestoreService } from './backup/importer'
-import { parseRestoreMarkdownInWorker } from './backup/restore-worker-client'
+import { parseRestoreMarkdownInWorker, verifyBackupV3ArchiveInWorker } from './backup/restore-worker-client'
+import { backupV3InventoryHash } from './backup/v3-format'
+import { readV3VersionHeader } from './backup/versions'
 import { DEFAULT_DOCUMENT_SUMMARY, KnowbookStore } from './database/store'
+import { DocumentBlockMoveNeedsControlledWrite } from './database/document-block-transfers'
 import { runDatabaseSavedViewForm } from './database/saved-view-form'
 import { createWorkspaceEventRecord, WorkspaceEventBus } from './event-bus'
 import { PluginPlatformV2Service } from './plugin-platform/platform-service'
@@ -173,7 +177,13 @@ import { SystemPluginRendererBridge } from './system-plugin/renderer-bridge'
 import { disposeSystemPluginWindow, removeSystemPluginFrameResources, snapshotSystemPluginFrameResources, SystemPluginManagedResources } from './system-plugin/managed-resources'
 import { createSystemPluginStartupCommand, resolveKnowbookUserDataOverride } from './system-plugin/startup-command'
 import { cleanupSystemPluginsForApplicationUninstall, isSystemPluginUninstallCleanup } from './system-plugin/uninstall-cleanup'
-import { consumeDatabaseRestoreSafeMode, parseDatabaseRestoreArgument, recoverInterruptedDatabaseRestore, restoreKnowbookDatabase } from './database/restore-maintenance'
+import { BACKUP_V3_RESTORE_ARGUMENT, BACKUP_V3_RESTORE_INVENTORY_ARGUMENT, BACKUP_V3_RESTORE_INTERACTIVE_ARGUMENT, consumeDatabaseRestoreSafeMode,
+  BACKUP_V3_RESTORE_REQUEST_ARGUMENT, parseBackupV3RestoreArgument, parseBackupV3RestoreInventoryArgument,
+  parseBackupV3RestoreInteractiveArgument, parseBackupV3RestoreRequestArgument, parseDatabaseRestoreArgument,
+  recoverInterruptedDatabaseRestore, restoreKnowbookBackupV3, restoreKnowbookDatabase } from './database/restore-maintenance'
+import type { ControlledV3RestorePreview } from './database/restore-safety'
+import { writeRestoreJson } from './database/restore-safety-files'
+import { isV3RestoreConsentFixture, readV3RestoreConsentFixture } from './database/restore-v3-e2e-consent'
 import { extractSystemPluginArchive } from './system-plugin-archive'
 import {
   createEphemeralCredentialStorage,
@@ -299,6 +309,7 @@ const backupHealth = new BackupHealthTracker((state) => {
 })
 let shutdownComplete = false
 let shutdownPromise: Promise<void> | null = null
+let queuedBackupV3Restore: { directory: string; inventoryHash: string; requestId: string } | null = null
 const editorCloseBarrier = createEditorCloseBarrier({
   verifyRecoveryReceipt: (event, receipt) => editorRecoveryReceipts?.verify(event, receipt) === true,
   reloadEditor: (window, ignoreCache) => {
@@ -308,7 +319,13 @@ const editorCloseBarrier = createEditorCloseBarrier({
   },
   beginShutdown: () => {
     if (!shutdownPromise) {
-      shutdownPromise = shutdownServices()
+      shutdownPromise = shutdownServices().then(() => {
+        if (!queuedBackupV3Restore) return
+        const { directory, inventoryHash, requestId } = queuedBackupV3Restore
+        app.relaunch({ args: [...process.argv.slice(1), `${BACKUP_V3_RESTORE_ARGUMENT}=${directory}`,
+          `${BACKUP_V3_RESTORE_INVENTORY_ARGUMENT}=${inventoryHash}`, BACKUP_V3_RESTORE_INTERACTIVE_ARGUMENT,
+          `${BACKUP_V3_RESTORE_REQUEST_ARGUMENT}=${requestId}`] })
+      })
         .catch((error) => {
           console.error('Unexpected shutdown failure.', error)
         })
@@ -319,7 +336,8 @@ const editorCloseBarrier = createEditorCloseBarrier({
     }
     return shutdownPromise!
   },
-  onShutdownError: (error) => console.error('Unexpected editor close shutdown failure.', error)
+  onShutdownError: (error) => console.error('Unexpected editor close shutdown failure.', error),
+  onQuitCancelled: () => { queuedBackupV3Restore = null }
 })
 // Only actual editor mutation channels use this port. Reads and the close ACK
 // remain available while saving; ACKed frames cannot start a new editor write.
@@ -404,15 +422,25 @@ if (userDataOverride) {
 }
 // Only an explicitly requested, isolated test instance runs without native UI.
 const backgroundElectronTest = process.env['KNOWBOOK_E2E_BACKGROUND'] === '1' && Boolean(userDataOverride)
+const showNativeMessageBox = dialog.showMessageBox
 
 let maintenanceArgumentError: unknown
 let databaseRestorePath: string | null = null
+let v3RestoreDirectory: string | null = null
+let v3RestoreInventoryHash: string | undefined
+let v3RestoreInteractive = false
+let v3RestoreRequestId: string | undefined
 let uninstallCleanupRequested = false
 try {
   databaseRestorePath = parseDatabaseRestoreArgument(process.argv)
+  v3RestoreDirectory = parseBackupV3RestoreArgument(process.argv)
+  v3RestoreInventoryHash = parseBackupV3RestoreInventoryArgument(process.argv, v3RestoreDirectory)
+  v3RestoreInteractive = parseBackupV3RestoreInteractiveArgument(process.argv, v3RestoreDirectory, v3RestoreInventoryHash)
+  v3RestoreRequestId = parseBackupV3RestoreRequestArgument(process.argv, v3RestoreDirectory, v3RestoreInventoryHash)
   uninstallCleanupRequested = isSystemPluginUninstallCleanup(process.argv)
 } catch (error) { maintenanceArgumentError = error }
-const databaseRestoreRequested = process.argv.some((argument) => argument.startsWith('--knowbook-restore-database'))
+const databaseRestoreRequested = process.argv.some((argument) =>
+  argument.startsWith('--knowbook-restore-database') || argument.startsWith(BACKUP_V3_RESTORE_ARGUMENT))
 const maintenanceRequested = uninstallCleanupRequested || databaseRestoreRequested || Boolean(maintenanceArgumentError)
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
 if (!hasSingleInstanceLock) {
@@ -1103,6 +1131,11 @@ function createWindow(): ElectronBrowserWindow {
   editorWindow.webContents.on('did-start-navigation', (_event, _url, inPlace, isMainFrame) => {
     if (isMainFrame && !inPlace) releaseRecoveryFrame()
   })
+  // A departing renderer can reach Main after navigation starts. Its frame
+  // may be reused, so clear its volatile owners again at top-level commit.
+  editorWindow.webContents.on('did-frame-navigate', (_event, _url, _code, _status, isMainFrame) => {
+    if (isMainFrame) releaseRecoveryFrame()
+  })
   editorWindow.webContents.on('render-process-gone', releaseRecoveryFrame)
   editorWindow.webContents.on('destroyed', releaseRecoveryFrame)
   editorWindow.webContents.on('before-input-event', (event, input) => {
@@ -1623,6 +1656,17 @@ function registerIpcHandlers(): void {
   ipcMain.handle('knowbook:save-webdav-sync-config', (_event, input: import('../shared/webdav-sync').SaveWebDavSyncConfig) => webdavSync.saveConfig(input))
   ipcMain.handle('knowbook:test-webdav-connection', () => webdavSync.testConnection())
   ipcMain.handle('knowbook:sync-webdav-now', () => webdavSync.sync())
+  ipcMain.handle('knowbook:rejoin-webdav-after-restore', event => webdavSync.rejoinProtocol5AfterRestore(async (baselineCount, remoteAdvanced) => {
+    if (backgroundElectronTest && (app.isPackaged || process.env['KNOWBOOK_E2E_V3_WEB_DAV_REJOIN'] !== '1'
+      || !isV3RestoreConsentFixture(userDataRoot) || dialog.showMessageBox === showNativeMessageBox)) return false
+    const options = { type: 'warning' as const, title: '恢复后续接 WebDAV',
+      message: '使用原共同版本续接这个同步目录？',
+      detail: `已核对 ${baselineCount} 项原共同版本。${remoteAdvanced ? '远端有后续修改。' : '远端清单与上次同步相同。'}`,
+      buttons: ['续接', '取消'], defaultId: 1, cancelId: 1, noLink: true }
+    const parent = BrowserWindow.fromWebContents(event.sender)
+    const result = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options)
+    return result.response === 0
+  }))
   ipcMain.handle('knowbook:cancel-webdav-sync', () => webdavSync.cancel())
   ipcMain.handle('knowbook:resolve-webdav-sync-conflict', (_event, input: import('../shared/webdav-sync').ResolveWebDavSyncConflict) => webdavSync.resolveConflict(input))
   ipcMain.handle('knowbook:get-webdav-sync-conflict-details', (_event, input: import('../shared/webdav-sync').WebDavSyncConflictDetailsInput) => webdavSync.getConflictDetails(input))
@@ -1969,8 +2013,15 @@ function registerIpcHandlers(): void {
     return result
   }
   ipcMain.handle('knowbook:document-block-move-history', async (_event, documentId: string) => store.getDocumentBlockMoveHistory(documentId))
-  ipcMain.handle('knowbook:move-document-blocks', async (_event, input: import('@shared/document-block-moves').MoveDocumentBlocksInput) =>
-    finishBlockMove(store.moveDocumentBlocks(input)))
+  ipcMain.handle('knowbook:read-controlled-document-block-move-dependencies', async (_event, input: import('@shared/document-block-moves').MoveDocumentBlocksInput) =>
+    store.readControlledDocumentBlockMoveDependencies(input))
+  ipcMain.handle('knowbook:move-document-blocks', async (_event, input: import('@shared/document-block-moves').MoveDocumentBlocksInput) => {
+    try { return finishBlockMove(store.moveDocumentBlocks(input)) }
+    catch (error) {
+      if (!(error instanceof DocumentBlockMoveNeedsControlledWrite)) throw error
+      return { state: 'controlled-required', dependencies: error.dependencies } satisfies import('@shared/document-block-moves').ControlledDocumentBlockMove
+    }
+  })
   ipcMain.handle('knowbook:undo-document-block-move', async (_event, input: import('@shared/document-block-moves').RestoreDocumentBlockMoveInput) =>
     finishBlockMove(store.undoDocumentBlockMove(input)))
   ipcMain.handle('knowbook:redo-document-block-move', async (_event, input: import('@shared/document-block-moves').RestoreDocumentBlockMoveInput) =>
@@ -2338,7 +2389,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(GET_BACKUP_HEALTH_CHANNEL, () => backupHealth.getSnapshot())
   ipcMain.handle('knowbook:trigger-backup', async () => {
-    if (restoreWorkflowInProgress) throw new Error('A restore workflow is already in progress.')
+    if (restoreWorkflowInProgress || queuedBackupV3Restore) throw new Error('A restore workflow is already in progress.')
     const result: BackupResult = await backupService.exportAll(true)
     backupHealth.report(null)
     return result
@@ -2349,7 +2400,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle('knowbook:restore-backup-from-folder', (event) => restoreBackupWorkflow(event))
 
   async function restoreBackupWorkflow(event: IpcMainInvokeEvent, versionId?: string): Promise<BackupRestoreResult | null> {
-    if (restoreWorkflowInProgress) {
+    if (restoreWorkflowInProgress || queuedBackupV3Restore) {
       throw new Error('A restore workflow is already in progress.')
     }
 
@@ -2372,6 +2423,21 @@ function registerIpcHandlers(): void {
           : await dialog.showOpenDialog(openDialogOptions)
         if (result.canceled || result.filePaths.length === 0) return null
         restoreRoot = result.filePaths[0]
+      }
+      if (readV3VersionHeader(restoreRoot)) {
+        const verification = await verifyBackupV3ArchiveInWorker(restoreRoot)
+        const requestId = randomUUID()
+        const options = {
+          type: 'warning' as const, title: '确认恢复 V3 备份',
+          message: 'KnowBook 将重启并准备恢复计划。',
+          detail: `备份包含 ${verification.manifest.documentIds.length} 篇文档和 ${verification.manifest.syncedGroups.length} 个同步组。重启后可在安装前查看并确认合并计划。`,
+          buttons: ['重启并预览', '取消'], defaultId: 1, cancelId: 1, noLink: true
+        }
+        const confirmation = targetWindow ? await dialog.showMessageBox(targetWindow, options) : await dialog.showMessageBox(options)
+        if (confirmation.response !== 0) return null
+        queuedBackupV3Restore = { directory: restoreRoot, inventoryHash: backupV3InventoryHash(verification.files), requestId }
+        app.quit()
+        return null
       }
       const preview = await restoreService.previewFromDirectory(restoreRoot)
       const deletionCount = preview.deleted + preview.standaloneDatabasesDeleted
@@ -2411,6 +2477,15 @@ function registerIpcHandlers(): void {
     clipboard.writeText(text)
   })
 
+  ipcMain.handle('knowbook:write-synced-block-clipboard', (event, text: unknown, marker: unknown) => {
+    if (!mainWindow || event.sender !== mainWindow.webContents || event.senderFrame !== mainWindow.webContents.mainFrame
+      || typeof text !== 'string' || typeof marker !== 'string' || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(marker)) {
+      throw new Error('Invalid synced-block clipboard write.')
+    }
+    const escaped = text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+    clipboard.write({ text, html: `<pre data-knowbook-markdown-source="true" data-knowbook-synced-clipboard="${marker}">${escaped}</pre>` })
+  })
+
   ipcMain.handle('knowbook:open-external-url', async (_event, url: string) => {
     await openManagedExternalUrl(url)
   })
@@ -2446,6 +2521,7 @@ function registerIpcHandlers(): void {
     return store.resolveWorkspaceSearchOccurrence(input)
   })
   ipcMain.handle('knowbook:resolve-synced-canonical-block-address', (_event, input: unknown) => store.resolveSyncedCanonicalBlockAddress(input))
+  ipcMain.handle('knowbook:resolve-synced-stored-block-link', (_event, input: unknown) => store.resolveSyncedStoredBlockLink(input))
   ipcMain.handle('knowbook:resolve-synced-inline-instance', (_event, input: ResolveSyncedInlineInstanceInput): SyncedInlineInstanceResult => {
     return store.resolveSyncedInlineInstance(input)
   })
@@ -2469,6 +2545,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle(EDITOR_RECOVERY_CHANNELS.retire, (event, input: unknown) => editorRecovery().service.retireClean(event, input))
   ipcMain.handle(EDITOR_RECOVERY_CHANNELS.prepareGroup, (event, input: unknown) => editorRecovery().service.prepareGroup(event, input))
   ipcMain.handle(EDITOR_RECOVERY_CHANNELS.prepareGroupFloor, (event, input: unknown) => editorRecovery().service.prepareGroupFloor(event, input))
+  ipcMain.handle(EDITOR_RECOVERY_CHANNELS.prepareGroupCrossMove, (event, input: unknown) => editorRecovery().service.prepareGroupCrossMove(event, input))
   ipcMain.handle(EDITOR_RECOVERY_CHANNELS.completeGroup, (event, input: unknown) => editorRecovery().service.completeGroup(event, input))
   ipcMain.handle(EDITOR_RECOVERY_CHANNELS.park, (event, input: unknown) => editorRecovery().service.park(event, input))
   ipcMain.handle(EDITOR_RECOVERY_CHANNELS.decide, (event, input: unknown) => {
@@ -2478,23 +2555,33 @@ function registerIpcHandlers(): void {
   ipcMain.handle('knowbook:open-synced-editing-session', (event, input: OpenSyncedEditingSessionInput): OpenSyncedEditingSessionResult => {
     return store.openSyncedEditingSession(event.senderFrame!,input)
   })
-  ipcMain.handle('knowbook:invoke-synced-editing-session', (event, input: SyncedEditingRequest) => {
-    const invoke = () => {
-    const result=store.invokeSyncedEditingSession(event.senderFrame!,input)
-    if(result&&typeof result==='object'&&'status'in result&&(result.status==='saved'||result.status==='applied')){
-      const snapshots:SyncedGroupSnapshot[]='snapshot'in result?[result.snapshot]:('groups'in result?result.groups:[])
-      const kind:'content'|'topology'=input.method==='updateSyncedBlockGroup'||input.method==='restoreSyncedGroupOperation'?'content':'topology'
-      const changed:SyncedBlocksChangedEvent={operationId:result.operationId,
-        changes:snapshots.map(snapshot=>({groupId:snapshot.groupId,revision:snapshot.revision,topologyRevision:snapshot.topologyRevision,
-          kind})),
-        affectedInstanceIds:'affectedInstanceIds'in result?result.affectedInstanceIds:snapshots.flatMap(snapshot=>snapshot.instances.map(instance=>instance.instanceId))}
-      event.sender.send('knowbook:synced-blocks-changed',changed)
-      notifyWorkspaceMutation()
-    }
-    return result
-    }
-    return runSyncedEditingSessionWithAdmission(editorCloseBarrier, event, input.method, invoke)
-  })
+  function dispatchSyncedEditing<M extends SyncedEditingMethod>(event: IpcMainInvokeEvent, input: SyncedEditingRequest<M>): SyncedEditingResult<M>
+  function dispatchSyncedEditing(event: IpcMainInvokeEvent, input: SyncedEditingRequest) {
+      const dispatch = () => {
+        const result=store.invokeSyncedEditingSession(event.senderFrame!,input)
+        if(result&&typeof result==='object'&&'status'in result&&(result.status==='saved'||result.status==='applied')){
+          const snapshots:SyncedGroupSnapshot[]='snapshot'in result?[result.snapshot]:('groups'in result?result.groups:[])
+          const kind:'content'|'topology'=input.method==='updateSyncedBlockGroup'||input.method==='restoreSyncedGroupOperation'?'content':'topology'
+          const changed:SyncedBlocksChangedEvent={operationId:result.operationId,
+            changes:snapshots.map(snapshot=>({groupId:snapshot.groupId,revision:snapshot.revision,topologyRevision:snapshot.topologyRevision,
+              kind})),
+            affectedInstanceIds:'affectedInstanceIds'in result?result.affectedInstanceIds:snapshots.flatMap(snapshot=>snapshot.instances.map(instance=>instance.instanceId))}
+          event.sender.send('knowbook:synced-blocks-changed',changed)
+          notifyWorkspaceMutation()
+        }
+        return result
+      }
+      const needsDraftCheck = input.method === 'prepareSyncedCrossHostMove'
+        || input.method === 'applySyncedHostStructure' && ((input.input?.hostsWorkingBefore?.length ?? 0) > 2
+          || input.input?.mode === 'command' && input.input.action?.kind === 'move-batch')
+        || input.method === 'restoreSyncedHostOperation'
+      return needsDraftCheck ? withCrossMoveDraftCheck(store.getUnsafeDatabaseHandle(),
+        (...args) => editorRecovery().service.crossMoveDraftCheck(event)(...args), dispatch) : dispatch()
+  }
+  ipcMain.handle('knowbook:invoke-synced-editing-session', (event, input: SyncedEditingRequest) =>
+    runSyncedEditingSessionWithAdmission(editorCloseBarrier, event, input.method, () => dispatchSyncedEditing(event, input)))
+  ipcMain.handle(EDITOR_RECOVERY_CHANNELS.applyCrossMove, (event, value: unknown) => editorCloseBarrier.runEditorMutation(event, () =>
+    editorRecovery().service.applyHotCrossMove(event, value, original => dispatchSyncedEditing(event, original))))
   ipcMain.handle('knowbook:release-synced-editing-session', (event, sessionId: string) => {
     store.releaseSyncedEditingSession(event.senderFrame!,sessionId)
   })
@@ -2977,7 +3064,7 @@ function startBackupSchedule(): void {
 }
 
 async function runScheduledBackup(): Promise<void> {
-  if (restoreWorkflowInProgress) return
+  if (restoreWorkflowInProgress || queuedBackupV3Restore) return
   try {
     await backupService.exportAll()
     backupHealth.report(null)
@@ -3021,7 +3108,8 @@ async function shutdownServices(): Promise<void> {
   }
 
   try {
-    await backupService.exportAll()
+    // Shutdown's usual export could rotate the exact selected V3 archive.
+    if (!queuedBackupV3Restore) await backupService.exportAll()
   } catch (error) {
     console.warn('Final workspace backup failed during shutdown.', error)
   }
@@ -3166,19 +3254,57 @@ function getAssetContentType(filePath: string): string {
   }
 }
 
+function relaunchAfterV3Restore(): void {
+  app.relaunch({ args: process.argv.slice(1).filter(argument => !argument.startsWith(BACKUP_V3_RESTORE_ARGUMENT)) })
+}
+
+async function confirmV3RestorePlan(preview: ControlledV3RestorePreview): Promise<boolean> {
+  if (backgroundElectronTest) {
+    if (process.env['KNOWBOOK_E2E_V3_RESTORE_CONSENT'] !== '1' || !isV3RestoreConsentFixture(userDataRoot)) return false
+    return readV3RestoreConsentFixture(userDataRoot, preview)
+  }
+  const counts = (label: string, value: ControlledV3RestorePreview['documents']) =>
+    `${label}：新增 ${value.incoming}，更新 ${value.replaced}，保留 ${value.retained}。`
+  const { response } = await dialog.showMessageBox({
+    title: '确认 V3 恢复计划', type: 'warning',
+    message: '安装此恢复计划并重新打开 KnowBook？',
+    detail: [counts('文档', preview.documents), counts('同步组', preview.groups), `未解决的冲突：${preview.conflicts}。`].join('\n'),
+    buttons: ['安装此计划', '取消'], defaultId: 1, cancelId: 1, noLink: true
+  })
+  return response === 0
+}
+
 if (hasSingleInstanceLock && (databaseRestoreRequested || maintenanceArgumentError)) {
+  const report = (value: object) => writeRestoreJson(join(userDataRoot, 'database-restore-result.json'),
+    { ...value, ...(v3RestoreRequestId ? { requestId: v3RestoreRequestId } : {}) }, userDataRoot)
   void app.whenReady().then(async () => {
     if (maintenanceArgumentError) throw maintenanceArgumentError
-    if (!databaseRestorePath) throw new Error('数据库恢复备份路径缺失。')
-    const result = await restoreKnowbookDatabase({ userDataRoot, backupPath: databaseRestorePath })
-    writeFileSync(join(userDataRoot, 'database-restore-result.json'), JSON.stringify({ status: 'restored', ...result }, null, 2))
+    if (!v3RestoreDirectory && !databaseRestorePath) throw new Error('数据库恢复备份路径缺失。')
+    const result = v3RestoreDirectory ? await restoreKnowbookBackupV3(userDataRoot, v3RestoreDirectory, v3RestoreInventoryHash,
+      v3RestoreInteractive ? confirmV3RestorePlan : undefined, v3RestoreRequestId)
+      : await restoreKnowbookDatabase({ userDataRoot, backupPath: databaseRestorePath! })
+    if (result === null) {
+      await report({ status: 'cancelled', ...(v3RestoreRequestId ? { operationId: v3RestoreRequestId } : {}) })
+        .catch(error => console.error('无法写入数据库恢复结果。', error))
+      console.log('KnowBook 恢复计划已取消。')
+      if (v3RestoreRequestId) console.log(JSON.stringify({ status: 'cancelled', requestId: v3RestoreRequestId, operationId: v3RestoreRequestId }))
+      if (!backgroundElectronTest) relaunchAfterV3Restore()
+      app.exit(0)
+      return
+    }
+    // A failed diagnostic write cannot convert an already committed install
+    // into a failed restore. The exact request acknowledgement is on disk.
+    await report({ ...result, status: 'restored' }).catch(error => console.error('无法写入数据库恢复结果。', error))
     console.log(`KnowBook 数据库已恢复，下次启动将进入安全模式。原始文件：${result.recoveryDirectory}`)
+    if (v3RestoreRequestId) console.log(JSON.stringify({ status: 'restored', requestId: v3RestoreRequestId, operationId: result.operationId }))
+    if (v3RestoreDirectory && v3RestoreInventoryHash && !backgroundElectronTest) relaunchAfterV3Restore()
     app.exit(0)
-  }).catch((error) => {
+  }).catch(async (error) => {
     const message = error instanceof AggregateError ? [error.message, ...error.errors.map(String)].join('\n') : String(error)
     console.error('KnowBook 数据库恢复失败。', message)
-    try { writeFileSync(join(userDataRoot, 'database-restore-result.json'), JSON.stringify({ status: 'failed', error: message }, null, 2)) } catch { /* Native dialog still exposes the failure. */ }
+    await report({ status: 'failed', error: message }).catch(error => console.error('无法写入数据库恢复结果。', error))
     if (!backgroundElectronTest) dialog.showErrorBox('KnowBook 数据库恢复未完成', message)
+    if (v3RestoreDirectory && v3RestoreInventoryHash && !backgroundElectronTest) relaunchAfterV3Restore()
     app.exit(25)
   })
 } else if (hasSingleInstanceLock && uninstallCleanupRequested) {

@@ -1,3 +1,4 @@
+import { isWorkingAssetArchive5 } from './restore-knowledge-capsule2-asset-archive'
 import { ATTACHMENT_MAX_FILE_BYTES } from '../../shared/attachments'
 import { parseSyncedPortableAssetUri } from '../../shared/syncedBlockPortable'
 import { parseExchangeStored, validateExchangeJob } from '../sync/synced-exchange-model'
@@ -52,7 +53,7 @@ function observations(captured: ReferenceRead) {
     const working = captured.working[role]
     if (!working) return []
     const packet = captured.pair[role], binding = original.original.node[role], ref = binding.capsule
-    if (packet.capsuleId !== ref.capsuleId || packet.operationId !== ref.operationId || packet.assetArchive.version !== 5)
+    if (packet.capsuleId !== ref.capsuleId || packet.operationId !== ref.operationId || !isWorkingAssetArchive5(packet.assetArchive))
       return fail('Working5 与实际 Root 角色不一致')
     const raw = packet.source.sourceContent
     const assetRoot = mixedOriginCapsulePath(binding, 'knowledge-complete-assets-v2')

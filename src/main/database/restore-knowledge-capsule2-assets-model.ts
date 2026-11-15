@@ -1,5 +1,6 @@
 import { ATTACHMENT_MAX_FILE_BYTES } from '../../shared/attachments'
 import { parseStrictJson } from '../../shared/strictJson'
+import { BACKUP_V3_MAX_ASSET_BYTES } from '../backup/v3-format'
 import { capsuleBytesHash, capsuleJson, capsuleRecord, capsuleText, freezeCapsuleValue, validateDurableSqlCapsuleInventory } from './restore-knowledge-capsule-model'
 import { CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-model'
 import type { Capsule2KnownAssetManifest } from './restore-knowledge-capsule2-assets-files'
@@ -9,6 +10,7 @@ import type { Capsule2ManagedTreeData } from './restore-knowledge-capsule2-manag
 type Alias = Capsule2ManagedAssetManifest['aliases'][number]
 type KnownAlias = Capsule2KnownAssetManifest['aliases'][number]
 const maxFiles = 5_000, maxBytes = 500 * 1024 * 1024, maxEntries = 20_000
+export const CAPSULE_V3_ASSET_MAX_FILE_BYTES = BACKUP_V3_MAX_ASSET_BYTES
 const bad = (message: string): never => { throw new Error('capsule2持久附件manifest无效：' + message + '；仅验证准备原件，不授认证或安装权。') }
 const baseKeys = ['kind', 'version', 'state', 'certified', 'semanticValidationComplete', 'permit', 'capsuleId', 'schemaVersion', 'sourceInventory',
   'sourceContentHash', 'workspaceHistoryObservationHash', 'assetReferencesObservationHash', 'aliases', 'files']
@@ -28,11 +30,11 @@ function pathParts(value: unknown, file: boolean): string[] {
     || parts.length >= 3 && (!/^[a-f0-9]{64}$/.test(parts[2]) || !parts[2].startsWith(parts[1]))) return bad('不是原管理附件相对布局')
   return parts
 }
-function aliases(value: unknown, known: boolean): Array<Alias | KnownAlias> {
+function aliases(value: unknown, known: boolean, fileLimit = ATTACHMENT_MAX_FILE_BYTES): Array<Alias | KnownAlias> {
   let total = 0
   return ordered(list(value, maxFiles).map(value => {
     const row = capsuleRecord(value, known ? ['uri', 'relativePath', 'hash', 'name', 'bytes'] : ['relativePath', 'hash', 'name', 'bytes'])
-    const parts = pathParts(row.relativePath, true), bytes = integer(row.bytes, ATTACHMENT_MAX_FILE_BYTES), digest = hash(row.hash)
+    const parts = pathParts(row.relativePath, true), bytes = integer(row.bytes, fileLimit), digest = hash(row.hash)
     if (capsuleText(row.name, 8192) !== parts[3] || digest !== parts[2] || (total += bytes) > maxBytes) return bad('alias名称/hash/完整字节预算不闭合')
     const alias: Alias = { relativePath: parts.join('/'), hash: digest, name: parts[3], bytes }
     if (!known) return alias
@@ -41,10 +43,10 @@ function aliases(value: unknown, known: boolean): Array<Alias | KnownAlias> {
     return { uri, ...alias }
   }), row => known ? (row as KnownAlias).uri : row.relativePath)
 }
-function files(value: unknown, actualAliases: readonly Alias[]) {
+function files(value: unknown, actualAliases: readonly Alias[], fileLimit = ATTACHMENT_MAX_FILE_BYTES) {
   let total = 0
   const result = ordered(list(value, maxFiles).map(value => {
-    const row = capsuleRecord(value, ['hash', 'bytes']), bytes = integer(row.bytes, ATTACHMENT_MAX_FILE_BYTES)
+    const row = capsuleRecord(value, ['hash', 'bytes']), bytes = integer(row.bytes, fileLimit)
     if ((total += bytes) > maxBytes) return bad('完整blob预算不闭合')
     return { hash: hash(row.hash), bytes }
   }), row => row.hash)
@@ -93,14 +95,22 @@ export function parseCapsule2ManagedAssetManifest(text: string, capsuleId: strin
 /** Pure complete-tree shape, shared by strict-known and literal-reference
  * archives. This accepts file data only and cannot create an owning handle. */
 export function validateCapsule2ManagedTree(value: unknown): Capsule2ManagedTreeData {
+  return validateManagedTree(value, ATTACHMENT_MAX_FILE_BYTES)
+}
+
+export function validateCapsuleV3ManagedTree(value: unknown): Capsule2ManagedTreeData {
+  return validateManagedTree(value, CAPSULE_V3_ASSET_MAX_FILE_BYTES)
+}
+
+function validateManagedTree(value: unknown, fileLimit: number): Capsule2ManagedTreeData {
   const row = capsuleRecord(value, ['rootPresent', 'directories', 'aliases', 'files'])
   if (typeof row.rootPresent !== 'boolean') return bad('原管理根存在状态无效')
-  const actualAliases = aliases(row.aliases, false) as Alias[]
+  const actualAliases = aliases(row.aliases, false, fileLimit) as Alias[]
   const directories = ordered(list(row.directories, maxEntries).map(value => pathParts(value, false).join('/')), value => value)
   if (directories.length + actualAliases.length > maxEntries) return bad('完整目录和文件项超过原准备预算')
   if (row.rootPresent ? directories[0] !== '' : directories.length !== 0 || actualAliases.length !== 0) return bad('原管理根存在状态不闭合')
   const directorySet = new Set(directories)
   for (const directory of directories) if (directory && !directorySet.has(directory.split('/').slice(0, -1).join('/'))) return bad('缺原目录祖先')
   for (const alias of actualAliases) if (!directorySet.has(alias.relativePath.split('/').slice(0, -1).join('/'))) return bad('alias缺原父目录')
-  return freezeCapsuleValue({ rootPresent: row.rootPresent, directories, aliases: actualAliases, files: files(row.files, actualAliases) })
+  return freezeCapsuleValue({ rootPresent: row.rootPresent, directories, aliases: actualAliases, files: files(row.files, actualAliases, fileLimit) })
 }

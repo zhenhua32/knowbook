@@ -6,6 +6,8 @@ import { assertSyncedShape, isSyncedBlockId, isSyncedUuid } from '../../shared/s
 import { getSyncedGroupSnapshots, listSyncedGroups, getSyncedHostHistory } from './synced-blocks-read'
 import { updateSyncedBlockGroup, restoreSyncedGroupOperation } from './synced-blocks-content'
 import { applySyncedHostStructureWithTitle2, restoreSyncedHostStructureWithTitle2, getSyncedOperationWithTitle2 } from './synced-host-title2'
+import { getOwnedSyncedCrossHostMoveHistory } from './synced-host-final'
+import { prepareOwnedThirdLinkCrossMove } from './synced-cross-host-journal4'
 import { captureSyncedBaselineOwnerWithMetadata2, reopenSyncedRecoveryBaselineOwner, type SyncedRecoveryBaselineInput, getSyncedOperationWithOwnedLinkSource, validateSyncedReadOwner, releaseSyncedReadOwner } from './synced-binding-sources'
 import { captureSyncedEditingFenceOwned, runWithSyncedEditingFence, assertSyncedEditingFenceOwned, assertSyncedEditingFenceRead,
   type SyncedEditingFence } from './synced-editing-fence'
@@ -16,7 +18,7 @@ import { resolveSyncedInlineInstance } from './workspace-search-occurrences'
 type Entry={sender:object;fence:SyncedEditingFence;session:SyncedEditingSession;readOwners:Set<string>}
 const fail=(message:string):never=>{throw new Error('Synced editing session unavailable: '+message+'; preserve drafts and reload the actual workspace.')}
 const methods=new Set<SyncedEditingMethod>(['getSyncedGroupSnapshots','listSyncedGroups','updateSyncedBlockGroup','restoreSyncedGroupOperation',
-  'getSyncedOperation','applySyncedHostStructure','restoreSyncedHostOperation','getSyncedHostHistory','captureBaseline','ownedOperation','validateOwner','releaseOwner'])
+  'getSyncedOperation','applySyncedHostStructure','prepareSyncedCrossHostMove','restoreSyncedHostOperation','getSyncedHostHistory','getSyncedCrossHostMoveHistory','captureBaseline','ownedOperation','validateOwner','releaseOwner'])
 /** One actual Store connection and exact IPC frame own this namespace.
  * Callers never supply a database, source pair, mapper, fence owner or epoch. */
 export class SyncedEditingSessionRepository {
@@ -85,6 +87,8 @@ export class SyncedEditingSessionRepository {
         case'getSyncedGroupSnapshots':return this.db.transaction(()=>{assertSyncedEditingFenceOwned(this.db);return getSyncedGroupSnapshots(this.db,request)})()
         case'listSyncedGroups':return this.db.transaction(()=>{assertSyncedEditingFenceOwned(this.db);return listSyncedGroups(this.db,request)})()
         case'getSyncedHostHistory':return this.db.transaction(()=>{assertSyncedEditingFenceOwned(this.db);return getSyncedHostHistory(this.db,request)})()
+        case'getSyncedCrossHostMoveHistory':return getOwnedSyncedCrossHostMoveHistory(this.db,request)
+        case'prepareSyncedCrossHostMove':return prepareOwnedThirdLinkCrossMove(this.db,request)
         case'updateSyncedBlockGroup':return updateSyncedBlockGroup(this.db,request)
         case'restoreSyncedGroupOperation':return restoreSyncedGroupOperation(this.db,request)
         case'getSyncedOperation':return getSyncedOperationWithTitle2(this.db,request)

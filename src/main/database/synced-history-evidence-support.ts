@@ -38,27 +38,30 @@ function readOriginalSqlTextRowsWithPrivateFactOwned2<T>(db: Database.Database,
   if (!label) return historicalEvidenceInvalid('不支持原数据库TEXT编码；不会推定empty。')
   const decoder = new TextDecoder(label, { fatal: true, ignoreBOM: true })
   const selection = columns.map(column => `${column},typeof(${column}) AS __type_${column},CAST(${column} AS BLOB) AS __bytes_${column}`).join(',')
-  return (db.prepare('SELECT ' + selection + (fact?.selection ?? '') + ' FROM ' + table + (where ? ' WHERE ' + where : '')).all(...parameters) as Record<string, unknown>[])
-    .map(raw => {
-      const result: Record<string, unknown> = {}
-      for (const column of columns) {
-        const kind = raw['__type_' + column], value = raw[column]
-        if (kind === 'null' && value === null) { result[column] = null; continue }
-        if (kind === 'integer' && typeof value === 'number' && Number.isSafeInteger(value)) { result[column] = value; continue }
-        if (kind !== 'text' || typeof value !== 'string' || !Buffer.isBuffer(raw['__bytes_' + column]))
-          return historicalEvidenceInvalid(table + '原TEXT列storage class损坏。')
-        let text: string
-        const originalBytes = raw['__bytes_' + column] as Buffer
-        try { text = decoder.decode(originalBytes) } catch { return historicalEvidenceInvalid(table + '原TEXT编码无效。') }
-        if (text !== raw[column]) return historicalEvidenceInvalid(table + '原TEXT解码不等于SQL列。')
-        const encoded = Buffer.from(text, label === 'utf-8' ? 'utf8' : 'utf16le')
-        if (label === 'utf-16be') encoded.swap16()
-        if (!encoded.equals(originalBytes)) return historicalEvidenceInvalid(table + '原TEXT回编码字节不相等。')
-        result[column] = text
-      }
-      fact?.observe(raw, result as T)
-      return result as T
-    })
+  const originals = db.prepare('SELECT ' + selection + (fact?.selection ?? '') + ' FROM ' + table + (where ? ' WHERE ' + where : ''))
+    .iterate(...parameters) as IterableIterator<Record<string, unknown>>
+  const rows: T[] = []
+  for (const raw of originals) {
+    const result: Record<string, unknown> = {}
+    for (const column of columns) {
+      const kind = raw['__type_' + column], value = raw[column]
+      if (kind === 'null' && value === null) { result[column] = null; continue }
+      if (kind === 'integer' && typeof value === 'number' && Number.isSafeInteger(value)) { result[column] = value; continue }
+      if (kind !== 'text' || typeof value !== 'string' || !Buffer.isBuffer(raw['__bytes_' + column]))
+        return historicalEvidenceInvalid(table + '原TEXT列storage class损坏。')
+      let text: string
+      const originalBytes = raw['__bytes_' + column] as Buffer
+      try { text = decoder.decode(originalBytes) } catch { return historicalEvidenceInvalid(table + '原TEXT编码无效。') }
+      if (text !== raw[column]) return historicalEvidenceInvalid(table + '原TEXT解码不等于SQL列。')
+      const encoded = Buffer.from(text, label === 'utf-8' ? 'utf8' : 'utf16le')
+      if (label === 'utf-16be') encoded.swap16()
+      if (!encoded.equals(originalBytes)) return historicalEvidenceInvalid(table + '原TEXT回编码字节不相等。')
+      result[column] = text
+    }
+    fact?.observe(raw, result as T)
+    rows.push(result as T)
+  }
+  return rows
 }
 export function readHistoricalTextRows<T>(db: Database.Database, table: RawHistoricalEvidenceTable,
   columns: readonly string[], where = '', parameters: readonly (string | number)[] = []): T[] {

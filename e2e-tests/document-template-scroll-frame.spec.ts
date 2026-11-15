@@ -99,8 +99,18 @@ async function record(page: Page, app: ElectronApplication, info: TestInfo, phas
       const bounds = rect(element), clip = { left: 0, top: 0, right: innerWidth, bottom: innerHeight }
       for (let parent = element.parentElement; parent; parent = parent.parentElement) {
         const style = getComputedStyle(parent), r = rect(parent)
-        if (/^(auto|scroll|hidden|clip)$/.test(style.overflowX)) { clip.left = Math.max(clip.left, r.left + parent.clientLeft); clip.right = Math.min(clip.right, r.left + parent.clientLeft + parent.clientWidth) }
-        if (/^(auto|scroll|hidden|clip)$/.test(style.overflowY)) { clip.top = Math.max(clip.top, r.top + parent.clientTop); clip.bottom = Math.min(clip.bottom, r.top + parent.clientTop + parent.clientHeight) }
+        const left = parseFloat(style.borderLeftWidth), right = parseFloat(style.borderRightWidth)
+        const top = parseFloat(style.borderTopWidth), bottom = parseFloat(style.borderBottomWidth)
+        if (/^(auto|scroll|hidden|clip)$/.test(style.overflowX)) {
+          const scrollbar = Math.max(0, Math.round(r.width - left - right) - parent.clientWidth)
+          clip.left = Math.max(clip.left, r.left + left)
+          clip.right = Math.min(clip.right, r.right - right - scrollbar)
+        }
+        if (/^(auto|scroll|hidden|clip)$/.test(style.overflowY)) {
+          const scrollbar = Math.max(0, Math.round(r.height - top - bottom) - parent.clientHeight)
+          clip.top = Math.max(clip.top, r.top + top)
+          clip.bottom = Math.min(clip.bottom, r.bottom - bottom - scrollbar)
+        }
       }
       const width = Math.max(0, Math.min(bounds.right, clip.right) - Math.max(bounds.left, clip.left))
       const height = Math.max(0, Math.min(bounds.bottom, clip.bottom) - Math.max(bounds.top, clip.top))

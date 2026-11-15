@@ -122,13 +122,25 @@ export function canonicalRecoveryHasUnsettledWork(record: EditorRecoveryRecord):
  * owner. Old ticket strings never survive as cold permissions: copy claims are
  * remapped only by complete original keys to that genuine new owner's tickets. */
 export function decodeCanonicalRecoveryData(value: unknown, reopened: SyncedEditingBaselineResult, originalAliasVerified = false): CanonicalRecoveryData {
+  if (reopened.status !== 'ready') return editorRecoveryInvalid('canonical draft needs its pending/Source/conflict replay adapter')
+  return readCanonicalRecoveryFrames(value, reopened.snapshot, reopened.workspaceScope, reopened.bindingSource, originalAliasVerified)
+}
+
+/** Validates the exact old W and local Redo without creating a read owner or
+ * reissuing copy tickets. The caller must independently authenticate old B. */
+export function readCanonicalRecoveryClosedFrames(value: unknown, snapshot: SyncedGroupSnapshot, workspaceScope: string): CanonicalRecoveryData {
+  return readCanonicalRecoveryFrames(value, snapshot, workspaceScope, null)
+}
+
+function readCanonicalRecoveryFrames(value: unknown, snapshot: SyncedGroupSnapshot, workspaceScope: string,
+  bindingSource: SyncedBindingSource | null, originalAliasVerified = false): CanonicalRecoveryData {
   const record = validateEditorRecoveryRecord(value), owner = record.base.owner, working = record.draft.working, persisted = record.base.persistedWorking
   if (owner.kind !== 'group' || working.kind !== 'group' || persisted.kind !== 'group' || working.incoming !== null || persisted.incoming !== null
     || record.draft.pending.length || record.draft.composing || record.draft.importing || record.draft.sources.length
-    || typeof record.draft.replayJson !== 'string' || reopened.status !== 'ready' || reopened.workspaceScope !== record.base.workspaceScope) {
+    || typeof record.draft.replayJson !== 'string' || workspaceScope !== record.base.workspaceScope) {
     return editorRecoveryInvalid('canonical draft needs its pending/Source/conflict replay adapter')
   }
-  const baseline = validateSyncedGroupSnapshot(reopened.snapshot)
+  const baseline = validateSyncedGroupSnapshot(snapshot)
   if (baseline.groupId !== owner.groupId || baseline.creationId !== owner.creationId || baseline.createdAt !== owner.createdAt
     || baseline.revision !== owner.revision || baseline.topologyRevision !== owner.topologyRevision || baseline.history.cursor !== owner.historyCursor
     || !same(syncedCanonicalEdits(baseline.blocks), persisted.blocks)) return editorRecoveryInvalid('new canonical read owner differs from the sealed original B')
@@ -144,8 +156,8 @@ export function decodeCanonicalRecoveryData(value: unknown, reopened: SyncedEdit
       || !same(validateSyncedGroupSnapshot(read.snapshot), baseline)) return editorRecoveryInvalid('canonical replay has no actual original read context')
     original = source(read.bindingSource, baseline)
   }
-  const current = source(reopened.bindingSource, baseline)
-  const originals = new Map(original?.entries.map(entry => [entry.entryId, entry.key]) ?? []), newByKey = new Map(current.entries.map(entry => [keyId(entry.key), entry.entryId]))
+  const current = bindingSource && source(bindingSource, baseline)
+  const originals = new Map(original?.entries.map(entry => [entry.entryId, entry.key]) ?? []), newByKey = new Map(current?.entries.map(entry => [keyId(entry.key), entry.entryId]) ?? [])
   const sequences = new Set<number>()
   let before = persisted.blocks, sequence = 0, checkingActive = true
   const readFrame = (raw: unknown): CanonicalRecoveryFrame => {
@@ -170,7 +182,7 @@ export function decodeCanonicalRecoveryData(value: unknown, reopened: SyncedEdit
       if (!rangeFits(claim.destination, after) || claim.kind === 'continue' && !rangeFits(claim.source, left)
         || claim.kind === 'copy' && claim.source.kind === 'current' && !rangeFits(claim.source.key, left)) return editorRecoveryInvalid('canonical replay claims do not match their exact frame ranges')
       if (claim.kind !== 'copy' || claim.source.kind !== 'ticket') return claim
-      if (!record.canonicalOriginalAliasHash || !originalAliasVerified) return editorRecoveryInvalid('the old copy alias has no sealed Main entry-to-Key proof')
+      if (!current || !record.canonicalOriginalAliasHash || !originalAliasVerified) return editorRecoveryInvalid('the old copy alias has no sealed Main entry-to-Key proof')
       const old = originals.get(claim.source.entryId)
       if (!original || claim.source.ticketId !== original.ticketId || !old || !retained.has(claim.source.entryId)) return editorRecoveryInvalid('canonical copy claim has no actual original retained lease')
       usedSources.add(claim.source.entryId)

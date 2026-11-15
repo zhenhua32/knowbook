@@ -3,10 +3,13 @@ import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-re
 import { LOGICAL_DELETION_CHANNEL } from '../sync/synced-logical-deletion-model'
 import { assertSyncedRecoveryBoundaryRecords } from './synced-recovery-boundary-read'
 import { RECOVERY_BOUNDARY_CHANNEL, recoveryEpochMarkerId } from './synced-recovery-boundary-model'
+import { COVERAGE_ANCHOR_CHANNEL } from './restore-knowledge-coverage-model'
+import { readRawPriorKnowledgeCoverageOwned } from './restore-knowledge-coverage-raw-read'
 import { isSyncedUuid } from '../../shared/syncedBlockValidation'
 import { parseStrictJson } from '../../shared/strictJson'
 import { readSyncedGroupLifecycles, syncedLifecycleSemanticHash } from './synced-lifecycle-state'
 import { hasAnySyncedObservationPending, hasSyncedObservationPending, observationDatabasePath } from './synced-remote-observation-pending'
+import { assertInstalledRestoreRuntimeCoverage, readInstalledRestoreRuntime } from './restore-knowledge-runtime-authority'
 import { decodeRemoteObservationMarker, observationCorrupt, observationJson, observationKey,
   sameObservedIncarnation, validateObservedIncarnation, SYNCED_OBSERVATION_PREFIX,
   SYNCED_OBSERVATION_CHANNEL, SYNCED_RETIRED_OBSERVATION_CHANNEL,
@@ -74,6 +77,25 @@ export function assertSyncedRemoteObservationRecords(db: Database.Database): voi
   // Startup also calls this assertion outside a transaction. Keep all paired
   // evidence reads, including recovery boundaries, in one owned SQL snapshot.
   if (!db.inTransaction) return db.transaction(() => assertSyncedRemoteObservationRecords(db))()
+  const installed = readInstalledRestoreRuntime(db)
+  if (installed) {
+    assertInstalledRestoreRuntimeCoverage(db, installed, readSyncedRemoteObservationWithCoverageOwned(db))
+    return
+  }
+  assertSyncedRemoteObservationPairs(db)
+}
+
+/** Recognize the actual SQL coverage pairs in this transaction. Their roots
+ * remain unresolved. This reader provides no installed-profile admission. */
+export function readSyncedRemoteObservationWithCoverageOwned(db: Database.Database) {
+  const coverage = readRawPriorKnowledgeCoverageOwned(db)
+  if (coverage.schemaVersion !== 27) return observationCorrupt('coverage 观察读取要求原 schema27')
+  const anchors = new Set(coverage.entries.map(entry => entry.supports.anchor.key[0]))
+  assertSyncedRemoteObservationPairs(db, anchors)
+  return coverage
+}
+
+function assertSyncedRemoteObservationPairs(db: Database.Database, coverageAnchors?: ReadonlySet<string>): void {
   const logical = assertSyncedLogicalDeletionRecords(db), logicalAnchors = new Set([...logical.values()].map(proof => proof.persistence.anchorId))
   const recovery = assertSyncedRecoveryBoundaryRecords(db)
   const recoveryAnchors = new Set([...recovery.boundaries.keys()].map(recoveryEpochMarkerId))
@@ -97,6 +119,7 @@ export function assertSyncedRemoteObservationRecords(db: Database.Database): voi
     SELECT 1 FROM synced_group_exposure_members m WHERE m.attempt_id=a.id)`).all() as Array<{ id: string; channel: string }>) {
     if (row.channel === LOGICAL_DELETION_CHANNEL && logicalAnchors.has(row.id)) continue
     if (row.channel === RECOVERY_BOUNDARY_CHANNEL && recoveryAnchors.has(row.id)) continue
+    if (row.channel === COVERAGE_ANCHOR_CHANNEL && coverageAnchors?.has(row.id)) continue
     if (row.channel !== SYNCED_RETIRED_OBSERVATION_CHANNEL || !row.id.startsWith(SYNCED_OBSERVATION_PREFIX)) {
       throw new Error('同步块 schema27 存在没有准确参与组的发布记录；不会丢弃可能曝光证据。')
     }

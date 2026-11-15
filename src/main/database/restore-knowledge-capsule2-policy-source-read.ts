@@ -9,7 +9,7 @@ import { assertRawCapsule2MovesOwned } from './restore-knowledge-capsule2-moves-
 import { assertRawCapsule2AssistantHistoryOwned } from './restore-knowledge-capsule2-assistant-read'
 import { assertRawCapsule2PreferencesOwned } from './restore-knowledge-capsule2-preferences-read'
 import { assertRawCapsule2PluginPolicyOwned } from './restore-knowledge-capsule2-plugin-policy-read'
-import { CAPSULE2_READER } from './restore-knowledge-capsule2-raw-model'
+import { CAPSULE2_READER, hashValidatedCapsule2RawContent, hashValidatedCapsule2RawSqlTable } from './restore-knowledge-capsule2-raw-model'
 
 type Family = 'host-settings-and-reserved-metadata' | 'host-activity-text' | 'host-assistant-event-history' | 'plugin-retained-storage'
 type AssetRule = 'host-message-and-retained-stream-markdown' | 'opaque-values-not-paths-or-markdown'
@@ -50,7 +50,7 @@ export function readRawCapsule2OrdinaryPolicySourceOwned(db: Database.Database) 
   assertRawCapsule2AssistantHistoryOwned(db)
   assertRawCapsule2PreferencesOwned(db)
   assertRawCapsule2PluginPolicyOwned(db)
-  const sourceContentHash = capsuleBytesHash('knowbook.capsule2.workspace-history-source-content.v1\0' + capsuleJson(sourceContent))
+  const sourceContentHash = hashValidatedCapsule2RawContent('knowbook.capsule2.workspace-history-source-content.v1', sourceContent)
   const tables: Array<Policy & { table: string; rows: number; originalTableHash: string }> = [], seen = new Set<string>()
   for (const table of sourceContent.tables) {
     if (table.role !== 'policy-unresolved') {
@@ -61,7 +61,7 @@ export function readRawCapsule2OrdinaryPolicySourceOwned(db: Database.Database) 
     if (!policy || seen.has(table.name)) return bad('完整来源含未分类/重复policy family')
     seen.add(table.name)
     tables.push({ table: table.name, rows: table.rows.length, ...policy,
-      originalTableHash: capsuleBytesHash('knowbook.capsule2.source-policy-original-table.v1\0' + capsuleJson(table)) })
+      originalTableHash: hashValidatedCapsule2RawSqlTable('knowbook.capsule2.source-policy-original-table.v1', table) })
   }
   if (seen.size !== policies.size) return bad('完整policy family缺失，不能当作空集合')
   tables.sort((a, b) => a.table < b.table ? -1 : a.table > b.table ? 1 : 0)

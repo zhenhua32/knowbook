@@ -1,7 +1,10 @@
+import { isDeepStrictEqual } from 'node:util'
 import type Database from 'better-sqlite3'
-import type { WorkspaceSearchOccurrence, WorkspaceSearchOccurrenceResult, SyncedInlineInstanceResult } from '../../shared/workspace-search-occurrence'
+import type { ResolveSyncedInlineInstanceInput, SyncedInlineInstanceResult, SyncedStoredBlockLinkResult,
+  WorkspaceSearchOccurrence, WorkspaceSearchOccurrenceResult } from '../../shared/workspace-search-occurrence'
 import { validateWorkspaceSearchOccurrence, isSameWorkspaceSearchOccurrence, validateSyncedInlineInstanceAddress } from '../../shared/workspace-search-occurrence'
 import { assertSyncedShape, isSyncedBlockId, isSyncedUuid } from '../../shared/syncedBlockValidation'
+import { validateSyncedBindingKey } from '../../shared/syncedBlockInputs'
 import { assertSyncedRecoveryBoundaryRecords } from './synced-recovery-boundary-read'
 import { assertSyncedLifecycleCoverage } from './synced-lifecycle-state'
 import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-read'
@@ -9,6 +12,8 @@ import { readRawSyncedGroupSnapshotsOwned } from './synced-blocks-raw-read'
 import { readStrictHostDocument, readRawCapsule2HostDocumentOwned } from './synced-host-document-read'
 import { LOGICAL_DELETION_PREFIX } from '../sync/synced-logical-deletion-model'
 import { canonicalSearchSnippet, sqliteTrigramTermsMatch } from './workspace-search-trigram'
+import { readSyncedBindingSources } from './synced-stored-binding-read'
+import { resolveRawLiveBlockOwner } from './block-identities-raw-read'
 
 export interface SyncedInlineInstanceSqlRow {
   document_id:string;document_title:string;document_path:string;updated_at:string
@@ -126,19 +131,45 @@ export function validateCanonicalSearchPageOwned(db:Database.Database,rows:reado
 export function resolveSyncedInlineInstance(db:Database.Database,input:unknown):SyncedInlineInstanceResult {
   assertSyncedShape(input,['hostDocumentId','instanceId','groupId'])
   if(!isSyncedBlockId(input.hostDocumentId)||!isSyncedUuid(input.instanceId)||!isSyncedUuid(input.groupId))throw new Error('Invalid inline instance read address.')
-  return db.transaction(()=>{
-    assertCanonicalSearchSnapshotOwned(db)
-    const row=db.prepare(`SELECT * FROM (${syncedInlineInstancesSql}) WHERE document_id=? AND instance_id=? AND group_id=?`)
-      .get(input.hostDocumentId,input.instanceId,input.groupId) as SyncedInlineInstanceSqlRow|undefined
-    if(!row)return{status:'missing' as const}
-    const snapshot=readRawSyncedGroupSnapshotsOwned(db,[row.group_id]).get(row.group_id)
-    const host=db.readonly?readRawCapsule2HostDocumentOwned(db,row.document_id):readStrictHostDocument(db,row.document_id)
-    const instance=snapshot?.instances.find(item=>item.instanceId===row.instance_id)
-    if(!snapshot||!host||!instance||host.createdAt!==row.host_created_at||host.births.get(row.instance_id)!==row.instance_created_at
-      ||snapshot.creationId!==row.creation_id||snapshot.createdAt!==row.group_created_at||snapshot.revision!==row.revision||snapshot.topologyRevision!==row.topology_revision
-      ||instance.hostDocumentId!==row.document_id||instance.bindingVersion!==row.binding_version||instance.depth!==row.instance_depth||instance.parentBlockId!==row.parent_block_id)
-      throw new Error('Inline instance differs from the same actual strict group and host.')
-    return{status:'ready' as const,instance:inlineInstanceFromRow(row),snapshot}
+  const identity = { hostDocumentId: input.hostDocumentId, instanceId: input.instanceId, groupId: input.groupId }
+  return db.transaction(() => readInlineInstanceOwned(db, identity))()
+}
+
+function readInlineInstanceOwned(db: Database.Database, input: ResolveSyncedInlineInstanceInput): SyncedInlineInstanceResult {
+  assertCanonicalSearchSnapshotOwned(db)
+  const row = db.prepare(`SELECT * FROM (${syncedInlineInstancesSql}) WHERE document_id=? AND instance_id=? AND group_id=?`)
+    .get(input.hostDocumentId, input.instanceId, input.groupId) as SyncedInlineInstanceSqlRow | undefined
+  if (!row) return { status: 'missing' }
+  const snapshot = readRawSyncedGroupSnapshotsOwned(db, [row.group_id]).get(row.group_id)
+  const host = db.readonly ? readRawCapsule2HostDocumentOwned(db, row.document_id) : readStrictHostDocument(db, row.document_id)
+  const instance = snapshot?.instances.find(item => item.instanceId === row.instance_id)
+  if (!snapshot || !host || !instance || host.createdAt !== row.host_created_at || host.births.get(row.instance_id) !== row.instance_created_at
+    || snapshot.creationId !== row.creation_id || snapshot.createdAt !== row.group_created_at || snapshot.revision !== row.revision
+    || snapshot.topologyRevision !== row.topology_revision || instance.hostDocumentId !== row.document_id || instance.bindingVersion !== row.binding_version
+    || instance.depth !== row.instance_depth || instance.parentBlockId !== row.parent_block_id)
+    throw new Error('Inline instance differs from the same actual strict group and host.')
+  return { status: 'ready', instance: inlineInstanceFromRow(row), snapshot }
+}
+
+/** Resolve the original parser occurrence against the current physical owner
+ * in one read. Binding state and document hints belong to the stored side. */
+export function resolveSyncedStoredBlockLink(db: Database.Database, input: unknown): SyncedStoredBlockLinkResult {
+  assertSyncedShape(input, ['source', 'binding'])
+  const source = validateSyncedInlineInstanceAddress(input.source), wanted = validateSyncedBindingKey(input.binding)
+  return db.transaction((): SyncedStoredBlockLinkResult => {
+    const actual = readInlineInstanceOwned(db, source)
+    if (actual.status !== 'ready' || !isDeepStrictEqual(actual.instance, source)) return { status: 'stale' }
+    const { snapshot } = actual
+    const binding = readSyncedBindingSources(db, snapshot.origin, snapshot.blocks, snapshot.bindings)
+      .find(({ key }) => key.blockId === wanted.blockId && key.from === wanted.from && key.to === wanted.to
+        && key.raw === wanted.raw && key.syntax === wanted.syntax)
+    if (binding?.target.kind !== 'block') return { status: 'missing' }
+    const blockId = binding.target.id, owner = resolveRawLiveBlockOwner(db, blockId)
+    if (owner?.kind === 'document' && db.prepare('SELECT 1 FROM documents WHERE id=?').get(owner.id))
+      return { status: 'ready', kind: 'document', documentId: owner.id, blockId }
+    const child = owner?.kind === 'group' && owner.id === snapshot.groupId && snapshot.blocks.find(block => block.id === blockId)
+    return child ? { status: 'ready', kind: 'canonical', occurrence: { ...actual.instance,
+      canonicalBlockId: child.id, canonicalCreatedAt: child.createdAt } } : { status: 'missing' }
   })()
 }
 export function resolveWorkspaceSearchOccurrence(db:Database.Database,input:unknown):WorkspaceSearchOccurrenceResult {

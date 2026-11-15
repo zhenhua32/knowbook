@@ -12,6 +12,8 @@ import { decodeHostCreateJournal, type HostCreateJournal } from './synced-host-c
 import { decodeHostDetachEvidence, type HostDetachEvidence } from './synced-host-detach-evidence'
 import { isHostDetachInput, type HostDetachInput } from './synced-host-detach-plan'
 import { planSyncedHostDetach, validateDetachSource, type DetachSource } from './synced-host-detach-legacy'
+import { decodeCrossHostJournal4, decodeCrossHostJournal6, decodeCrossHostJournal7, decodeCrossHostJournal8, decodeCrossHostJournal9,
+  decodeCrossHostJournal10, decodeCrossHostJournal11, decodeCrossHostJournal12 } from './synced-cross-host-journal4'
 
 export type HostFinalInput = Extract<SyncedStructureInput, { mode: 'host-final' }>
 export interface HostSide { documentId: string; content: HostContent }
@@ -77,11 +79,19 @@ const matchingHosts = (left: readonly HostSide[], right: readonly HostSide[]) =>
 
 /** Finite executable branches share side/birth/incarnation validation. The
  * original bare-create lifecycle action remains a separate, unsupported format. */
-export function decodeHostJournal(row: Readonly<SyncedHostHistoryBranchRow>): HostJournal | HostCreateJournal | HostDetachJournal | LegacyHostDetachJournal {
+export function decodeHostJournal(row: Readonly<SyncedHostHistoryBranchRow>): HostJournal | HostCreateJournal | HostDetachJournal | LegacyHostDetachJournal | ReturnType<typeof decodeCrossHostJournal4> | ReturnType<typeof decodeCrossHostJournal8> {
   try {
     if (!isSyncedUuid(row.id)) return bad()
     hostTime(row.created_at)
     const action = hostJson(row.action_json)
+    if (syncedPlainRecord(action) && action.kind === 'host-command' && action.version === 4) return decodeCrossHostJournal4(row)
+    if (syncedPlainRecord(action) && action.kind === 'host-command' && action.version === 6) return decodeCrossHostJournal6(row)
+    if (syncedPlainRecord(action) && action.kind === 'host-command' && action.version === 7) return decodeCrossHostJournal7(row)
+    if (syncedPlainRecord(action) && action.kind === 'host-command' && action.version === 8) return decodeCrossHostJournal8(row)
+    if (syncedPlainRecord(action) && action.kind === 'host-command' && action.version === 9) return decodeCrossHostJournal9(row)
+    if (syncedPlainRecord(action) && action.kind === 'host-command' && action.version === 10) return decodeCrossHostJournal10(row)
+    if (syncedPlainRecord(action) && action.kind === 'host-command' && action.version === 11) return decodeCrossHostJournal11(row)
+    if (syncedPlainRecord(action) && action.kind === 'host-command' && action.version === 12) return decodeCrossHostJournal12(row)
     if (syncedPlainRecord(action) && action.kind === 'host-command' && action.version === 2) return decodeHostCreateJournal(row)
     const detachVersion = syncedPlainRecord(action) && action.kind === 'host-command' && action.version === 3
     const legacyDetachVersion = detachVersion && !Object.hasOwn(action, 'detachHash')
@@ -157,7 +167,7 @@ export function decodeHostJournal(row: Readonly<SyncedHostHistoryBranchRow>): Ho
 }
 export function decodeHostFinalJournal(row: Readonly<SyncedHostHistoryBranchRow>): HostFinalJournal {
   const journal = decodeHostJournal(row)
-  if (journal.input.mode !== 'host-final') return bad()
+  if ('crossMove' in journal || journal.input.mode !== 'host-final') return bad()
   return { ...journal, input: journal.input }
 }
 export function encodeHostJournal(journal: HostJournal | HostDetachJournal | LegacyHostDetachJournal): { action: string; before: string; after: string; beforeHash: string; afterHash: string } {

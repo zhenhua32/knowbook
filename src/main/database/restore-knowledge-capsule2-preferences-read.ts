@@ -30,14 +30,14 @@ export function assertRawCapsule2PreferencesOwned(db: Database.Database): void {
     totalRows += measured[0]; totalBytes += measured[1]
     if (totalRows > BigInt(CAPSULE2_RAW_MAX_ROWS) || totalBytes > BigInt(CAPSULE2_RAW_MAX_VALUE_BYTES)) return bad('完整设置/活动超来源预算，不能截断或过滤')
   }
-  const settings = db.prepare('SELECT * FROM app_settings ORDER BY key').safeIntegers(true).all() as Row[]
+  const settings = db.prepare('SELECT * FROM app_settings ORDER BY key').safeIntegers(true).iterate() as IterableIterator<Row>
   const keys = new Set<string>()
   for (const row of settings) {
     const key = text(row.key)
     if (keys.has(key)) return bad('设置主身份重复')
     keys.add(key); text(row.value); text(row.updated_at)
   }
-  const events = db.prepare('SELECT * FROM workspace_events ORDER BY id').safeIntegers(true).all() as Row[]
+  const events = db.prepare('SELECT * FROM workspace_events ORDER BY id').safeIntegers(true).iterate() as IterableIterator<Row>
   const identities = new Set<string>()
   for (const row of events) {
     const id = text(row.id)

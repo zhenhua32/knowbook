@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { closeSync, mkdtempSync, openSync, rmSync, rmdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { rawRestoreSqlCell as cell } from './restore-knowledge-sql-cell'
+import { rawRestoreSqlCell as cell, type RawRestoreSqlCell } from './restore-knowledge-sql-cell'
 import { publicationHash, publicationJson, publicationCompare } from '../sync/synced-publication-model'
 import { syncedBlockSchemaObjectNames } from './synced-schema'
 import { syncedLifecycleSchemaObjectNames } from './synced-lifecycle-schema-metadata'
@@ -23,7 +23,7 @@ function encoding(db: Database.Database) {
   if (actual !== 'UTF-8' && actual !== 'UTF-16le' && actual !== 'UTF-16be') return refused('未知数据库TEXT编码')
   return actual
 }
-function rawRows(db: Database.Database, table: string, columns: readonly string[], textEncoding: string): IterableIterator<unknown[]> {
+function rawRows(db: Database.Database, table: string, columns: readonly string[], textEncoding: string): IterableIterator<RawRestoreSqlCell[]> {
   const projection = columns.flatMap(name => {
     const key = quoted(name)
     return [`typeof(${key})`, `CASE WHEN typeof(${key})='text' THEN CAST(${key} AS BLOB) ELSE ${key} END`]
@@ -36,11 +36,11 @@ function rawRows(db: Database.Database, table: string, columns: readonly string[
 
 const rowHashMemoryLimit = 16_384
 const rowSetDigest = () => createHash('sha256').update('knowbook.raw-sql-row-set.v1\0')
-const rowHash = (row: unknown[]) => publicationHash(publicationJson(row))
+const rowHash = (row: readonly RawRestoreSqlCell[]) => publicationHash(publicationJson(row))
 
 /** Keep the original hex sort and duplicates while spilling large tables to
  * an independent temporary SQLite file with a bounded private page cache. */
-function hashSpilledRows(first: readonly string[], rest: IterableIterator<unknown[]>, overflow: string) {
+function hashSpilledRows(first: readonly string[], rest: IterableIterator<readonly RawRestoreSqlCell[]>, overflow: string) {
   const directory = mkdtempSync(join(tmpdir(), 'knowbook-restore-row-hashes-')), path = join(directory, 'row-hashes.db')
   let sorter: Database.Database | undefined
   try {
@@ -67,7 +67,9 @@ function hashSpilledRows(first: readonly string[], rest: IterableIterator<unknow
   }
 }
 
-function hashRows(rows: IterableIterator<unknown[]>) {
+/** Only fixed row hashes and ordinals enter the sorter. Opaque row values
+ * are consumed synchronously and are never written to a temporary file. */
+export function hashRestoreSqlRowSet(rows: IterableIterator<readonly RawRestoreSqlCell[]>) {
   const hashes: string[] = []
   for (const row of rows) {
     const hash = rowHash(row)
@@ -101,7 +103,7 @@ export function readRawRestoreSqlInventoryOwned(db: Database.Database): RawSqlIn
   const result: RawSqlTableInventory[] = []
   for (const name of tables) {
     const columns = db.prepare('SELECT * FROM ' + quoted(name) + ' LIMIT 0').columns().map(item => item.name)
-    const digest = hashRows(rawRows(db, name, columns, textEncoding))
+    const digest = hashRestoreSqlRowSet(rawRows(db, name, columns, textEncoding))
     result.push(Object.freeze({ name, columnsHash: publicationHash(publicationJson(columns)), ...digest }))
   }
   const schemaHash = publicationHash(publicationJson({ domain: 'knowbook.raw-sql-schema.v1', encoding: textEncoding, rows: schemaRows }))

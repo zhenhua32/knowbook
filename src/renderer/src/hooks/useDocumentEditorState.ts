@@ -2,7 +2,7 @@ import type { AppMessageHandler } from '../notify'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Dispatch, SetStateAction } from 'react'
 import type { DocumentBlockDraft, DocumentDetail, HomeData } from '@shared/contracts'
-import type { BlockMoveCompletionContext } from '../utils/blockMoveActions'
+import type { BlockMoveCompletionContext, BlockMoveDestination } from '../utils/blockMoveActions'
 import type { UiText } from '../i18n'
 import { toDraftBlock } from '../utils/draftBlockShape'
 import { buildDraftMarkdownExport } from '../utils/documentMarkdown'
@@ -23,7 +23,7 @@ import {
 type DraftBlockUpdater = DocumentBlockDraft[] | ((previous: DocumentBlockDraft[]) => DocumentBlockDraft[])
 type DraftWriterModule = Pick<typeof import('../utils/documentDraftWriter'), 'completeDocumentDraftWrite'>
 const loadDocumentDraftWriter = (): Promise<DraftWriterModule> => import('../utils/documentDraftWriter')
-type MoveTransition = { operationId: string; versions: Record<string, string> }
+type MoveTransition = import('../utils/blockMoveActions').MoveTransition
 type EditSnapshot = { blocks: DocumentBlockDraft[]; bookmark: EditorHistoryBookmark | null; move?: MoveTransition; hostStructure?: SyncedHostHistoryTransition }
 export type DocumentBlockActionTarget = Readonly<{
   documentId: string; session: number; blockIds: readonly string[]
@@ -114,7 +114,7 @@ export function useDocumentEditorState({
   const draftTitleRef = useRef(draftTitle)
   const draftSummaryRef = useRef(draftSummary)
   const draftBlocksRef = useRef(draftBlocksState)
-  const [, setHistoryRevision] = useState(0)
+  const [historyRevision, setHistoryRevision] = useState(0)
   selectedDocumentIdRef.current = selectedDocumentId
   // A successful write advances the revision immediately, before React renders
   // its acknowledgement. Queued saves must keep that revision in the meantime.
@@ -181,7 +181,7 @@ export function useDocumentEditorState({
       restoreEditorHistoryBookmark(bookmark, draftBlocksState)
     })
     return () => cancelAnimationFrame(frame)
-  }, [draftBlocksState, isReadingMode, onRevealHistoryBlock])
+  }, [draftBlocksState, historyRevision, isReadingMode, onRevealHistoryBlock])
 
   const triggerTransientFlash = useCallback((setter: (value: boolean) => void) => {
     setter(true)
@@ -460,7 +460,7 @@ export function useDocumentEditorState({
     }
     if (blockMoveBusyRef.current) return
     const session = editorSessionRef.current, raw = JSON.stringify(draftBlocksRef.current)
-    if (canonicalInlineInputLocked() || !await flushCanonicalInlinePendingChanges()
+    if (canonicalInlineInputLocked() || !originalHistory[originalPointer]?.move?.cross && !await flushCanonicalInlinePendingChanges()
       || session !== editorSessionRef.current || raw !== JSON.stringify(draftBlocksRef.current)) return
     if (historyDebounceTimerRef.current) {
       clearTimeout(historyDebounceTimerRef.current)
@@ -501,7 +501,7 @@ export function useDocumentEditorState({
     }
     if (blockMoveBusyRef.current) return
     const session = editorSessionRef.current, raw = JSON.stringify(draftBlocksRef.current)
-    if (canonicalInlineInputLocked() || !await flushCanonicalInlinePendingChanges()
+    if (canonicalInlineInputLocked() || !originalHistory[originalPointer + 1]?.move?.cross && !await flushCanonicalInlinePendingChanges()
       || session !== editorSessionRef.current || raw !== JSON.stringify(draftBlocksRef.current)) return
     // A new edit must retire the old redo branch even before the debounce ends.
     if (historyDebounceTimerRef.current) {
@@ -605,7 +605,7 @@ export function useDocumentEditorState({
           const requiresSyncedWriter = hasCanonicalHostSavePending() || [...normalizedBlocks, ...detail.blocks].some(block => block.type === 'synced-block')
           const { completeDocumentDraftWrite } = await loadWriter()
           return await completeDocumentDraftWrite({ documentId, title, summary, normalizedBlocks, detail, baseTitle,
-            renaming: Boolean(intent), saveFailed: ui.documentSaveFailed, requiresSyncedWriter, syncedHost: getSyncedHostEditorState,
+            renaming: Boolean(intent), purpose: options?.purpose, saveFailed: ui.documentSaveFailed, requiresSyncedWriter, syncedHost: getSyncedHostEditorState,
             isCurrentSession, mountedRef, selectedDocumentRef, draftTitleRef, draftSummaryRef, draftBlocksRef,
             editHistoryRef, onSelectedDocumentChange, setDraftTitle, setDraftSummary, setDraftBlocksState, onHomeDataChange })
         } catch (error) {
@@ -692,11 +692,12 @@ export function useDocumentEditorState({
     onDocument: onSelectedDocumentChange, onHome: onHomeDataChange, onRevision: setHistoryRevision
   }), [onHomeDataChange, onSelectedDocumentChange])
 
-  const adoptSyncedHostResult = useCallback((before: SyncedHostSourceCurrent, result: SyncedStructureApplied, history = false): boolean =>
+  const adoptSyncedHostResult = useCallback((before: SyncedHostSourceCurrent, result: SyncedStructureApplied, history: boolean, afterBookmark?: EditorHistoryBookmark): boolean =>
     adoptCanonicalHostResult({ editor: getBlockMoveContext(() => mountedRef.current),
       hooks: [getSyncedHostEditorState, hostHistoryBusyRef, clearAutoSaveTimer, checkpointDraft, commitHistorySnapshot, pendingHistorySnapshotRef] },
-    before, result, history), [getBlockMoveContext, getSyncedHostEditorState, clearAutoSaveTimer, checkpointDraft, commitHistorySnapshot])
-  const adoptSyncedHostStructureResult: (before: SyncedHostSourceCurrent, result: SyncedStructureApplied) => boolean = adoptSyncedHostResult
+    before, result, history, afterBookmark), [getBlockMoveContext, getSyncedHostEditorState, clearAutoSaveTimer, checkpointDraft, commitHistorySnapshot])
+  const adoptSyncedHostStructureResult = useCallback((before: SyncedHostSourceCurrent, result: SyncedStructureApplied, afterBookmark?: EditorHistoryBookmark) =>
+    adoptSyncedHostResult(before, result, false, afterBookmark), [adoptSyncedHostResult])
   const adoptSyncedHostHistoryResult = useCallback((before: SyncedHostSourceCurrent, result: SyncedStructureApplied) =>
     adoptSyncedHostResult(before, result, true), [adoptSyncedHostResult])
 
@@ -725,8 +726,8 @@ export function useDocumentEditorState({
       && areDocumentDraftBlocksEqual(target.blocks, draftBlocksRef.current)
   ), [])
 
-  const moveDraftBlocksToDocument = useCallback(async (target: DocumentBlockActionTarget, toDocumentId: string): Promise<boolean> => {
-    if (blockMoveBusyRef.current || composingDraftRef.current || !isBlockActionTargetCurrent(target)
+  const moveDraftBlocksToDocument = useCallback(async (target: DocumentBlockActionTarget, toDocumentId: BlockMoveDestination): Promise<boolean> => {
+    if (blockMoveBusyRef.current || composingDraftRef.current || pendingSaveRef.current || !isBlockActionTargetCurrent(target)
       || target.documentId === toDocumentId) return false
     blockMoveBusyRef.current = true
     setIsBlockMoveBusy(true)
@@ -735,22 +736,17 @@ export function useDocumentEditorState({
     const isCurrent = () => mountedRef.current && selectedDocumentIdRef.current === target.documentId
       && editorSessionRef.current === target.session
     try {
-      if (!await persistDraft(false, true) || !isCurrent()) return false
-      const source = selectedDocumentRef.current!
-      const destination = await window.knowbook.getDocumentDetail(toDocumentId)
-      if (!isCurrent() || !destination) return false
-      const input = { fromDocumentId: source.id, toDocumentId, blockIds: [...target.blockIds],
-        expectedFromUpdatedAt: source.updatedAt, expectedToUpdatedAt: destination.updatedAt }
-      const { completeDocumentBlockMove } = await import('../utils/blockMoveActions')
-      return await completeDocumentBlockMove(input, target.bookmark, getBlockMoveContext(isCurrent))
+      const { moveDraftBlocksAcrossPages } = await import('../utils/blockMoveActions')
+      return await moveDraftBlocksAcrossPages(toDocumentId, [...target.blockIds], target.bookmark, getBlockMoveContext(isCurrent),
+        getSyncedHostEditorState, options => persistDraft(false, true, undefined, options))
     } catch (error) {
       if (isCurrent()) onMessage(getErrorMessage(error, '移动失败，请重新打开文档后重试。'), 'error')
       return false
     } finally { blockMoveBusyRef.current = false; if (mountedRef.current) setIsBlockMoveBusy(false) }
-  }, [checkpointDraft, clearAutoSaveTimer, getBlockMoveContext, isBlockActionTargetCurrent, onMessage, persistDraft])
+  }, [checkpointDraft, clearAutoSaveTimer, getBlockMoveContext, getSyncedHostEditorState, isBlockActionTargetCurrent, onMessage, persistDraft])
 
   restoreMoveRef.current = async (move, state) => {
-    if (blockMoveBusyRef.current || composingDraftRef.current) return false
+    if (blockMoveBusyRef.current || composingDraftRef.current || pendingSaveRef.current) return false
     const documentId = selectedDocumentIdRef.current, session = editorSessionRef.current
     const focusPermission = captureAsyncHistoryFocusPermission()
     const isCurrent = () => mountedRef.current && selectedDocumentIdRef.current === documentId && editorSessionRef.current === session
@@ -758,10 +754,8 @@ export function useDocumentEditorState({
     setIsBlockMoveBusy(true)
     clearAutoSaveTimer()
     try {
-      if (!await persistDraft(false, true) || !isCurrent()) return false
-      const input = { operationId: move.operationId, expectedUpdatedAtByDocument: { ...move.versions } }
-      const { completeDocumentBlockMoveRestore } = await import('../utils/blockMoveActions')
-      return await completeDocumentBlockMoveRestore(input, state, getBlockMoveContext(isCurrent))
+      const { restoreDraftBlockMove } = await import('../utils/blockMoveActions')
+      return await restoreDraftBlockMove(move, state, getBlockMoveContext(isCurrent), getSyncedHostEditorState, () => persistDraft(false, true))
     } catch (error) {
       if (isCurrent()) onMessage(getErrorMessage(error, '撤销移动失败；不会覆盖后续编辑。'), 'error')
       return false
@@ -774,18 +768,16 @@ export function useDocumentEditorState({
   }
 
   useEffect(() => {
-    if (!isEditing || isReadingModeRef.current || !selectedDocumentId || selectedDocument?.id !== selectedDocumentId
+    if (!isEditing || isReadingMode || !selectedDocumentId || selectedDocument?.id !== selectedDocumentId
       || typeof window.knowbook.getDocumentBlockMoveHistory !== 'function') return
     const documentId = selectedDocumentId, session = editorSessionRef.current
     let cancelled = false
-    void window.knowbook.getDocumentBlockMoveHistory(documentId).then(async entry => {
-      if (!entry || cancelled) return
-      const { acceptDocumentBlockMoveHistory } = await import('../utils/blockMoveActions')
-      acceptDocumentBlockMoveHistory(entry, getBlockMoveContext(() => !cancelled && mountedRef.current
+    void import('../utils/blockMoveActions').then(({ readPairedBlockMoveHistory }) => {
+      if (!cancelled) return readPairedBlockMoveHistory(documentId, getBlockMoveContext(() => !cancelled && mountedRef.current
         && selectedDocumentIdRef.current === documentId && editorSessionRef.current === session))
     }).catch(error => console.warn('Failed to read paired block move history.', error))
     return () => { cancelled = true }
-  }, [isEditing, selectedDocument?.id, selectedDocument?.updatedAt, selectedDocumentId])
+  }, [isEditing, isReadingMode, selectedDocument?.id, selectedDocument?.updatedAt, selectedDocumentId])
 
   useLayoutEffect(() => {
     // A second beforeinput can arrive before passive effects run. Publish the

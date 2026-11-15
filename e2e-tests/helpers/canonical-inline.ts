@@ -8,14 +8,14 @@ import { promisify } from 'node:util'
 import { expect, type Locator, type Page, type TestInfo } from '@playwright/test'
 import type { CanonicalInlineSeed, CanonicalHostBody } from './canonical-inline-seed'
 import type { EditorCloseRequest, EditorCloseCancelled } from '../../src/shared/editor-close'
-import { closeElectronApp, launchElectronApp, uiText, type ElectronAppContext } from './electron'
+import { closeElectronApp, launchElectronApp, relaunchElectronApp, uiText, type ElectronAppContext } from './electron'
 import { setRichTextDomSelection } from './rich-text-selection'
 
 const runFile = promisify(execFile)
 const helperRoot = dirname(fileURLToPath(import.meta.url)), repoRoot = join(helperRoot, '..', '..')
 const electronRoot = dirname(createRequire(import.meta.url).resolve('electron/package.json'))
 
-export async function prepareCanonicalInlineProfile(bodyBlocks = 2): Promise<{ profile: string; seed: CanonicalInlineSeed }> {
+export async function prepareCanonicalInlineProfile(bodyBlocks = 2, nestedList = false): Promise<{ profile: string; seed: CanonicalInlineSeed }> {
   // This source-backed Main preparer is intentionally paired with the local
   // built app, not an arbitrary packaged executable with another schema/ABI.
   if (process.env.KNOWBOOK_E2E_EXECUTABLE?.trim()) throw new Error('Canonical inline seed requires the current local build; unset KNOWBOOK_E2E_EXECUTABLE')
@@ -26,7 +26,8 @@ export async function prepareCanonicalInlineProfile(bodyBlocks = 2): Promise<{ p
   // The 4,000-block fixture uses real Main writes before any editor timing starts.
   const seedTimeout = bodyBlocks === 4000 ? 90_000 : 30_000
   try {
-    await runFile(executable, ['--import', 'tsx', join(helperRoot, 'canonical-inline-seed.ts'), profile, String(bodyBlocks)], {
+    await runFile(executable, ['--import', 'tsx', join(helperRoot, 'canonical-inline-seed.ts'), profile, String(bodyBlocks),
+      ...(nestedList ? ['nested-list'] : [])], {
       cwd: repoRoot, env, windowsHide: true, timeout: seedTimeout, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8'
     })
     const seed = JSON.parse(readFileSync(join(profile, 'canonical-inline-seed.json'), 'utf8')) as CanonicalInlineSeed
@@ -41,8 +42,8 @@ export async function prepareCanonicalInlineProfile(bodyBlocks = 2): Promise<{ p
 
 export async function withCanonicalInlineApp(info: TestInfo, run: (fixture: {
   context: () => ElectronAppContext; seed: CanonicalInlineSeed; restart: () => Promise<void>
-}) => Promise<void>, bodyBlocks = 2): Promise<void> {
-  const { profile, seed } = await prepareCanonicalInlineProfile(bodyBlocks)
+}) => Promise<void>, bodyBlocks = 2, nestedList = false): Promise<void> {
+  const { profile, seed } = await prepareCanonicalInlineProfile(bodyBlocks, nestedList)
   let current: ElectronAppContext | null = null, failed = true
   await info.attach('canonical-inline-seed', { body: Buffer.from(JSON.stringify({ profile, seed }, null, 2)), contentType: 'application/json' })
   try {
@@ -52,16 +53,7 @@ export async function withCanonicalInlineApp(info: TestInfo, run: (fixture: {
       const prior = context()
       await closeElectronApp(prior, { preserveUserData: true })
       current = null
-      const launch = () => launchElectronApp({}, { userDataRoot: profile, editorMode: 'markdown' })
-      try {
-        current = await launch()
-      } catch (error) {
-        // The original host has exited, but Windows can briefly hold the profile lock.
-        if (process.platform !== 'win32' || !(error instanceof Error)
-          || !error.message.includes('Lock file can not be created! Error code: 32')) throw error
-        await new Promise(resolve => setTimeout(resolve, 250))
-        current = await launch()
-      }
+      current = await relaunchElectronApp({ userDataRoot: profile, editorMode: 'markdown' })
     } })
     failed = false
   } finally {

@@ -273,6 +273,21 @@ export async function launchElectronApp(
   }
 }
 
+export async function relaunchElectronApp(options: ElectronLaunchOptions & { userDataRoot: string }): Promise<ElectronAppContext> {
+  const retryDelays = [250, 500, 1000]
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await launchElectronApp({}, options)
+    } catch (error) {
+      // Windows can briefly hold the profile lock after the original host exits.
+      const delay = retryDelays[attempt]
+      if (delay === undefined || process.platform !== 'win32' || !(error instanceof Error)
+        || !error.message.includes('Lock file can not be created! Error code: 32')) throw error
+      await new Promise(resolve => setTimeout(resolve, delay))
+    }
+  }
+}
+
 export async function closeElectronApp(
   context: Pick<ElectronAppContext, 'app' | 'tempRoot'> | null,
   options: ElectronCloseOptions = {}

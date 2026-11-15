@@ -135,6 +135,13 @@ export function assertSyncedRecoveryBoundaryRecords(db: Database.Database): Sync
       }
       const history = groupArchives.get(group.groupId) ?? []; history.push(boundary); groupArchives.set(group.groupId, history)
     }
+    if (boundary.version === 2) {
+      // Block IDs remain reserved even after instance removal. The historical
+      // record never authorizes today’s ownership or a new binding.
+      const reserved = db.prepare('SELECT 1 FROM block_identities WHERE id=?')
+      for (const instance of boundary.instanceChanges) if (!reserved.get(instance.instanceId))
+        return recoveryBoundaryInvalid('移除实例丢失原稳定身份账本')
+    }
     freeze(boundary)
   }
   return { boundaries, hostCuts, groupArchives }

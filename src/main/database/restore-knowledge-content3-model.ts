@@ -1,5 +1,6 @@
-import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
-import { CAPSULE2_RAW_MAX_JSON_BYTES, type Capsule2RawSqlTable, type Capsule2TableRole } from './restore-knowledge-capsule2-raw-model'
+import { freezeCapsuleValue } from './restore-knowledge-capsule-model'
+import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
+import { CAPSULE2_RAW_MAX_JSON_BYTES, hashValidatedCapsule2RawSqlTable, type Capsule2RawSqlTable, type Capsule2TableRole } from './restore-knowledge-capsule2-raw-model'
 import type { readRootKnowledgeConservationContent3 } from './restore-knowledge-root3-read'
 
 type Inputs = Awaited<ReturnType<typeof readRootKnowledgeConservationContent3>>
@@ -11,7 +12,7 @@ const actions = {
   derived: 'rebuild',
   'policy-unresolved': 'preserve-current-policy-no-source-replay'
 } as const satisfies Record<Capsule2TableRole, string>
-const tableHash = (table: Capsule2RawSqlTable) => capsuleBytesHash('knowbook.restore.content3.original-table.v1\0' + capsuleJson(table))
+const tableHash = (table: Capsule2RawSqlTable) => hashValidatedCapsule2RawSqlTable('knowbook.restore.content3.original-table.v1', table)
 
 /** Data only. Source rows are candidate business values, still in their exact
  * original encoding/storage classes. Nothing here is executable SQL or an ID
@@ -53,7 +54,7 @@ export function selectRootRestoreContent3(inputs: Inputs) {
     assets: 'requires-rollbackable-original-bound-staging' as const,
     sourcePolicyReplayAllowed: false as const, originalInputClosureAuthenticated: true as const,
     semanticValidationComplete: false as const, acceptedCoverage: false as const, effective: false as const, permit: false as const }
-  const encoded = capsuleJson(body)
-  if (Buffer.byteLength(encoded) > CAPSULE2_RAW_MAX_JSON_BYTES) return content3Invalid('完整候选超过原有限材料预算，不能截断')
-  return freezeCapsuleValue({ ...body, selectionHash: capsuleBytesHash('knowbook.restore.content3.selection.v1\0' + encoded) })
+  const selectionHash = hashBoundedCapsuleJson(body, CAPSULE2_RAW_MAX_JSON_BYTES, 'knowbook.restore.content3.selection.v1\0')
+    ?? content3Invalid('完整候选超过原有限材料预算，不能截断')
+  return freezeCapsuleValue({ ...body, selectionHash })
 }

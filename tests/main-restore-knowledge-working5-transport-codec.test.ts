@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { randomUUID } from 'node:crypto'
 import test from 'node:test'
 import {capsuleJson} from '../src/main/database/restore-knowledge-capsule-model'
 import {capsule5TransportFiles} from '../src/main/database/restore-knowledge-capsule5-transport-model'
@@ -31,4 +32,28 @@ test('archive5 transport refuses missing or re-signed foreign working index comm
     assert.throws(()=>capsule5TransportFiles(resigned,assets,resignedText),'A self-consistent raw/domain/index pointer cannot replace this source/base/observer commitment')
   }
   assert.equal(archive.coverage.allAssetScopesCaptured,false);assert.equal(archive.coverage.installPermit,false)
+}))
+
+test('archive10 transport binds the version 3 Working index to its exact multi-origin base pointer', () => withPendingWorkingSource5(async f => {
+  const old = f.value.assetArchive
+  if (old.version !== 5) throw new Error('Expected genuine archive5 Working inventory')
+  // Only exercise the pure transport join here. The production fixture uses
+  // actual installed sources and transfer facts in separate Electron processes.
+  const baseProjection = { ...old.baseProjection, version: 3 as const }
+  const index = { ...f.working.manifest, version: 3 as const, baseProjection }
+  const archive: Extract<Capsule2AssetArchiveManifest, { version: 10 }> = {
+    ...old, version: 10, referencePolicy: 'capture-installed-multiple-v3-native-base-and-original-working-aliases',
+    baseProjection, workingOriginals: describeWorkingOriginals5(index),
+    installedV3Many: { root: { kind: 'restore-knowledge-origin-root-ref', version: 1, namespace: { kind: 'native' },
+      operationId: randomUUID(), dagId: randomUUID(), rootHash: '1'.repeat(64), readerVersion: 'knowbook-required-sql-knowledge-dag-v2' },
+      qualifiedDescriptorHash: '2'.repeat(64), installationProofHash: '3'.repeat(64), aliases: [], transfers: [] }
+  }
+  const assetPath = 'catalog/backups/database-restore/' + f.sourceInput.operationId + '/knowledge-complete-assets-v2/' + f.sourceInput.capsuleId
+  const files = capsule5TransportFiles(archive, assetPath, capsuleJson(index) + '\n')
+  assert.deepEqual(files.slice(1), index.files.map(file => ({ path: assetPath + '/contexts/files/' + file.sha256, ...file })))
+  assert.equal(files[0].path, assetPath + '/contexts/manifest.json')
+  assert.throws(() => parseWorkingOriginals5(capsuleJson({ ...index, version: 2 }) + '\n'), /Working index 与 native base 版本不同/)
+  const foreign = { ...index, baseProjection: { ...baseProjection, baseManifestHash: '4'.repeat(64) } }
+  const resigned = { ...archive, workingOriginals: describeWorkingOriginals5(foreign) }
+  assert.throws(() => capsule5TransportFiles(resigned, assetPath, capsuleJson(foreign) + '\n'), /不是本side来源/)
 }))

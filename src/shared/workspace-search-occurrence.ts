@@ -1,4 +1,4 @@
-import type { SyncedGroupSnapshot } from './synced-blocks'
+import type { SyncedBindingKey, SyncedGroupSnapshot } from './synced-blocks'
 import { assertSyncedShape, isSyncedBlockId, isSyncedUuid } from './syncedBlockValidation'
 
 /** A read address, never mutation authority. A canonical ID has no host by
@@ -30,6 +30,11 @@ export interface ResolveSyncedInlineInstanceInput { hostDocumentId:string;instan
 export type SyncedInlineInstanceResult=
   | {status:'ready';instance:SyncedInlineInstanceAddress;snapshot:SyncedGroupSnapshot}
   | {status:'missing'}
+export interface ResolveSyncedStoredBlockLinkInput { source: SyncedInlineInstanceAddress; binding: SyncedBindingKey }
+export type SyncedStoredBlockLinkResult =
+  | { status: 'stale' | 'missing' }
+  | { status: 'ready'; kind: 'document'; documentId: string; blockId: string }
+  | { status: 'ready'; kind: 'canonical'; occurrence: WorkspaceSearchOccurrence }
 export interface ResolveSyncedHeadingAnchorInput { documentId: string; expectedUpdatedAt: string; anchor: string; matchText: boolean }
 export type SyncedHeadingAnchorResult = { status: 'stale' | 'missing' }
   | { status: 'ready'; kind: 'title' }

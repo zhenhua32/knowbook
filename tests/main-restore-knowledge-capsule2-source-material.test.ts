@@ -7,6 +7,8 @@ import { basename, join, resolve } from 'node:path'
 import { prepareCapsule2AssetArchive, readCapsule2AssetArchive } from '../src/main/database/restore-knowledge-capsule2-asset-archive'
 import { extractCapsule2SourceMaterial, readCapsule2SourceMaterial, diagnoseCapsule2SourceMaterial } from '../src/main/database/restore-knowledge-capsule2-source-material'
 import { readCertifiedDurableSqlCapsule, type CertifiedDurableSqlCapsule } from '../src/main/database/restore-knowledge-capsule-read'
+import { hashBoundedCapsuleJson } from '../src/main/database/restore-knowledge-capsule-json-hash'
+import { capsuleBytesHash, capsuleJson } from '../src/main/database/restore-knowledge-capsule-model'
 import { restoreInventory } from '../src/main/database/restore-safety-files'
 import { addV3Assets, allTables, withV3Fixture } from './helpers/synced-backup-v3-fixture'
 import { captureAssetOriginal } from './helpers/capsule2-assets-fixture'
@@ -18,11 +20,23 @@ async function captured(f: Parameters<Parameters<typeof withV3Fixture>[0]>[0]) {
   return { source, archive }
 }
 
+test('bounded capsule digest matches the original canonical bytes at the exact UTF-8 budget', () => {
+  const longKey = 'x' + '🙂'.repeat(12_000)
+  const body = { '11': { nested: { b: '😄\ud800\n'.repeat(30_000), a: -0 } }, '2': 'another value',
+    z: [null, undefined, NaN, { '01': true, '9': '\u0000', strings: ['\\', '汉字'] }],
+    [longKey]: [longKey + '\udfff\u0001\ufeff"'], a: undefined }
+  const encoded = capsuleJson(body), size = Buffer.byteLength(encoded), domain = 'capsule-domain\0'
+  assert.equal(hashBoundedCapsuleJson(body, size, domain), capsuleBytesHash(domain + encoded))
+  assert.equal(hashBoundedCapsuleJson(body, size - 1, domain), null)
+})
+
 test('capsule2 source material binds complete real ordinary policy historical and file sources without a caller projection', () => withV3Fixture(async f => {
   await addV3Assets(f); const long = writeMixedOrdinary501(f)
   f.store.saveSetting('source.fixture.secret', 'private source credential fixture')
   const before = allTables(f.db), { source, archive } = await captured(f)
   const handle = await extractCapsule2SourceMaterial(archive), value = await readCapsule2SourceMaterial(handle)
+  const { materialHash, ...original } = value
+  assert.equal(materialHash, capsuleBytesHash('knowbook.capsule2.complete-source-material.v2\0' + capsuleJson(original)))
   const documents = decodedCapsule2Table(value.source.sourceContent, 'documents')
   assert.ok(documents.some(row => row.title === long.title))
   assert.equal(value.source.policy.tables.length, 20); assert.ok(value.source.physical.groups.length > 0)

@@ -12,6 +12,7 @@ import { graph3Encode, graph3Text } from './restore-knowledge-graph3-data'
 import type { Capsule2Encoding, Capsule2RawSqlTable } from './restore-knowledge-capsule2-raw-model'
 import { rawRestoreSqlCell, type RawRestoreSqlCell } from './restore-knowledge-sql-cell'
 import { assertMerge3JsonBudget } from './restore-knowledge-merge3-storage'
+import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-read'
 
 type Actual = Awaited<ReturnType<typeof readRootRestoreReferenceGraphInputs3>>
 type Row = Capsule2RawSqlTable['rows'][number]
@@ -111,7 +112,8 @@ function occupied(actual: Actual, target: readonly Capsule2RawSqlTable[], contex
   return { uuids, times }
 }
 
-export function planRootRestoreStage3RetainedCut3(actual: Actual, physicalTables: readonly Capsule2RawSqlTable[], context: RootRestoreStage3RetainedCutContext3) {
+export function planRootRestoreStage3RetainedCut3(actual: Actual, physicalTables: readonly Capsule2RawSqlTable[], context: RootRestoreStage3RetainedCutContext3,
+  retainDeletedHostStates = true) {
   if (!isSyncedUuid(context.stageId) || !isSyncedUuid(context.copyId) || !/^[a-f0-9]{64}$/.test(context.copyManifestHash)
     || typeof context.preparedAt !== 'string' || !Number.isFinite(Date.parse(context.preparedAt))) return fail('固定stage/copy分配无效')
   const encoding = actual.data.inputs.current.source.sourceContent.encoding
@@ -139,8 +141,8 @@ export function planRootRestoreStage3RetainedCut3(actual: Actual, physicalTables
   if (!isSyncedUuid(workspaceScope) || !isSyncedUuid(beforeEpoch)) return fail('原workspace身份不是准确UUID')
   const afterEpoch = fresh('workspace-recovery-epoch', workspaceScope)
   const documentTable = tableNamed(physicalTables, 'documents'), originalDocuments = original(actual, 'documents')
-  const beforeDocuments = indexed(originalDocuments, 'id', encoding)
-  const documentAllocations = [...indexed(documentTable, 'id', encoding)].sort(([a], [b]) => compare(a, b)).map(([id, row]) => {
+  const beforeDocuments = indexed(originalDocuments, 'id', encoding), indexedDocuments = indexed(documentTable, 'id', encoding)
+  const documentAllocations = [...indexedDocuments].sort(([a], [b]) => compare(a, b)).map(([id, row]) => {
     const before = beforeDocuments.get(id)
     return { documentId: id, targetRowId: row.sourceRowId, currentSourceRowId: before?.sourceRowId ?? null,
       beforeUpdatedAt: before ? text(cell(originalDocuments, before, 'updated_at'), encoding) : null,
@@ -154,6 +156,20 @@ export function planRootRestoreStage3RetainedCut3(actual: Actual, physicalTables
       beforePosition: before ? integer(cell(oldStates, before, 'position')) : null,
       afterCursor: fresh('host-history-cursor', document.documentId), afterPosition: '0' }
   })
+  // A validated document tombstone may leave an old cursor even after its
+  // document is gone. Preserve that row as evidence and cut its cursor just
+  // as an in-place epoch rotation does.
+  const deletedHosts = retainDeletedHostStates
+    ? new Set(actual.data.inputs.current.source.physical.deletions.filter(proof => proof.before.kind === 'document').map(proof => proof.before.id))
+    : new Set<string>()
+  const retainedDeletedHosts = [...beforeStates].filter(([id]) => deletedHosts.has(id))
+    .sort(([left], [right]) => compare(left, right)).map(([documentId, before]) => {
+      if (beforeDocuments.has(documentId) || indexedDocuments.has(documentId))
+        return fail('墓碑宿主身份在原库或目标出现活动文档')
+      return { documentId, targetRowId: before.sourceRowId, beforeCursor: text(cell(oldStates, before, 'cursor'), encoding),
+        beforePosition: integer(cell(oldStates, before, 'position')), afterCursor: fresh('host-history-cursor', documentId), afterPosition: '0' }
+    })
+  hostAllocations.push(...retainedDeletedHosts)
   const oldGroups = original(actual, 'synced_groups'), beforeGroups = indexed(oldGroups, 'id', encoding)
   const groupTable = tableNamed(physicalTables, 'synced_groups'), active = new Set(actual.candidate.activeGroupWires.map(group => group.id))
   const groupAllocations = [...indexed(groupTable, 'id', encoding)].sort(([a], [b]) => compare(a, b)).map(([id, row]) => {
@@ -215,6 +231,7 @@ export function planRootRestoreStage3RetainedCut3(actual: Actual, physicalTables
   const record = { key: ROOT3_RETAINED_CUT_PREFIX + context.stageId, json: capsuleJson(recordBody), hash: hash('knowbook.restore.stage3.retained-cut.record.v1', recordBody) }
   if (original(actual, 'app_settings').rows.some(row => text(cell(original(actual, 'app_settings'), row, 'key'), encoding) === record.key)) return fail('新cut key已被原件占用')
   const plan = { encoding, context: { ...context }, tables, protectedTables, allocation, archiveTables, record, cutHash: executionHash,
+    retainedDeletedHostIds: retainedDeletedHosts.map(row => row.documentId),
     retainedTables: retainedNames.map(name => original(actual, name)), finalCurrentRetainedCutComplete: true as const,
     historyCutComplete: false as const, acceptedCoverage: false as const, effective: false as const, permit: false as const }
   // Each raw family already passed the original source/candidate budgets.
@@ -260,6 +277,15 @@ export function assertRootRestoreStage3RetainedCutObserved3(db: Database.Databas
   for (const descriptor of plan.archiveTables) {
     const table = original(actual, descriptor.table)
     if (hash('knowbook.restore.stage3.retained-cut.original-table.v1', table) !== descriptor.rawTableHash) return fail('cut qualified原件支持变化')
+  }
+  if (plan.retainedDeletedHostIds.length) {
+    const targetDeletions = assertSyncedLogicalDeletionRecords(db)
+    const original = new Map(actual.data.inputs.current.source.physical.deletions.map(proof => [proof.key, proof]))
+    for (const id of plan.retainedDeletedHostIds) {
+      const key = 'doc:' + id
+      if (!same(targetDeletions.get(key) ?? null, original.get(key) ?? null))
+        return fail('墓碑宿主在目标 SQL 缺原逻辑删除证据')
+    }
   }
   assertRecord(db, plan)
   const observations = [...plan.tables.filter(table => ['documents', 'synced_groups', 'synced_instances'].includes(table.name)), ...plan.protectedTables, ...plan.retainedTables]

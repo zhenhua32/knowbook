@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useRef, useState } from 'react'
+import { useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { Annotation, EditorState, Prec } from '@codemirror/state'
 import { EditorView, drawSelection, keymap, type ViewUpdate } from '@codemirror/view'
@@ -15,7 +15,22 @@ import './document-markdown-source.css'
 import { registerRecoverySource, recoveryData, type RecoverySourceAddress } from '../features/editor-recovery/sourceSnapshots'
 
 type Snapshot<Draft> = { draft: Draft; start: number; end: number }
+type ReferencePlacement<Draft> = { draft: Draft; from: number; to: number }
+type SourceReferencePicker<Draft> = {
+  opener: HTMLButtonElement; cancel: () => void
+  insert: (prepare: (draft: Draft, at: number) => ReferencePlacement<Draft>) => boolean
+}
 const sourceCommand = Annotation.define<boolean>()
+const referencePlacement = Annotation.define<{ from: number; to: number }>()
+
+function rawSourceOffset(source: string, offset: number): number {
+  let raw = 0, normalized = 0
+  while (raw < source.length && normalized < offset) {
+    if (source[raw] === '\r' && source[raw + 1] === '\n') raw++
+    raw++; normalized++
+  }
+  return raw
+}
 
 export type MarkdownSourceDialogText = {
   title: string; hint: string; editorLabel: string; cancel: string; undo: string; redo: string; apply: string
@@ -41,6 +56,8 @@ export type MarkdownSourceDialogProps<Draft extends { source: string }> = {
   sessionKey: object
   createDraft: () => Draft
   replaceChanges: (draft: Draft, changes: readonly MarkdownSourceChange[]) => Draft
+  relocateReferenceSelection?: (draft: Draft, range: { from: number; to: number; insertAt: number }, copy: boolean) => ReferencePlacement<Draft>
+  renderReferencePicker?: (picker: SourceReferencePicker<Draft>) => ReactNode
   onApply: (draft: Draft) => boolean | Promise<boolean>
   readApplyCheckpoint?: () => MarkdownSourceAppliedCheckpoint<Draft> | null
   isCurrent: () => boolean
@@ -106,6 +123,9 @@ function MarkdownSourceDialogOpening<Draft extends { source: string }>(props: Ma
   const [error, setError] = useState('')
   const [isApplying, setIsApplying] = useState(false)
   const [importing, setImporting] = useState(false), importLock = useRef(false)
+  const [placement, setPlacement] = useState<(Snapshot<Draft> & { copy: boolean }) | null>(null)
+  const [picker, setPicker] = useState<SourceReferencePicker<Draft> | null>(null)
+  const activePicker = useRef<SourceReferencePicker<Draft> | null>(null)
   const acceptedSource = useRef(props.restored?.accepted.source ?? snapshot.draft.source)
   const originalDraft = useRef(props.restored?.opening ?? snapshot.draft), acceptedDraft = useRef(props.restored?.accepted ?? snapshot.draft)
   const recovery = useRef<ReturnType<typeof registerRecoverySource> | null>(null)
@@ -117,20 +137,12 @@ function MarkdownSourceDialogOpening<Draft extends { source: string }>(props: Ma
     const view = editor.current, entry = recovery.current
     if (!mounted.current || !entry || !view) return
     const draft = session.read(view.state), selection = view.state.selection.main
-    const rawOffset = (offset: number) => {
-      let raw = 0, normalized = 0
-      while (raw < draft.source.length && normalized < offset) {
-        if (draft.source[raw] === '\r' && draft.source[raw + 1] === '\n') raw++
-        raw++; normalized++
-      }
-      return raw
-    }
     const opening = originalDraft.current, accepted = acceptedDraft.current
     const provenance = live.current.readRecoveryProvenance?.(draft) ?? null
     let replayJson: string | undefined
     entry.update({ openingSource: opening.source, acceptedSource: acceptedSource.current, source: draft.source,
       dirty: dirty(draft),
-      selection: { anchor: rawOffset(selection.anchor), head: rawOffset(selection.head) },
+      selection: { anchor: rawSourceOffset(draft.source, selection.anchor), head: rawSourceOffset(draft.source, selection.head) },
       composing: composing.current, applying: applying.current !== null, importing: importLock.current,
       serializeReplay: () => replayJson ??= JSON.stringify(recoveryData({ kind: 'knowbook-source-replay-data', version: 1,
         opening, accepted, current: draft, provenance })) })
@@ -166,6 +178,68 @@ function MarkdownSourceDialogOpening<Draft extends { source: string }>(props: Ma
     replaceChanges: (draft, changes) => live.current.replaceChanges(draft, changes), isCurrent: canUse,
     onError: cause => { if (canUse()) setError(cause instanceof Error ? cause.message : String(cause)) } })
   const session = sourceSession.current
+
+  const replayPlacement = (view: EditorView, next: ReferencePlacement<Draft>, previous: { from: number; to: number }) => {
+    const before = view.state.doc.toString(), source = markdownSourceEditorText(next.draft.source)
+    view.dispatch({ changes: before === source ? [] : markdownSourceChange(before, source),
+      selection: { anchor: markdownSourceEditorText(next.draft.source.slice(0, next.from)).length,
+        head: markdownSourceEditorText(next.draft.source.slice(0, next.to)).length },
+      scrollIntoView: true, annotations: [session.replay.of(next.draft), referencePlacement.of(previous)] })
+    return session.read(view.state) === next.draft
+  }
+
+  const beginReferenceInsertion = (opener: HTMLButtonElement) => {
+    const view = editor.current
+    if (!view || !canUse() || composing.current || applying.current || importLock.current || activePicker.current) return
+    const draft = session.read(view.state), selection = view.state.selection
+    if (selection.ranges.length !== 1 || !selection.main.empty) {
+      setError(isZh ? '请将光标放在要插入引用的位置。' : 'Place the cursor where the reference should go.')
+      view.focus()
+      return
+    }
+    const at = rawSourceOffset(draft.source, selection.main.head)
+    const request: SourceReferencePicker<Draft> = {
+      opener,
+      cancel: () => {
+        if (activePicker.current !== request) return
+        activePicker.current = null; setPicker(null)
+      },
+      insert: prepare => {
+        if (activePicker.current !== request || editor.current !== view || !canUse()
+          || composing.current || applying.current || importLock.current
+          || session.read(view.state) !== draft || !view.state.selection.eq(selection)) throw new Error(text.conflict)
+        const next = prepare(draft, at)
+        if (!replayPlacement(view, next, { from: selection.main.from, to: selection.main.to })) return false
+        setPlacement(null); request.cancel(); return true
+      }
+    }
+    setError(''); activePicker.current = request; setPicker(request)
+  }
+
+  const beginPlacement = (copy: boolean) => {
+    const view = editor.current
+    if (!view || !canUse() || composing.current || applying.current || importLock.current) return
+    const { from, to } = view.state.selection.main
+    setError(from === to ? isZh ? '请选择完整的同步引用源码。' : 'Select the complete source of a synced reference.' : '')
+    if (from !== to) setPlacement({ draft: session.read(view.state), start: from, end: to, copy })
+    view.focus()
+  }
+
+  const placeSelection = () => {
+    const view = editor.current, relocate = live.current.relocateReferenceSelection
+    if (!placement || !view || !relocate || composing.current || applying.current || importLock.current) return
+    const draft = session.read(view.state), selection = view.state.selection.main
+    if (!canUse() || draft !== placement.draft) { setError(text.conflict); setPlacement(null); return }
+    if (!selection.empty) {
+      setError(isZh ? '请将光标放在目标位置。' : 'Place the cursor at the destination.'); view.focus(); return
+    }
+    try {
+      const next = relocate(draft, { from: rawSourceOffset(draft.source, placement.start),
+        to: rawSourceOffset(draft.source, placement.end), insertAt: rawSourceOffset(draft.source, selection.head) }, placement.copy)
+      if (replayPlacement(view, next, { from: placement.start, to: placement.end })) { setError(''); setPlacement(null) }
+    } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
+    view.focus()
+  }
 
   const record = (before: Snapshot<Draft>, next: Snapshot<Draft>, input: boolean) => {
     const state = history.current
@@ -210,12 +284,12 @@ function MarkdownSourceDialogOpening<Draft extends { source: string }>(props: Ma
   // Explicit Cancel can discard a stale opening; staleness removes its write
   // authority, never the user's ability to close it after preserving text.
   const close = () => {
-    if (mounted.current && live.current.ownsOpening() && !composing.current && !applying.current && !importLock.current) {
+    if (mounted.current && live.current.ownsOpening() && !composing.current && !applying.current && !importLock.current && !activePicker.current) {
       if (live.current.onClose() !== false) { recovery.current?.acceptedClose(); recovery.current = null }
     }
   }
   const apply = async () => {
-    if (composing.current || importLock.current || applying.current || !canUse()) return
+    if (composing.current || importLock.current || applying.current || activePicker.current || !canUse()) return
     const submitted = current.current.draft, receipt = {}, opening = live.current
     applying.current = receipt; setIsApplying(true); setError('')
     try {
@@ -310,8 +384,10 @@ function MarkdownSourceDialogOpening<Draft extends { source: string }>(props: Ma
         const draft = session.read(transaction.state), previous = session.read(transaction.startState)
         const selected = transaction.newSelection.main, before = transaction.startState.selection.main
         const next = { draft, start: selected.from, end: selected.to }
-        if (draft !== previous && !session.isReplay(transaction)) {
-          record({ draft: previous, start: before.from, end: before.to }, next, transaction.annotation(sourceCommand) !== true)
+        const placement = transaction.annotation(referencePlacement)
+        const command = placement !== undefined || transaction.annotation(sourceCommand) === true
+        if (draft !== previous && (command || !session.isReplay(transaction))) {
+          record({ draft: previous, start: placement?.from ?? before.from, end: placement?.to ?? before.to }, next, !command)
         }
         changed ||= draft !== previous
         current.current = next
@@ -377,6 +453,7 @@ function MarkdownSourceDialogOpening<Draft extends { source: string }>(props: Ma
       const restore = live.current.ownsOpening() && live.current.isCurrent() && document.hasFocus()
         && returnFocus?.isConnected && (active === document.body || active instanceof Node && dialog.current?.contains(active))
       mounted.current = false
+      activePicker.current = null
       editor.current = null
       // Layout cleanup runs before React removes the modal. Close it first so
       // the background trigger is no longer inert when restoring its focus.
@@ -388,7 +465,7 @@ function MarkdownSourceDialogOpening<Draft extends { source: string }>(props: Ma
     }
   }, [])
 
-  return createPortal(<dialog ref={dialog} className="document-markdown-source" aria-labelledby={labelId} aria-describedby={hintId}
+  return <>{createPortal(<dialog ref={dialog} className="document-markdown-source" aria-labelledby={labelId} aria-describedby={hintId}
     onPasteCapture={event => { if (event.clipboardData.files.length) { event.preventDefault(); event.stopPropagation(); void insertFiles(Array.from(event.clipboardData.files)) } }}
     onDragOverCapture={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.stopPropagation() } }}
     onDropCapture={event => { if (event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.stopPropagation(); void insertFiles(Array.from(event.dataTransfer.files), editor.current?.posAtCoords({ x: event.clientX, y: event.clientY }) ?? undefined) } }}
@@ -405,9 +482,26 @@ function MarkdownSourceDialogOpening<Draft extends { source: string }>(props: Ma
     <label className="markdown-source-attachments">{importing ? text.importing : text.attachments}
       <input type="file" multiple disabled={importing || isComposing} onChange={event => { const files = Array.from(event.target.files ?? []); event.target.value = ''; void insertFiles(files) }} /></label>
     <div ref={editorHost} className="document-markdown-source-editor" />
+    {(props.relocateReferenceSelection || props.renderReferencePicker) && <div className="markdown-source-attachments">
+      {props.relocateReferenceSelection && (placement ? <>
+        <span>{isZh ? '将光标放在要插入选区的位置。' : 'Place the cursor where the selection should go.'}</span>
+        <button type="button" className="secondary-button" disabled={isComposing || importing || isApplying} onClick={placeSelection}>
+          {placement.copy ? isZh ? '复制到光标处' : 'Copy to cursor' : isZh ? '移动到光标处' : 'Move to cursor'}</button>
+        <button type="button" className="secondary-button" onClick={() => { setPlacement(null); setError(''); editor.current?.focus() }}>
+          {isZh ? '取消定位' : 'Cancel placement'}</button>
+      </> : <>
+        <button type="button" className="secondary-button" disabled={isComposing || importing || isApplying} onClick={() => beginPlacement(false)}>
+          {isZh ? '移动引用选区' : 'Move reference selection'}</button>
+        <button type="button" className="secondary-button" disabled={isComposing || importing || isApplying} onClick={() => beginPlacement(true)}>
+          {isZh ? '复制引用选区' : 'Copy reference selection'}</button>
+      </>)}
+      {props.renderReferencePicker && !placement && <button type="button" className="secondary-button"
+        disabled={isComposing || importing || isApplying} onClick={event => beginReferenceInsertion(event.currentTarget)}>
+        {isZh ? '插入已有同步块' : 'Insert existing synced block'}</button>}
+    </div>}
     {error && <p role="alert">{error}</p>}
     <footer><button type="button" className="secondary-button" disabled={isComposing || history.current.index === 0} onClick={() => undo(-1)}>{text.undo}</button>
       <button type="button" className="secondary-button" disabled={isComposing || history.current.index + 1 >= history.current.entries.length} onClick={() => undo(1)}>{text.redo}</button>
       <button type="button" className="primary-button" disabled={isComposing || importing || isApplying} onClick={() => { void apply() }}>{isApplying ? text.applying : text.apply}</button></footer>
-  </dialog>, document.body)
+  </dialog>, document.body)}{picker && props.renderReferencePicker?.(picker)}</>
 }

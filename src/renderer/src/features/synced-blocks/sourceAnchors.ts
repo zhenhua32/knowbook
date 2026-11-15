@@ -1,4 +1,5 @@
 import type { SyncedNewRefSource, SyncedReferenceIdentity } from '@shared/synced-blocks'
+import { hostSourceProtection as protection } from '@shared/editor-recovery-source'
 import { parseMarkdownSourceStrict } from '@shared/markdownSource'
 import { assertSyncedShape, isSyncedBlockId, isSyncedUuid, serializeSyncedBlockPayload, SYNCED_BLOCK_FENCE_INFO } from '@shared/syncedBlockValidation'
 import type { MarkdownSourceChange } from '../../utils/markdownSourceDraft'
@@ -77,31 +78,6 @@ function provenance(value: SyncedSourceReferenceProvenance | null, instanceId: s
   return fail('shape')
 }
 
-/** These are raw character ranges, not a second Markdown grammar. The strict
- * parser proves the core fence boundaries at creation/Apply. Only leading
- * horizontal whitespace on subsequent source lines is editable inside a core;
- * line endings, markers, info and payload remain protected. Empty gaps matter
- * too: indentation can be inserted before an unindented payload/closing line. */
-function protection(source: string, from: number, to: number) {
-  const gaps: SyncedSourceRange[] = [], immutableRanges: SyncedSourceRange[] = []
-  let index = from
-  while (index < to) {
-    const char = source[index++]
-    if (char !== '\r' && char !== '\n') continue
-    if (char === '\r' && source[index] === '\n') index++
-    const start = index
-    while (index < to && (source[index] === ' ' || source[index] === '\t')) index++
-    gaps.push({ from: start, to: index })
-  }
-  let cursor = from
-  for (const gap of gaps) {
-    if (cursor < gap.from) immutableRanges.push(Object.freeze({ from: cursor, to: gap.from }))
-    cursor = gap.to
-  }
-  if (cursor < to) immutableRanges.push(Object.freeze({ from: cursor, to }))
-  return { gaps, immutableRanges: Object.freeze(immutableRanges) }
-}
-
 /** Make an owned immutable value, never freeze or mutate caller-owned objects. */
 function snapshot(value: SyncedSourceSnapshot): SyncedSourceSnapshot {
   shape(value, ['sessionKey', 'sourceDocumentId', 'source', 'anchors'])
@@ -152,12 +128,18 @@ export function createSyncedSourceSnapshot(input: SyncedSourceSnapshotInput): Sy
   })) })
   return result
 }
-/** An ordinary cold Source can be syntactically incomplete. Only an actual
- * owned empty opening may seed this empty current reference side; no marker,
- * new reference or historical identity can be minted by the raw buffer. */
-export function restoreEmptySyncedSourceSnapshot(opening: SyncedSourceSnapshot, source: string): SyncedSourceSnapshot {
-  if (!ownedSnapshots.has(opening) || opening.anchors.length || typeof source !== 'string') return fail('identity', 'Actual empty Source opening required')
-  return snapshot({ sessionKey: opening.sessionKey, sourceDocumentId: opening.sourceDocumentId, source, anchors: [] })
+/** The cold decoder has checked every retained reference against the Main-pinned
+ * opening. Rehome that subset under the new dialog without parsing unfinished C. */
+export function restoreSyncedSourceSnapshot(opening: SyncedSourceSnapshot, source: string,
+  anchors: readonly SyncedSourceReferenceAnchor[]): SyncedSourceSnapshot {
+  if (!ownedSnapshots.has(opening)) return fail('identity', 'Actual Source opening required')
+  const originals = new Map(opening.anchors.map(anchor => [anchor.key, anchor]))
+  return snapshot({ sessionKey: opening.sessionKey, sourceDocumentId: opening.sourceDocumentId, source, anchors: anchors.map(anchor => {
+    const original = originals.get(anchor.key)
+    if (!original || original.newRefSource !== null || anchor.newRefSource !== null
+      || original.instanceId !== anchor.instanceId || original.groupId !== anchor.groupId) return fail('identity')
+    return { ...anchor, sessionKey: opening.sessionKey }
+  }) })
 }
 
 function edits(source: string, changes: readonly MarkdownSourceChange[]): MarkdownSourceChange[] {

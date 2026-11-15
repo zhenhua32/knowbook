@@ -6,7 +6,7 @@ import { HOST_DETACH_OPERATION_KIND } from './synced-host-detach-original'
 import { TextDecoder } from 'node:util'
 import { assertSyncedShape } from '../../shared/syncedBlockValidation'
 import { capsuleBytesHash, capsuleJson } from './restore-knowledge-capsule-model'
-import type { Capsule2RawContent } from './restore-knowledge-capsule2-raw-model'
+import { hashValidatedCapsule2RawContent, type Capsule2RawContent } from './restore-knowledge-capsule2-raw-model'
 import { graph3Rows, graph3Text } from './restore-knowledge-graph3-data'
 import * as M from '../sync/synced-exchange-model'
 import * as C from '../sync/synced-exchange-conflict-model'
@@ -60,7 +60,7 @@ const list = (value: unknown): unknown[] => Array.isArray(value) ? value : fail(
 // new 128MiB input cap: that budget belongs to the compact capsule descriptor.
 const parse = (value: Uint8Array) => M.parseExchangeStored(new TextDecoder('utf-8', { fatal: true }).decode(value))
 export const root3SupplementSourceContentHash3 = (raw: Capsule2RawContent) =>
-  capsuleBytesHash('knowbook.capsule2.workspace-history-source-content.v1\0' + capsuleJson(raw))
+  hashValidatedCapsule2RawContent('knowbook.capsule2.workspace-history-source-content.v1', raw)
 export function root3SupplementOriginalRowHash3(raw: Capsule2RawContent, row: ReturnType<typeof graph3Rows>[number]) {
   return capsuleBytesHash('knowbook.restore.merge3.original-row.v1\0' + capsuleJson({ table: row.table.name,
     columns: row.table.columns, primaryKey: row.table.primaryKey, encoding: raw.encoding,

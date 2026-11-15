@@ -41,23 +41,26 @@ function replaceWikiPath(url: string, reference: WikiReference, path: string): s
   return path + (reference.hasFragment ? '#' + reference.fragment : '') + (separator < 0 ? '' : url.slice(separator))
 }
 
-function rebaseLocalUrl(url: string, context: BlockTransferLinkContext, movedSource: boolean, image: boolean, binding?: BlockTransferWikiBinding): string | null {
+type DestinationAfterTransfer = (path: string, fragment: string) => string | undefined
+
+function rebaseLocalDestination(url: string, sourcePath: string, relocatedSource: string | undefined,
+  destinationAfterTransfer: DestinationAfterTransfer, image: boolean, binding?: BlockTransferWikiBinding): string | null {
   const local = parseLocalMarkdownUrl(url)
   if (!local) return null
-  const parsedTarget = image ? null : resolveMarkdownDocumentPath(context.sourcePath, url)
+  const parsedTarget = image ? null : resolveMarkdownDocumentPath(sourcePath, url)
   const target = parsedTarget && binding?.kind === 'block' ? { path: binding.path, fragment: binding.fragment } : parsedTarget
-  const newSource = movedSource ? context.toPath : context.sourcePath
+  const newSource = relocatedSource ?? sourcePath
   if (target) {
-    const targetPath = target.path === context.fromPath && context.movedIds.has(blockTransferFragmentId(target.fragment)) ? context.toPath : target.path
-    if (targetPath === target.path && !movedSource) return null
+    const targetPath = destinationAfterTransfer(target.path, target.fragment) ?? target.path
+    if (targetPath === target.path && relocatedSource === undefined) return null
     if (targetPath === target.path && local.path.startsWith('/')) return null
     if (targetPath === newSource && !local.path) return null
     const path = local.path.startsWith('/') ? '/' + targetPath.split('/').map(encodeURIComponent).join('/') + '.md'
       : !local.path && targetPath === newSource ? '' : relativeMarkdownPath(newSource + '.md', targetPath + '.md')
     return path + local.suffix
   }
-  if (!movedSource || !local.path || local.path.startsWith('/')) return null
-  const parts = context.sourcePath.split('/').slice(0, -1)
+  if (relocatedSource === undefined || !local.path || local.path.startsWith('/')) return null
+  const parts = sourcePath.split('/').slice(0, -1)
   for (const part of local.path.split('/')) {
     if (part === '..') { if (!parts.length) return null; parts.pop() }
     else if (part && part !== '.') parts.push(part)
@@ -65,20 +68,33 @@ function rebaseLocalUrl(url: string, context: BlockTransferLinkContext, movedSou
   return parts.length ? relativeMarkdownPath(newSource + '.md', parts.join('/')) + local.suffix : null
 }
 
-function rewriteLink(link: MarkdownDocumentLink, context: BlockTransferLinkContext, forceMovedSource?: boolean): string | null {
-  const movedSource = forceMovedSource ?? (context.sourcePath === context.fromPath && context.movedIds.has(link.blockId ?? ''))
-  const binding = context.bindings.get(blockTransferLinkBindingKey(link.blockId, link.url))
-  if (link.kind !== 'wiki') return rebaseLocalUrl(link.url, context, movedSource, link.kind === 'image', binding)
+function originalTargetRelocation(context: BlockTransferLinkContext): DestinationAfterTransfer {
+  return (path, fragment) => path === context.fromPath && context.movedIds.has(blockTransferFragmentId(fragment)) ? context.toPath : undefined
+}
+
+function rebaseLocalUrl(url: string, context: BlockTransferLinkContext, movedSource: boolean, image: boolean, binding?: BlockTransferWikiBinding): string | null {
+  return rebaseLocalDestination(url, context.sourcePath, movedSource ? context.toPath : undefined, originalTargetRelocation(context), image, binding)
+}
+
+function rewriteRelocatedLink(link: MarkdownDocumentLink, sourcePath: string, relocatedSource: string | undefined,
+  destinationAfterTransfer: DestinationAfterTransfer, binding?: BlockTransferWikiBinding): string | null {
+  if (link.kind !== 'wiki') return rebaseLocalDestination(link.url, sourcePath, relocatedSource, destinationAfterTransfer, link.kind === 'image', binding)
   const reference = referenceForBinding(link.url, binding)
-  if (binding?.path === context.fromPath && binding.kind === 'block' && context.movedIds.has(blockTransferFragmentId(binding.fragment))) {
-    const path = !reference.path && movedSource ? '' : context.toPath
-    return replaceWikiPath(link.url, reference, path)
+  const relocatedTarget = binding?.kind === 'block' ? destinationAfterTransfer(binding.path, binding.fragment) : undefined
+  if (relocatedTarget !== undefined) {
+    return replaceWikiPath(link.url, reference, !reference.path && relocatedSource === relocatedTarget ? '' : relocatedTarget)
   }
-  if (!movedSource || reference.path && !/^\.\.?\//.test(reference.path)) return null
-  const oldTarget = binding?.path ?? wikiDocumentPaths(reference.path, context.sourcePath)[0]
+  if (relocatedSource === undefined || reference.path && !/^\.\.?\//.test(reference.path)) return null
+  const oldTarget = binding?.path ?? wikiDocumentPaths(reference.path, sourcePath)[0]
   if (!oldTarget) return null
   // A local heading or surviving block still belongs to the original document.
   return replaceWikiPath(link.url, reference, oldTarget)
+}
+
+function rewriteLink(link: MarkdownDocumentLink, context: BlockTransferLinkContext, forceMovedSource?: boolean): string | null {
+  const movedSource = forceMovedSource ?? (context.sourcePath === context.fromPath && context.movedIds.has(link.blockId ?? ''))
+  const binding = context.bindings.get(blockTransferLinkBindingKey(link.blockId, link.url))
+  return rewriteRelocatedLink(link, context.sourcePath, movedSource ? context.toPath : undefined, originalTargetRelocation(context), binding)
 }
 
 type ContentEdit = { blockIndex: number; start: number; end: number; replacement: string }
@@ -227,9 +243,9 @@ function applyContentEdits(content: string, input: Array<{ start: number; end: n
   return content
 }
 
-function normalLinkEdits(blocks: DocumentBlockDraft[], context: BlockTransferLinkContext, forceMovedSource?: boolean): ContentEdit[] {
+function linkEdits(blocks: DocumentBlockDraft[], replacementFor: (link: MarkdownDocumentLink) => string | null): ContentEdit[] {
   return collectDocumentMarkdownLinks(blocks).flatMap(link => {
-    const replacement = rewriteLink(link, context, forceMovedSource)
+    const replacement = replacementFor(link)
     if (replacement === null || replacement === link.url) return []
     const raw = blocks[link.blockIndex].content.slice(link.start, link.end)
     const escaped = escapeMarkdownDestination(replacement, link.kind === 'wiki' ? undefined : link.syntax)
@@ -237,6 +253,10 @@ function normalLinkEdits(blocks: DocumentBlockDraft[], context: BlockTransferLin
       replacement: link.kind === 'wiki' ? (raw.includes('\\|') ? replacement.replace(/\|/g, '\\|') : replacement)
         : raw.includes('#^') ? escaped.replace(/#%5e/i, '#^') : escaped }]
   })
+}
+
+function normalLinkEdits(blocks: DocumentBlockDraft[], context: BlockTransferLinkContext, forceMovedSource?: boolean): ContentEdit[] {
+  return linkEdits(blocks, link => rewriteLink(link, context, forceMovedSource))
 }
 
 /** Keep named notes bound to their complete original definition closure. Read
@@ -463,6 +483,30 @@ export function collectBlockTransferNamespaceEdits(blocks: DocumentBlockDraft[],
  * literal code/math/HTML and ordinary incoming document links stay untouched. */
 export function rewriteDocumentBlockTransferLinks(blocks: DocumentBlockDraft[], context: BlockTransferLinkContext): DocumentBlockDraft[] {
   const edits = [...referenceBoundaryEdits(blocks, context), ...normalLinkEdits(blocks, context), ...namedFootnoteEdits(blocks, context)]
+  return applyBlockContentEdits(blocks, edits)
+}
+
+export type BlockTransferPathChange = { fromPath: string; toPath: string }
+
+/** Evaluate all direct destinations in the original document and its original
+ * index. A source and its linked block can move to different destinations. */
+export function rewriteBatchBlockTransferLinks(blocks: DocumentBlockDraft[], sourcePath: string,
+  transfers: ReadonlyMap<string, BlockTransferPathChange>, bindings: ReadonlyMap<string, BlockTransferWikiBinding>,
+  outgoing: readonly Pick<BlockTransferLinkContext, 'toPath' | 'movedIds' | 'targetContent'>[]): DocumentBlockDraft[] | null {
+  for (const edge of outgoing) {
+    const context = { ...edge, sourcePath, fromPath: sourcePath, bindings }
+    if (referenceBoundaryEdits(blocks, context).length || namedFootnoteEdits(blocks, context).length) return null
+  }
+  const destinationAfterTransfer: DestinationAfterTransfer = (path, fragment) => {
+    const target = transfers.get(blockTransferFragmentId(fragment))
+    return target?.fromPath === path ? target.toPath : undefined
+  }
+  return applyBlockContentEdits(blocks, linkEdits(blocks, link => rewriteRelocatedLink(link, sourcePath,
+    link.blockId ? transfers.get(link.blockId)?.toPath : undefined, destinationAfterTransfer,
+    bindings.get(blockTransferLinkBindingKey(link.blockId, link.url)))))
+}
+
+function applyBlockContentEdits(blocks: DocumentBlockDraft[], edits: ContentEdit[]): DocumentBlockDraft[] {
   return blocks.map((block, blockIndex) => {
     const contentEdits = edits.filter(edit => edit.blockIndex === blockIndex)
     return contentEdits.length ? { ...block, content: applyContentEdits(block.content, contentEdits) } : block

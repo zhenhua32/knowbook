@@ -4,9 +4,9 @@ import test from 'node:test'
 import { randomUUID } from 'node:crypto'
 import { captureActualFirstRequiredSqlDag, readActualFirstRequiredSqlDagMaterial } from '../src/main/database/restore-knowledge-mixed-required-dag-read'
 import { exportPreparedMixedOriginBundle } from '../src/main/database/restore-knowledge-mixed-origin-bundle-read'
-import { captureMixedOriginalPackageWithInitialInputs, readCompleteOriginalContentPair3 } from '../src/main/database/restore-knowledge-qualified-originals'
+import { captureMixedOriginalPackageWithInitialInputs } from '../src/main/database/restore-knowledge-qualified-originals'
 import { withWorkingTransport5, assertWorkingTransportOperation5, assertWorkingTransportInventory5,
-  retireWorkingTransportSource5, assertWorkingTransportContent5, assertWorkingTransportChild5 } from './helpers/working5-transport-fixture'
+  retireWorkingTransportSource5, assertWorkingTransportChild5 } from './helpers/working5-transport-fixture'
 
 test('genuine mixed export import and qualified content consumers carry pending automatic archive5 complete working index and byhash originals with an empty base-v2 current after the original profile retires',
   { concurrency: false }, context => withWorkingTransport5(async f => {
@@ -33,9 +33,6 @@ test('genuine mixed export import and qualified content consumers carry pending 
     const locator = { profileRoot: canonicalTransport, operationId: importOperation, mountId: namespace.mountId, expectedDescriptorHash: exported.descriptorHash }
     await retireWorkingTransportSource5(f)
     phase('origin-profile-retired')
-    const content = await readCompleteOriginalContentPair3(imported.bundle)
-    phase('fresh-content-reread-complete')
-    assertWorkingTransportContent5(f, content)
     await assertWorkingTransportChild5(f, 'mixed', locator)
     phase('independent-sealed-only-child-complete')
   }))

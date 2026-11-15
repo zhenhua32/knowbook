@@ -15,13 +15,15 @@ import { decodeSyncedOperationAck } from './synced-host-operation-receipt'
 import { HOST_DETACH_OPERATION_KIND, decodeHostDetachOriginalOwned } from './synced-host-detach-original'
 import { readSyncedExchangeDenialEvidenceById } from './synced-exchange-receipt'
 import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-read'
-import { assertSyncedRemoteObservationRecords } from './synced-remote-observation-read'
+import { assertSyncedRemoteObservationRecords, readSyncedRemoteObservationWithCoverageOwned } from './synced-remote-observation-read'
 import { decodeRemoteObservationMarker, SYNCED_OBSERVATION_CHANNEL, SYNCED_RETIRED_OBSERVATION_CHANNEL } from './synced-remote-observation-codec'
 import { assertSyncedRecoveryBoundaryRecords } from './synced-recovery-boundary-read'
 import { RECOVERY_BOUNDARY_CHANNEL, recoveryBoundaryKey, recoveryEpochMarkerId } from './synced-recovery-boundary-model'
 import { assertSyncedLifecycleCoverage, readSyncedGroupLifecycles } from './synced-lifecycle-state'
 import { assertRawSyncedExchangeHistoricalMetadataOwned } from './synced-exchange-history-metadata-read'
 import { assertRawSyncedBackupV3MetadataOwned } from './synced-backup-v3-metadata-read'
+import { readRawPriorKnowledgeCoverageOwned } from './restore-knowledge-coverage-raw-read'
+import type { CoverageSqlRowReference, RawPriorCoverageRequirements } from './restore-knowledge-coverage-model'
 import { assertHistoricalEvidenceOwned, historicalEvidenceInvalid, historicalFact, historicalHash, historicalMetadataLocator,
   historicalOperationLocator, historicalRowLocator, readHistoricalRowLocator, historicalTime, readHistoricalExactRows } from './synced-history-evidence-support'
 import type { RawHistoricalEvidenceFact, RawHistoricalEvidenceLocator, RawSyncedHistoricalEvidence } from './synced-history-evidence-model'
@@ -35,6 +37,20 @@ type Member = { attempt_id: string; group_id: string; creation_id: string; revis
  * old inverse permit. Metadata/schema and the full raw workspace are separate
  * original-capsule checks owned by the caller. No removable spool is required. */
 export function assertRawSyncedHistoricalEvidenceOwned(db: Database.Database): RawSyncedHistoricalEvidence {
+  return readHistoricalEvidenceOwned(db)
+}
+
+/** Read the full legacy fact index and the exact unresolved C SQL supports
+ * separately. This does not authenticate any installed profile or prior root. */
+export function readRawSyncedHistoricalEvidenceWithCoverageOwned(db: Database.Database) {
+  assertHistoricalEvidenceOwned(db)
+  const coverage = db.pragma('user_version', { simple: true }) === 27
+    ? readSyncedRemoteObservationWithCoverageOwned(db) : readRawPriorKnowledgeCoverageOwned(db)
+  const legacyHistory = readHistoricalEvidenceOwned(db, coverage)
+  return Object.freeze({ legacyHistory, coverage })
+}
+
+function readHistoricalEvidenceOwned(db: Database.Database, coverage?: RawPriorCoverageRequirements): RawSyncedHistoricalEvidence {
   assertHistoricalEvidenceOwned(db)
   const schema = db.pragma('user_version', { simple: true })
   if (schema !== 26 && schema !== 27) return historicalEvidenceInvalid('尚无该schema的完整同步历史adapter；不会推定empty。')
@@ -42,6 +58,18 @@ export function assertRawSyncedHistoricalEvidenceOwned(db: Database.Database): R
   const {rows,metadata,headingBirthMetadata,headingTitleMetadata,originals:headingTitleOriginals}=readHistoricalMetadataWithHeadingTitle3Owned(db)
   const titleKeys=new Set([...titleMetadata,...headingBirthMetadata,...headingTitleMetadata].map(row=>row.key))
   const operations = new Map(rows.map(row => [row.client_operation_id, row])), settings = new Map(metadata.map(row => [row.key, row]))
+  const coverageLinks = new Map(coverage?.entries.map(({ supports }) => [supports.link.key[0], supports.link]))
+  const coverageAnchors = new Map(coverage?.entries.map(({ supports }) => [supports.anchor.key[0], supports.anchor]))
+  const assertCoverageRow = (actual: RawHistoricalEvidenceLocator | undefined, expected: CoverageSqlRowReference): void => {
+    if (actual?.table !== expected.table || actual.key[0] !== expected.key[0] || actual.rowHash !== expected.rowHash)
+      return historicalEvidenceInvalid('本次实际 coverage 原行或定位哈希变化。')
+  }
+  const coverageMetadata = new Set<string>()
+  for (const entry of coverage?.entries ?? []) for (const reference of [entry.supports.coverage, entry.supports.receipt]) {
+    const row = settings.get(reference.key[0])
+    assertCoverageRow(row && historicalMetadataLocator(row), reference)
+    coverageMetadata.add(reference.key[0])
+  }
   const facts: RawHistoricalEvidenceFact[] = []
   const operation = (id: string): RawHistoricalEvidenceLocator => {
     const row = operations.get(id)
@@ -55,7 +83,7 @@ export function assertRawSyncedHistoricalEvidenceOwned(db: Database.Database): R
   if (schema === 26 && selectedMetadata.length) return historicalEvidenceInvalid('schema26含不属于该版本的同步私有metadata。')
   const boundaries = schema === 27 ? assertSyncedRecoveryBoundaryRecords(db) : null
   const proofs = schema === 27 ? assertSyncedLogicalDeletionRecords(db) : null
-  if (schema === 27) assertSyncedRemoteObservationRecords(db)
+  if (schema === 27 && !coverage) assertSyncedRemoteObservationRecords(db)
   const proofByAnchor = new Map([...(proofs?.values() ?? [])].map(proof => [proof.persistence.anchorId, proof]))
   const attempts = schema === 27 ? readHistoricalExactRows<Attempt>(db, 'synced_exposure_attempts', ['id', 'request_hash', 'channel',
     'target_fingerprint', 'publication_hash', 'state', 'created_at', 'confirmed_at']) : []
@@ -80,6 +108,12 @@ export function assertRawSyncedHistoricalEvidenceOwned(db: Database.Database): R
     return historicalOperationLocator(row)
   }
   for (const row of rows) {
+    const coverageLink = coverageLinks.get(row.client_operation_id)
+    if (coverageLink) {
+      assertCoverageRow(historicalOperationLocator(row), coverageLink)
+      coverageLinks.delete(row.client_operation_id)
+      continue
+    }
     if (!historicalHash(row.request_hash) || !historicalTime(row.created_at)) return historicalEvidenceInvalid('原operation hash/时点无效。')
     const value = parseExchangeStored(row.result_json)
     const kind = value && typeof value === 'object' && !Array.isArray(value) && 'kind' in value ? value.kind : null
@@ -167,6 +201,13 @@ export function assertRawSyncedHistoricalEvidenceOwned(db: Database.Database): R
     const special = new Set<string>([SYNCED_OBSERVATION_CHANNEL, SYNCED_RETIRED_OBSERVATION_CHANNEL, LOGICAL_DELETION_CHANNEL, RECOVERY_BOUNDARY_CHANNEL])
     for (const row of attempts) {
       const actual = membersById.get(row.id) ?? []
+      const coverageAnchor = coverageAnchors.get(row.id)
+      if (coverageAnchor) {
+        if (actual.length) return historicalEvidenceInvalid('coverage anchor 不允许有真实成员。')
+        assertCoverageRow(historicalRowLocator('synced_exposure_attempts', [row.id], row), coverageAnchor)
+        coverageAnchors.delete(row.id)
+        continue
+      }
       if (special.has(row.channel)) continue // Each reserved domain was strictly paired above; no generic fallback.
       if (!actual.length || !isSyncedUuid(row.id) || !historicalHash(row.request_hash) || !historicalHash(row.target_fingerprint)
         || !historicalHash(row.publication_hash) || typeof row.channel !== 'string' || !row.channel.trim() || !historicalTime(row.created_at)
@@ -206,10 +247,12 @@ export function assertRawSyncedHistoricalEvidenceOwned(db: Database.Database): R
       const head=decodeTitle2GroupHead(parseExchangeStored(row.value))
       facts.push(historicalFact('metadata2-title-head',2,historicalMetadataLocator(row),[operation(head.operationId),setting(title2CompanionKey(head.operationId))],'index-attempt-only'))
     }
-    for (const row of selectedMetadata) if (!titleKeys.has(row.key)&&!/^sync\.webdav\.protocol5\./.test(row.key)
+    for (const row of selectedMetadata) if (!coverageMetadata.has(row.key) && !titleKeys.has(row.key)&&!/^sync\.webdav\.protocol5\./.test(row.key)
       && !/^synced\.backup\.v3\./.test(row.key) && !/^synced\.recovery\.history\.v1\./.test(row.key))
       return historicalEvidenceInvalid('未知原同步metadata family/版本；不能只hash认证。')
   }
+  if (coverageLinks.size || coverageAnchors.size) return historicalEvidenceInvalid('未读取本次全部 coverage link 和 anchor 原行。')
   facts.sort((left, right) => publicationCompare(publicationJson([left.family, left.locator.table, left.locator.key]), publicationJson([right.family, right.locator.table, right.locator.key])))
-  return Object.freeze({ version: 1, operations: rows.length, metadata: selectedMetadata.length, facts: Object.freeze(facts) })
+  const coverageCount = coverage?.entries.length ?? 0
+  return Object.freeze({ version: 1, operations: rows.length - coverageCount, metadata: selectedMetadata.length - coverageCount, facts: Object.freeze(facts) })
 }

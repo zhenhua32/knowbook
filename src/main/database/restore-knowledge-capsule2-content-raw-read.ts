@@ -1,32 +1,44 @@
 import type Database from 'better-sqlite3'
-import { capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
+import { capsuleJson } from './restore-knowledge-capsule-model'
 import { rawRestoreSqlCell } from './restore-knowledge-sql-cell'
 import { readRawRestoreSqlInventoryOwned } from './restore-knowledge-sql-inventory'
 import { assertSyncedBlockSchema, syncedBlockSchemaObjectNames } from './synced-schema'
-import { assertSyncedLifecycleSchemaMetadata, syncedLifecycleSchemaObjectNames } from './synced-lifecycle-schema-metadata'
-import { CAPSULE2_READER, CAPSULE2_RAW_MAX_ROWS, CAPSULE2_RAW_MAX_VALUE_BYTES, capsule2ApplicationColumns,
-  capsule2RawInvalid, capsule2RawSqlValueBytesExpression, capsule2TableRole, validateCapsule2RawContent, type Capsule2RawContent, type Capsule2RawSqlRow,
-  type Capsule2RawSqlTable } from './restore-knowledge-capsule2-raw-model'
-import { capsule2DerivedFtsDefinitions, capsule2DerivedFtsTables } from './restore-knowledge-capsule2-raw-model'
+import { assertSyncedLifecycleSchemaDefinition, syncedLifecycleSchemaObjectNames } from './synced-lifecycle-schema-metadata'
+import { CAPSULE2_READER, CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_RAW_MAX_ROWS, CAPSULE2_RAW_MAX_VALUE_BYTES,
+  assertCapsule2RawContentStreamHeader, capsule2ApplicationColumns,
+  capsule2DerivedFtsDefinitions, capsule2DerivedFtsTables, capsule2RawInvalid, capsule2RawSqlValueBytesExpression, capsule2TableRole,
+  hashCapsule2RawContentStream, validateCapsule2RawContent, type Capsule2Encoding, type Capsule2RawContent,
+  type Capsule2RawContentStream, type Capsule2RawSqlRow, type Capsule2RawStreamTable } from './restore-knowledge-capsule2-raw-model'
 
 const quote = (value: string): string => '"' + value.replace(/"/g, '""') + '"'
 const compare = (left: string, right: string): number => left < right ? -1 : left > right ? 1 : 0
 const fts = new Set(capsule2DerivedFtsTables())
-type Info = { name: string; columns: string[]; primaryKey: string[]; rows: bigint; bytes: bigint }
+type Info = { name: string; columns: string[]; primaryKey: string[]; rows: bigint }
 
-/** Data-only source read. The future private capsule2 owner must supply an
- * independent readonly scratch and perform all remaining semantic/historical
- * certification. No Store, publication graph, empty audit or permit is used. */
-export function readRawCapsule2ContentOwned(db: Database.Database): Capsule2RawContent {
+function* readOriginalRows(db: Database.Database, plan: Info, encoding: Capsule2Encoding): IterableIterator<Capsule2RawSqlRow> {
+  const projection = plan.columns.flatMap(name => ['typeof(' + quote(name) + ')', 'CASE WHEN typeof(' + quote(name) + ")='text' THEN CAST(" + quote(name) + ' AS BLOB) ELSE ' + quote(name) + ' END']).join(',')
+  const rows = db.prepare('SELECT _rowid_,' + projection + ' FROM ' + quote(plan.name) + ' ORDER BY _rowid_')
+    .safeIntegers(true).raw(true).iterate() as IterableIterator<unknown[]>
+  let previous: bigint | undefined, count = 0n
+  for (const row of rows) {
+    const rowId = row[0]
+    if (typeof rowId !== 'bigint' || previous !== undefined && rowId <= previous) return capsule2RawInvalid('原rowid顺序不闭合')
+    previous = rowId
+    count++
+    // Keep every occurrence, including rows with NULL composite PK.
+    yield { sourceRowId: rowId.toString(), cells: plan.columns.map((_name, index) => rawRestoreSqlCell(row[index * 2 + 1], row[index * 2 + 2], encoding)) }
+  }
+  if (count !== plan.rows) return capsule2RawInvalid('同事务完整原行计数变化')
+}
+
+function prepareRawCapsule2Content(db: Database.Database): Capsule2RawContentStream {
   if (!db.open || !db.readonly || !db.inTransaction || db.pragma('query_only', { simple: true }) !== 1
     || db.pragma('foreign_keys', { simple: true }) !== 1) return capsule2RawInvalid('要求独立readonly scratch的query-only/FKON真实owned事务')
   const version = db.pragma('user_version', { simple: true }), encoding = db.pragma('encoding', { simple: true })
   if (version !== 26 && version !== 27 || encoding !== 'UTF-8' && encoding !== 'UTF-16le' && encoding !== 'UTF-16be')
     return capsule2RawInvalid('仅准确schema26/27和已知原TEXT编码；不推empty')
-  if (db.pragma('integrity_check', { simple: true }) !== 'ok' || (db.pragma('foreign_key_check') as unknown[]).length)
-    return capsule2RawInvalid('原SQL物理/FK完整性失败')
   assertSyncedBlockSchema(db)
-  if (version === 27) assertSyncedLifecycleSchemaMetadata(db)
+  if (version === 27) assertSyncedLifecycleSchemaDefinition(db)
   // Exact sync DDL is checked above. App columns come from the single existing
   // pure DDL plus the two actual blocks migrations and Store template schema.
   const application = capsule2ApplicationColumns(), sync = new Set([...syncedBlockSchemaObjectNames(),
@@ -59,26 +71,62 @@ export function readRawCapsule2ContentOwned(db: Database.Database): Capsule2RawC
     if (typeof measured[0] !== 'bigint' || typeof measured[1] !== 'bigint' || measured[0] < 0n || measured[1] < 0n) return capsule2RawInvalid('原表预算不是准确非负INTEGER')
     totalRows += measured[0]; totalBytes += measured[1]
     if (totalRows > BigInt(CAPSULE2_RAW_MAX_ROWS) || totalBytes > BigInt(CAPSULE2_RAW_MAX_VALUE_BYTES)) return capsule2RawInvalid('完整raw source超准备预算，必须流式adapter，不能丢行')
-    plans.push({ name: table.name, columns, primaryKey, rows: measured[0], bytes: measured[1] })
+    plans.push({ name: table.name, columns, primaryKey, rows: measured[0] })
   }
+  if (db.pragma('main.integrity_check', { simple: true }) !== 'ok' || db.prepare('PRAGMA main.foreign_key_check').get() !== undefined)
+    return capsule2RawInvalid('原SQL物理/FK完整性失败')
   // Independent original SQL inventory/hash domain is left unchanged. It is
   // not a publication projection and introduces no title500 or graph pruning.
-  const inventory = readRawRestoreSqlInventoryOwned(db), tables: Capsule2RawSqlTable[] = []
-  for (const plan of plans) {
-    const projection = plan.columns.flatMap(name => ['typeof(' + quote(name) + ')', 'CASE WHEN typeof(' + quote(name) + ")='text' THEN CAST(" + quote(name) + ' AS BLOB) ELSE ' + quote(name) + ' END']).join(',')
-    const rows: Capsule2RawSqlRow[] = []
-    for (const raw of db.prepare('SELECT _rowid_,' + projection + ' FROM ' + quote(plan.name) + ' ORDER BY _rowid_').safeIntegers(true).raw(true).iterate() as IterableIterator<unknown[]>) {
-      if (typeof raw[0] !== 'bigint') return capsule2RawInvalid('原rowid证据不是INTEGER')
-      // Keep every occurrence, including rows with NULL composite PK. This
-      // sourceRowId records original ordering, never portable subject identity.
-      rows.push({ sourceRowId: raw[0].toString(), cells: plan.columns.map((_name, index) => rawRestoreSqlCell(raw[index * 2 + 1], raw[index * 2 + 2], encoding)) })
-    }
-    if (BigInt(rows.length) !== plan.rows) return capsule2RawInvalid('同事务完整原行计数变化')
-    tables.push({ name: plan.name, role: capsule2TableRole(plan.name), columns: plan.columns, primaryKey: plan.primaryKey, rows })
-  }
-  const workspace = db.prepare('SELECT workspace_scope,recovery_epoch FROM synced_workspace_state WHERE singleton=1').get() as { workspace_scope: string; recovery_epoch: string }
-  return validateCapsule2RawContent(freezeCapsuleValue({ kind: 'restore-knowledge-capsule2-raw-content', version: 1, forReader: CAPSULE2_READER,
+  const inventory = readRawRestoreSqlInventoryOwned(db)
+  const workspace = db.prepare('SELECT workspace_scope,recovery_epoch FROM synced_workspace_state WHERE singleton=1').get() as { workspace_scope: string; recovery_epoch: string } | undefined
+  if (!workspace) return capsule2RawInvalid('缺少原工作区标头')
+  return { kind: 'restore-knowledge-capsule2-raw-content', version: 1, forReader: CAPSULE2_READER,
     schemaVersion: version, encoding, workspaceScope: workspace.workspace_scope, recoveryEpoch: workspace.recovery_epoch, schemaHash: inventory.schemaHash,
-    legacyInventoryHash: inventory.inventoryHash, derivedTablesNotRepeated: ignored, tables,
-    state: 'raw-storage-only', semanticValidationComplete: false, certified: false }))
+    legacyInventoryHash: inventory.inventoryHash, derivedTablesNotRepeated: ignored,
+    tables: plans.map(plan => ({ name: plan.name, role: capsule2TableRole(plan.name), columns: plan.columns, primaryKey: plan.primaryKey,
+      rows: readOriginalRows(db, plan, encoding) })), state: 'raw-storage-only', semanticValidationComplete: false, certified: false }
+}
+
+/** Full data-only DTO for callers that need to inspect or transform raw rows. */
+export function readRawCapsule2ContentOwned(db: Database.Database): Capsule2RawContent {
+  const content = prepareRawCapsule2Content(db)
+  return validateCapsule2RawContent({ ...content, tables: content.tables.map(table => ({ ...table, rows: [...table.rows] })) })
+}
+
+/** Visit every inspected row in one owned transaction, with the same complete
+ * JSON budget as the materialized raw DTO. Each visitor must exhaust its table. */
+export function observeRawCapsule2TablesOwned(db: Database.Database,
+  visit: (table: Capsule2RawStreamTable, encoding: Capsule2Encoding) => void) {
+  const content = prepareRawCapsule2Content(db)
+  assertCapsule2RawContentStreamHeader(content)
+  const { tables, ...header } = content
+  let bytes = Buffer.byteLength(capsuleJson({ ...header, tables: [] }))
+  const charge = (value: object, separator: boolean) => {
+    bytes += Buffer.byteLength(capsuleJson(value)) + Number(separator)
+    if (bytes > CAPSULE2_RAW_MAX_JSON_BYTES) return capsule2RawInvalid('完整raw JSON超预算，不截断')
+  }
+  for (const [index, { rows, ...layout }] of tables.entries()) {
+    charge({ ...layout, rows: [] }, index > 0)
+    let exhausted = false
+    const observed = function* () {
+      let first = true
+      for (const row of rows) {
+        charge(row, !first)
+        first = false
+        yield row
+      }
+      exhausted = true
+    }()
+    try {
+      visit({ ...layout, rows: observed }, content.encoding)
+      if (!exhausted) return capsule2RawInvalid('必须读完原表：' + layout.name)
+    } finally { observed.return(undefined) }
+  }
+  return header
+}
+
+/** Exact digest for observers that need the complete scan but consume no rows. */
+export function readRawCapsule2ObserverContentOwned(db: Database.Database) {
+  const content = prepareRawCapsule2Content(db)
+  return { schemaVersion: content.schemaVersion, rawContentHash: hashCapsule2RawContentStream('knowbook.capsule2.observer-content.v1', content) }
 }

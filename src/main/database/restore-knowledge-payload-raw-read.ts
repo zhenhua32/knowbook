@@ -1,5 +1,4 @@
 import type Database from 'better-sqlite3'
-import { createHash } from 'node:crypto'
 import { TextDecoder } from 'node:util'
 import { parseStrictJson } from '../../shared/strictJson'
 import { collectDatabaseViewFieldIds, parseDatabaseViewPayload } from '../../shared/databaseViewBlock'
@@ -19,7 +18,7 @@ import type { SyncedHostHistoryBranchRow } from './synced-host-history-branch'
 import { readRawSyncedGroupSnapshotsOwned } from './synced-blocks-raw-read'
 import { assertRawSyncedHistoricalEvidenceOwned } from './synced-operation-history-read'
 import { readHistoricalRowLocator } from './synced-history-evidence-support'
-import { readRawRestoreSqlInventoryOwned, type RawSqlInventory } from './restore-knowledge-sql-inventory'
+import { hashRestoreSqlRowSet, readRawRestoreSqlInventoryOwned, type RawSqlInventory } from './restore-knowledge-sql-inventory'
 import { readRawCapsule2AssetReferenceSourceOwned } from './restore-knowledge-capsule2-assets-read'
 import { CAPSULE2_READER, CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-model'
 import { COVERAGE_ANCHOR_CHANNEL } from './restore-knowledge-coverage-model'
@@ -55,15 +54,21 @@ function sourceOnly(value: KnowledgeOriginalRow): KnowledgeRowRef {
  * Historical locator hashes keep their existing separate domain below. */
 function originals(db: Database.Database, inventory: RawSqlInventory, metadataKeys: ReadonlySet<string>) {
   const encoding = inventory.encoding, decoder = new TextDecoder(encoding.toLowerCase(), { fatal: true, ignoreBOM: true })
-  const decodeText = (bytes: Buffer): string => {
-    let result: string
-    try { result = decoder.decode(bytes) } catch { return capsuleInvalid('K原TEXT编码无效') }
-    const encoded = Buffer.from(result, encoding === 'UTF-8' ? 'utf8' : 'utf16le')
-    if (encoding === 'UTF-16be') encoded.swap16()
-    if (!encoded.equals(bytes)) return capsuleInvalid('K原TEXT不能无损回编码')
-    return result
+  const tables: KnowledgeOriginalTable[] = []
+  const byTable = new Map<string, KnowledgeOriginalTable>(), byPrimary = new Map<string, KnowledgeOriginalRow>()
+  const databaseViewContents = new Map<KnowledgeOriginalRow, KnowledgeSqlCell>()
+  function decode(cell: KnowledgeSqlCell): unknown {
+    switch (cell[0]) {
+      case 'null': return null
+      case 'integer': {
+        const value = BigInt(cell[1]), number = Number(value)
+        return Number.isSafeInteger(number) ? number : value
+      }
+      case 'real-ieee754-le': return Buffer.from(cell[1], 'hex').readDoubleLE()
+      case 'text': return decoder.decode(Buffer.from(cell[1], 'base64'))
+      case 'blob': return Buffer.from(cell[1], 'base64')
+    }
   }
-  const tables: KnowledgeOriginalTable[] = [], byTable = new Map<string, RecordRow[]>(), byPrimary = new Map<string, RecordRow>()
   const completeTables = new Set(['block_identities', 'document_block_routes', 'backup_restore_identities',
     'document_history', 'document_trash', 'document_block_moves', 'document_templates', 'app_settings'])
   const projectedColumns: Record<string, readonly string[]> = {
@@ -85,56 +90,101 @@ function originals(db: Database.Database, inventory: RawSqlInventory, metadataKe
     if (publicationHash(publicationJson(columns)) !== expected.columnsHash) return capsuleInvalid('K原表列清单不一致')
     const selection = columns.flatMap(column => [`typeof(${quote(column)})`, `CASE WHEN typeof(${quote(column)})='text' THEN CAST(${quote(column)} AS BLOB) ELSE ${quote(column)} END`]).join(',')
     const statement = db.prepare('SELECT ' + selection + ' FROM ' + quote(table)).safeIntegers(true).raw(true)
-    const records: Array<{ cells: KnowledgeSqlCell[]; value: Record<string, unknown>; storageHash: string }> = []
-    for (const row of statement.iterate() as IterableIterator<unknown[]>) {
-      const value: Record<string, unknown> = {}
-      const cells = columns.map((column, index): KnowledgeSqlCell => {
-        const kind = row[index * 2], actual = row[index * 2 + 1]
-        const cell = rawRestoreSqlCell(kind, actual, encoding)
-        if (kind === 'null' && actual === null) { value[column] = null; return cell }
-        if (kind === 'integer' && typeof actual === 'bigint') {
-          value[column] = actual >= BigInt(Number.MIN_SAFE_INTEGER) && actual <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(actual) : actual
-          return cell
+    const records: Array<{ cells: KnowledgeSqlCell[]; databaseViewContent?: KnowledgeSqlCell;
+      projection?: { order: string; key: KnowledgeSqlCell; rowHash: string } }> = []
+    const compact = projectedColumns[table] && primaryKey.length === 1 && primaryKey[0] === columns[0]
+    const exposedIndices = exposedColumns.map(column => columns.indexOf(column))
+    const settings = table === 'app_settings', keyIndex = settings ? columns.indexOf('key') : -1
+    const typeIndex = table === 'blocks' || table === 'synced_group_blocks' ? columns.indexOf('type') : -1
+    const contentIndex = typeIndex >= 0 ? columns.indexOf('content') : -1
+    // Retain the least canonical invalid key so sorted key validation keeps
+    // its existing rejection order after the complete row-set check.
+    let invalidKeySort: string | undefined
+    let invalidKeyRow: typeof records[number] | undefined
+    function* originalCells(): IterableIterator<KnowledgeSqlCell[]> {
+      for (const row of statement.iterate() as IterableIterator<unknown[]>) {
+        const cells = columns.map((_, index) => rawRestoreSqlCell(row[index * 2], row[index * 2 + 1], encoding))
+        // The digest still reads and losslessly validates every cell, including
+        // values omitted from the K disclosure. Keep only the typed preimage.
+        const type = cells[typeIndex]
+        const databaseViewContent = type?.[0] === 'text' && decode(type) === 'database-view' ? cells[contentIndex] : undefined
+        if (compact) {
+          // The first canonical cell orders each distinct PK exactly as the
+          // full row JSON. Equal keys fail the original duplicate check.
+          const key = cells[0]
+          records.push({ cells: exposedIndices.map(index => cells[index]), databaseViewContent,
+            projection: { order: publicationJson(key), key, rowHash: knowledgeHash('knowbook.knowledge.sql-row.v1', { encoding, table, columns, cells }) } })
+        } else if (!settings) {
+          records.push({ cells, databaseViewContent })
+        } else {
+          const key = cells[keyIndex]
+          if (key?.[0] === 'text') {
+            if (metadataKeys.has(text(decode(key)))) records.push({ cells })
+          } else {
+            const sort = publicationJson(cells)
+            if (invalidKeySort === undefined || publicationCompare(sort, invalidKeySort) < 0) {
+              invalidKeySort = sort
+              invalidKeyRow = { cells }
+            }
+          }
         }
-        if (kind === 'real' && typeof actual === 'number') {
-          value[column] = actual; return cell
-        }
-        if ((kind === 'text' || kind === 'blob') && actual instanceof Uint8Array) {
-          const bytes = Buffer.from(actual); value[column] = kind === 'text' ? decodeText(bytes) : bytes
-          return cell
-        }
-        return capsuleInvalid('K原SQL storage class不闭合')
-      })
-      records.push({ cells, value, storageHash: publicationHash(publicationJson(cells)) })
+        yield cells
+      }
     }
-    const originalSet = createHash('sha256').update('knowbook.raw-sql-row-set.v1\0')
-    for (const hash of records.map(item => item.storageHash).sort(publicationCompare)) originalSet.update(hash)
-    if (records.length !== expected.rows || originalSet.digest('hex') !== expected.rowSetHash) return capsuleInvalid('K完整原行与同事务SQL清单不一致')
-    records.sort((a, b) => publicationCompare(publicationJson(a.cells), publicationJson(b.cells)))
-    const occurrences = new Map<string, number>(), captured: KnowledgeOriginalRow[] = [], readRows: RecordRow[] = []
+    const actual = hashRestoreSqlRowSet(originalCells())
+    if (actual.rows !== expected.rows || actual.rowSetHash !== expected.rowSetHash) return capsuleInvalid('K完整原行与同事务SQL清单不一致')
+    if (invalidKeyRow) records.push(invalidKeyRow)
+    records.sort((a, b) => publicationCompare(a.projection?.order ?? publicationJson(a.cells), b.projection?.order ?? publicationJson(b.cells)))
+    const occurrences = new Map<string, number>(), captured: KnowledgeOriginalRow[] = []
     for (const record of records) {
-      if (table === 'app_settings' && !metadataKeys.has(text(record.value.key))) continue
-      const key = primaryKey.length ? primaryKey.map(column => record.cells[columns.indexOf(column)]) : record.cells
-      const rowHash = knowledgeHash('knowbook.knowledge.sql-row.v1', { encoding, table, columns, cells: record.cells })
+      if (settings && record.cells[keyIndex]?.[0] !== 'text') return capsuleInvalid('K原SQL字段不是TEXT')
+      const key = record.projection ? [record.projection.key] : primaryKey.length ? primaryKey.map(column => record.cells[columns.indexOf(column)]) : record.cells
+      const rowHash = record.projection?.rowHash ?? knowledgeHash('knowbook.knowledge.sql-row.v1', { encoding, table, columns, cells: record.cells })
       const occurrence = occurrences.get(rowHash) ?? 0; occurrences.set(rowHash, occurrence + 1)
-      const source: KnowledgeOriginalRow = { table, key, occurrence, rowHash, cells: exposedColumns.map(column => record.cells[columns.indexOf(column)]) }
-      captured.push(source); const entry = { value: record.value, source }; readRows.push(entry)
+      const source: KnowledgeOriginalRow = { table, key, occurrence, rowHash,
+        cells: record.projection || !projectedColumns[table] ? record.cells : exposedIndices.map(index => record.cells[index]) }
+      captured.push(source)
+      if (record.databaseViewContent) databaseViewContents.set(source, record.databaseViewContent)
       if (primaryKey.length) {
         const locator = publicationJson([table, key])
         if (byPrimary.has(locator)) return capsuleInvalid('K原主键重复')
-        byPrimary.set(locator, entry)
+        byPrimary.set(locator, source)
       }
     }
-    tables.push({ table, columns: exposedColumns, primaryKey, fullColumnsHash: expected.columnsHash,
-      disclosure: projectedColumns[table] ? 'identity-projection' : 'complete-evidence-rows', rows: captured }); byTable.set(table, readRows)
+    const original: KnowledgeOriginalTable = { table, columns: exposedColumns, primaryKey, fullColumnsHash: expected.columnsHash,
+      disclosure: projectedColumns[table] ? 'identity-projection' : 'complete-evidence-rows', rows: captured }
+    tables.push(original); byTable.set(table, original)
   }
   const parameterCell = (value: string | number): KnowledgeSqlCell => {
     if (typeof value === 'number') return Number.isSafeInteger(value) ? ['integer', String(value)] : capsuleInvalid('K定位整数非精确')
     const bytes = Buffer.from(value, encoding === 'UTF-8' ? 'utf8' : 'utf16le'); if (encoding === 'UTF-16be') bytes.swap16()
     return ['text', bytes.toString('base64')]
   }
-  const lookup = (table: string, key: readonly (string | number)[]): RecordRow => byPrimary.get(publicationJson([table, key.map(parameterCell)])) ?? capsuleInvalid('K原支持完整行缺失：' + table)
-  return { tables, rows: (table: string) => byTable.get(table) ?? [], lookup }
+  const lookup = (table: string, key: readonly (string | number)[]): KnowledgeOriginalRow =>
+    byPrimary.get(publicationJson([table, key.map(parameterCell)])) ?? capsuleInvalid('K原支持完整行缺失：' + table)
+  function read(table: KnowledgeOriginalTable, source: KnowledgeOriginalRow): RecordRow {
+    const value: Record<string, unknown> = {}
+    for (const [index, column] of table.columns.entries()) value[column] = decode(source.cells[index])
+    const content = databaseViewContents.get(source)
+    if (content) { value.type = 'database-view'; value.content = decode(content) }
+    return { source, value }
+  }
+  function* rows(name: string, match?: readonly [column: string, value: unknown]): IterableIterator<RecordRow, void> {
+    const table = byTable.get(name)
+    if (!table) return
+    const index = match ? table.columns.indexOf(match[0]) : -1
+    const matchText = typeof match?.[1] === 'string' ? parameterCell(match[1])[1] : undefined
+    for (const source of table.rows) {
+      if (match) {
+        const cell = source.cells[index]
+        if (matchText !== undefined ? cell?.[0] !== 'text' || cell[1] !== matchText
+          : (cell === undefined ? undefined : decode(cell)) !== match[1]) continue
+      }
+      yield read(table, source)
+    }
+  }
+  const readRow = (name: string, key: readonly (string | number)[]): RecordRow => read(byTable.get(name)!, lookup(name, key))
+  return { tables, rows, lookup, read: readRow }
 }
 
 /** Fixed private capsule owner invokes this only after rebuilding its complete
@@ -169,18 +219,19 @@ function readKnowledgeProjectionOwned(db: Database.Database, schemaVersion: 26 |
   // Non-content literals yield no reference edges, while their complete original
   // bytes remain in originals; this is not a certified-empty inference.
   const historyJson = (source: string): unknown => JSON.parse(source) as unknown
-  const reference = (table: string, key: readonly (string | number)[]): KnowledgeRowRef => sourceOnly(original.lookup(table, key).source)
+  const reference = (table: string, key: readonly (string | number)[]): KnowledgeRowRef => sourceOnly(original.lookup(table, key))
   const material: KnowledgeHistoricalMaterial[] = facts.map(fact => {
     for (const locator of [fact.locator, ...fact.supports]) if (readHistoricalRowLocator(db, locator.table, locator.key).rowHash !== locator.rowHash)
       return capsuleInvalid('K历史原locator未闭合')
     return { fact, primary: reference(fact.locator.table, fact.locator.key), supports: fact.supports.map(locator => reference(locator.table, locator.key)) }
   })
   const groups: KnowledgeGroup[] = [], groupById = new Map<string, KnowledgeGroup>()
-  const groupRows = original.rows('synced_groups'), life = schemaVersion === 27 ? readSyncedGroupLifecycles(db, groupRows.map(item => text(item.value.id))) : new Map()
-  for (const row of groupRows) {
+  const life = schemaVersion === 27
+    ? readSyncedGroupLifecycles(db, Array.from(original.rows('synced_groups'), item => text(item.value.id))) : new Map()
+  for (const row of original.rows('synced_groups')) {
     const value = row.value, incarnation = validateObservedIncarnation({ groupId: value.id, creationId: value.creation_id,
       createdAt: value.created_at, origin: json(text(value.origin_json)) }), lifecycle = life.get(incarnation.groupId) ?? null
-    const retiredRow = original.rows('synced_group_retirements').find(item => item.value.group_id === incarnation.groupId)
+    const retiredRow = original.rows('synced_group_retirements', ['group_id', incarnation.groupId]).next().value
     const retirement = retiredRow ? { wire: validateSyncedGroupWire(json(text(retiredRow.value.wire_json))),
       semanticHash: text(retiredRow.value.semantic_hash), retiredAt: text(retiredRow.value.retired_at),
       createHistoryId: text(retiredRow.value.create_history_id), source: sourceOnly(retiredRow.source) } : null
@@ -191,10 +242,10 @@ function readKnowledgeProjectionOwned(db: Database.Database, schemaVersion: 26 |
       createJournalSource: lifecycle?.createHistoryId ? reference('synced_host_history', [lifecycle.createHistoryId]) : null }
     groups.push(group); groupById.set(incarnation.groupId, group)
   }
-  const exposures: KnowledgeExposure[] = original.rows('synced_exposure_attempts').map(row => {
+  const exposures: KnowledgeExposure[] = Array.from(original.rows('synced_exposure_attempts'), row => {
     const item = row.value, channel = text(item.channel), state = item.state
     if (state !== 'possible' && state !== 'confirmed') return capsuleInvalid('K曝光状态未知')
-    const members = original.rows('synced_group_exposure_members').filter(member => member.value.attempt_id === item.id).map(member => {
+    const members = Array.from(original.rows('synced_group_exposure_members', ['attempt_id', item.id]), member => {
       const group = groupById.get(text(member.value.group_id)) ?? capsuleInvalid('K曝光失去完整immutable tuple')
       if (group.tuple.creationId !== member.value.creation_id) return capsuleInvalid('K曝光原incarnation不匹配')
       return { tuple: group.tuple, comparisonKey: group.comparisonKey, revision: text(member.value.revision),
@@ -206,8 +257,10 @@ function readKnowledgeProjectionOwned(db: Database.Database, schemaVersion: 26 |
       publicationHash: text(item.publication_hash), state, createdAt: text(item.created_at), confirmedAt: item.confirmed_at === null ? null : text(item.confirmed_at) },
       kind, members, source: sourceOnly(row.source) }
   })
-  const observations = original.rows('synced_operations').filter(row => text(row.value.client_operation_id).startsWith(SYNCED_OBSERVATION_PREFIX))
-    .map(row => ({ marker: decodeRemoteObservationMarker(row.value as unknown as Parameters<typeof decodeRemoteObservationMarker>[0]), source: sourceOnly(row.source) }))
+  const observations: Array<CapsuleKnowledgePayload['observations'][number]> = []
+  for (const row of original.rows('synced_operations')) if (text(row.value.client_operation_id).startsWith(SYNCED_OBSERVATION_PREFIX)) {
+    observations.push({ marker: decodeRemoteObservationMarker(row.value as unknown as Parameters<typeof decodeRemoteObservationMarker>[0]), source: sourceOnly(row.source) })
+  }
   const factByPrimary = new Map(material.map(item => [publicationJson([item.fact.locator.table, item.fact.locator.key]), item]))
   const mandatory = (starts: readonly [string, readonly (string | number)[]][]): KnowledgeRowRef[] => {
     const pending = [...starts], found = new Map<string, KnowledgeRowRef>()
@@ -231,7 +284,7 @@ function readKnowledgeProjectionOwned(db: Database.Database, schemaVersion: 26 |
     const starts: Array<[string, readonly (string | number)[]]> = [['synced_operations', [proof.persistence.anchorId]], ['synced_operations', [proof.application.operationId]]]
     for (const effect of proof.identities) starts.push(['block_identities', [effect.before.id]])
     if (before.kind === 'synced-group') starts.push(['synced_groups', [before.id]], ['synced_group_lifecycle', [before.id]])
-    for (const pin of original.rows('synced_group_pins')) if (pin.value.pin_id === proof.persistence.anchorId)
+    for (const pin of original.rows('synced_group_pins', ['pin_id', proof.persistence.anchorId]))
       starts.push(['synced_group_pins', [text(pin.value.group_id), text(pin.value.kind), text(pin.value.pin_id)]])
     return { proof, comparisonKey, source: reference('synced_operations', [proof.persistence.anchorId]),
       receipt: evidence.receipt, job: evidence.job, mandatoryMaterial: mandatory(starts) }
@@ -278,7 +331,8 @@ function readKnowledgeProjectionOwned(db: Database.Database, schemaVersion: 26 |
   for (const row of original.rows('documents')) occupy('document', row.value.id, 'physical', sourceOnly(row.source), null, null, text(row.value.created_at))
   for (const row of original.rows('blocks')) occupy('block', row.value.id, 'physical', sourceOnly(row.source), 'document', text(row.value.document_id), text(row.value.created_at))
   for (const row of original.rows('synced_group_blocks')) occupy('block', row.value.id, 'physical', sourceOnly(row.source), 'group', text(row.value.group_id), text(row.value.created_at))
-  for (const row of [...original.rows('blocks'), ...original.rows('synced_group_blocks')]) databaseReference(row.value.type, row.value.content, sourceOnly(row.source))
+  for (const table of ['blocks', 'synced_group_blocks'])
+    for (const row of original.rows(table)) databaseReference(row.value.type, row.value.content, sourceOnly(row.source))
   for (const group of groups) {
     occupy('group', group.tuple.groupId, 'physical', group.source, null, null, group.tuple.createdAt, group.comparisonKey)
     occupy('document', group.tuple.origin.documentId, 'history', group.source)
@@ -296,7 +350,7 @@ function readKnowledgeProjectionOwned(db: Database.Database, schemaVersion: 26 |
     occupy('instance', guard.instanceId, 'history', source); occupy('document', guard.hostDocumentId, 'history', source)
   }
   for (const row of original.rows('synced_instances')) {
-    const block = original.lookup('blocks', [text(row.value.instance_id)])
+    const block = original.read('blocks', [text(row.value.instance_id)])
     occupy('instance', row.value.instance_id, 'physical', sourceOnly(row.source), 'document', text(row.value.host_document_id), text(block.value.created_at))
     occupy('document', row.value.host_document_id, 'physical', sourceOnly(row.source))
   }
@@ -350,9 +404,9 @@ function readKnowledgeProjectionOwned(db: Database.Database, schemaVersion: 26 |
     }
   }
   for (const row of original.rows('document_block_routes')) occupy('block', row.value.block_id, 'route', sourceOnly(row.source))
-  for (const row of [...original.rows('synced_host_history_documents'), ...original.rows('synced_host_history_state')])
-    occupy('document', row.value.document_id, 'history', sourceOnly(row.source))
-  const restoreLineage = original.rows('backup_restore_identities').map((row): CapsuleKnowledgePayload['restoreLineage'][number] => {
+  for (const table of ['synced_host_history_documents', 'synced_host_history_state'])
+    for (const row of original.rows(table)) occupy('document', row.value.document_id, 'history', sourceOnly(row.source))
+  const restoreLineage = Array.from(original.rows('backup_restore_identities'), (row): CapsuleKnowledgePayload['restoreLineage'][number] => {
     const kind = row.value.kind, state = row.value.state
     if (kind !== 'block' && kind !== 'document' && kind !== 'database' && kind !== 'column' && kind !== 'view' && kind !== 'entity') return capsuleInvalid('K restore identity kind尚无adapter')
     if (state !== 'live' && state !== 'missing') return capsuleInvalid('K restore identity state未知')
@@ -360,7 +414,7 @@ function readKnowledgeProjectionOwned(db: Database.Database, schemaVersion: 26 |
     return { lineage: text(row.value.lineage), kind, sourceDatabaseId: text(row.value.source_database_id),
       sourceId: text(row.value.source_id), state, targetId: text(row.value.target_id), source }
   })
-  const hostJournals = original.rows('synced_host_history').map(row => {
+  const hostJournals = Array.from(original.rows('synced_host_history'), row => {
     const value = row.value as unknown as SyncedHostHistoryBranchRow, source = sourceOnly(row.source), kind = hostJournalKind(value)
     const decoded = kind === 'bare-create' ? { before: validateHostSides(json(value.before_json)), after: validateHostSides(json(value.after_json)) } : decodeHostJournal(value)
     for (const side of [...decoded.before, ...decoded.after]) { occupy('document', side.documentId, 'history', source); content(side.content, source, side.documentId, 'history') }
@@ -378,9 +432,9 @@ function readKnowledgeProjectionOwned(db: Database.Database, schemaVersion: 26 |
     const typedDecoded = kind === 'bare-create' ? { kind: 'bare-create' as const, before: decoded.before, after: decoded.after }
       : { kind: 'finite' as const, value: decodeHostJournal(value) }
     return { historyToken: value.id, kind, documentIds, source, decoded: typedDecoded,
-      mappings: original.rows('synced_host_history_documents').filter(mapping => mapping.value.history_id === value.id).map(mapping => sourceOnly(mapping.source)) }
+      mappings: Array.from(original.rows('synced_host_history_documents', ['history_id', value.id]), mapping => sourceOnly(mapping.source)) }
   })
-  const groupHistories = original.rows('synced_group_history').map(row => {
+  const groupHistories = Array.from(original.rows('synced_group_history'), row => {
     const before = validateSyncedGroupWire(json(text(row.value.before_json))), after = validateSyncedGroupWire(json(text(row.value.after_json))), source = sourceOnly(row.source)
     for (const wire of [before, after]) for (const block of wire.blocks) { occupy('block', block.id, 'history', source, 'group', wire.id, block.createdAt); databaseReference(block.type, block.content, source) }
     capturedBindings(before.bindings, source, 'group-history'); capturedBindings(after.bindings, source, 'group-history')
@@ -405,7 +459,7 @@ function readKnowledgeProjectionOwned(db: Database.Database, schemaVersion: 26 |
       historyId: row.id, groupId: group.groupId, position: row.position, before, after, source })
   }
   for (const item of material) if (item.fact.family === 'exchange-history-row') {
-    const source = original.lookup('app_settings', item.fact.locator.key), envelope = json(text(source.value.value))
+    const source = original.read('app_settings', item.fact.locator.key), envelope = json(text(source.value.value))
     if (!object(envelope) || !object(envelope.row)) return capsuleInvalid('K已认证exchange archive原shape变化')
     const row = envelope.row, before = validateSyncedGroupWire(json(text(row.before_json))), after = validateSyncedGroupWire(json(text(row.after_json)))
     for (const wire of [before, after]) for (const block of wire.blocks) { occupy('block', block.id, 'history', item.primary, 'group', wire.id, block.createdAt); databaseReference(block.type, block.content, item.primary) }
@@ -418,12 +472,12 @@ function readKnowledgeProjectionOwned(db: Database.Database, schemaVersion: 26 |
   const recoveryBoundaries = boundaries.map(boundary => ({ boundary, source: reference('app_settings', ['synced.recovery.history.v1.' + boundary.operationId]),
     markerSource: reference('synced_operations', ['synced:recovery-epoch:v1:' + boundary.operationId]),
     anchorSource: reference('synced_exposure_attempts', ['synced:recovery-epoch:v1:' + boundary.operationId]) }))
-  const instances = original.rows('synced_instances').map(row => ({ instanceId: text(row.value.instance_id), groupId: text(row.value.group_id),
+  const instances = Array.from(original.rows('synced_instances'), row => ({ instanceId: text(row.value.instance_id), groupId: text(row.value.group_id),
     hostDocumentId: text(row.value.host_document_id), bindingVersion: text(row.value.binding_version),
     parentBlockId: row.value.parent_block_id === null ? null : text(row.value.parent_block_id), depth: integer(row.value.depth), source: sourceOnly(row.source) }))
-  const hostStates = original.rows('synced_host_history_state').map(row => ({ documentId: text(row.value.document_id),
+  const hostStates = Array.from(original.rows('synced_host_history_state'), row => ({ documentId: text(row.value.document_id),
     cursor: text(row.value.cursor), position: integer(row.value.position), source: sourceOnly(row.source) }))
-  const pins = original.rows('synced_group_pins').map(row => ({ groupId: text(row.value.group_id), kind: text(row.value.kind),
+  const pins = Array.from(original.rows('synced_group_pins'), row => ({ groupId: text(row.value.group_id), kind: text(row.value.kind),
     pinId: text(row.value.pin_id), createdAt: text(row.value.created_at), source: sourceOnly(row.source) }))
   return freezeCapsuleValue({ originals: original.tables, groups, exposures, observations, denials, occupancy, identities, instances, hostStates, pins, bindings, databaseViewReferences, hostJournals, groupHistories, archivedGroupHistories, exchangeCuts,
     recoveryBoundaries, restoreLineage, historicalMaterial: material })
@@ -441,7 +495,7 @@ export function readRawCapsule2SourceKnowledgeOwned(db: Database.Database) {
   const metadataKeys = new Set(references.filter(row => row.table === 'app_settings').map(row => text(row.key[0])))
   const original = originals(db, inventory, metadataKeys)
   const projection = readKnowledgeProjectionOwned(db, content.schemaVersion, original, source.total.legacyFacts)
-  const reference = (table: string, key: readonly (string | number)[]) => sourceOnly(original.lookup(table, key).source)
+  const reference = (table: string, key: readonly (string | number)[]) => sourceOnly(original.lookup(table, key))
   const coverageMaterial = source.total.coverageSyntaxFacts.map(fact => ({ fact,
     primary: reference(fact.locator.table, fact.locator.key), supports: fact.supports.map(row => reference(row.table, row.key)) }))
   const coverageAnchors = projection.exposures.filter(row => row.attempt.channel === COVERAGE_ANCHOR_CHANNEL)

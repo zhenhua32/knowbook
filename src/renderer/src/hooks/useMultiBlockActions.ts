@@ -10,6 +10,7 @@ import { materializeDraftFragment } from '../utils/draftTreeFragment'
 import { reparentOrphanedBlocksAfterRangeDeletion } from '../utils/draftTreePlacement'
 import { planBlockAction } from '../utils/documentBlockActions'
 import { validColumnStructure } from '@shared/columnStructure'
+import { changesCanonicalHostReferences, deleteCanonicalHostBlocks, openCanonicalHostEdit } from '../features/synced-blocks/inlineBridge'
 import {
   getBlockSubtreeEndIndex,
   getNextSiblingSubtreeStartIndex,
@@ -60,6 +61,8 @@ type UseMultiBlockActionsParams = {
   ) => DocumentBlockDraft
   clearBlockSelection: () => void
   draftBlocks: DocumentBlockDraft[]
+  selectedDocumentId?: string | null
+  getDraftBlocks?: () => DocumentBlockDraft[]
   endBlockDrag: () => void
   getMultiBlockInteractionGuard: (range: BlockSelectionRange) => string | null
   getMultiBlockOperationRange: (range: BlockSelectionRange) => BlockSelectionRange
@@ -83,6 +86,8 @@ export function useMultiBlockActions({
   buildBlockTypePatch,
   clearBlockSelection,
   draftBlocks,
+  selectedDocumentId,
+  getDraftBlocks,
   endBlockDrag,
   getMultiBlockInteractionGuard,
   getMultiBlockOperationRange,
@@ -167,8 +172,6 @@ export function useMultiBlockActions({
       return
     }
 
-    pushToHistory(draftBlocks)
-
     const operationRange = visibleSiblingSlice.operationRange
     const targetIndex = delta === -1 ? siblingIndex : getBlockSubtreeEndIndex(draftBlocks, siblingIndex)
     const nextBlocks = moveContiguousBlockRange(draftBlocks, operationRange, targetIndex)
@@ -184,20 +187,27 @@ export function useMultiBlockActions({
       insertionIndex
     ) ?? newEndIndex
 
+    const restoreSelection = () => {
+      setSelectedBlockRange({ start: newStartIndex, end: newEndIndex })
+      setSelectionAnchorBlockId(getNormalizedBlockId(nextBlocks[newStartIndex]) ?? null)
+      setActiveBlockIndex(nextFocusIndex)
+      setPendingFocusBlockIndex(nextFocusIndex)
+      endBlockDrag()
+    }
+    if (draftBlocks.slice(operationRange.start, operationRange.end + 1).some(block => block.type === 'synced-block')) {
+      void openCanonicalHostEdit(draftBlocks, nextBlocks, { opener: document.activeElement instanceof HTMLElement ? document.activeElement : null,
+        shouldContinue: () => getDraftBlocks?.() === draftBlocks, onAccepted: restoreSelection, preserveSameParentDraft: true })
+      return
+    }
+    pushToHistory(draftBlocks)
     setDraftBlocks(nextBlocks)
-    setSelectedBlockRange({
-      start: newStartIndex,
-      end: newEndIndex
-    })
-    setSelectionAnchorBlockId(getNormalizedBlockId(nextBlocks[newStartIndex]) ?? null)
-    setActiveBlockIndex(nextFocusIndex)
-    setPendingFocusBlockIndex(nextFocusIndex)
-    endBlockDrag()
+    restoreSelection()
   }, [
     activeBlockIndex,
     draftBlocks,
     endBlockDrag,
     getBlockSubtreeEndIndex,
+    getDraftBlocks,
     getMultiBlockInteractionGuard,
     getNextSiblingSubtreeStartIndex,
     getPreviousSiblingSubtreeStartIndex,
@@ -293,30 +303,26 @@ export function useMultiBlockActions({
     ui
   ])
 
-  const removeSelectedBlockRange = useCallback((range: BlockSelectionRange) => {
-    const lastRemovedBlock = draftBlocks[range.end]
-    if (!lastRemovedBlock) {
-      return false
-    }
+  const removeSelectedBlockRange = useCallback((range: BlockSelectionRange, onRemoved?: () => void) => {
+    if (!draftBlocks[range.end]) return false
 
     const modifiedBlocks = reparentOrphanedBlocksAfterRangeDeletion(draftBlocks, range.start, range.end)
     if (!validColumnStructure(modifiedBlocks, { checkParentIds: true })) { notify(ui.invalidVisibleTreeSlice, 'warning'); return false }
+    const settleSelection = (index: number | null) => {
+      clearBlockSelection(); setActiveBlockIndex(index); setActiveCursorPosition(0); setPendingFocusBlockIndex(index); endBlockDrag()
+      onRemoved?.()
+    }
+    if (changesCanonicalHostReferences(draftBlocks, modifiedBlocks)) {
+      return deleteCanonicalHostBlocks(draftBlocks, modifiedBlocks, range.start, () => getDraftBlocks?.() === draftBlocks, settleSelection)
+    }
     pushToHistory(draftBlocks)
-
-    const remainingCount = modifiedBlocks.length
-    const nextIndex = remainingCount > 0 ? Math.min(range.start, remainingCount - 1) : null
-
-    clearBlockSelection()
     setDraftBlocks(modifiedBlocks)
-    setActiveBlockIndex(nextIndex)
-    setActiveCursorPosition(0)
-    setPendingFocusBlockIndex(nextIndex)
-    endBlockDrag()
-    return true
+    settleSelection(modifiedBlocks.length ? Math.min(range.start, modifiedBlocks.length - 1) : null)
   }, [
     clearBlockSelection,
     draftBlocks,
     endBlockDrag,
+    getDraftBlocks,
     notify,
     pushToHistory,
     setActiveBlockIndex,
@@ -326,23 +332,32 @@ export function useMultiBlockActions({
     ui.invalidVisibleTreeSlice
   ])
 
+  const copyRange = useCallback(async (range: BlockSelectionRange, plain = false, onCut?: () => void) => {
+    if (!draftBlocks.slice(range.start, range.end + 1).some(block => block.type === 'synced-block')) {
+      await window.knowbook.writeClipboardText(plain ? serializeDraftBlockRangeAsPlainText(draftBlocks, range) : serializeDraftBlockRange(draftBlocks, range))
+      if (onCut) removeSelectedBlockRange(range, onCut)
+      return true
+    }
+    if (!selectedDocumentId || !getDraftBlocks) throw new Error(ui.copyFailed)
+    const { copyOrCutSyncedBlocks } = await import('../features/synced-blocks/blockClipboard')
+    return copyOrCutSyncedBlocks({ blocks: draftBlocks, documentId: selectedDocumentId, getDraftBlocks }, range, plain, onCut)
+  }, [draftBlocks, getDraftBlocks, removeSelectedBlockRange, selectedDocumentId, serializeDraftBlockRangeAsPlainText, ui.copyFailed])
+
   const copySelectedBlocks = useCallback(async () => {
     if (!selectedBlockRange) {
       return
     }
 
     const range = getMultiBlockOperationRange(selectedBlockRange)
-    const text = serializeDraftBlockRange(draftBlocks, range)
     const count = range.end - range.start + 1
 
     try {
-      await window.knowbook.writeClipboardText(text)
-      notify(ui.copiedBlocks(count))
+      if (await copyRange(range)) notify(ui.copiedBlocks(count))
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.copyFailed
       notify(message, 'error')
     }
-  }, [draftBlocks, getMultiBlockOperationRange, selectedBlockRange, notify, ui])
+  }, [copyRange, getMultiBlockOperationRange, selectedBlockRange, notify, ui])
 
   const copySelectedBlocksAsPlainText = useCallback(async () => {
     if (!selectedBlockRange) {
@@ -350,17 +365,15 @@ export function useMultiBlockActions({
     }
 
     const range = getMultiBlockOperationRange(selectedBlockRange)
-    const text = serializeDraftBlockRangeAsPlainText(draftBlocks, range)
     const count = range.end - range.start + 1
 
     try {
-      await window.knowbook.writeClipboardText(text)
-      notify(ui.copiedPlainText(count))
+      if (await copyRange(range, true)) notify(ui.copiedPlainText(count))
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.copyTextFailed
       notify(message, 'error')
     }
-  }, [draftBlocks, getMultiBlockOperationRange, selectedBlockRange, serializeDraftBlockRangeAsPlainText, notify, ui])
+  }, [copyRange, getMultiBlockOperationRange, selectedBlockRange, notify, ui])
 
   const cutSelectedBlocks = useCallback(async () => {
     if (!selectedBlockRange) {
@@ -368,17 +381,15 @@ export function useMultiBlockActions({
     }
 
     const range = getMultiBlockOperationRange(selectedBlockRange)
-    const text = serializeDraftBlockRange(draftBlocks, range)
     const count = range.end - range.start + 1
 
     try {
-      await window.knowbook.writeClipboardText(text)
-      if (removeSelectedBlockRange(range)) notify(ui.cutBlocks(count))
+      await copyRange(range, false, () => { clearBlockSelection(); endBlockDrag(); notify(ui.cutBlocks(count)) })
     } catch (error) {
       const message = error instanceof Error ? error.message : ui.cutFailed
       notify(message, 'error')
     }
-  }, [draftBlocks, getMultiBlockOperationRange, removeSelectedBlockRange, selectedBlockRange, notify, ui])
+  }, [clearBlockSelection, copyRange, endBlockDrag, getMultiBlockOperationRange, selectedBlockRange, notify, ui])
 
   const deleteSelectedBlocks = useCallback(() => {
     if (!selectedBlockRange) {
@@ -387,7 +398,7 @@ export function useMultiBlockActions({
 
     const range = getMultiBlockOperationRange(selectedBlockRange)
     const count = range.end - range.start + 1
-    if (removeSelectedBlockRange(range)) notify(ui.deletedBlocks(count))
+    removeSelectedBlockRange(range, () => notify(ui.deletedBlocks(count)))
   }, [getMultiBlockOperationRange, removeSelectedBlockRange, selectedBlockRange, notify, ui])
 
   const duplicateSelectedBlocks = useCallback(() => {

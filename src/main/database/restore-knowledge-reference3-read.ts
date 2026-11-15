@@ -1,13 +1,16 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { capsuleBytesHash, capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
+import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
+import { CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-model'
 import { durableSqlDagHash, durableSqlDagUuid } from './restore-knowledge-dag-model'
 import { readCapsule2AssetManifest, writeCapsule2AssetCopy } from './restore-knowledge-capsule2-assets-files'
 import { syncOriginCatalogAncestors } from './restore-knowledge-origin-bundle-files'
 import { restoreDirectory, syncRestoreDirectory } from './restore-safety-files'
 import { assertRootRestoreIdentityOriginalBytes3, readRootRestoreIdentityGraphInputs3, readRootRestoreIdentityInputsAndOriginals5,
   readRootRestoreIdentityPlanLocation3, readRootRestoreIdentityOriginalOwnerForCopy3, readReopenedRootRestoreIdentityInputs5,
-  withReopenedRootRestoreIdentityInputs5, type ReopenedRootIdentityInputs5, type RootRestoreIdentityPlan3 } from './restore-knowledge-identity3-read'
+  withReopenedRootRestoreIdentityInputs5, readPreparedRootRestoreIdentityInputs5,
+  type PreparedRootIdentityInputs5, type ReopenedRootIdentityInputs5, type RootRestoreIdentityPlan3 } from './restore-knowledge-identity3-read'
 import { withReopenedRootKnowledgeConservationInputs5 } from './restore-knowledge-root3-read'
 import { assertCompleteOriginalVerificationBytes5 } from './restore-knowledge-qualified-originals'
 import { deriveRootRestoreReferenceAllocation3, normalizeReference3Choices, validateReference3Kernel,
@@ -24,6 +27,17 @@ type BaseLocation = Awaited<ReturnType<typeof readRootRestoreIdentityPlanLocatio
 type Location = BaseLocation['location']
 type Data = Awaited<ReturnType<typeof readRootRestoreIdentityGraphInputs3>>
 type Candidate = ReturnType<typeof checkedCandidate>
+export interface ColdRootRestoreReferenceInputs5 {
+  readonly data: Data
+  readonly allocation: Reference3Allocation
+  readonly candidate: Candidate
+  readonly value: Reference3Value
+  readonly kernel: Reference3Kernel
+  readonly choices: Reference3Choices
+  readonly referencePlanId: string
+  readonly referenceManifestHash: string
+  assertPlanManifests(): Promise<void>
+}
 export interface Reference3Value { readonly allocation: Reference3Allocation; readonly candidate: Candidate }
 type Manifest = ReturnType<typeof manifestBody>
 type Pending = { choice: PendingLocalComponentLocator5; baseCandidateHash: string }
@@ -56,7 +70,9 @@ function checkedCandidateWithCells(data: Data, allocation: Reference3Allocation,
     referenceRewriteComplete: false as const, semanticValidationComplete: false as const,
     acceptedCoverage: false as const, effective: false as const, permit: false as const }
   assertMerge3JsonBudget(body)
-  const value = { ...body, checkedCanonicalCandidateHash: capsuleBytesHash('knowbook.restore.canonical3.checked-candidate.v1\0' + capsuleJson(body)) }
+  const checkedCanonicalCandidateHash = hashBoundedCapsuleJson(body, CAPSULE2_RAW_MAX_JSON_BYTES, 'knowbook.restore.canonical3.checked-candidate.v1\0')
+    ?? invalid('完整候选超过原JSON预算，不能截断')
+  const value = { ...body, checkedCanonicalCandidateHash }
   assertMerge3JsonBudget(value)
   return Object.freeze({ ...cells, candidate: freezeCapsuleValue(value) })
 }
@@ -152,15 +168,18 @@ function mint(saved: Saved): RootRestoreReferencePlan3 {
 /** Main owns entropy, time, filesystem locations and full originals. The only
  * external inputs are a genuine old identity owner and a closed finite choice.
  * The durable base manifest and old public DTO/hash are never rewritten. */
-export async function prepareRootRestoreReferencePlan3(identity: RootRestoreIdentityPlan3, inputChoices?: Reference3Choices) {
+export async function prepareRootRestoreReferencePlan3(identity: RootRestoreIdentityPlan3, inputChoices?: Reference3Choices,
+  scope?: PreparedRootIdentityInputs5) {
   const choices = normalizeReference3Choices(inputChoices), base = await readRootRestoreIdentityPlanLocation3(identity)
-  const data = await readRootRestoreIdentityGraphInputs3(identity)
+  const data = scope ? (await readPreparedRootRestoreIdentityInputs5(identity, scope)).actual : await readRootRestoreIdentityGraphInputs3(identity)
   const kernel: Reference3Kernel = { kind: 'root-restore-reference-kernel', version: 1, policyVersion: 1, purposeVersion: 1,
     seed: randomBytes(32).toString('hex'), preparedAt: new Date().toISOString() }
   const planId = randomUUID(), allocation = deriveRootRestoreReferenceAllocation3(data, kernel, choices)
   if (allocation.purposes.some(purpose => purpose.targetId === planId)) return invalid('引用plan locator与新分配身份碰撞')
   const candidate = checkedCandidate(data, allocation, choices), value: Reference3Value = Object.freeze({ allocation, candidate })
-  return persistReference3(identity, base, planId, data, kernel, choices, value)
+  const result = await persistReference3(identity, base, planId, data, kernel, choices, value)
+  if (scope) await readPreparedRootRestoreIdentityInputs5(identity, scope)
+  return result
 }
 
 async function persistReference3(identity: RootRestoreIdentityPlan3, base: BaseLocation, planId: string, data: Data,
@@ -244,19 +263,56 @@ function reopenedReference(saved: Saved, value: Reference3Value) {
   return Object.freeze({ plan: mint(saved), value, planId: saved.planId, manifestHash: saved.manifestHash, directory: saved.directory })
 }
 
+/** Read a single cold Reference3 against both pinned plans and the complete
+ * original package. The caller separately authenticates the installed pin. */
+export async function readRootRestoreReferenceFromQualified5(
+  qualified: Parameters<typeof withReopenedRootKnowledgeConservationInputs5>[0],
+  identity: Parameters<typeof withReopenedRootRestoreIdentityInputs5>[2],
+  reference: Parameters<typeof reopenRootRestoreReferencePlan3>[1]): Promise<ColdRootRestoreReferenceInputs5> {
+  return withReopenedRootKnowledgeConservationInputs5(qualified, (knowledge, knowledgeScope) =>
+    withReopenedRootRestoreIdentityInputs5(knowledge, knowledgeScope, identity, async (plan, scope) => {
+      const saved = await reopenSaved(plan, reference)
+      const { actual } = await reconstructWithOriginals(saved, await readManifest(saved), await readBaseLocation(saved), scope)
+      return Object.freeze({ ...actual, async assertPlanManifests() {
+        await readManifest(saved)
+        await readBaseLocation(saved)
+      } })
+    }))
+}
+
 /** Reopen an explicit pending selection from the actual qualified mount and
  * both durable plan locators. The caller receives the checked planning result. */
 export async function reopenRootRestorePendingReferenceFromQualified5(
   qualified: Parameters<typeof withReopenedRootKnowledgeConservationInputs5>[0],
   identity: Parameters<typeof withReopenedRootRestoreIdentityInputs5>[2],
   reference: Parameters<typeof reopenRootRestoreReferencePlan3>[1]) {
+  return reopenPendingReferenceInputs(qualified, identity, reference, async opened => opened)
+}
+
+/** Share this same cold SQL reconstruction only within the pending stage's
+ * bounded call. The original byte tails still bracket every downstream read. */
+export async function withReopenedRootRestorePendingReferenceFromQualified5<T>(
+  qualified: Parameters<typeof withReopenedRootKnowledgeConservationInputs5>[0],
+  identity: Parameters<typeof withReopenedRootRestoreIdentityInputs5>[2],
+  reference: Parameters<typeof reopenRootRestoreReferencePlan3>[1],
+  run: (opened: ReturnType<typeof reopenedReference>, scope: RootRestoreStageInputs5) => Promise<T>) {
+  return reopenPendingReferenceInputs(qualified, identity, reference, (opened, captured, proofHash) =>
+    runRootRestoreStageInputs5(opened.plan, proofHash, stageScope => run(opened, stageScope), captured))
+}
+
+async function reopenPendingReferenceInputs<T>(
+  qualified: Parameters<typeof withReopenedRootKnowledgeConservationInputs5>[0],
+  identity: Parameters<typeof withReopenedRootRestoreIdentityInputs5>[2],
+  reference: Parameters<typeof reopenRootRestoreReferencePlan3>[1],
+  run: (opened: ReturnType<typeof reopenedReference>, captured: ReferenceInputs, proofHash: string) => Promise<T>) {
   return withReopenedRootKnowledgeConservationInputs5(qualified, (knowledge, knowledgeScope) =>
     withReopenedRootRestoreIdentityInputs5(knowledge, knowledgeScope, identity, async (plan, scope) => {
       const saved = await reopenSaved(plan, reference)
       const before = await readManifest(saved), base = await readBaseLocation(saved)
       if (before.version !== 2) return invalid('联合冷重开要求实际pending引用清单')
-      const { actual } = await reconstructWithOriginals(saved, before, base, scope)
-      return reopenedReference(saved, actual.value)
+      const captured = await reconstructWithOriginals(saved, before, base, scope)
+      const opened = reopenedReference(saved, captured.actual.value)
+      return run(opened, captured, before.pendingCellProofHash)
     }))
 }
 
@@ -281,8 +337,15 @@ const stageInputs = new WeakMap<RootRestoreStageInputs5, {
  * No SQL observation is cached on the reference or kept after the combined call. */
 export async function withRootRestoreStageInputs5<T>(reference: RootRestoreReferencePlan3, pendingCellProofHash: string | undefined,
   run: (scope: RootRestoreStageInputs5) => Promise<T>): Promise<T> {
+  return runRootRestoreStageInputs5(reference, pendingCellProofHash, run)
+}
+
+async function runRootRestoreStageInputs5<T>(reference: RootRestoreReferencePlan3, pendingCellProofHash: string | undefined,
+  run: (scope: RootRestoreStageInputs5) => Promise<T>, captured?: ReferenceInputs): Promise<T> {
   const scope: RootRestoreStageInputs5 = Object.freeze({ kind: 'main-root-restore-stage-inputs' })
-  stageInputs.set(scope, { reference, pendingCellProofHash })
+  if (captured && captured.actual.candidate.pendingLocalBody?.proofHash !== pendingCellProofHash)
+    return invalid('联合阶段与实际持久pending选择不符')
+  stageInputs.set(scope, { reference, pendingCellProofHash, read: captured && Promise.resolve(captured) })
   try { return await run(scope) }
   finally { stageInputs.delete(scope) }
 }
@@ -307,10 +370,11 @@ export async function readRootRestoreStageInputs5(reference: RootRestoreReferenc
   return result
 }
 
-async function reconstructWithOriginals(saved: Saved, before: Manifest, base: BaseLocation, scope?: ReopenedRootIdentityInputs5) {
-  const captured = scope
-    ? await readReopenedRootRestoreIdentityInputs5(saved.identity, scope)
-    : await readRootRestoreIdentityInputsAndOriginals5(saved.identity)
+async function reconstructWithOriginals(saved: Saved, before: Manifest, base: BaseLocation,
+  scope?: ReopenedRootIdentityInputs5 | PreparedRootIdentityInputs5) {
+  const captured = scope?.kind === 'main-prepared-root-identity-inputs'
+    ? await readPreparedRootRestoreIdentityInputs5(saved.identity, scope)
+    : scope ? await readReopenedRootRestoreIdentityInputs5(saved.identity, scope) : await readRootRestoreIdentityInputsAndOriginals5(saved.identity)
   const data = captured.actual
   const allocation = deriveRootRestoreReferenceAllocation3(data, before.kernel, before.choices)
   if (allocation.purposes.some(purpose => purpose.targetId === saved.planId)) return invalid('引用plan locator与新分配身份碰撞')
@@ -347,14 +411,39 @@ export async function previewRootRestorePendingLocalBody5(plan: RootRestoreRefer
 /** Persist an explicit choice against the base plan's genuine original and
  * unchanged kernel. The newly selected reference is still non-executable. */
 export async function prepareRootRestoreReferenceWithPendingLocal5(plan: RootRestoreReferencePlan3, locator: unknown) {
+  return (await preparePendingReference(plan, locator)).prepared
+}
+
+/** Share the exact same-call qualified inputs and selected physical cells with
+ * one downstream stage. Both independently persisted reference owners stay pinned. */
+export async function withPreparedRootRestorePendingReference5<T>(plan: RootRestoreReferencePlan3, locator: unknown,
+  identityScope: PreparedRootIdentityInputs5,
+  run: (prepared: Awaited<ReturnType<typeof prepareRootRestoreReferenceWithPendingLocal5>>, scope: RootRestoreStageInputs5) => Promise<T>): Promise<T> {
+  const { prepared, captured, identity } = await preparePendingReference(plan, locator, identityScope)
+  const proofHash = prepared.value.candidate.pendingLocalBody?.proofHash
+  if (!proofHash) return invalid('联合阶段需要持久pending选择')
+  const result = await runRootRestoreStageInputs5(prepared.plan, proofHash, stageScope => run(prepared, stageScope), captured)
+  await assertRootRestoreReferenceOriginalBytes3(plan)
+  await readPreparedRootRestoreIdentityInputs5(identity, identityScope)
+  await assertRootRestoreReferenceOriginalBytes3(prepared.plan)
+  return result
+}
+
+async function preparePendingReference(plan: RootRestoreReferencePlan3, locator: unknown, identityScope?: PreparedRootIdentityInputs5) {
   const choice = parsePendingLocalComponentLocator5(locator), saved = owners.get(plan)
   if (!saved) return invalid('不是实际Main持久引用规划句柄')
-  const captured = await readRootRestoreReferenceInputsAndOriginals5(plan)
+  const before = await readManifest(saved), base = await readBaseLocation(saved)
+  const captured = await reconstructWithOriginals(saved, before, base, identityScope)
   const { data, allocation, kernel, choices, candidate: original } = captured.actual
-  const { candidate } = checkedPendingCandidateWithCells(captured, data, allocation, choices, original, choice)
-  const base = await readBaseLocation(saved), planId = randomUUID()
+  const { candidate, ordinaryEdits, physicalBlocks } = checkedPendingCandidateWithCells(captured, data, allocation, choices, original, choice)
+  const planId = randomUUID()
   if (allocation.purposes.some(purpose => purpose.targetId === planId)) return invalid('引用plan locator与新分配身份碰撞')
+  await readBaseLocation(saved)
   await assertRootRestoreReferenceOriginalBytes3(plan)
-  return persistReference3(saved.identity, base, planId, data, kernel, choices, Object.freeze({ allocation, candidate }),
+  const value = Object.freeze({ allocation, candidate })
+  const prepared = await persistReference3(saved.identity, base, planId, data, kernel, choices, value,
     { choice, baseCandidateHash: original.checkedCanonicalCandidateHash })
+  const actual = Object.freeze({ data, allocation, candidate, value, kernel, choices, referencePlanId: prepared.planId,
+    referenceManifestHash: prepared.manifestHash })
+  return { prepared, identity: saved.identity, captured: Object.freeze({ ...captured, actual, cells: Object.freeze({ ordinaryEdits, physicalBlocks }) }) }
 }

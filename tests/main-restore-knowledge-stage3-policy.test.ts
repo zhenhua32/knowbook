@@ -5,7 +5,7 @@ import { copyFile, mkdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import Database from 'better-sqlite3'
-import { capsuleBytesHash } from '../src/main/database/restore-knowledge-capsule-model'
+import { capsuleBytesHash, capsuleJson } from '../src/main/database/restore-knowledge-capsule-model'
 import { graph3Text } from '../src/main/database/restore-knowledge-graph3-data'
 import { rawRestoreSqlCell } from '../src/main/database/restore-knowledge-sql-cell'
 import { capsule2DerivedFtsTables, type Capsule2Encoding } from '../src/main/database/restore-knowledge-capsule2-raw-model'
@@ -99,6 +99,14 @@ test('preserving an exact current group tuple retains the actual later current e
         assert.deepEqual(db.prepare('SELECT group_id,host_document_id FROM synced_instances WHERE instance_id=?').get(f.cases.externalInstanceId),
           { group_id: f.cases.linkedGroupId, host_document_id: f.cases.externalHostId })
         const content = new Set<string>(MERGE3_CONTENT_TABLES), fts = new Set([...capsule2DerivedFtsTables(), 'document_search_ids', 'block_search_ids'])
+        for (const observation of value.protectedObservations) {
+          const metadata = current.tables.find(table => table.name === observation.table)!
+          assert.ok(metadata)
+          const actual = rows(db, metadata.name)
+          assert.equal(observation.rows, actual.length)
+          assert.equal(observation.rowHash, capsuleBytesHash('knowbook.restore.stage3.exact-table.v1\0'
+            + capsuleJson({ ...metadata, rows: actual })), metadata.name)
+        }
         for (const table of current.tables) {
           if (content.has(table.name) || fts.has(table.name) || table.name === 'block_identities' || stage3CutProtectedTables.has(table.name)) continue
           const actual = rows(db, table.name)

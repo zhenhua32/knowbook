@@ -178,6 +178,18 @@ export function syncedLifecycleSchemaObjectNames(): ReadonlyArray<Readonly<{ nam
  * effective knowledge, public group read, repair, version change or writes.
  * A successful call authenticates structure only, never a publication permit. */
 export function assertSyncedLifecycleSchemaMetadata(db: Database.Database): void {
+  assertSyncedLifecycleSchemaDefinition(db)
+  // Coverage/selected-group reads cannot discover every orphan row, and
+  // foreign_keys=ON does not retroactively validate pre-existing rows.
+  for (const item of required) if (item.type === 'table') {
+    if ((db.pragma(`foreign_key_check(${item.name})`) as unknown[]).length) {
+      throw new Error(`同步块 schema27 生命周期外键校验失败：${item.name}；不会自动修复状态。`)
+    }
+  }
+}
+
+/** Check exact definitions before a restore reader scans or interprets rows. */
+export function assertSyncedLifecycleSchemaDefinition(db: Database.Database): void {
   const rows = db.prepare(`SELECT name,type,sql FROM sqlite_master WHERE name IN (SELECT value FROM json_each(?))`)
     .all(JSON.stringify(required.map(item => item.name))) as Array<{ name: string; type: string; sql: string | null }>
   const actual = new Map(rows.map(row => [row.name, row]))
@@ -185,14 +197,6 @@ export function assertSyncedLifecycleSchemaMetadata(db: Database.Database): void
     const row = actual.get(item.name)
     if (!row || row.type !== item.type || row.sql === null || comparable(row.sql) !== comparable(item.sql)) {
       throw new Error(`同步块 schema27 缺少或损坏关键结构：${item.name}；不会自动重建生命周期。`)
-    }
-  }
-  // The read-only startup assertion must cover orphan rows even in a database
-  // with zero real groups. Coverage/selected-group reads cannot discover those,
-  // and foreign_keys=ON does not retroactively validate pre-existing rows.
-  for (const item of required) if (item.type === 'table') {
-    if ((db.pragma(`foreign_key_check(${item.name})`) as unknown[]).length) {
-      throw new Error(`同步块 schema27 生命周期外键校验失败：${item.name}；不会自动修复状态。`)
     }
   }
 }

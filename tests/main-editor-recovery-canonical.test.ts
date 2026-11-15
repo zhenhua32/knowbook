@@ -11,9 +11,12 @@ import { attestCanonicalRecoveryCompletionOwned, prepareCanonicalRecoveryComplet
 import type { CompleteEditorRecoveryGroupInput, EditorRecoveryOpened, ParkEditorRecoveryDraftInput, PrepareEditorRecoveryGroupInput, PrepareEditorRecoveryGroupFloorInput, RetireEditorRecoveryDraftInput, WriteEditorRecoveryDraftsInput } from '../src/shared/editor-recovery-drafts'
 import type { SyncedBlocksApi, SyncedGroupSaved, SyncedUpdateGroupInput } from '../src/shared/synced-blocks'
 import { decodeCanonicalRecoveryData, decodeCanonicalRecoveryFollowupData } from '../src/shared/editor-recovery-canonical'
+import { readCanonicalRecoverySource } from '../src/shared/editor-recovery-canonical-source'
 import { canonicalSyncedPortableJson } from '../src/shared/syncedBlockPortable'
 import { EditorRecoveryCoordinator, recoveryPending, type RecoveryContent } from '../src/renderer/src/features/editor-recovery/coordinator'
 import { recoveryData } from '../src/renderer/src/features/editor-recovery/sourceSnapshots'
+import { canonicalSourceDraftToBlocks, createCanonicalSourceDraft } from '../src/renderer/src/features/synced-blocks/canonicalSource'
+import { replaceMarkdownSource } from '../src/renderer/src/utils/markdownSourceDraft'
 import { openColdCanonicalRecoveryOwner, openColdCanonicalFollowupOwner, closeColdCanonicalRecoveryOwner } from '../src/renderer/src/features/editor-recovery/canonicalColdOwner'
 import { getSyncedWorkspaceController, captureSyncedWorkspaceRecovery, restoreSyncedCanonicalRecovery,
   acceptSyncedCanonicalRecoveryReview, flushSyncedWorkspacePendingChanges } from '../src/renderer/src/features/synced-blocks/controller'
@@ -477,6 +480,29 @@ test('canonical cold decoding keeps unfinished Source, original ACK floors, lost
     const unfinished = structuredClone(prepared.record); unfinished.draft.sources.push({ sourceId: randomUUID(), kind: 'canonical', openingSource: 'B', acceptedSource: 'B',
       source: 'unclosed C\u0000\ud800', selection: { anchor: 1, head: 0 }, composing: false, importing: false, applying: false })
     assert.throws(() => decodeCanonicalRecoveryData(unfinished, prepared.baseline), /pending\/Source\/conflict replay/)
+    assert.throws(() => readCanonicalRecoverySource(unfinished), /original unchanged opening/)
+
+    const opening = createCanonicalSourceDraft(blocks)
+    const anchor = opening.anchors.at(-1)!
+    const current = replaceMarkdownSource(opening, { from: anchor.to, to: anchor.to, insert: ' 续写🙂' })
+    const source = { ...unfinished.draft.sources[0], openingSource: opening.source, acceptedSource: opening.source, source: current.source,
+      selection: { anchor: anchor.to + ' 续写🙂'.length, head: anchor.to + ' 续写'.length },
+      replayJson: JSON.stringify(recoveryData({ kind: 'knowbook-source-replay-data', version: 1, opening, accepted: opening, current, provenance: null })) }
+    const retained = service.write(original.event, { records: [{ ...draft, generation: 2, expectedPreviousGeneration: 1, sources: [source] }] }, { kind: 'background' }).records[0]
+    const pendingSource = service.read(original.event, { recordId: retained.recordId, hash: retained.hash, generation: retained.generation })
+    assert.equal(readCanonicalRecoverySource(pendingSource.record).draft.source, current.source)
+    assert.equal(pendingSource.canonicalSourceAvailable, true, JSON.stringify(pendingSource.reasons))
+    assert.equal(pendingSource.writePermit, false)
+    const recovered = service.decide(original.event, pendingSource.recoveryOwnerId, 'restore-draft')
+    const restored = readCanonicalRecoverySource(recovered)
+    assert.equal(restored.draft.source, current.source)
+    assert.deepEqual(restored.selection, source.selection)
+    assert.deepEqual(canonicalSourceDraftToBlocks(restored.draft), canonicalSourceDraftToBlocks(current))
+    const badAnchor = structuredClone(recovered!)
+    const packet = JSON.parse(badAnchor.draft.sources[0].replayJson!)
+    packet.current.anchors[0].block.id = randomUUID()
+    badAnchor.draft.sources[0].replayJson = JSON.stringify(packet)
+    assert.throws(() => readCanonicalRecoverySource(badAnchor), /anchor differs/)
     assert.deepEqual(allTables(f.db), before)
     assert.equal((f.db.prepare('SELECT total_changes() AS n').get() as { n: number }).n, changes)
   } finally { service.dispose(); side.close() }

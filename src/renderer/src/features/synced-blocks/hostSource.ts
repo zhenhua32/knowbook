@@ -7,7 +7,7 @@ import { reconcileMarkdownSourceDraft, type MarkdownSourceReconciliationPort } f
 import type { SyncedHostSourceCurrent } from './SyncedHostSourceDialog'
 import { areDocumentDraftBlocksEqual } from '../../utils/documentDraftComparison'
 import { applySyncedSourceChanges, copySyncedSourceRange, createSyncedSourceSnapshot, insertSyncedSourceReference,
-  moveSyncedSourceRange, restoreEmptySyncedSourceSnapshot, type SyncedSourceIdFactory, type SyncedSourceRangeOperation, type SyncedSourceSnapshot } from './sourceAnchors'
+  moveSyncedSourceRange, restoreSyncedSourceSnapshot, type SyncedSourceIdFactory, type SyncedSourceRangeOperation, type SyncedSourceSnapshot } from './sourceAnchors'
 import { readColdHostSourceOwner, type ColdHostSourceOwner } from '../editor-recovery/sourceColdOwner'
 
 export type SyncedHostSourceDraft = Readonly<{
@@ -337,11 +337,14 @@ export function restoreSyncedHostSourceDraft(owner: ColdHostSourceOwner, current
   const actual = readColdHostSourceOwner(owner, current), opening = freezeValue(structuredClone(actual.current.opening))
   const initialOrdinary = sealOrdinary(freezeValue(structuredClone(actual.current.initialOrdinary)))
   const initialReferences = createSyncedSourceSnapshot({ sessionKey: freshUuid(), sourceDocumentId: opening.documentId,
-    source: initialOrdinary.source, anchors: [] })
+    source: initialOrdinary.source, anchors: actual.opening.references.anchors.map(({ key, instanceId, groupId, from, to, newRefSource }) =>
+      ({ key, instanceId, groupId, from, to, newRefSource })) })
   const accepted = seal({ source: initialOrdinary.source, opening, ordinary: initialOrdinary, references: initialReferences, initialOrdinary, initialReferences })
   const ordinary = sealOrdinary(freezeValue(structuredClone(actual.current.ordinary)))
   const draft = seal({ source: actual.current.source, opening, ordinary,
-    references: restoreEmptySyncedSourceSnapshot(initialReferences, actual.current.source), initialOrdinary, initialReferences })
-  return { draft, accepted, opening: accepted, selection: { ...actual.record.draft.sources[0].selection } }
+    references: restoreSyncedSourceSnapshot(initialReferences, actual.current.source, actual.current.references.anchors), initialOrdinary, initialReferences })
+  const { hostSourcePins, workspaceScope, recoveryEpoch } = actual.record.base
+  return { draft, accepted, opening: accepted, selection: { ...actual.record.draft.sources[0].selection },
+    ...(hostSourcePins ? { pinnedOpening: freezeValue(structuredClone({ hostSourcePins, workspaceScope, recoveryEpoch })) } : {}) }
 }
 export type RestoredSyncedHostSource = ReturnType<typeof restoreSyncedHostSourceDraft>

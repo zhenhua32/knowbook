@@ -29,7 +29,7 @@ test('normal complete Main backup service dispatches actual raw-db V3, cold veri
     assert.equal(existsSync(join(backupRoot, '__knowbook', 'snapshot.json')), false, 'No legacy version sidecar can enter the closed V3 archive')
     const firstVersion = service.listVersions()[0]
     assert.deepEqual({ id: firstVersion.id, count: firstVersion.documentCount, current: firstVersion.current, format: firstVersion.format, restorable: firstVersion.restorable },
-      { id: archive.manifest.snapshotId, count: archive.documents.length, current: true, format: 'synced-v3', restorable: false })
+      { id: archive.manifest.snapshotId, count: archive.documents.length, current: true, format: 'synced-v3', restorable: undefined })
     assert.equal(service.resolveVersion(firstVersion.id), backupRoot)
     assert.deepEqual(await service.exportAll(), first)
     assert.equal(jobs.length, 1, 'Its own real possible/confirmed exposure and lastRun setting cannot schedule another identical backup')

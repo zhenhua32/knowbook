@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { serializeDatabaseViewPayload } from '../src/shared/databaseViewBlock'
+import { createDefaultDatabaseViewConfig } from '../src/shared/database-workspace'
 import { capsuleJson } from '../src/main/database/restore-knowledge-capsule-model'
+import { knowledgeHash } from '../src/main/database/restore-knowledge-payload-model'
 import { prepareCapsule2AssetArchive } from '../src/main/database/restore-knowledge-capsule2-asset-archive'
 import { extractCapsule2SourceMaterial, readCapsule2SourceMaterial } from '../src/main/database/restore-knowledge-capsule2-source-material'
 import { readRawCapsule2SourceKnowledgeOwned } from '../src/main/database/restore-knowledge-payload-raw-read'
@@ -13,6 +16,7 @@ import { writeMixedOrdinary501, withCapsule2RawCopy, decodedCapsule2Table } from
 import { actualHistorySyntax, insertCoverageSyntax } from './helpers/coverage-raw-sql-fixture'
 import { withControlledRestore, restoreKnowbookDatabase, noProcesses, KnowbookStore } from './helpers/controlled-restore-fixture'
 import { readHistoricalRowLocator } from '../src/main/database/synced-history-evidence-support'
+import { ordinary } from './helpers/synced-content-fixture'
 
 async function capture(f: Pick<V3Fixture, 'userDataRoot' | 'db'>) {
   const original = await captureAssetOriginal(f), archive = await prepareCapsule2AssetArchive(original.original)
@@ -40,6 +44,60 @@ test('capsule2 source K retains actual mixed ordinary501 identities and unreserv
   for (const key of ['certified','semanticValidationComplete','acceptedCoverage','effective','permit'] as const) assert.equal(knowledge[key], false)
   await assert.rejects(readCertifiedDurableSqlCapsule(knowledge as never), /不是Main认证/)
   assert.deepEqual(allTables(f.db), before)
+}))
+
+test('capsule2 K keeps complete typed block hashes while projecting large ordinary bodies and exact database-view references', () => withV3Fixture(async f => {
+  const documentId = f.store.createDocument(null), marker = 'K large ordinary body 标志'
+  const blockIds = new Set<string>()
+  const write = f.db.prepare('UPDATE blocks SET content=? WHERE id=?')
+  const viewId = 'K projection 数据库 view'
+  const sortOrder = f.db.prepare('SELECT coalesce(max(sort_order), 0) AS last FROM blocks WHERE document_id=?').pluck().get(documentId) as number
+  f.db.transaction(() => {
+    for (let index = 0; index < 64; index++) {
+      const id = index % 2 === 0 ? `K z${index}` : `K 甲${index}`
+      blockIds.add(id)
+      ordinary(f.db, id, { owner: documentId, sort: sortOrder + index + 1, type: 'code' })
+      write.run(marker + String(index).padStart(2, '0') + 'x'.repeat(128 * 1024), id)
+    }
+    ordinary(f.db, viewId, { owner: documentId, sort: sortOrder + blockIds.size + 1, type: 'database-view' })
+    write.run(serializeDatabaseViewPayload({ version: 1, databaseId: f.customId, viewId: f.view.id,
+      config: createDefaultDatabaseViewConfig('table', [f.customColumn.id]) }), viewId)
+  })()
+  const expected = await withCapsule2RawCopy(f, db => db.transaction(() => {
+    const { source, knowledge } = readRawCapsule2SourceKnowledgeOwned(db)
+    const original = source.sourceContent.tables.find(table => table.name === 'blocks')
+    const projected = knowledge.originals.find(table => table.table === 'blocks')
+    assert.ok(original && projected)
+    assert.deepEqual(projected.columns, ['id', 'document_id', 'created_at'])
+    const { encoding } = source.sourceContent
+    const typed = original.rows.map(row => ({ row, order: capsuleJson(row.cells) }))
+      .sort((a, b) => a.order < b.order ? -1 : a.order > b.order ? 1 : 0)
+    const keyId = (base64: string) => Buffer.from(base64, 'base64').toString('utf8')
+    const scoped = typed.filter(({ row }) => row.cells[0][1] && blockIds.has(keyId(row.cells[0][1])))
+    assert.equal(scoped.length, blockIds.size)
+    for (const { row } of scoped) {
+      const id = row.cells[0][1]!
+      const block = knowledge.occupancy.find(item => item.id === keyId(id) && item.kind === 'physical')
+      const index = typed.findIndex(item => item.row === row)
+      const exact = knowledgeHash('knowbook.knowledge.sql-row.v1', { encoding, table: original.name, columns: original.columns, cells: row.cells })
+      assert.equal(projected.rows[index].rowHash, exact)
+      assert.deepEqual(projected.rows[index].key, [row.cells[0]])
+      assert.equal(projected.rows[index].occurrence, 0)
+      assert.equal(block?.source.rowHash, exact)
+      assert.equal(block?.ownerId, documentId)
+    }
+    const view = knowledge.databaseViewReferences.find(item => item.source.key[0][1] && keyId(item.source.key[0][1]) === viewId)
+    assert.deepEqual([view?.databaseId, view?.viewId, view?.fieldIds], [f.customId, f.view.id, [f.customColumn.id, '__updated_at__'].sort()])
+    const { observationHash, ...body } = knowledge
+    assert.equal(observationHash, knowledgeHash('knowbook.capsule2.source-knowledge-projection.v1', body))
+    assert.equal(capsuleJson(knowledge).includes(marker), false)
+    assert.equal(db.prepare('SELECT total_changes() AS count').pluck().get(), 0)
+    return observationHash
+  })())
+  await withCapsule2RawCopy(f, db => {
+    const reopened = db.transaction(() => readRawCapsule2SourceKnowledgeOwned(db))()
+    assert.equal(reopened.knowledge.observationHash, expected)
+  })
 }))
 
 test('capsule2 source K binds every actual prior-C support row while keeping its anchor separate from member exposure and accepted coverage', () => withV3Fixture(async f => {

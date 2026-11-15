@@ -1,11 +1,13 @@
 import { capsule5WorkingIndex, capsule5TransportFiles, type TransportWorkingTexts5, type TransportWorkingIndex5 } from './restore-knowledge-capsule5-transport-model'
 import { parseStrictJson } from '../../shared/strictJson'
+import { installedV3TransferFiles } from './restore-knowledge-installed-v3-many'
 import { capsuleBytesHash, capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { CAPSULE2_READER } from './restore-knowledge-capsule2-raw-model'
 import { parseCapsule2SourceManifest } from './restore-knowledge-capsule2-source-seal-model'
-import { parseCapsule2CompleteAssetArchiveManifest } from './restore-knowledge-capsule2-asset-archive'
+import { isWorkingAssetArchive5, parseCapsule2CompleteAssetArchiveManifest } from './restore-knowledge-capsule2-asset-archive'
 import { parseCapsule2BoundSourceManifest } from './restore-knowledge-bound-source-model'
-import { mixedOriginBundleSideFiles, mixedOriginBundleSideCopyHeader5, mixedOriginCapsulePath, type MixedOriginBundleSide } from './restore-knowledge-mixed-origin-bundle-model'
+import { capsuleV3TransportContentFiles, mixedOriginBundleSideFiles, mixedOriginBundleSideCopyHeader5, mixedOriginCapsulePath,
+  type MixedOriginBundleSide } from './restore-knowledge-mixed-origin-bundle-model'
 import { originBundleNodePath, type OriginBundleFile } from './restore-knowledge-origin-bundle-model'
 import { parseRequiredSqlDagNode, requiredDagDatabaseFilesHash, requiredSqlDagRootHash, type RequiredDagOrigin } from './restore-knowledge-required-dag-model'
 import { validateCoverageRootReference, type CoverageInputBinding, type CoverageRootReference } from './restore-knowledge-coverage-model'
@@ -66,13 +68,15 @@ function qualifiedSide(value: unknown, binding: CoverageInputBinding, origin: Re
   add(assets + '/manifest.json', assetManifestText)
   for (const file of source.files) if (file.present) files.push({ path: mixedOriginCapsulePath(binding, 'knowledge-capsules') + '/original/' + file.name, bytes: file.bytes, sha256: file.sha256! })
   for (const file of archive.tree.files) files.push({ path: assets + '/files/' + file.hash, bytes: file.bytes, sha256: file.hash })
+  files.push(...capsuleV3TransportContentFiles(archive, assets))
+  if (archive.version === 9 || archive.version === 10) files.push(...installedV3TransferFiles(archive.installedV3Many, assets))
   if ((archive.version === 3 || archive.version === 4)) for (const file of archive.contextOriginals.files) files.push({ path: assets + '/contexts/' + file.sha256, bytes: file.bytes, sha256: file.sha256 })
-  if (archive.version === 4 || archive.version === 5) files.push({ path: assets + '/base-provenance.json',
+  if (archive.version === 4 || isWorkingAssetArchive5(archive)) files.push({ path: assets + '/base-provenance.json',
     bytes: archive.baseProjection.baseManifestFile.bytes, sha256: archive.baseProjection.baseManifestFile.sha256 })
   if(!copyOnly)files.push(...capsule5TransportFiles(archive,assets,workingText))
   const workingIndex=capsule5WorkingIndex(archive,assets)
   return { workingIndex, value: { kind: 'bound-capsule2', bindingText, sourceManifestText, assetManifestText, contextText } as QualifiedOriginalSide,
-    files, emptyDirectory: assets + '/files', ...((archive.version === 3 || archive.version === 4 || archive.version === 5) ? { emptyDirectories: [assets + '/contexts', ...(archive.version === 5 ? [assets+'/contexts/files'] : [])] } : {}), context }
+    files, emptyDirectory: assets + '/files', ...((archive.version === 3 || archive.version === 4 || isWorkingAssetArchive5(archive)) ? { emptyDirectories: [assets + '/contexts', ...(isWorkingAssetArchive5(archive) ? [assets+'/contexts/files'] : [])] } : {}), context, archive }
 }
 function validateQualified(value: unknown, workingTexts:TransportWorkingTexts5={}, copyOnly=false): QualifiedOriginalDescriptor {
   const row = capsuleRecord(value, ['kind','version','root','nodeText','source','current','acceptedCoverage','effective','permit'])

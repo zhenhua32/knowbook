@@ -1,5 +1,6 @@
 import { assertCompleteOriginalPackageBytes, assertCompleteOriginalVerificationBytes5, readCompleteOriginalPackage, captureMixedOriginalPackageWithInitialInputs,
-  captureQualifiedOriginalBundle, captureQualifiedOriginalBundleFromReferences, captureReopenedQualifiedOriginalBundle, captureReopenedQualifiedOriginalContent5,
+  captureQualifiedOriginalBundle, captureQualifiedOriginalBundleWithInitialContent5, captureQualifiedOriginalBundleFromReferences,
+  captureReopenedQualifiedOriginalBundle, captureReopenedQualifiedOriginalContent5,
   type CompleteOriginalBundle } from './restore-knowledge-qualified-originals'
 import type { CompleteOriginalPackage } from './restore-knowledge-original-input-types'
 import { deriveRoot3KnowledgeConstraints, root3Invalid, type Root3KnowledgeConstraints } from './restore-knowledge-root3-model'
@@ -45,8 +46,37 @@ export async function captureReopenedRootKnowledgeConservationPlan3(input: Param
 }
 
 export interface ReopenedRootKnowledgeInputs5 { readonly kind: 'main-reopened-root-knowledge-inputs' }
+export interface PreparedRootKnowledgeInputs5 { readonly kind: 'main-prepared-root-knowledge-inputs' }
 type KnowledgeOriginals = Awaited<ReturnType<typeof readRootKnowledgeConservationContentAndOriginals5>>
 const reopenedInputs = new WeakMap<ReopenedRootKnowledgeInputs5, { plan: RootKnowledgeConservationPlan3; data: KnowledgeOriginals }>()
+const preparedInputs = new WeakMap<PreparedRootKnowledgeInputs5, { plan: RootKnowledgeConservationPlan3; data: KnowledgeOriginals }>()
+
+/** Initial content comes from the copied and independently verified mount.
+ * It is only available to the exact plan within the preparation call. */
+export async function withPreparedRootKnowledgeInputs5<T>(
+  input: Parameters<typeof captureQualifiedOriginalBundle>[0],
+  run: (root: Awaited<ReturnType<typeof captureRootKnowledgeConservationPlanFromCertifiedSources3>>, scope: PreparedRootKnowledgeInputs5) => Promise<T>) {
+  const { pair, working, ...captured } = await captureQualifiedOriginalBundleWithInitialContent5(input)
+  const knowledge = await mintFromInitial(captured.bundle, captured.originalPackage)
+  const root = Object.freeze({ ...captured, knowledgePlan: knowledge.plan, knowledgeValue: knowledge.value })
+  const scope: PreparedRootKnowledgeInputs5 = Object.freeze({ kind: 'main-prepared-root-knowledge-inputs' })
+  const value = Object.freeze({ knowledge: knowledge.value, source: pair.source, current: pair.current })
+  preparedInputs.set(scope, { plan: root.knowledgePlan, data: Object.freeze({ value, pair, original: root.bundle, working }) })
+  try {
+    const result = await run(root, scope)
+    await readPreparedRootKnowledgeInputs5(root.knowledgePlan, scope)
+    return result
+  } finally { preparedInputs.delete(scope) }
+}
+
+export async function readPreparedRootKnowledgeInputs5(plan: RootKnowledgeConservationPlan3, scope: PreparedRootKnowledgeInputs5) {
+  const entry = preparedInputs.get(scope)
+  if (!entry || entry.plan !== plan) return root3Invalid('不是本次准备的真实知识原件')
+  await assertRootKnowledgePlanOriginalBytes3(plan)
+  await assertCompleteOriginalVerificationBytes5(entry.data.pair.originalPackage)
+  if (preparedInputs.get(scope) !== entry) return root3Invalid('知识准备范围已结束')
+  return entry.data
+}
 
 /** Keep the actual qualified content alive only for the fixed cold chain. */
 export async function withReopenedRootKnowledgeConservationInputs5<T>(input: Parameters<typeof captureReopenedQualifiedOriginalBundle>[0],

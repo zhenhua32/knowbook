@@ -1,10 +1,59 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { readRawCapsule2ContentOwned } from '../src/main/database/restore-knowledge-capsule2-content-raw-read'
-import { diagnoseCapsule2RawContent, validateCapsule2RawContent } from '../src/main/database/restore-knowledge-capsule2-raw-model'
+import { observeRawCapsule2TablesOwned, readRawCapsule2ContentOwned } from '../src/main/database/restore-knowledge-capsule2-content-raw-read'
+import { capsule2RawContentHash, diagnoseCapsule2RawContent, hashValidatedCapsule2RawSqlTable, hashValidatedCapsule2RawSqlTablePair,
+  validateCapsule2RawContent } from '../src/main/database/restore-knowledge-capsule2-raw-model'
+import { readRawCapsule2ObserverOwned } from '../src/main/database/restore-knowledge-capsule2-observer-read'
+import { readRawCapsule2OrdinaryPolicySourceOwned } from '../src/main/database/restore-knowledge-capsule2-policy-source-read'
+import { capsuleBytesHash, capsuleJson } from '../src/main/database/restore-knowledge-capsule-model'
+import { root3SupplementSourceContentHash3 } from '../src/main/database/restore-knowledge-assets3-context'
 import { readInitialIncomingWorkspace } from '../src/main/database/synced-initial-incoming-read'
 import { withV3Fixture } from './helpers/synced-backup-v3-fixture'
 import { decodedCapsule2Table, withCapsule2RawCopy, writeMixedOrdinary501 } from './helpers/capsule2-raw-fixture'
+
+for (const encoding of ['UTF-8', 'UTF-16le', 'UTF-16be'] as const) test(`raw source hash retains its original canonical JSON in ${encoding}`,
+  () => withV3Fixture(async f => {
+    const opaque = 'opaque\0中文 😀 "quoted" \\path'
+    f.db.prepare('INSERT INTO app_settings(rowid,key,value,updated_at) VALUES(?,?,?,?)')
+      .run(-42n, 'raw-json-parity', opaque, '2048-01-02T03:04:05.000Z')
+    await withCapsule2RawCopy(f, db => db.transaction(() => {
+      const { sourceContent: raw, policy } = readRawCapsule2OrdinaryPolicySourceOwned(db)
+      const observer = readRawCapsule2ObserverOwned(db)
+      assert.equal(raw.encoding, encoding)
+      const settings = raw.tables.find(table => table.name === 'app_settings')!
+      assert.equal(settings.rows[0].sourceRowId, '-42')
+      assert.equal(decodedCapsule2Table(raw, 'app_settings')[0].value, opaque)
+      const previous = (domain: string, value: unknown = raw) => capsuleBytesHash(domain + '\0' + capsuleJson(value))
+      assert.equal(capsule2RawContentHash(raw), previous('knowbook.capsule2.raw-content.v1'))
+      assert.equal(observer.rawContentHash, previous('knowbook.capsule2.observer-content.v1'))
+      assert.equal(policy.sourceContentHash, previous('knowbook.capsule2.workspace-history-source-content.v1'))
+      assert.equal(root3SupplementSourceContentHash3(raw), policy.sourceContentHash)
+      assert.throws(() => observeRawCapsule2TablesOwned(db, table => {
+        table.rows[Symbol.iterator]().next()
+      }), /必须读完原表/)
+      const tableHashes: string[] = [], tableDomain = 'knowbook.restore.stage3.exact-table.v1'
+      const header = observeRawCapsule2TablesOwned(db, table => {
+        tableHashes.push(hashValidatedCapsule2RawSqlTable(tableDomain, table))
+      })
+      const { tables, ...originalHeader } = raw
+      assert.deepEqual(header, originalHeader)
+      assert.deepEqual(tableHashes, tables.map(table => previous(tableDomain, table)))
+      const pairs: Array<readonly [string, string]> = []
+      observeRawCapsule2TablesOwned(db, table => {
+        let ordinal = 0
+        pairs.push(hashValidatedCapsule2RawSqlTablePair(tableDomain, table,
+          () => { const index = ordinal++; return [index % 2 === 0, index % 3 === 1] }))
+      })
+      assert.deepEqual(pairs, tables.map(table => [
+        previous(tableDomain, { ...table, rows: table.rows.filter((_, index) => index % 2 === 0) }),
+        previous(tableDomain, { ...table, rows: table.rows.filter((_, index) => index % 3 === 1) })
+      ]))
+      for (const table of policy.tables) {
+        const original = raw.tables.find(source => source.name === table.table)!
+        assert.equal(table.originalTableHash, previous('knowbook.capsule2.source-policy-original-table.v1', original))
+      }
+    })())
+  }, encoding))
 
 test('capsule2 raw content keeps a real mixed ordinary501 and Main group source without changing the public wire500 rule', () => withV3Fixture(async f => {
   const { title, template, documentId } = writeMixedOrdinary501(f)
@@ -51,6 +100,11 @@ test('capsule2 raw content preserves actual ordinary history rowid order and all
 
 test('capsule2 raw content rejects unknown ordinary columns and preserves the unsupported source instead of silently pruning it', () => withV3Fixture(async f => {
   writeMixedOrdinary501(f)
+  f.db.pragma('foreign_keys=OFF')
+  f.db.prepare('UPDATE blocks SET document_id=? WHERE id=?').run('missing-owner', f.targetBodyId)
+  await withCapsule2RawCopy(f, db => {
+    assert.throws(() => db.transaction(() => readRawCapsule2ContentOwned(db))(), /原SQL物理\/FK完整性失败/)
+  })
   f.db.exec('ALTER TABLE documents ADD COLUMN future_content TEXT')
   f.db.prepare('UPDATE documents SET future_content=? WHERE id=?').run('must not disappear', f.targetId)
   await withCapsule2RawCopy(f, db => {

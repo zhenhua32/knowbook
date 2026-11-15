@@ -58,9 +58,11 @@ function peer(stayContent?: string) {
     assert.deepEqual(input.expectedUpdatedAtByDocument, versions)
     return acknowledge(kind === 'undo' ? 'undone' : 'applied')
   }
-  const api: Pick<ElectronApi, 'getDocumentDetail' | 'getDocumentBlockMoveHistory' | 'getHomeData' | 'updateDocument' | 'moveDocumentBlocks' | 'undoDocumentBlockMove' | 'redoDocumentBlockMove'> = {
+  const api: Pick<ElectronApi, 'getDocumentDetail' | 'getDocumentBlockMoveHistory' | 'getHomeData' | 'updateDocument' | 'moveDocumentBlocks'
+    | 'readControlledDocumentBlockMoveDependencies' | 'undoDocumentBlockMove' | 'redoDocumentBlockMove'> = {
     getDocumentDetail: async id => documents.has(id) ? get(id) : null,
     getHomeData: async () => { calls.home++; return {} as HomeData },
+    readControlledDocumentBlockMoveDependencies: async () => null,
     getDocumentBlockMoveHistory: async id => {
       calls.histories.push(id)
       if (!state) return null

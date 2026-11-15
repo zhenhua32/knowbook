@@ -22,6 +22,23 @@ function rejectWithoutChanging(input: DocumentBlockTransferInput, context: strin
   assert.deepEqual(input, before, `${context}: neither document may change before an atomic commit`)
 }
 
+test('only the synced-host transfer path recognizes a reference under its actual list parent', () => {
+  const from = [block('source-list'), block('ref', 'synced-block', 1, 'source-list')]
+  const to = [block('target-list'), block('anchor', 'todo', 1, 'target-list')]
+  const input = { from, to, selectedIds: ['ref'], parentBlockId: 'target-list', beforeBlockId: 'anchor' }
+  assert.equal(planDocumentBlockTransfer(input), null)
+  const synced = { ...input, allowSyncedPlaceholders: true } as const
+  const plan = planDocumentBlockTransfer(synced)
+  assert.ok(plan)
+  assert.deepEqual(plan.sourceBlocks, [from[0]])
+  assert.deepEqual(plan.targetBlocks.map(item => [item.id, item.parentBlockId, item.depth]),
+    [['target-list', null, 0], ['ref', 'target-list', 1], ['anchor', 'target-list', 1]])
+  rejectWithoutChanging({ ...synced, from: [block('source-list', 'paragraph'), from[1]] }, 'paragraph is never a valid parent')
+  rejectWithoutChanging({ ...synced, from: [from[0], { ...from[1], parentBlockId: 'different-parent' }] }, 'declared parent must match')
+  rejectWithoutChanging({ ...synced, from: [...from, block('child', 'todo', 2, 'ref')] }, 'a synced ref remains a leaf')
+  rejectWithoutChanging({ ...synced, from: [...from, block('sibling-list')], selectedIds: ['ref', 'sibling-list'] }, 'selected roots must share a parent')
+})
+
 test('moving adjacent nested task subtrees keeps identity, metadata and both documents ownership, then moves back losslessly', () => {
   const from: DocumentBlockDraft[] = [
     block('source-intro', 'paragraph'),

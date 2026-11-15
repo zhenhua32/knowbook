@@ -1,13 +1,16 @@
 import type { MarkdownRenderableBlock } from '../../shared/markdown'
-import { collectStoredMarkdownAssetDestinations, parseSyncedPortableAssetUri } from '../../shared/syncedBlockPortable'
+import { ATTACHMENT_MAX_FILE_BYTES } from '../../shared/attachments'
+import { collectStoredMarkdownAssetDestinations, parseSyncedPortableAssetUri, syncedPortableAssetBackupPath } from '../../shared/syncedBlockPortable'
 import { capsuleBytesHash, capsuleJson } from './restore-knowledge-capsule-model'
 import { capsule2CombinedAssetUris3 } from './restore-knowledge-capsule2-asset-supplement-model'
 import { capsule2CombinedAssetUris4 } from './restore-knowledge-capsule2-asset-supplement4-model'
 import { capsule5CombinedAssetUris5 } from './restore-knowledge-capsule5-asset-supplement-model'
+import { CAPSULE_V3_ASSET_MAX_FILE_BYTES } from './restore-knowledge-capsule-v3-assets'
 import { logicalFileAsset } from './restore-knowledge-assets5-working-portable-derive'
 import { transformCanonical3Cell, type Canonical3TextEdit } from './restore-knowledge-canonical3-cells'
 import { graph3Rows, graph3Text } from './restore-knowledge-graph3-data'
 import type { Merge3OriginalRowRef, MergedRow3 } from './restore-knowledge-merge3-storage'
+import { applyNavigation3TextEdits, createNavigation3RangeProjection } from './restore-knowledge-navigation3-rewrite-cells'
 import { mixedOriginCapsulePath } from './restore-knowledge-mixed-origin-bundle-model'
 import type { OriginalFrameCopy } from './restore-knowledge-original-frame-files'
 import { referenceContextFileKey } from './restore-knowledge-reference-context-model'
@@ -27,14 +30,20 @@ export type NativeAssetCellContext5 =
   | { kind: 'template-content'; blockIndex: number; localId: string; asset: Range }
   | { kind: 'template-summary' }
 
+export interface VerifiedBackupV3Asset5 {
+  readonly snapshotId: string; readonly inventoryHash: string; readonly archiveHash: string
+}
+
+type BaseAssetProof = { id: string; logicalName: string; file: OriginalFrameCopy; backupV3?: VerifiedBackupV3Asset5 }
+
 export interface SelectedNativeAsset5 {
   target: MergedRow3
   column: 'content' | 'summary' | 'blocks_json'
   original: Range
   final: { from: number; to: number }
   finalText: string
-  context: NativeAssetCellContext5
-  proof: { id: string; logicalName: string; file: OriginalFrameCopy }
+  context: NativeAssetCellContext5 | null
+  proof: BaseAssetProof
 }
 
 const same = (left: unknown, right: unknown) => capsuleJson(left) === capsuleJson(right)
@@ -58,7 +67,7 @@ export function bindRootRestoreBaseAssetBlobs5(actual: Actual, side: 'source' | 
   if (binding.capsule.operationId !== packet.operationId || binding.capsule.capsuleId !== packet.capsuleId
     || archive.sourceContentHash !== packet.source.assets.sourceContentHash || archive.assetReferencesObservationHash !== packet.source.assets.observationHash)
     return fail('typed base scope 不属于同一角色/capsule')
-  const uris = archive.version === 2 ? archive.referenceUris
+  const uris = archive.version === 2 || archive.version === 6 || archive.version === 7 || archive.version === 9 ? archive.referenceUris
     : archive.version === 3 ? capsule2CombinedAssetUris3(archive.referenceUris, archive.assetScopeSupplement)
       : archive.version === 4 ? capsule2CombinedAssetUris4(archive.referenceUris, archive.assetScopeSupplement)
         : capsule5CombinedAssetUris5(archive.referenceUris, archive.assetScopeSupplement)
@@ -66,7 +75,12 @@ export function bindRootRestoreBaseAssetBlobs5(actual: Actual, side: 'source' | 
   const files = mapBy(original.files, referenceContextFileKey), inventory = mapBy(archive.tree.files, file => file.hash)
   const actualScopes = new Set(packet.source.assets.scopes)
   const members = new WeakMap<Scope, Set<Destination>>()
-  return (scope: Scope, destination: Destination) => {
+  const v3Files = archive.version === 6 ? mapBy(archive.backupV3.files, file => file.relativePath) : null
+  const installedV3 = archive.version === 7 || archive.version === 8
+    ? archive.installedV3.aliases.map(alias => ({ alias, backupV3: archive.installedV3.backupV3 }))
+    : archive.version === 9 || archive.version === 10 ? archive.installedV3Many.aliases : []
+  const installedByPath = mapBy(installedV3, entry => entry.alias.relativePath)
+  return (scope: Scope, destination: Destination): BaseAssetProof | null => {
     // Call sites pass only real members of this actual original typed scope.
     // An occurrence may remain unresolved even if another role owns its hash.
     if (!actualScopes.has(scope)) return fail('不是本角色封存的 typed scope')
@@ -87,9 +101,21 @@ export function bindRootRestoreBaseAssetBlobs5(actual: Actual, side: 'source' | 
     const path = mixedOriginCapsulePath(binding, 'knowledge-complete-assets-v2') + '/files/' + alias.hash
     const file = files.get(referenceContextFileKey({ frame: [], path }))
     if (!file || file.sha256 !== alias.hash || file.bytes !== alias.bytes) return fail('本角色 frame 缺准确原附件')
+    let backupV3: VerifiedBackupV3Asset5 | undefined
+    if (archive.version === 6) {
+      const originalV3 = entry[1] === 'portable' && v3Files?.get(syncedPortableAssetBackupPath(destination.uri))
+      if (!originalV3 || originalV3.hash !== alias.hash || originalV3.bytes !== alias.bytes || alias.bytes > CAPSULE_V3_ASSET_MAX_FILE_BYTES)
+        return fail('V3 原件清单与入选 typed alias 不符')
+      backupV3 = { snapshotId: archive.backupV3.snapshotId, inventoryHash: archive.backupV3.inventoryHash, archiveHash: packet.assetArchiveHash }
+    } else if (alias.bytes > ATTACHMENT_MAX_FILE_BYTES) {
+      const installed = installedByPath.get(alias.relativePath)
+      if (!installed || !same(installed.alias, alias)) return fail('旧封存附件超过原 25MiB 预算')
+      backupV3 = installed.backupV3
+    }
     return { id: hash('knowbook.restore.selected-native-base-asset-occurrence.v1', { side, capsule: binding.capsule,
       archiveHash: packet.assetArchiveHash, scope: scope.source, scopeContentHash: scope.contentHash, destination,
-      referenceIndex, aliasIndex: entry[2], hash: alias.hash, bytes: alias.bytes, logicalName: name }), logicalName: name, file }
+      referenceIndex, aliasIndex: entry[2], hash: alias.hash, bytes: alias.bytes, logicalName: name }), logicalName: name, file,
+      ...(backupV3 ? { backupV3 } : {}) }
   }
 }
 
@@ -103,6 +129,79 @@ function reprojectCanonicalRange(range: Range, edits: readonly Canonical3TextEdi
     else if (edit.key.from < range.to) return null
   }
   return { from: range.from + shift, to: range.to + shift }
+}
+
+function selectBackupV3DocumentAssets(actual: Actual, side: 'source' | 'current', documents: Table, blocks: Table,
+  scopes: ReadonlyMap<string, Scope>, bindBlob: NonNullable<ReturnType<typeof bindRootRestoreBaseAssetBlobs5>>): SelectedNativeAsset5[] {
+  const packet = actual.captured.pair[side], raw = packet.source.sourceContent
+  const chosenDocuments = mapBy(documents.rows.filter(row => row.sourceRef.side === side), row => row.sourceRef.sourceRowId)
+  const chosenBlocks = mapBy(blocks.rows.filter(row => row.sourceRef.side === side), row => row.sourceRef.sourceRowId)
+  const originalDocuments = mapBy(graph3Rows(raw, 'documents'), row => String(row.value.id))
+  const originalBlocks = mapBy(graph3Rows(raw, 'blocks'), row => String(row.value.id))
+  const editGroups = new Map<string, (typeof actual.captured.cells.ordinaryEdits)[number][]>()
+  for (const edit of actual.captured.cells.ordinaryEdits) {
+    const list = editGroups.get(edit.rowKey) ?? []
+    list.push(edit); editGroups.set(edit.rowKey, list)
+  }
+  const rowsByKey = mapBy(blocks.rows, row => row.key)
+  const physicalByDocument = new Map<string, (typeof actual.captured.cells.physicalBlocks)[number][]>()
+  for (const item of actual.captured.cells.physicalBlocks) if (item.documentId !== null) {
+    const list = physicalByDocument.get(item.documentId) ?? []
+    list.push(item); physicalByDocument.set(item.documentId, list)
+  }
+  const finalBodies = new Map<string, ReturnType<typeof projectWorkingAssetBodyCells5>>()
+  const order = (key: string) => {
+    const cell = rowsByKey.get(key)?.cells[blocks.columns.indexOf('sort_order')]
+    return cell?.[0] === 'integer' ? BigInt(cell[1]) : fail('最终正文缺实际排序')
+  }
+  const finalBody = (documentId: string) => {
+    let body = finalBodies.get(documentId)
+    if (!body) {
+      const physical = [...(physicalByDocument.get(documentId) ?? [])].sort((left, right) => {
+        const a = order(left.rowKey), b = order(right.rowKey)
+        return a < b ? -1 : a > b ? 1 : left.id < right.id ? -1 : left.id > right.id ? 1 : 0
+      })
+      body = projectWorkingAssetBodyCells5(physical.map(item => item.block), 'base')
+      finalBodies.set(documentId, body)
+    }
+    return body
+  }
+  const selected: SelectedNativeAsset5[] = []
+  for (const doc of packet.source.physical.documents) {
+    const originalDocument = originalDocuments.get(doc.documentId)
+    const scope = scopes.get(capsuleJson(['documents', doc.documentId]))
+    if (!originalDocument || !scope?.destinations.length) continue
+    const header = chosenDocuments.get(originalDocument.original.sourceRowId)
+    if (header?.sourceRef.materialHash !== packet.materialHash) continue
+    const documentId = cellText(documents, header, 'id'), body = projectWorkingAssetBodyCells5(doc.blocks, 'base')
+    if (body.baseProjectionHash !== scope.bodyProjectionHash) return fail('V3 原正文范围与封存 typed scope 不符')
+    const summary = cellText(documents, header, 'summary'), summaryDestinations = collectStoredMarkdownAssetDestinations(summary)
+    for (const destination of scope.destinations) {
+      const cell = destination.section === 'body' ? body.byBodyPosition.get(workingAssetPosition5(destination)) : undefined
+      const originalBlock = cell && originalBlocks.get(cell.blockId)
+      if (destination.section === 'body' && (!cell || !originalBlock || originalBlock.value.document_id !== doc.documentId)) continue
+      const target = originalBlock ? chosenBlocks.get(originalBlock.original.sourceRowId) : header
+      if (target?.sourceRef.materialHash !== packet.materialHash || originalBlock && cellText(blocks, target, 'document_id') !== documentId) continue
+      const column = originalBlock ? 'content' : 'summary', original = cell ?? destination
+      const oldText = originalBlock ? originalBlock.value.content : originalDocument.value.summary
+      const finalText = originalBlock ? cellText(blocks, target, 'content') : summary
+      const edits = editGroups.get(target.key) ?? []
+      if (edits.some(edit => edit.column !== column || !same(edit.sourceRef, target.sourceRef))) return fail('V3 导航改写不属于原 cell')
+      if (typeof oldText !== 'string' || oldText.slice(original.from, original.to) !== original.raw || original.raw !== destination.raw
+        || applyNavigation3TextEdits(oldText, edits) !== finalText) continue
+      const final = createNavigation3RangeProjection(edits)(original.from, original.to)
+      if (!final || finalText.slice(final.from, final.to) !== destination.raw) continue
+      if (originalBlock) {
+        const blockId = cellText(blocks, target, 'id')
+        const occurrence = finalBody(documentId).byCellPosition.get(workingAssetCellPosition5(blockId, { ...final, uri: destination.uri }))
+        if (occurrence?.raw !== destination.raw || occurrence.kind !== destination.kind || occurrence.syntax !== destination.syntax) continue
+      } else if (!summaryDestinations.some(item => item.start === final.from && item.end === final.to && item.url === destination.uri
+        && item.kind === destination.kind && (item.syntax ?? 'markdown') === destination.syntax)) continue
+      const proof = bindBlob(scope, destination)
+      if (proof) selected.push({ target, column, original, final, finalText, context: null, proof })
+    }
+  }
+  return selected
 }
 
 /** Data-only staging requests. Main calls this after its fixed same-read
@@ -127,6 +226,9 @@ export function selectRootRestoreNativeAssetScopes5(actual: Actual): SelectedNat
     const packet = actual.captured.pair[side], bindBlob = bindRootRestoreBaseAssetBlobs5(actual, side)
     if (!bindBlob) continue
     const raw = packet.source.sourceContent, scopes = mapBy(packet.source.assets.scopes, scope => capsuleJson(scope.source))
+    if (packet.assetArchive.version === 6 || packet.assetArchive.version === 7 || packet.assetArchive.version === 8
+      || packet.assetArchive.version === 9 || packet.assetArchive.version === 10)
+      selected.push(...selectBackupV3DocumentAssets(actual, side, table('documents'), table('blocks'), scopes, bindBlob))
     const belongs = (row: MergedRow3 | undefined): row is MergedRow3 => row !== undefined && row.sourceRef.materialHash === packet.materialHash
     const groupRows = mapBy(graph3Rows(raw, 'synced_groups'), row => String(row.value.id))
     const blockRows = mapBy(graph3Rows(raw, 'synced_group_blocks'), row => String(row.value.id))

@@ -3,8 +3,10 @@ import type { SyncedHostWorkingBefore } from '@shared/synced-blocks'
 import { MarkdownSourceDialog, type MarkdownSourceLocalState } from '../../components/DocumentMarkdownSourceDialog'
 import { areDocumentDraftBlocksEqual } from '../../utils/documentDraftComparison'
 import { applySyncedHostSourceChanges, createSyncedHostSourceDraft, prepareSyncedHostSourceApply,
-  captureSyncedHostSourceSubmission, readSyncedHostSourceCheckpoint, readSyncedHostSourceRecovery, hasSyncedHostSourceChanges,
+  captureSyncedHostSourceSubmission, copySyncedHostSourceRange, insertSyncedHostSourceReference, moveSyncedHostSourceRange, readSyncedHostSourceCheckpoint,
+  readSyncedHostSourceRecovery, hasSyncedHostSourceChanges,
   type PreparedSyncedHostSource, type SyncedHostSourceSubmission, type SyncedHostSourceApplyOutcome, type SyncedHostSourceCheckpoint, type RestoredSyncedHostSource } from './hostSource'
+import { SyncedHostSourceReferencePicker, type SyncedSourcePickerPort } from './SyncedHostSourceReferencePicker'
 
 export type SyncedHostSourceCurrent = {
   hostSession: object
@@ -18,6 +20,7 @@ export type SyncedHostSourceDialogProps = {
   opener: HTMLElement | null
   applyPrepared: (prepared: PreparedSyncedHostSource) => Promise<boolean>
   applySubmission?: (submission: SyncedHostSourceSubmission) => Promise<SyncedHostSourceApplyOutcome>
+  referencePicker?: SyncedSourcePickerPort
   onCompositionChange?: (composing: boolean) => void
   isZh: boolean
   onLocalStateChange?: (state: Readonly<MarkdownSourceLocalState>) => void
@@ -52,12 +55,42 @@ function HostSourceOpening(props: SyncedHostSourceDialogProps & { ownsOpening: (
     const current = latest.current.getCurrent()
     return current !== null && current.hostSession === opening.hostSession && current.host.documentId === opening.draft.opening.documentId
   }
+  const hasOriginalWorkingBody = () => {
+    const state = latest.current.getCurrent(), before = opening.draft.opening
+    return isCurrent() && state?.editSequence === opening.editSequence && state.host.expectedPersistedUpdatedAt === before.expectedPersistedUpdatedAt
+      && state.host.workingBefore.title === before.workingBefore.title && state.host.workingBefore.summary === before.workingBefore.summary
+      && areDocumentDraftBlocksEqual(state.host.workingBefore.blocks, before.workingBefore.blocks)
+  }
   return <MarkdownSourceDialog sessionKey={opening.sessionKey} isZh={props.isZh} onClose={props.onClose} onLocalStateChange={props.onLocalStateChange}
     recoveryAddress={{ kind: 'host', documentId: opening.draft.opening.documentId }}
     readRecoveryProvenance={readSyncedHostSourceRecovery}
     hasUnappliedChanges={hasSyncedHostSourceChanges}
     restored={props.restored}
     createDraft={() => opening.draft} replaceChanges={applySyncedHostSourceChanges}
+    renderReferencePicker={props.referencePicker && (picker => <SyncedHostSourceReferencePicker documentId={opening.draft.opening.documentId}
+      opener={picker.opener} isZh={props.isZh} isCurrent={hasOriginalWorkingBody} port={props.referencePicker!} cancel={picker.cancel}
+      insert={identity => picker.insert((draft, at) => {
+        const next = insertSyncedHostSourceReference(draft, { at, identity })
+        prepareSyncedHostSourceApply(next)
+        const before = new Set(draft.references.anchors.map(anchor => anchor.key))
+        const added = next.references.anchors.find(anchor => !before.has(anchor.key))!
+        return { draft: next, from: added.from, to: added.to }
+      })} />)}
+    relocateReferenceSelection={opening.hasSyncedReferences ? (draft, range, copy) => {
+      if (!hasOriginalWorkingBody()) {
+        throw new Error(props.isZh ? '宿主正文已变化。当前源码已保留。' : 'The host body changed. Your source is retained.')
+      }
+      if (!draft.references.anchors.some(anchor => range.from <= anchor.from && anchor.to <= range.to)) {
+        throw new Error(props.isZh ? '选区须包含至少一个完整同步引用。' : 'The selection must include at least one complete synced reference.')
+      }
+      const next = copy ? copySyncedHostSourceRange(draft, range) : moveSyncedHostSourceRange(draft, range)
+      if (next === draft) return { draft, from: range.from, to: range.to }
+      // Validate the proposed destination without publishing it or allocating a
+      // different opening. Incomplete unrelated syntax remains in the old draft.
+      prepareSyncedHostSourceApply(next)
+      const from = !copy && range.insertAt > range.from ? range.insertAt - (range.to - range.from) : range.insertAt
+      return { draft: next, from, to: from + range.to - range.from }
+    } : undefined}
     isCurrent={isCurrent} getReturnFocus={() => opening.opener} onCompositionChange={opening.onCompositionChange}
     readApplyCheckpoint={() => {
       const handle = opening.checkpoint
@@ -88,12 +121,7 @@ function HostSourceOpening(props: SyncedHostSourceDialogProps & { ownsOpening: (
       conflict: props.isZh ? '宿主正文、标题、摘要或编辑会话已变化。当前源码已保留，请复制后重新打开。'
         : 'The host body, title, summary or editing session changed. Your source is retained; copy it and reopen.' }}
     onApply={draft => {
-      if (!isCurrent()) return false
-      const current = latest.current.getCurrent(), before = opening.draft.opening
-      if (!current || current.hostSession !== opening.hostSession || current.editSequence !== opening.editSequence
-        || current.host.documentId !== before.documentId || current.host.expectedPersistedUpdatedAt !== before.expectedPersistedUpdatedAt
-        || current.host.workingBefore.title !== before.workingBefore.title || current.host.workingBefore.summary !== before.workingBefore.summary
-        || !areDocumentDraftBlocksEqual(current.host.workingBefore.blocks, before.workingBefore.blocks)) return false
+      if (!hasOriginalWorkingBody()) return false
       // This exact opening callback owns coordinator adoption. It receives only
       // the existing prepared fields, never a fabricated successful Main result.
       // Its successful adoption may advance host editSequence, so W equality is

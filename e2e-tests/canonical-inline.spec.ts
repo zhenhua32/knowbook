@@ -2,8 +2,9 @@ import { expect, test, type Page } from '@playwright/test'
 import type { ElectronApplication } from 'playwright'
 import type { IpcMainInvokeEvent } from 'electron'
 import type { EditorRecoveryReceipt, EditorRecoverySourceBuffer, WriteEditorRecoveryDraftsInput } from '../src/shared/editor-recovery-drafts'
+import { parseSyncedBlockPayload } from '../src/shared/syncedBlockValidation'
 import { hasBuiltElectronApp, uiText } from './helpers/electron'
-import { expectSource, sourceValue } from './helpers/markdown-source'
+import { expectSource, sourceSelection, sourceValue } from './helpers/markdown-source'
 import {
   appendCanonicalText, assertRealCloseBlocked, expectCanonicalRow, expectExactCanonicalFocus, expectHostReferencesUnchanged,
   inlineInstance, observeRealEditorClose, openInlineHost, saveCanonical, setInlineReading, withCanonicalInlineApp
@@ -176,9 +177,12 @@ test('normal window close preserves exact unapplied shared Source and selection 
     await closed
     await fixture.restart()
     const reopened = fixture.context().page
+    await openInlineHost(reopened, host)
+    await expectCanonicalRow(inlineInstance(reopened, seed.instanceIds[0]), seed.primaryId, seed.primaryText)
     const recovery = await reviewRetainedDraft(reopened, seed.query)
     await expect(draftPreview(recovery)).toHaveValue(initial + suffix)
-    await expect(recovery.getByRole('button', { name: uiText('Restore', '恢复'), exact: true })).toBeDisabled()
+    const restore = recovery.getByRole('button', { name: uiText('Restore', '恢复'), exact: true })
+    await expect(restore).toBeEnabled()
     const retained = await reopened.evaluate(async groupId => {
       const row = (await window.knowbook.listEditorRecoveryDrafts({ limit: 20 })).records
         .find(item => item.owner.kind === 'group' && item.owner.groupId === groupId)
@@ -197,6 +201,17 @@ test('normal window close preserves exact unapplied shared Source and selection 
       return opened.status === 'ready' ? opened.snapshot.blocks.at(-1)?.content : null
     }, { hostDocumentId: host.id, instanceId: seed.instanceIds[0], groupId: seed.groupId })
     expect(committed).toBe(seed.secondaryText)
+    await restore.click()
+    const restored = reopened.getByRole('textbox', { name: uiText('Shared body Markdown source', '共享正文 Markdown 源码'), exact: true })
+    await expectSource(restored, initial + suffix)
+    await expect.poll(() => sourceSelection(restored)).toEqual({ from: initial.length + suffix.length - 2, to: initial.length + suffix.length })
+    await reopened.getByRole('button', { name: uiText('Apply changes', '应用更改'), exact: true }).click()
+    await saveCanonical(reopened, seed, seed.instanceIds[0], seed.primaryText)
+    await expectCanonicalRow(inlineInstance(reopened, seed.instanceIds[0]), seed.secondaryId, seed.secondaryText + suffix)
+    await expect.poll(() => reopened.evaluate(input => window.knowbook.resolveSyncedInlineInstance(input), {
+      hostDocumentId: host.id, instanceId: seed.instanceIds[0], groupId: seed.groupId
+    }).then(result => result.status === 'ready' ? result.snapshot.blocks.find(block => block.id === seed.secondaryId)?.content : null)).toBe(seed.secondaryText + suffix)
+    await expectHostReferencesUnchanged(reopened, seed)
   })
 })
 
@@ -227,11 +242,25 @@ test('a background Source checkpoint survives force-ending the real test host be
     await fixture.restart()
 
     const reopened = fixture.context().page
+    await openInlineHost(reopened, host)
     const recovery = await reviewRetainedDraft(reopened, host.title)
     await expect(draftPreview(recovery)).toHaveValue(initial + suffix)
-    await expect(recovery.getByRole('button', { name: uiText('Restore', '恢复'), exact: true })).toBeDisabled()
+    const restore = recovery.getByRole('button', { name: uiText('Restore', '恢复'), exact: true })
+    await expect(restore).toBeEnabled()
     await expectHostReferencesUnchanged(reopened, seed)
     expect(await reopened.evaluate(id => window.knowbook.getDocumentDetail(id), host.id)).toEqual(persisted)
+    await restore.click()
+    const restored = reopened.getByRole('textbox', { name: uiText('Host body Markdown source', '宿主正文 Markdown 源码'), exact: true })
+    await expectSource(restored, initial + suffix)
+    expect(await reopened.evaluate(id => window.knowbook.getDocumentDetail(id), host.id)).toEqual(persisted)
+    await reopened.getByRole('button', { name: uiText('Apply changes', '应用更改'), exact: true }).click()
+    await expect(restored).toBeHidden()
+    await expect.poll(() => reopened.evaluate(id => window.knowbook.getDocumentDetail(id), host.id).then(document =>
+      document?.blocks.find(block => block.content === 'Crash checkpoint 中文🙂')?.content)).toBe('Crash checkpoint 中文🙂')
+    const hostBlocks = (await reopened.evaluate(id => window.knowbook.getDocumentDetail(id), host.id))?.blocks
+    const references = (blocks: NonNullable<typeof hostBlocks>) => blocks.filter(block => block.type === 'synced-block')
+      .map(block => ({ ...block, content: parseSyncedBlockPayload(block.content) }))
+    expect(hostBlocks && references(hostBlocks)).toEqual(persisted && references(persisted.blocks))
   })
 })
 

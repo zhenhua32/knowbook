@@ -8,10 +8,11 @@ import { canonicalJson, conflictPreview, emptySyncState, hashBytes, parseManifes
 import { mergeSyncDocument } from './merge'
 import { preflightSyncBlockTransfers, preflightSyncPublishedBlockOwnership, preflightSyncCatalogReferences, SyncBlockOwnershipError } from './repository'
 import { normalizeWebDavConfig, WebDavClient, WebDavHttpError, type WebDavCapabilities } from './webdav-client'
-import { peekProtocol5Remote, previewProtocol5WebDavConflicts, protocol5LastSyncAt, protocol5ModeKey, readProtocol5Selection, resolveProtocol5WebDavConflict, runProtocol5WebDav } from './protocol5-service'
+import { peekProtocol5Remote, previewProtocol5WebDavConflicts, protocol5LastSyncAt, protocol5ModeKey, protocol5NeedsRestoreRejoin, readProtocol5Selection, resolveProtocol5WebDavConflict, runProtocol5WebDav } from './protocol5-service'
 import { previewProtocol5WebDavDeletions, readProtocol5DeletionSelection, resolveProtocol5WebDavDeletion } from './protocol5-service'
 import type { WebDavProtocol5DeletionPreview } from '../../shared/webdav-sync'
 import { SYNC_RECEIVER_PROFILE_KEY } from './receiver-bootstrap'
+import { confirmProtocol5RestoreRejoin, prepareProtocol5RestoreRejoin } from './protocol5-restore-rejoin-read'
 
 const CONFIG_KEY = 'sync.webdav.config'
 const PASSWORD_KEY = 'sync.webdav.password'
@@ -102,7 +103,8 @@ export class WebDavSyncService {
     const protocol5 = this.protocol5Enabled(), state = protocol5 ? emptySyncState() : this.state()
     return { config: { ...this.config }, hasPassword: Boolean(this.store.getSettingPublic(PASSWORD_KEY)), phase: this.phase,
       ...(protocol5 ? { protocol5: true as const, ...(this.protocol5Preview ? { protocol5Preview: this.protocol5Preview } : {}),
-        ...(this.protocol5DeletionPreview ? { protocol5DeletionPreview: this.protocol5DeletionPreview } : {}) } : {}),
+        ...(this.protocol5DeletionPreview ? { protocol5DeletionPreview: this.protocol5DeletionPreview } : {}),
+        ...(protocol5NeedsRestoreRejoin(this.store, this.config) ? { protocol5RestoreRejoin: true as const } : {}) } : {}),
       lastSyncAt: protocol5 ? protocol5LastSyncAt(this.store, this.config) : state.lastSyncAt, message: this.message, uploaded: this.uploaded, downloaded: this.downloaded, merged: this.merged,
       progress: this.progress ? { ...this.progress } : null,
       conflicts: Object.entries(state.conflicts).map(([key, conflict]) => ({ key,
@@ -260,6 +262,24 @@ export class WebDavSyncService {
   private clearProtocol5Previews(): void {
     this.protocol5Preview = null
     this.protocol5DeletionPreview = null
+  }
+
+  rejoinProtocol5AfterRestore(confirm: (baselineCount: number, remoteAdvanced: boolean) => Promise<boolean>): Promise<WebDavSyncStatus> {
+    const profile = this.profile, target = normalizeWebDavConfig(this.config)
+    if (!profile || !this.protocol5Enabled() || !protocol5NeedsRestoreRejoin(this.store, target))
+      throw new Error('当前目录没有等待续接的同步块工作区。')
+    return this.operation('syncing', async () => {
+      this.clearProtocol5Previews()
+      this.stage('comparing')
+      const db = this.store.getUnsafeDatabaseHandle(), runtime = { password: this.password(), signal: this.abort?.signal }
+      const preview = await prepareProtocol5RestoreRejoin(db, profile, target, runtime)
+      if (!await confirm(preview.baseline.length, preview.manifestHash !== preview.originalManifestHash)) {
+        this.message = '已取消续接，工作区保持暂停。'
+        return
+      }
+      await confirmProtocol5RestoreRejoin(db, profile, target, runtime, preview.owner)
+      this.message = '已续接原同步目录，可以开始同步。'
+    })
   }
 
   previewProtocol5Conflicts(): Promise<WebDavSyncStatus> {

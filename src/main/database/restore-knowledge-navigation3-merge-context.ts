@@ -1,6 +1,6 @@
 import type { SyncedStableBlockDraft } from '../../shared/synced-blocks'
 import type { Graph3Inputs } from './restore-knowledge-graph3-data'
-import type { Capsule2Encoding } from './restore-knowledge-capsule2-raw-model'
+import type { Capsule2Encoding, Capsule2RawSqlRow, Capsule2RawSqlTable } from './restore-knowledge-capsule2-raw-model'
 import type { FinishedMerge3Table, Merge3OriginalRowRef, MergedRow3 } from './restore-knowledge-merge3-storage'
 import type { deriveRootRestoreMergedContent3 } from './restore-knowledge-merge3-model'
 import type { Navigation3FinalTarget } from './restore-knowledge-navigation3-rewrite-cells'
@@ -11,9 +11,10 @@ import { parseWikiReference, resolveWikiDocument, wikiDocumentPaths } from '../.
 import { canBlockNestUnder } from '../../shared/blockTypes'
 import { parseSyncedBlockPayload, SYNCED_MAX_BLOCKS, SYNCED_MAX_DEPTH, validateSyncedCanonicalEdit, validateSyncedHostForest } from '../../shared/syncedBlockValidation'
 import { parseStrictJson } from '../../shared/strictJson'
-import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
+import { capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
+import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
 import { CAPSULE2_RAW_MAX_ROWS, CAPSULE2_RAW_MAX_VALUE_BYTES } from './restore-knowledge-capsule2-raw-model'
-import { graph3Conflict, graph3Key, graph3Rows, graph3Text } from './restore-knowledge-graph3-data'
+import { findGraph3OriginalRow, graph3Conflict, graph3Key, graph3Text, graph3Value } from './restore-knowledge-graph3-data'
 import { assertMerge3JsonBudget } from './restore-knowledge-merge3-storage'
 import { captureSyncedCreateSourceFacts } from './synced-host-create-plan'
 
@@ -89,47 +90,71 @@ const same = (a: unknown, b: unknown) => capsuleJson(a) === capsuleJson(b)
 const unresolved = (reason: string): Extract<Navigation3MappedTarget, { kind: 'unresolved' }> => ({ kind: 'unresolved', reason, preserveUnresolved: true })
 const ascii = (value: string) => value.replace(/[A-Z]/g, value => value.toLowerCase())
 const refKey = (ref: Merge3OriginalRowRef) => graph3Key(ref)
-const hash = (domain: string, value: unknown) => capsuleBytesHash(domain + '\0' + capsuleJson(value))
+const hash = (domain: string, value: object) => hashBoundedCapsuleJson(value, Number.MAX_SAFE_INTEGER, domain + '\0')
+  ?? graph3Conflict('navigation-merge-hash-budget', null)
 function originalAccess(data: Graph3Inputs) {
-  const tables = new Map<string, ReturnType<typeof graph3Rows>>()
+  const tables = new Map<string, Capsule2RawSqlTable>()
   const payloads = new Map((['source', 'current'] as const).map(side => {
     const matches = data.inputs.knowledge.constraints.payloads.filter(payload => !payload.witness.domain.length && payload.witness.side === side)
     if (matches.length !== 1) return graph3Conflict('navigation-merge-payload', side)
     return [side, matches[0]] as const
   }))
-  function rows(side: Side, table: string) {
-    const key = graph3Key(side, table)
+  function table(side: Side, name: string) {
+    const key = graph3Key(side, name)
     let result = tables.get(key)
-    if (!result) { result = graph3Rows(data.inputs[side].source.sourceContent, table); tables.set(key, result) }
+    if (!result) {
+      result = data.inputs[side].source.sourceContent.tables.find(table => table.name === name)
+        ?? graph3Conflict('missing-source-table', name)
+      tables.set(key, result)
+    }
     return result
   }
-  const byRow = new Map<string, Map<string, ReturnType<typeof graph3Rows>[number]>>()
-  const byId = new Map<string, Map<string, ReturnType<typeof graph3Rows>[number]>>()
-  function original(side: Side, table: string, sourceRowId: string) {
-    const key = graph3Key(side, table)
-    if (!byRow.has(key)) byRow.set(key, new Map(rows(side, table).map(row => [row.original.sourceRowId, row])))
-    return byRow.get(key)!.get(sourceRowId) ?? graph3Conflict('navigation-merge-original-row', { side, table, sourceRowId })
+  function value(side: Side, table: Capsule2RawSqlTable, row: Capsule2RawSqlRow, column: string) {
+    const index = table.columns.indexOf(column)
+    return index < 0 ? undefined : graph3Value(row.cells[index], data.inputs[side].source.sourceContent.encoding)
   }
-  function identity(side: Side, table: 'documents' | 'blocks' | 'synced_group_blocks', id: string) {
-    const key = graph3Key(side, table)
-    if (!byId.has(key)) byId.set(key, new Map(rows(side, table).map(row => [text(row.value.id), row])))
-    return byId.get(key)!.get(id) ?? graph3Conflict('navigation-merge-original-identity', { side, table, id })
+  function original(side: Side, originalTable: Capsule2RawSqlTable, sourceRowId: string) {
+    return findGraph3OriginalRow(originalTable, sourceRowId)
+      ?? graph3Conflict('navigation-merge-original-row', { side, table: originalTable.name, sourceRowId })
+  }
+  const byId = new Map<string, Map<string, Capsule2RawSqlRow>>()
+  function findIdentity(side: Side, name: 'documents' | 'blocks' | 'synced_group_blocks', id: string) {
+    const key = graph3Key(side, name), originalTable = table(side, name)
+    let index = byId.get(key)
+    if (!index) {
+      index = new Map()
+      for (const row of originalTable.rows) index.set(text(value(side, originalTable, row, 'id')), row)
+      byId.set(key, index)
+    }
+    const row = index.get(id)
+    return row && { table: originalTable, row }
+  }
+  function identity(side: Side, name: 'documents' | 'blocks' | 'synced_group_blocks', id: string) {
+    return findIdentity(side, name, id) ?? graph3Conflict('navigation-merge-original-identity', { side, table: name, id })
   }
   const refs = new Map<string, Merge3OriginalRowRef>()
-  function ref(side: Side, table: Merge3OriginalRowRef['table'], sourceRowId: string): Merge3OriginalRowRef {
-    const key = graph3Key(side, table, sourceRowId), old = refs.get(key)
+  function ref(side: Side, name: Merge3OriginalRowRef['table'], sourceRowId: string): Merge3OriginalRowRef {
+    const key = graph3Key(side, name, sourceRowId), old = refs.get(key)
     if (old) return old
-    const packet = data.inputs[side], raw = packet.source.sourceContent, row = original(side, table, sourceRowId), payload = payloads.get(side)!
-    const result: Merge3OriginalRowRef = { side, table, sourceRowId, payload: payload.key, materialHash: packet.materialHash, witness: payload.witness,
-      originalRowHash: hash('knowbook.restore.merge3.original-row.v1', { table, columns: row.table.columns, primaryKey: row.table.primaryKey,
-        encoding: raw.encoding, sourceRowId, cells: row.original.cells }) }
+    const packet = data.inputs[side], raw = packet.source.sourceContent, originalTable = table(side, name)
+    const row = original(side, originalTable, sourceRowId), payload = payloads.get(side)!
+    const result: Merge3OriginalRowRef = { side, table: name, sourceRowId, payload: payload.key, materialHash: packet.materialHash, witness: payload.witness,
+      originalRowHash: hash('knowbook.restore.merge3.original-row.v1', { table: name, columns: originalTable.columns, primaryKey: originalTable.primaryKey,
+        encoding: raw.encoding, sourceRowId, cells: row.cells }) }
     refs.set(key, result); return result
   }
-  function checked(refValue: Merge3OriginalRowRef) {
+  function assertRef(refValue: Merge3OriginalRowRef) {
     if (!same(refValue, ref(refValue.side, refValue.table, refValue.sourceRowId))) return graph3Conflict('navigation-merge-original-ref', refValue)
-    return original(refValue.side, refValue.table, refValue.sourceRowId)
   }
-  return { rows, original, identity, ref, checked }
+  function values(side: Side, originalTable: Capsule2RawSqlTable, row: Capsule2RawSqlRow, columns: readonly string[]): Values {
+    return Object.fromEntries(columns.map(column => [column, value(side, originalTable, row, column)]))
+  }
+  function checkedValues(ref: Merge3OriginalRowRef, columns: readonly string[]): Values {
+    assertRef(ref)
+    const originalTable = table(ref.side, ref.table)
+    return values(ref.side, originalTable, original(ref.side, originalTable, ref.sourceRowId), columns)
+  }
+  return { table, value, values, identity, findIdentity, ref, assertRef, checkedValues }
 }
 function finalEntries(tables: readonly Navigation3Table[]): FinalEntry[] {
   assertMerge3JsonBudget(tables)
@@ -169,12 +194,34 @@ function cell(entry: FinalEntry, column: 'content' | 'summary'): Navigation3Cell
 }
 function captureGrammar(blocks: readonly SyncedStableBlockDraft[]) {
   const facts = captureSyncedCreateSourceFacts(blocks)
-  const offsets = blocks.map(block => { const result: number[] = []; for (let i = 0; i < block.content.length; i++) {
-    result.push(i); if (block.content[i] === '\r' && block.content[i + 1] === '\n') i++
-  } result.push(block.content.length); return result })
-  const grammar = new Map(collectDocumentMarkdownLinks(blocks.map(block => ({ ...block, content: block.content.replace(/\r\n?/g, '\n') }))).map(link => [
-    graph3Key(link.blockId, offsets[link.blockIndex][link.start], offsets[link.blockIndex][link.end]), link
-  ]))
+  const normalized = blocks.map(block => ({ ...block, content: block.content.replace(/\r\n?/g, '\n') }))
+  const parsed = collectDocumentMarkdownLinks(normalized)
+  const requested = new Map<number, Set<number>>()
+  for (const { blockIndex, start, end } of parsed) {
+    const offsets = requested.get(blockIndex) ?? new Set<number>()
+    offsets.add(start).add(end)
+    requested.set(blockIndex, offsets)
+  }
+  const originalOffsets = new Map<number, Map<number, number>>()
+  for (const [index, requestedOffsets] of requested) {
+    const content = blocks[index].content, offsets = new Map<number, number>()
+    let crlf = content.indexOf('\r\n'), removed = 0
+    // The CRLF's own start stays at its original CR. Only positions after
+    // that normalized newline need the extra UTF-16 code unit.
+    for (const offset of [...requestedOffsets].sort((a, b) => a - b)) {
+      if (offset < 0 || offset > normalized[index].content.length) return graph3Conflict('navigation-final-range-grammar', null)
+      while (crlf >= 0 && crlf - removed < offset) {
+        removed++
+        crlf = content.indexOf('\r\n', crlf + 2)
+      }
+      offsets.set(offset, offset + removed)
+    }
+    originalOffsets.set(index, offsets)
+  }
+  const grammar = new Map(parsed.map(link => {
+    const offsets = originalOffsets.get(link.blockIndex)!
+    return [graph3Key(link.blockId, offsets.get(link.start), offsets.get(link.end)), link] as const
+  }))
   if (grammar.size !== facts.links.length) return graph3Conflict('navigation-final-incomplete-grammar', null)
   const links = facts.links.map(link => {
     const role = grammar.get(graph3Key(link.key.blockId, link.key.from, link.key.to))
@@ -204,13 +251,15 @@ export function buildMerge3NavigationFinalIndex3(data: Graph3Inputs, tables: rea
   const documents: Navigation3FinalDocument[] = [], physicalBlocks: Navigation3FinalBlock[] = []
   const documentEntries = new Map<string, FinalEntry>(), blockEntries = new Map<string, FinalEntry>(), groupEntries = new Map<string, FinalEntry>()
   for (const entry of physical) {
-    const original = access.checked(entry.row.sourceRef).value, name = entry.table.name, kind = name === 'documents' ? 'document' : name === 'synced_groups' ? 'group' : 'block'
+    const name = entry.table.name, kind = name === 'documents' ? 'document' : name === 'synced_groups' ? 'group' : 'block'
     const ownerKind = kind !== 'block' ? null : name === 'blocks' ? 'document' : 'group'
-    const ownerId = ownerKind === null ? null : text(original[ownerKind === 'document' ? 'document_id' : 'group_id'])
+    const ownerColumn = ownerKind === null ? null : ownerKind === 'document' ? 'document_id' : 'group_id'
+    const original = access.checkedValues(entry.row.sourceRef, ownerColumn ? ['id', 'created_at', ownerColumn] : ['id', 'created_at'])
+    const ownerId = ownerColumn === null ? null : text(original[ownerColumn])
     if (entry.value.id !== mapped(entry.row.sourceRef.side, kind, original, ownerKind, ownerId) || entry.value.created_at !== original.created_at)
       return graph3Conflict('navigation-final-identity-or-birth', entry.row.key)
     if (entry.row.replaces) {
-      const old = access.checked(entry.row.replaces).value
+      const old = access.checkedValues(entry.row.replaces, ['id', 'created_at'])
       if (entry.row.replaces.side !== 'current' || entry.row.replaces.table !== name || old.id !== entry.value.id || old.created_at !== entry.value.created_at)
         return graph3Conflict('navigation-final-replaced-incarnation', entry.row.key)
     }
@@ -246,7 +295,7 @@ export function buildMerge3NavigationFinalIndex3(data: Graph3Inputs, tables: rea
   const physicalGroupStates = new Map((['source', 'current'] as const).map(side => [side,
     new Map(data.inputs[side].source.physical.groups.map(group => [group.groupId, group]))] as const))
   for (const [id, entry] of groupEntries) {
-    const original = access.checked(entry.row.sourceRef).value
+    const original = access.checkedValues(entry.row.sourceRef, ['id'])
     const fact = physicalGroupStates.get(entry.row.sourceRef.side)!.get(text(original.id))
     if (!fact) return graph3Conflict('navigation-final-group-state-source', id)
     const items = order(groupRows.get(id) ?? [])
@@ -309,17 +358,18 @@ export function buildMerge3NavigationFinalIndex3(data: Graph3Inputs, tables: rea
   const routes: Navigation3FinalIndex['routes'][number][] = []
   const finalBlocks = new Map(physicalBlocks.filter(block => block.documentId !== null).map(block => [block.id, block]))
   for (const side of ['source', 'current'] as const) {
-    const originals = new Map(access.rows(side, 'blocks').map(row => [text(row.value.id), row]))
-    for (const route of access.rows(side, 'document_block_routes')) {
-      const old = originals.get(text(route.value.block_id))
+    const routeTable = access.table(side, 'document_block_routes')
+    for (const route of routeTable.rows) {
+      const old = access.findIdentity(side, 'blocks', text(access.value(side, routeTable, route, 'block_id')))
       if (!old) continue // A retained/canonical UUID alone is never a physical host route.
-      const originalRef = access.ref(side, 'blocks', old.original.sourceRowId)
-      const targetId = mapped(side, 'block', old.value, 'document', text(old.value.document_id)), block = finalBlocks.get(targetId)
-      if (!block || block.birth !== old.value.created_at || !(same(block.sourceRef, originalRef) || side === 'current' && same(block.replaces, originalRef))) continue
-      routes.push({ path: text(route.value.document_path), blockId: block.id, documentId: block.documentId!, side,
-        sourceRowId: route.original.sourceRowId, sourceMaterialHash: data.inputs[side].materialHash,
-        originalRowHash: hash('knowbook.restore.merge3.original-row.v1', { table: route.table.name, columns: route.table.columns, primaryKey: route.table.primaryKey,
-          encoding: data.inputs[side].source.sourceContent.encoding, sourceRowId: route.original.sourceRowId, cells: route.original.cells }) })
+      const originalRef = access.ref(side, 'blocks', old.row.sourceRowId)
+      const oldValues = access.values(side, old.table, old.row, ['id', 'document_id', 'created_at'])
+      const targetId = mapped(side, 'block', oldValues, 'document', text(oldValues.document_id)), block = finalBlocks.get(targetId)
+      if (!block || block.birth !== oldValues.created_at || !(same(block.sourceRef, originalRef) || side === 'current' && same(block.replaces, originalRef))) continue
+      routes.push({ path: text(access.value(side, routeTable, route, 'document_path')), blockId: block.id, documentId: block.documentId!, side,
+        sourceRowId: route.sourceRowId, sourceMaterialHash: data.inputs[side].materialHash,
+        originalRowHash: hash('knowbook.restore.merge3.original-row.v1', { table: routeTable.name, columns: routeTable.columns, primaryKey: routeTable.primaryKey,
+          encoding: data.inputs[side].source.sourceContent.encoding, sourceRowId: route.sourceRowId, cells: route.cells }) })
     }
   }
   const body = { kind: 'restore-navigation3-final-syntax-index' as const, version: 1 as const, documents, physicalBlocks, headingNamespaces, scopes, routes,
@@ -344,7 +394,7 @@ export function deriveRootRestoreNavigationMergeContext3(data: Graph3Inputs,
   for (const table of merged.tables) if (table.name === 'documents' || table.name === 'blocks' || table.name === 'synced_group_blocks') {
     const column = table.name === 'documents' ? 'summary' : 'content'
     for (const row of table.rows) {
-      access.checked(row.sourceRef)
+      access.assertRef(row.sourceRef)
       const key = graph3Key(refKey(row.sourceRef), column)
       if (selectedCells.has(key)) return graph3Conflict('navigation-selected-cell-duplicate-origin', key)
       selectedCells.set(key, { table: table.name, rowKey: row.key, targetRowId: row.targetRowId, column, sourceRef: row.sourceRef,
@@ -354,9 +404,9 @@ export function deriveRootRestoreNavigationMergeContext3(data: Graph3Inputs,
   function evidence(side: Side, kind: 'document' | 'block', identity: OriginalIdentity) {
     let table: 'documents' | 'blocks' | 'synced_group_blocks' = 'documents'
     if (kind === 'block') table = identity.ownerKind === 'group' ? 'synced_group_blocks' : 'blocks'
-    const row = access.identity(side, table, identity.id)
-    if (row.value.created_at !== identity.birth) return graph3Conflict('navigation-baseline-identity-birth', identity)
-    return access.ref(side, table, row.original.sourceRowId)
+    const original = access.identity(side, table, identity.id)
+    if (access.value(side, original.table, original.row, 'created_at') !== identity.birth) return graph3Conflict('navigation-baseline-identity-birth', identity)
+    return access.ref(side, table, original.row.sourceRowId)
   }
   const projected = new Map<string, Navigation3FinalDocument | Navigation3FinalBlock | null>()
   function project(side: Side, kind: 'document', identity: OriginalIdentity): Navigation3FinalDocument | null
@@ -417,7 +467,8 @@ export function deriveRootRestoreNavigationMergeContext3(data: Graph3Inputs,
         mapping = new Map<string, FinalHeading>()
         const before = originalHeadingIndexes.get(side)!.get(old.document.id)?.byBlock.get(oldWrapper) ?? []
         const oldBlock = access.identity(side, originalRef.table as 'blocks' | 'synced_group_blocks', location.blockId!)
-        if (/^heading-[1-6]$/.test(text(oldBlock.value.type)) && /^heading-[1-6]$/.test(block.block.type) && before.length === 1 && candidates.length === 1)
+        if (/^heading-[1-6]$/.test(text(access.value(side, oldBlock.table, oldBlock.row, 'type')))
+          && /^heading-[1-6]$/.test(block.block.type) && before.length === 1 && candidates.length === 1)
           mapping.set(before[0].key, candidates[0])
         else {
           const left = new Map<string, typeof before>(), right = new Map<string, typeof candidates>()

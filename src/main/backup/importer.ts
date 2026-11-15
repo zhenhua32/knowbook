@@ -378,7 +378,7 @@ export class MarkdownRestoreService {
       if (!indexInfo.isFile() || indexInfo.isSymbolicLink() || indexInfo.size > 5 * 1024 * 1024) throw new Error('备份保留索引不是有效普通文件；未开始恢复。')
       const index = this.readMarkdownFileStrictUtf8(reservedIndex)
       if (/^backupFormatVersion:\s*(?:"3"|'3'|3)\s*$/m.test(index) || /^(?:syncedGroups|syncedInstances|syncedMissingReferences):/m.test(index))
-        throw new Error('这是完整 V3 备份。V3 恢复入口尚待实现，不能降级为旧 Markdown 恢复；原数据未修改。')
+        throw new Error('这是完整 V3 备份。请通过“导入 Markdown / 恢复备份”选择目录。')
     }
     const wikiAssets = new Map<string, string[]>()
     const markdownFiles = await this.collectMarkdownFiles(root, wikiAssets)

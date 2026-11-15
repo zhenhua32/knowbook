@@ -64,13 +64,13 @@ export function assertRawCapsule2OrdinaryHistoryOwned(db: Database.Database): vo
     count += measured[0]; bytes += measured[1]
     if (count > BigInt(CAPSULE2_RAW_MAX_ROWS) || bytes > BigInt(CAPSULE2_RAW_MAX_VALUE_BYTES)) return bad('完整来源超raw准备预算，不截断')
   }
-  for (const row of db.prepare('SELECT * FROM document_history ORDER BY _rowid_').all() as Row[]) {
+  for (const row of db.prepare('SELECT * FROM document_history ORDER BY _rowid_').iterate() as IterableIterator<Row>) {
     id(row.id); id(row.document_id); text(row.path); time(row.created_at)
     if (!['edit', 'restore', 'delete', 'move'].includes(text(row.reason))) return bad('未知checkpoint原因')
     const body = content(json(row.content_json))
     if (title(row.title) !== body.title) return bad('原checkpoint标题与正文不一致')
   }
-  for (const row of db.prepare('SELECT * FROM document_trash ORDER BY _rowid_').all() as Row[]) {
+  for (const row of db.prepare('SELECT * FROM document_trash ORDER BY _rowid_').iterate() as IterableIterator<Row>) {
     const key = id(row.id)
     title(row.title); text(row.path); time(row.deleted_at)
     const saved = json(row.snapshot_json)

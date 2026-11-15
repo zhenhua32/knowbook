@@ -18,7 +18,7 @@ import { assertRootRestoreStage3FilesHeld3, assertRootRestoreStage3WritableMain3
 import { stage3MarkerKey } from './restore-knowledge-stage3-marker-model'
 import { readRootRestoreStage3MarkerOwned } from './restore-knowledge-stage3-marker-read'
 import { discardRootRestoreStage3Probe3, holdRootRestorePhysicalStageOriginalBytes3, readRootRestoreStage3NativeFtsProjection3,
-  reopenRootRestorePhysicalStage3 } from './restore-knowledge-stage3-physical'
+  reopenRootRestorePhysicalStage3, type PreparedRestoreHistoryScope3 } from './restore-knowledge-stage3-physical'
 import { prepareRootRestoreCanonicalAliasDerivationFromCombined5, prepareRootRestoreSqlAssetAliasDerivationFromCombined5,
   readRootRestoreSqlAssetAliasDerivationSource5, reopenRootRestoreCanonicalAliasDerivationFromCombined5,
   reopenRootRestoreSqlAssetAliasDerivationFromCombined5, reopenRootRestoreSqlAssetAliasDerivationSource5,
@@ -54,12 +54,9 @@ const protectedTables = ['documents', 'blocks', 'document_block_routes', 'synced
   'document_trash', 'document_block_moves', 'document_templates', 'databases', 'document_database_columns',
   'database_saved_views', 'database_entities', 'database_entity_values', 'document_database_values'] as const
 
-function expectedLinks(db: Database.Database): Link[] {
-  return db.prepare(`SELECT DISTINCT source.source_document_id,target.id AS target_document_id,source.url AS label
-    FROM main.markdown_link_sources AS source JOIN main.documents AS target ON target.path=source.target_path
-    WHERE source.kind IN ('wiki','wiki-heading') OR target.id<>source.source_document_id
-    ORDER BY source_document_id,target_document_id,label`).all() as Link[]
-}
+const expectedLinks = `SELECT DISTINCT source.source_document_id,target.id AS target_document_id,source.url AS label
+  FROM main.markdown_link_sources AS source JOIN main.documents AS target ON target.path=source.target_path
+  WHERE source.kind IN ('wiki','wiki-heading') OR target.id<>source.source_document_id`
 
 function fingerprint(db: Database.Database, names: readonly string[], exceptLinkCount: boolean) {
   const encoding = db.pragma('main.encoding', { simple: true }) as string
@@ -91,13 +88,21 @@ function observe(db: Database.Database, routes?: DerivedRoutePlan4, names: reado
   if (!db.inTransaction || db.pragma('main.user_version', { simple: true }) !== 27
     || db.pragma('foreign_keys', { simple: true }) !== 1 || db.pragma('main.integrity_check', { simple: true }) !== 'ok'
     || (db.pragma('main.foreign_key_check') as unknown[]).length) return fail('需要完整实际 schema27 自有事务')
-  const actual = db.prepare('SELECT source_document_id,target_document_id,label FROM main.links ORDER BY source_document_id,target_document_id,label').all()
+  // Use SQLite's file-backed temporary sets for a whole-workspace comparison.
+  // Equal counts also reject duplicate physical rows that EXCEPT would hide.
+  const membership = db.prepare(`WITH expected AS (${expectedLinks}),
+      actual AS (SELECT source_document_id,target_document_id,label FROM main.links)
+    SELECT (SELECT count(*) FROM actual) AS links, (SELECT count(*) FROM expected) AS expectedLinks,
+      EXISTS(SELECT * FROM actual EXCEPT SELECT * FROM expected) AS unexpected,
+      EXISTS(SELECT * FROM expected EXCEPT SELECT * FROM actual) AS missing`).get() as
+      { links: number; expectedLinks: number; unexpected: 0 | 1; missing: 0 | 1 }
   const extraCounts = routes ? `OR d.block_count<>(SELECT count(*) FROM main.blocks b WHERE b.document_id=d.id)
     OR d.child_count<>(SELECT count(*) FROM main.documents c WHERE c.parent_id=d.id)` : ''
   const wrongCount = db.prepare(`SELECT 1 FROM main.documents d
     WHERE d.link_count<>(SELECT count(*) FROM main.links l WHERE l.source_document_id=d.id) ${extraCounts} LIMIT 1`).get()
-  if (wrongCount || !same(actual, expectedLinks(db))) return fail('实际链接、索引来源或计数不闭合')
-  return { links: actual.length, indexed: (db.prepare('SELECT count(*) AS n FROM main.markdown_link_sources').get() as { n: number }).n,
+  if (wrongCount || membership.links !== membership.expectedLinks || membership.unexpected || membership.missing)
+    return fail('实际链接、索引来源或计数不闭合')
+  return { links: membership.links, indexed: (db.prepare('SELECT count(*) AS n FROM main.markdown_link_sources').get() as { n: number }).n,
     protectedHash: fingerprint(db, protectedNames(names, routes), true),
     derivedHash: fingerprint(db, routes ? ['markdown_link_sources', 'links', 'documents', 'document_block_routes'] : ['markdown_link_sources', 'links', 'documents'], false),
     ...(routes ? { ...observeStage4Routes(db, routes), ...observeStage4CanonicalSearch(db) } : {}) }
@@ -113,7 +118,9 @@ function linkId(stageId: string, link: Link) {
 
 function rebuild(db: Database.Database, stageId: string, physicalId: string, routes?: DerivedRoutePlan4,
   names: readonly string[] = protectedTables): Observation {
-  db.pragma('foreign_keys=ON')
+  db.pragma('foreign_keys=ON'); db.pragma('temp_store=FILE')
+  db.function('knowbook_stage4_link_id', { deterministic: true, directOnly: true },
+    (source_document_id: string, target_document_id: string, label: string) => linkId(stageId, { source_document_id, target_document_id, label }))
   return db.transaction(() => {
     const protectedBefore = fingerprint(db, protectedNames(names, routes), true)
     const marker = db.prepare('SELECT updated_at FROM main.app_settings WHERE key=?').get(stage3MarkerKey(physicalId)) as { updated_at: string } | undefined
@@ -121,10 +128,13 @@ function rebuild(db: Database.Database, stageId: string, physicalId: string, rou
       return fail('缺实际物理暂存标记时点')
     if (routes) completeStage4Routes(db, routes)
     new MarkdownLinkIndex(db).rebuild()
-    const links = expectedLinks(db)
-    db.exec('DELETE FROM main.links')
-    const insert = db.prepare('INSERT INTO main.links(id,source_document_id,target_document_id,label,created_at) VALUES(?,?,?,?,?)')
-    for (const link of links) insert.run(linkId(stageId, link), link.source_document_id, link.target_document_id, link.label, marker.updated_at)
+    db.exec(`CREATE TEMP TABLE stage4_expected_links AS ${expectedLinks}`)
+    try {
+      db.exec('DELETE FROM main.links')
+      db.prepare(`INSERT INTO main.links(id,source_document_id,target_document_id,label,created_at)
+        SELECT knowbook_stage4_link_id(source_document_id,target_document_id,label),source_document_id,target_document_id,label,?
+        FROM temp.stage4_expected_links ORDER BY source_document_id,target_document_id,label`).run(marker.updated_at)
+    } finally { db.exec('DROP TABLE temp.stage4_expected_links') }
     db.exec(`UPDATE main.documents SET link_count=(SELECT count(*) FROM main.links WHERE source_document_id=documents.id)`)
     const actual = observe(db, routes, names)
     if (actual.protectedHash !== protectedBefore) return fail('派生写入改变了受保护正文、历史或路由原行')
@@ -202,11 +212,11 @@ async function readIndependent(saved: Independent, original: RootRestoreStage3He
     const db = new Database(restoreSqliteFilename(join(probe, 'knowbook.db')), { readonly: true, fileMustExist: true })
     let actual: Observation
     try {
-      db.pragma('query_only=ON'); db.pragma('foreign_keys=ON')
+      db.pragma('query_only=ON'); db.pragma('foreign_keys=ON'); db.pragma('temp_store=FILE')
       actual = db.transaction(() => {
         if (alias) {
           readRootRestoreStage3MarkerOwned(db, alias.source.marker)
-          if (readRawRestoreSqlInventoryOwned(db).schemaHash !== alias.source.raw.schemaHash)
+          if (readRawRestoreSqlInventoryOwned(db).schemaHash !== alias.source.schemaHash)
             return fail('派生附件副本原 schema 变化')
           if (!same(readRootRestoreStage3NativeFtsProjection3(db, false), alias.source.physical.nativeFtsProjection))
             return fail('派生附件副本原生 FTS 或映射变化')
@@ -314,7 +324,10 @@ export async function reopenRootRestoreDerivedStage4(reference: RootRestoreRefer
 }
 
 export interface RootRestoreDerivedAfterAliasStage4 { readonly kind: 'main-root-restore-non-executable-derived-after-alias-stage4' }
-const aliasDerivedOwners = new WeakMap<RootRestoreDerivedAfterAliasStage4, { alias: RootRestoreSqlAssetAliasStage5; locator: Locator }>()
+type AliasDerivedOwner = { alias: RootRestoreSqlAssetAliasStage5; locator: Locator;
+  canonical?: Pick<AliasSql, 'location' | 'physicalStage' | 'holdOriginalBytes' | 'assertOriginalBytes' | 'closure' | 'readCoverageOriginal' | 'readPolicy'> &
+    { directory: string; inventory: readonly DurableSqlCapsuleFile[]; aliasManifestHash: string } }
+const aliasDerivedOwners = new WeakMap<RootRestoreDerivedAfterAliasStage4, AliasDerivedOwner>()
 const aliasManifestKeys = ['kind', 'version', 'stageId', 'referencePlanId', 'referenceManifestHash', 'aliasStageId', 'aliasManifestHash',
   'physicalStageId', 'physicalObservationHash', 'syntaxIndexHash', 'inventory', 'observation', 'installPermit']
 const canonicalManifestKeys = [...aliasManifestKeys, 'canonicalStageId', 'canonicalStageManifestHash', 'canonicalAssetPlanHash']
@@ -323,7 +336,7 @@ async function deriveAfterAlias(source: AliasSql, stageId: string, expectedHash?
   const root = source.location.profileRoot, base = collection(source.location), directory = join(base, stageId)
   const { alias, physical, lineage } = source, version = lineage ? 4 as const : 3 as const
   const { routes, syntaxIndexHash } = deriveStage4AliasNavigation(source)
-  const names = source.raw.tables.map(table => table.name).filter(name => name !== 'links' && name !== 'markdown_link_sources')
+  const names = source.tableNames.filter(name => name !== 'links' && name !== 'markdown_link_sources')
   const copy: SqlCopy = { databaseDirectory: source.databaseDirectory, inventory: alias.value.inventory, physicalStageId: source.marker.stageId }
   const original = await source.holdOriginalBytes()
   try {
@@ -369,7 +382,10 @@ async function deriveAfterAlias(source: AliasSql, stageId: string, expectedHash?
       assertRootRestoreStage3FilesHeld3(original)
     }
     const stage: RootRestoreDerivedAfterAliasStage4 = Object.freeze({ kind: 'main-root-restore-non-executable-derived-after-alias-stage4' })
-    aliasDerivedOwners.set(stage, { alias: alias.stage, locator: { stageId, expectedManifestHash: manifestHash } })
+    aliasDerivedOwners.set(stage, { alias: alias.stage, locator: { stageId, expectedManifestHash: manifestHash },
+      canonical: lineage ? { location: source.location, physicalStage: source.physicalStage, holdOriginalBytes: source.holdOriginalBytes,
+        assertOriginalBytes: source.assertOriginalBytes, directory, inventory, closure: source.closure,
+        readCoverageOriginal: source.readCoverageOriginal, readPolicy: source.readPolicy, aliasManifestHash: alias.manifestHash } : undefined })
     const result = freezeCapsuleValue({ ...actual, version: manifest.version, aliasManifestHash: alias.manifestHash, ...lineage, syntaxIndexHash,
       ordinaryLinkProjectionComplete: true as const, routesRebuilt: true as const, canonicalExpandedSearchComplete: true as const,
       documentStatisticsComplete: true as const, finalAssetClosureComplete: false as const, acceptedCoverage: false as const,
@@ -409,8 +425,9 @@ export async function reopenRootRestoreDerivedFromCombinedStage4(combined: RootR
 
 /** A genuine combined/reference pair is the sole authority for the localized
  * canonical parent and both descendants. All three databases are non-executable. */
-export async function prepareRootRestoreFinalAssetSql5(reference: RootRestoreReferencePlan3, combined: RootRestoreSqlAssetStage5) {
-  const { aliases, canonical, source } = await prepareRootRestoreCanonicalAliasDerivationFromCombined5(reference, combined)
+export async function prepareRootRestoreFinalAssetSql5(reference: RootRestoreReferencePlan3, combined: RootRestoreSqlAssetStage5,
+  historyScope?: PreparedRestoreHistoryScope3) {
+  const { aliases, canonical, source } = await prepareRootRestoreCanonicalAliasDerivationFromCombined5(reference, combined, historyScope)
   const derived = await deriveAfterAlias(source, randomUUID())
   return Object.freeze({ aliases, canonical, sql: source.alias, derived })
 }
@@ -429,4 +446,29 @@ export async function readRootRestoreDerivedAfterAliasStage4(stage: RootRestoreD
   const saved = aliasDerivedOwners.get(stage) ?? fail('不是实际附件派生阶段句柄')
   return (await deriveAfterAlias(await readRootRestoreSqlAssetAliasDerivationSource5(saved.alias),
     saved.locator.stageId, saved.locator.expectedManifestHash)).value
+}
+
+/** The final SQL owner was minted only after independent readback. Keep its
+ * exact bytes and its alias parent held during the history operation. */
+export function readRootRestoreFinalHistorySqlSource5(stage: RootRestoreDerivedAfterAliasStage4) {
+  const saved = aliasDerivedOwners.get(stage), source = saved?.canonical
+  if (!saved || !source) return fail('历史 SQL 后继要求真实 canonical 附件派生阶段')
+  const { stageId, expectedManifestHash: manifestHash } = saved.locator
+  const { directory, inventory } = source, root = source.location.profileRoot, databaseDirectory = join(directory, 'database')
+  const manifestPath = join(directory, 'manifest.json')
+  return Object.freeze({ root, databaseDirectory, inventory, physical: source.physicalStage, stageId, manifestHash,
+    closure: source.closure, readCoverageOriginal: source.readCoverageOriginal, readPolicy: source.readPolicy, aliasManifestHash: source.aliasManifestHash,
+    holdAliasOriginalBytes: source.holdOriginalBytes,
+    async holdOriginalBytes() {
+      const text = await readCapsule2AssetManifest(manifestPath, root, maxManifestBytes)
+      if (capsuleBytesHash(text) !== manifestHash) return fail('最终派生 SQL 清单在后继写入前变化')
+      const present = inventory.filter(file => file.present)
+      return holdRootRestoreStage3Files3({ profileRoot: root,
+        directories: [{ path: directory, entries: ['checks', 'database', 'manifest.json'] },
+          { path: databaseDirectory, entries: present.map(file => file.name) }],
+        files: [{ path: manifestPath, bytes: Buffer.byteLength(text), sha256: manifestHash },
+          ...present.map(file => ({ path: join(databaseDirectory, file.name), bytes: file.bytes,
+            sha256: file.sha256 ?? fail('最终派生 SQL 缺文件哈希') }))],
+        absentFiles: inventory.filter(file => !file.present).map(file => join(databaseDirectory, file.name)) })
+    }, assertOriginalInputsFresh: source.assertOriginalBytes })
 }

@@ -14,29 +14,38 @@ import { capsuleBytesHash, capsuleJson, capsuleRecord, capsuleText, freezeCapsul
 import { CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-model'
 import { readRawCapsule2AssetReferenceSourceOwned } from './restore-knowledge-capsule2-assets-read'
 import { captureCapsule2ManagedTreeData, type Capsule2ManagedTreeData } from './restore-knowledge-capsule2-managed-assets-files'
-import { validateCapsule2ManagedTree } from './restore-knowledge-capsule2-assets-model'
+import { CAPSULE_V3_ASSET_MAX_FILE_BYTES, validateCapsule2ManagedTree, validateCapsuleV3ManagedTree } from './restore-knowledge-capsule2-assets-model'
 import { captureCapsule2AssetReferenceProvenanceOwned3, validateCapsule2AssetReferenceProvenance1,
+  captureCapsuleInstalledAssetProvenance, validateCapsuleInstalledAssetProvenance,
   type Capsule2AssetReferenceProvenance1 } from './restore-knowledge-capsule2-asset-provenance'
+import { captureInstalledV3NativeBase, validateInstalledV3AssetArchiveProof, type InstalledV3AssetArchiveProof,
+  type InstalledV3AssetContinuity } from './restore-knowledge-installed-v3-assets'
+import { assertInstalledV3ManyFiles, CAPSULE_INSTALLED_TRANSFERS_DIRECTORY, validateInstalledV3Many,
+  type InstalledV3Many } from './restore-knowledge-installed-v3-many'
 import { assertCapsule2AssetDirectory as directory, readCapsule2AssetManifest,
   writeCapsule2AssetCopy as writeNew, readCapsule2AssetCopy as readExact } from './restore-knowledge-capsule2-assets-files'
 import { deriveCapsule2SettledPortableEvidence3 } from './restore-knowledge-assets3-settled-portable-derive'
+import { readOriginCatalogFile } from './restore-knowledge-origin-bundle-files'
 
-export interface Capsule2BaseProjectionManifest4 {
-  readonly kind: 'capsule2-captured-base-projection'; readonly version: 1
+type BaseManifest = {
+  readonly kind: 'capsule2-captured-base-projection'
   readonly capsuleId: string; readonly schemaVersion: 26 | 27; readonly sourceInventory: readonly DurableSqlCapsuleFile[]
   readonly sourceContentHash: string; readonly workspaceHistoryObservationHash: string; readonly assetReferencesObservationHash: string
   readonly referenceCount: number; readonly referenceUris: readonly string[]; readonly tree: Capsule2ManagedTreeData
   readonly referenceProvenance: Capsule2AssetReferenceProvenance1; readonly baseMaterialHash: string
   readonly rawOriginalRewritten: false; readonly semanticSelectionPermission: false; readonly installPermit: false
 }
-export interface Capsule2BaseProjectionCommitment4 extends Capsule2BaseProjectionManifest4 {
+export type Capsule2BaseProjectionManifest4 = BaseManifest & ({ readonly version: 1 }
+  | { readonly version: 2; readonly installedV3: InstalledV3AssetArchiveProof }
+  | { readonly version: 3; readonly installedV3Many: InstalledV3Many })
+export type Capsule2BaseProjectionCommitment4 = Capsule2BaseProjectionManifest4 & {
   readonly baseManifestHash: string
   readonly baseManifestFile: { readonly bytes: number; readonly sha256: string }
 }
 /** Compact archive pointer only. Complete facts live once in the separately
  * authenticated base original; a pointer DTO cannot mint or read that file. */
 export interface Capsule2BaseProjectionPointer4 {
-  readonly version: 1; readonly baseManifestHash: string; readonly baseMaterialHash: string
+  readonly version: 1 | 2 | 3; readonly baseManifestHash: string; readonly baseMaterialHash: string
   readonly baseManifestFile: { readonly bytes: number; readonly sha256: string }
 }
 export interface PreparedCapsule2BaseProjection4 { readonly kind: 'main-capsule2-base-projection4' }
@@ -50,12 +59,16 @@ const digest = (domain: string, value: unknown) => capsuleBytesHash(domain + '\0
 const manifestKeys = ['kind','version','capsuleId','schemaVersion','sourceInventory','sourceContentHash','workspaceHistoryObservationHash',
   'assetReferencesObservationHash','referenceCount','referenceUris','tree','referenceProvenance','baseMaterialHash',
   'rawOriginalRewritten','semanticSelectionPermission','installPermit'] as const
-function materialHash(value: Pick<Capsule2BaseProjectionManifest4, 'sourceContentHash' | 'workspaceHistoryObservationHash' | 'assetReferencesObservationHash' | 'tree' | 'referenceProvenance'>) {
-  return digest('knowbook.capsule2.base-projection-material4.v1', { sourceContentHash: value.sourceContentHash,
+type InstalledBaseProof = { installedV3: InstalledV3AssetArchiveProof } | { installedV3Many: InstalledV3Many }
+function materialHash(value: Pick<BaseManifest, 'sourceContentHash' | 'workspaceHistoryObservationHash' | 'assetReferencesObservationHash' | 'tree' | 'referenceProvenance'>,
+  installed?: InstalledBaseProof) {
+  const version = !installed ? 1 : 'installedV3' in installed ? 2 : 3
+  return digest('knowbook.capsule2.base-projection-material4.v' + version, { sourceContentHash: value.sourceContentHash,
     workspaceHistoryObservationHash: value.workspaceHistoryObservationHash, assetReferencesObservationHash: value.assetReferencesObservationHash,
-    tree: value.tree, referenceProvenance: value.referenceProvenance })
+    tree: value.tree, referenceProvenance: value.referenceProvenance, ...installed })
 }
-function manifestHash(value: Capsule2BaseProjectionManifest4) { return digest('knowbook.capsule2.base-projection-manifest4.v1', value) }
+const installedKeys = (version: unknown) => version === 2 ? ['installedV3'] : version === 3 ? ['installedV3Many'] : []
+function manifestHash(value: Capsule2BaseProjectionManifest4) { return digest('knowbook.capsule2.base-projection-manifest4.v' + value.version, value) }
 function commit(manifest: Capsule2BaseProjectionManifest4): Capsule2BaseProjectionCommitment4 {
   const bytes = Buffer.from(capsuleJson(manifest) + '\n')
   if (bytes.length > CAPSULE2_RAW_MAX_JSON_BYTES) return bad('完整base manifest超原准备预算，不截断')
@@ -63,8 +76,9 @@ function commit(manifest: Capsule2BaseProjectionManifest4): Capsule2BaseProjecti
     baseManifestFile: { bytes: bytes.length, sha256: capsuleBytesHash(bytes) } })
 }
 function validateManifest(value: unknown): Capsule2BaseProjectionManifest4 {
-  const row = capsuleRecord(value, manifestKeys)
-  if (row.kind !== 'capsule2-captured-base-projection' || row.version !== 1 || row.schemaVersion !== 26 && row.schemaVersion !== 27
+  const version = value && typeof value === 'object' ? Object.getOwnPropertyDescriptor(value, 'version')?.value : undefined
+  const row = capsuleRecord(value, [...manifestKeys, ...installedKeys(version)])
+  if (row.kind !== 'capsule2-captured-base-projection' || version !== 1 && version !== 2 && version !== 3 || row.schemaVersion !== 26 && row.schemaVersion !== 27
     || row.rawOriginalRewritten !== false || row.semanticSelectionPermission !== false || row.installPermit !== false) return bad('未知格式或许可提升')
   const capsuleId = capsuleText(row.capsuleId, 36)
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(capsuleId)) return bad('capsule身份无效')
@@ -72,18 +86,25 @@ function validateManifest(value: unknown): Capsule2BaseProjectionManifest4 {
   const referenceUris = row.referenceUris.map(uri => capsuleText(uri, CAPSULE2_RAW_MAX_JSON_BYTES))
   if (referenceUris.length > row.referenceCount || row.referenceCount > 0 && !referenceUris.length
     || referenceUris.some((uri, index) => index > 0 && referenceUris[index - 1] >= uri)) return bad('原URI集合未严格闭合')
-  const tree = validateCapsule2ManagedTree(row.tree), binding = { sourceContentHash: hash(row.sourceContentHash),
+  const tree = version === 1 ? validateCapsule2ManagedTree(row.tree) : validateCapsuleV3ManagedTree(row.tree)
+  const binding = { sourceContentHash: hash(row.sourceContentHash),
     workspaceHistoryObservationHash: hash(row.workspaceHistoryObservationHash), assetReferencesObservationHash: hash(row.assetReferencesObservationHash), referenceUris }
-  const referenceProvenance = validateCapsule2AssetReferenceProvenance1(row.referenceProvenance, binding, tree)
-  const manifest: Capsule2BaseProjectionManifest4 = { kind: 'capsule2-captured-base-projection', version: 1, capsuleId, schemaVersion: row.schemaVersion,
+  const installed: InstalledBaseProof | undefined = version === 2 ? { installedV3: validateInstalledV3AssetArchiveProof(row.installedV3, tree) }
+    : version === 3 ? { installedV3Many: validateInstalledV3Many(row.installedV3Many, tree) } : undefined
+  const aliases = installed && ('installedV3' in installed ? installed.installedV3.aliases : installed.installedV3Many.aliases.map(entry => entry.alias))
+  const referenceProvenance = aliases ? validateCapsuleInstalledAssetProvenance(row.referenceProvenance, binding, tree,
+    new Set(aliases.map(alias => alias.relativePath))) : validateCapsule2AssetReferenceProvenance1(row.referenceProvenance, binding, tree)
+  const common: BaseManifest = { kind: 'capsule2-captured-base-projection', capsuleId, schemaVersion: row.schemaVersion,
     sourceInventory: validateDurableSqlCapsuleInventory(row.sourceInventory), ...binding, referenceCount: row.referenceCount, tree,
     referenceProvenance, baseMaterialHash: hash(row.baseMaterialHash), rawOriginalRewritten: false, semanticSelectionPermission: false, installPermit: false }
-  if (manifest.baseMaterialHash !== materialHash(manifest)) return bad('base材料hash不属于完整原scope/tree/proof')
-  return freezeCapsuleValue(manifest)
+  if (common.baseMaterialHash !== materialHash(common, installed)) return bad('base材料hash不属于完整原scope/tree/proof')
+  if (!installed) return freezeCapsuleValue({ ...common, version: 1 })
+  return freezeCapsuleValue('installedV3' in installed ? { ...common, version: 2, ...installed } : { ...common, version: 3, ...installed })
 }
 /** Strict pure codec only. It never opens a locator or mints a Main owner. */
 export function validateCapsule2BaseProjectionCommitment4(value: unknown): Capsule2BaseProjectionCommitment4 {
-  const row = capsuleRecord(value, [...manifestKeys, 'baseManifestHash', 'baseManifestFile'])
+  const version = value && typeof value === 'object' ? Object.getOwnPropertyDescriptor(value, 'version')?.value : undefined
+  const row = capsuleRecord(value, [...manifestKeys, 'baseManifestHash', 'baseManifestFile', ...installedKeys(version)])
   const { baseManifestHash: expectedHash, baseManifestFile, ...rawManifest } = row
   const actual = commit(validateManifest(rawManifest)), file = capsuleRecord(baseManifestFile, ['bytes', 'sha256'])
   if (hash(expectedHash) !== actual.baseManifestHash || file.bytes !== actual.baseManifestFile.bytes || hash(file.sha256) !== actual.baseManifestFile.sha256)
@@ -91,7 +112,7 @@ export function validateCapsule2BaseProjectionCommitment4(value: unknown): Capsu
   return actual
 }
 export function describeCapsule2BaseProjectionPointer4(value: Capsule2BaseProjectionCommitment4): Capsule2BaseProjectionPointer4 {
-  return freezeCapsuleValue({ version: 1, baseManifestHash: value.baseManifestHash, baseMaterialHash: value.baseMaterialHash,
+  return freezeCapsuleValue({ version: value.version, baseManifestHash: value.baseManifestHash, baseMaterialHash: value.baseMaterialHash,
     baseManifestFile: value.baseManifestFile })
 }
 /** Shape only. Genuine owner reads must join both raw-file and domain hashes
@@ -99,8 +120,8 @@ export function describeCapsule2BaseProjectionPointer4(value: Capsule2BaseProjec
 export function validateCapsule2BaseProjectionPointer4(value: unknown): Capsule2BaseProjectionPointer4 {
   const row = capsuleRecord(value, ['version','baseManifestHash','baseMaterialHash','baseManifestFile'])
   const file = capsuleRecord(row.baseManifestFile, ['bytes','sha256'])
-  if (row.version !== 1 || typeof file.bytes !== 'number' || !Number.isSafeInteger(file.bytes) || file.bytes < 0 || file.bytes > CAPSULE2_RAW_MAX_JSON_BYTES) return bad('compact base pointer版本或原文件预算无效')
-  return freezeCapsuleValue({ version: 1, baseManifestHash: hash(row.baseManifestHash), baseMaterialHash: hash(row.baseMaterialHash),
+  if (row.version !== 1 && row.version !== 2 && row.version !== 3 || typeof file.bytes !== 'number' || !Number.isSafeInteger(file.bytes) || file.bytes < 0 || file.bytes > CAPSULE2_RAW_MAX_JSON_BYTES) return bad('compact base pointer版本或原文件预算无效')
+  return freezeCapsuleValue({ version: row.version, baseManifestHash: hash(row.baseManifestHash), baseMaterialHash: hash(row.baseMaterialHash),
     baseManifestFile: { bytes: file.bytes, sha256: hash(file.sha256) } })
 }
 function parseManifest(text: string, capsuleId: string, expectedHash: string) {
@@ -124,6 +145,7 @@ async function readSource(original: OwnedRawCapsuleOriginal): Promise<Source> {
 async function verifyBytes(saved: Saved): Promise<void> {
   await assertOwnedRawCapsuleOriginal(saved.original)
   const files = join(saved.directory, 'files'), expected = saved.commitment.tree.files.map(file => file.hash).sort(compare)
+  const ownsTransfers = saved.commitment.version === 3
   const closure = async () => {
     await directory(saved.directory, saved.root); await directory(files, saved.root)
     const names = (await readdir(saved.directory)).sort(compare)
@@ -131,17 +153,26 @@ async function verifyBytes(saved: Saved): Promise<void> {
     // owner, which checks their exact bytes/closure independently. This owner
     // authenticates its own two fixed artifacts before and after every read.
     if (!names.includes('base-provenance.json') || !names.includes('files')
-      || names.some(name => !['base-provenance.json', 'files', 'contexts', 'manifest.json'].includes(name))
+      || names.includes(CAPSULE_INSTALLED_TRANSFERS_DIRECTORY) !== ownsTransfers
+      || names.some(name => !['base-provenance.json', 'files', 'contexts', 'manifest.json', CAPSULE_INSTALLED_TRANSFERS_DIRECTORY].includes(name))
       || capsuleJson((await readdir(files)).sort(compare)) !== capsuleJson(expected)) return bad('base原件目录闭集变化')
   }
   await closure()
   await readExact(join(saved.directory, 'base-provenance.json'), saved.root, saved.bytes.length, capsuleBytesHash(saved.bytes), CAPSULE2_RAW_MAX_JSON_BYTES)
-  for (const file of saved.commitment.tree.files) await readExact(join(files, file.hash), saved.root, file.bytes, file.hash, ATTACHMENT_MAX_FILE_BYTES)
+  for (const file of saved.commitment.tree.files) {
+    const path = join(files, file.hash)
+    if (saved.commitment.version !== 1 && file.bytes > ATTACHMENT_MAX_FILE_BYTES) {
+      if (file.bytes > CAPSULE_V3_ASSET_MAX_FILE_BYTES) return bad('已安装 base 附件超出 V3 上限')
+      await readOriginCatalogFile(path, saved.root, { path: file.hash, bytes: file.bytes, sha256: file.hash })
+    } else await readExact(path, saved.root, file.bytes, file.hash, ATTACHMENT_MAX_FILE_BYTES)
+  }
+  if (saved.commitment.version === 3) await assertInstalledV3ManyFiles(saved.commitment.installedV3Many, saved.directory, saved.root)
   await closure(); await assertOwnedRawCapsuleOriginal(saved.original)
 }
 async function rebuild(saved: Saved) {
   await verifyBytes(saved)
   const source = await readSource(saved.original), manifest = saved.commitment, info = readOwnedRawCapsuleOriginal(saved.original), assets = source.assets
+  if (manifest.version !== 1) return bad('旧 Base4 不接受已安装 V3 扩展')
   const referenceUris = [...new Set(assets.scopes.flatMap(scope => scope.destinations.map(item => item.uri)))].sort(compare)
   if (source.sourceContent.schemaVersion !== manifest.schemaVersion || assets.sourceContentHash !== manifest.sourceContentHash
     || assets.workspaceHistoryObservationHash !== manifest.workspaceHistoryObservationHash || assets.observationHash !== manifest.assetReferencesObservationHash
@@ -231,34 +262,53 @@ async function rebuildOriginalInput5(saved: Saved) {
     || assets.workspaceHistoryObservationHash !== manifest.workspaceHistoryObservationHash || assets.observationHash !== manifest.assetReferencesObservationHash
     || capsuleJson(info.originalInventory) !== capsuleJson(manifest.sourceInventory) || capsuleJson(referenceUris) !== capsuleJson(manifest.referenceUris)
     || assets.scopes.reduce((count, scope) => count + scope.destinations.length, 0) !== manifest.referenceCount) return bad('base proof不属于同次完整真实SQL/typed scope')
-  validateCapsule2AssetReferenceProvenance1(manifest.referenceProvenance, { sourceContentHash: assets.sourceContentHash,
-    workspaceHistoryObservationHash: assets.workspaceHistoryObservationHash, assetReferencesObservationHash: assets.observationHash, referenceUris }, manifest.tree)
+  const binding = { sourceContentHash: assets.sourceContentHash, workspaceHistoryObservationHash: assets.workspaceHistoryObservationHash,
+    assetReferencesObservationHash: assets.observationHash, referenceUris }
+  if (manifest.version !== 1) {
+    const installed = manifest.version === 2 ? manifest.installedV3 : manifest.installedV3Many
+    const entries = source.total.observer.coverage.requirements.entries
+    if (!entries.some(entry => capsuleJson(entry.root) === capsuleJson(installed.root)))
+      return bad('本次原 SQLite 缺 installed base 覆盖')
+    if (manifest.version === 3 && manifest.installedV3Many.transfers.some(file => !entries.some(entry => entry.operationId === file.operationId)))
+      return bad('逐别名 transfer 不属于同次原 SQLite C')
+    const aliases = manifest.version === 2 ? manifest.installedV3.aliases : manifest.installedV3Many.aliases.map(entry => entry.alias)
+    validateCapsuleInstalledAssetProvenance(manifest.referenceProvenance, binding, manifest.tree,
+      new Set(aliases.map(alias => alias.relativePath)))
+  } else validateCapsule2AssetReferenceProvenance1(manifest.referenceProvenance, binding, manifest.tree)
   await verifyBytes(saved)
   return Object.freeze({commitment:manifest,source,sourceContent:source.sourceContent,baseAssets:assets,tree:manifest.tree,baseProof:manifest.referenceProvenance,referenceUris})
 }
-export async function prepareCapsule2BaseProjectionForWorking5(original: OwnedRawCapsuleOriginal) {
+export async function prepareCapsule2BaseProjectionForWorking5(original: OwnedRawCapsuleOriginal, readInstalled?: () => Promise<InstalledV3AssetContinuity>) {
   const info = readOwnedRawCapsuleOriginal(original)
   if (used.has(original)) return bad('同一原件已开始或失败，不覆盖重试')
   used.add(original)
   const source = await readSource(original), assets = source.assets, capsuleId = basename(info.capsuleDirectory)
   const base = join(info.recoveryDirectory, 'knowledge-complete-assets-v2'), output = join(base, capsuleId), files = join(output, 'files')
   await restoreDirectory(base, info.profileRoot); await restoreDirectory(output, info.profileRoot, true); await restoreDirectory(files, info.profileRoot, true)
-  const tree = await captureCapsule2ManagedTreeData(join(info.profileRoot, 'storage', 'assets'), info.profileRoot, files)
+  const installed = readInstalled ? await captureInstalledV3NativeBase(original, readInstalled, output, source.total.observer.coverage.requirements.entries) : undefined
+  const proof = installed?.proof
+  const tree = installed?.tree ?? await captureCapsule2ManagedTreeData(join(info.profileRoot, 'storage', 'assets'), info.profileRoot, files)
   const referenceUris = [...new Set(assets.scopes.flatMap(scope => scope.destinations.map(item => item.uri)))].sort(compare)
   const binding = { sourceContentHash: assets.sourceContentHash, workspaceHistoryObservationHash: assets.workspaceHistoryObservationHash,
     assetReferencesObservationHash: assets.observationHash, referenceUris }
-  const referenceProvenance = await captureCapsule2AssetReferenceProvenanceOwned3(original, binding, tree)
+  const referenceProvenance = installed && proof ? await captureCapsuleInstalledAssetProvenance(original, binding, tree, installed.identities)
+    : await captureCapsule2AssetReferenceProvenanceOwned3(original, binding, tree)
   const material = { ...binding, tree, referenceProvenance }
-  const manifest: Capsule2BaseProjectionManifest4 = freezeCapsuleValue({ kind: 'capsule2-captured-base-projection', version: 1, capsuleId,
+  const common: BaseManifest = { kind: 'capsule2-captured-base-projection', capsuleId,
     schemaVersion: source.sourceContent.schemaVersion, sourceInventory: info.originalInventory, ...material,
-    referenceCount: assets.scopes.reduce((count, scope) => count + scope.destinations.length, 0), baseMaterialHash: materialHash(material),
-    rawOriginalRewritten: false, semanticSelectionPermission: false, installPermit: false })
+    referenceCount: assets.scopes.reduce((count, scope) => count + scope.destinations.length, 0),
+    baseMaterialHash: materialHash(material, proof?.version === 7 ? { installedV3: proof.installedV3 }
+      : proof ? { installedV3Many: proof.installedV3Many } : undefined),
+    rawOriginalRewritten: false, semanticSelectionPermission: false, installPermit: false }
+  const manifest: Capsule2BaseProjectionManifest4 = freezeCapsuleValue(proof?.version === 7
+    ? { ...common, version: 2, installedV3: proof.installedV3 }
+    : proof ? { ...common, version: 3, installedV3Many: proof.installedV3Many } : { ...common, version: 1 })
   const commitment = commit(manifest), bytes = Buffer.from(capsuleJson(manifest) + '\n')
   await writeNew(join(output, 'base-provenance.json'), bytes, info.profileRoot)
   await syncRestoreDirectory(output); await syncRestoreDirectory(base); await syncRestoreDirectory(info.recoveryDirectory)
   const saved: Saved = { original, root: info.profileRoot, directory: output, commitment, bytes }
   await rebuildOriginalInput5(saved)
-  return Object.freeze({ owner: mint(saved), commitment })
+  return Object.freeze({ owner: mint(saved), commitment, ...(installed && proof ? { installedIdentities: installed.identities } : {}) })
 }
 export async function reopenCapsule2BaseProjectionForWorking5(original: OwnedRawCapsuleOriginal, expectedBaseManifestHash: string,
   expectedPointer?: Capsule2BaseProjectionPointer4): Promise<PreparedCapsule2BaseProjection4> {

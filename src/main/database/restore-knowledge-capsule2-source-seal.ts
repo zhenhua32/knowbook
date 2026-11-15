@@ -7,8 +7,9 @@ import { readOwnedRawCapsuleOriginal, assertOwnedRawCapsuleOriginal, reopenPrepa
   type OwnedRawCapsuleOriginal } from './restore-knowledge-capsule-files'
 import { assertCapsule2AssetDirectory as directory, readCapsule2AssetManifest, readCapsule2AssetCopy as readExact,
   writeCapsule2AssetCopy as writeNew } from './restore-knowledge-capsule2-assets-files'
-import { reopenCapsule2AssetArchive, readCapsule2ArchiveSourceOriginal, prepareCapsule2AssetArchiveWithProvenance3, prepareCapsule2AssetArchiveWithContextProvenance3, prepareCapsule2AssetArchiveWithSettledContextProvenance4, prepareCapsule2AssetArchiveWithWorkingProvenance5,
+import { isWorkingAssetArchive5, withReopenedCapsule2ArchiveInputs5, readCapsule2ArchiveSourceOriginal, prepareCapsule2AssetArchiveWithProvenance3, prepareCapsule2AssetArchiveWithContextProvenance3, prepareCapsule2AssetArchiveWithSettledContextProvenance4, prepareCapsule2AssetArchiveWithWorkingProvenance5,
   type PreparedCapsule2AssetArchive } from './restore-knowledge-capsule2-asset-archive'
+import type { InstalledV3AssetContinuity } from './restore-knowledge-installed-v3-assets'
 import { captureCapsule2SourceMaterial, captureCapsule2SourceMaterialWithWorking5, readCapsule2SourceMaterial, readCapsule2SourceInputsWithWorking5, tryAssertCapsule2SourceWorking5OriginalBytes5, readCapsule2SourceSealInput,
   assertCapsule2SourceOriginalBytes, readCapsule2SourceBaseProjection4, readCapsule2SourceWorkingOriginals5, type PreparedCapsule2SourceMaterial } from './restore-knowledge-capsule2-source-material'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_READER } from './restore-knowledge-capsule2-raw-model'
@@ -88,21 +89,23 @@ export async function captureReopenedSealedCapsule2SourceWithWorking5(input: { p
   const text = await readCapsule2AssetManifest(join(output, 'manifest.json'), root)
   const manifest = parseCapsule2SourceManifest(text, operationId, capsuleId, row.expectedManifestHash)
   const original = await reopenPreparedRawCapsuleOriginal({ profileRoot: root, operationId, capsuleId, expectedInventory: manifest.files })
-  const archive = await reopenCapsule2AssetArchive(original, manifest.assetArchiveHash), bytes = Buffer.from(text)
+  const bytes = Buffer.from(text)
   const closure = async () => {
     await directory(output, root)
     if (capsuleJson(await readdir(output)) !== capsuleJson(['manifest.json'])) return bad('来源清单目录闭集变化')
   }
   const path = join(output, 'manifest.json')
-  await assertOwnedRawCapsuleOriginal(original); await closure()
-  await readExact(path, root, bytes.length, capsuleBytesHash(bytes), CAPSULE2_RAW_MAX_JSON_BYTES)
-  const { material, value, working } = await captureCapsule2SourceMaterialWithWorking5(archive)
-  if (capsuleJson(manifestFor(value)) !== capsuleJson(manifest)) return bad('完整实际SQL/K/政策/附件/原要求与来源清单不一致')
-  await closure(); await readExact(path, root, bytes.length, capsuleBytesHash(bytes), CAPSULE2_RAW_MAX_JSON_BYTES)
-  await assertOwnedRawCapsuleOriginal(original)
-  const entry: Saved = { original, material, root, directory: output, manifest, manifestHash: capsule2SourceManifestHash(manifest), bytes }
-  return Object.freeze({ source: register(entry), value, working, profileRoot: root,
-    info: freezeCapsuleValue({ directory: output, manifest, manifestHash: entry.manifestHash }) })
+  return withReopenedCapsule2ArchiveInputs5(original, manifest.assetArchiveHash, async (archive, scope) => {
+    await assertOwnedRawCapsuleOriginal(original); await closure()
+    await readExact(path, root, bytes.length, capsuleBytesHash(bytes), CAPSULE2_RAW_MAX_JSON_BYTES)
+    const { material, value, working } = await captureCapsule2SourceMaterialWithWorking5(archive, scope)
+    if (capsuleJson(manifestFor(value)) !== capsuleJson(manifest)) return bad('完整实际SQL/K/政策/附件/原要求与来源清单不一致')
+    await closure(); await readExact(path, root, bytes.length, capsuleBytesHash(bytes), CAPSULE2_RAW_MAX_JSON_BYTES)
+    await assertOwnedRawCapsuleOriginal(original)
+    const entry: Saved = { original, material, root, directory: output, manifest, manifestHash: capsule2SourceManifestHash(manifest), bytes }
+    return Object.freeze({ source: register(entry), value, working, profileRoot: root,
+      info: freezeCapsuleValue({ directory: output, manifest, manifestHash: entry.manifestHash }) })
+  })
 }
 export async function readSealedCapsule2Source(handle: SealedCapsule2Source): Promise<SealedCapsule2SourceInfo> {
   const entry = sealed.get(handle)
@@ -198,8 +201,8 @@ export async function readSealedCapsule2SourceBaseProjection4(handle: SealedCaps
 
 /** Explicit all-merge Working5 source. Released custom-only v3/v4 factories
  * keep their selectors, observer/hash domains and persisted bytes. */
-export async function captureSealedCapsule2SourceWithWorkingProvenance5(original:OwnedRawCapsuleOriginal){
- return captureSealedCapsule2SourceFromArchive(await prepareCapsule2AssetArchiveWithWorkingProvenance5(original))
+export async function captureSealedCapsule2SourceWithWorkingProvenance5(original:OwnedRawCapsuleOriginal, readInstalled?:()=>Promise<InstalledV3AssetContinuity>){
+ return captureSealedCapsule2SourceFromArchive(await prepareCapsule2AssetArchiveWithWorkingProvenance5(original,readInstalled))
 }
 /** Native transport sees the real registered Working5 text/members only.
  * Non5 returns undefined after the same original/manifest byte bracket. */
@@ -245,7 +248,7 @@ export async function tryAssertSealedCapsule2Working5OriginalBytes5(handle: Seal
 
 export async function captureSealedCapsule2SourceFromArchiveWithWorking5(archive: PreparedCapsule2AssetArchive) {
   const { material, value, working } = await captureCapsule2SourceMaterialWithWorking5(archive)
-  if (value.assetArchive.version !== 5 || !working) return bad('显式Working5 capture需要genuine archive5完整原件')
+  if (!isWorkingAssetArchive5(value.assetArchive) || !working) return bad('显式Working5 capture需要genuine archive5完整原件')
   const original = await readCapsule2ArchiveSourceOriginal(archive), info = readOwnedRawCapsuleOriginal(original)
   if (used.has(material)) return bad('同一材料已开始或失败')
   used.add(material)

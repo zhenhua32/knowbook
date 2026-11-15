@@ -22,12 +22,14 @@
       originals.push({ object, name, original }); object[name] = wrapped
     }
     module.syncBuiltinESMExports()
-    const { captureReopenedPreparedMixedOriginBundle } = await import('../../src/main/database/restore-knowledge-mixed-origin-bundle-read.ts')
-    const { readCompleteOriginalContentPair3, captureReopenedQualifiedOriginalBundle } = await import('../../src/main/database/restore-knowledge-qualified-originals.ts')
+    const { captureReopenedMixedOriginalPackageWithInitialContent3, readCompleteOriginalContentPair3, captureReopenedQualifiedOriginalBundle } =
+      await import('../../src/main/database/restore-knowledge-qualified-originals.ts')
     const { capsule2SourceManifestHash } = await import('../../src/main/database/restore-knowledge-capsule2-source-seal-model.ts')
     assert.ok(input.mode === 'mixed' || input.mode === 'qualified')
-    const captured = input.mode === 'qualified' ? await captureReopenedQualifiedOriginalBundle(input.locator) : await captureReopenedPreparedMixedOriginBundle(input.locator)
-    const actual = await readCompleteOriginalContentPair3(captured.bundle), source = actual.source, current = actual.current, archive = source.assetArchive
+    const captured = input.mode === 'qualified' ? await captureReopenedQualifiedOriginalBundle(input.locator)
+      : await captureReopenedMixedOriginalPackageWithInitialContent3(input.locator)
+    const actual = 'content' in captured ? captured.content.pair : await readCompleteOriginalContentPair3(captured.bundle)
+    const { source, current } = actual, archive = source.assetArchive
     assert.equal(archive.version, 4); assert.equal(current.assetArchive.version, 2)
     const sourceManifestPath = `catalog/backups/database-restore/${source.operationId}/knowledge-source-capsules-v2/${source.capsuleId}/manifest.json`
     const sourceManifestFile = actual.originalPackage.files.find(file => file.path === sourceManifestPath)
@@ -42,6 +44,7 @@
     const suffix = path.join('backups', 'database-restore', current.operationId, 'knowledge-complete-assets-v2', current.capsuleId, 'files')
     const recreated = [...new Set(createdDirectories.filter(value => key(value).endsWith(path.sep + key(suffix))))]
     assert.ok(recreated.length > 0, 'The genuine fresh reader recreates the transported empty directory')
+    if (input.mode === 'mixed') assert.equal(recreated.length, 1, 'The mixed content capture uses one cold verification profile')
     for (const directory of recreated) assert.deepEqual(await promises.readdir(directory), [])
     const logicalSourceAssets = `catalog/backups/database-restore/${source.operationId}/knowledge-complete-assets-v2/${source.capsuleId}`
     assert.ok(actual.originalPackage.directories.some(dir => !dir.frame.length && dir.path === logicalSourceAssets + '/contexts'))
@@ -50,6 +53,11 @@
     const sourceSuffix = path.join('backups', 'database-restore', source.operationId, 'knowledge-complete-assets-v2', source.capsuleId, 'contexts')
     const sourceEmpty = [...new Set(createdDirectories.filter(value => key(value).endsWith(path.sep + key(sourceSuffix))))]
     assert.ok(sourceEmpty.length > 0, 'The genuine cold reader recreates the explicitly empty archive4 contexts directory')
+    if (input.mode === 'mixed') {
+      assert.equal(sourceEmpty.length, 1)
+      assert.equal(key(sourceEmpty[0].slice(0, -sourceSuffix.length)), key(recreated[0].slice(0, -suffix.length)),
+        'The same cold verification profile recreates both directories')
+    }
     for (const directory of sourceEmpty) assert.deepEqual(await promises.readdir(directory), [])
     const baseFile = actual.originalPackage.files.find(file => !file.frame.length && file.path === logicalSourceAssets + '/base-provenance.json')
     assert.ok(baseFile); const baseBytes = await promises.readFile(baseFile.sourcePath)

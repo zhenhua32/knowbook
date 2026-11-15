@@ -4,7 +4,8 @@ import { existsSync, lstatSync, mkdirSync } from 'node:fs'
 import { join, parse, resolve } from 'node:path'
 import { editorRecoveryInvalid, editorRecoveryRecordJson, validateEditorRecoveryBase, validateEditorRecoveryDraftInput,
   validateEditorRecoveryReceipt, validateEditorRecoveryRecord, type EditorRecoveryBase, type EditorRecoveryDecision,
-  type EditorRecoveryDraftInput, type EditorRecoveryReceipt, type EditorRecoveryRecord, type EditorRecoveryRecordSummary } from '../../shared/editor-recovery-drafts'
+  type EditorRecoveryCrossMoveGroupHead, type EditorRecoveryDraftInput, type EditorRecoveryExpected, type EditorRecoveryReceipt,
+  type EditorRecoveryRecord, type EditorRecoveryRecordSummary } from '../../shared/editor-recovery-drafts'
 import { assertIndependentRecoveryJournal, LegacyEditorRecoveryDraftStore } from './legacy-draft-store'
 
 const APPLICATION_ID = 0x4b425244
@@ -41,6 +42,9 @@ CREATE TRIGGER recovery_bases_no_update BEFORE UPDATE ON recovery_bases BEGIN SE
 type BasePointer = { baseId: string; hash: string }
 type Stored = { record_id: string; draft_session_id: string; generation: number; previous_record_id: string | null; base_id: string; captured_at: string; payload: Buffer; payload_hash: string }
 type Head = { draft_session_id: string; record_id: string; generation: number; payload_hash: string }
+type Capture = { base: EditorRecoveryBase | BasePointer; draft: EditorRecoveryDraftInput; canonicalOriginalAliasHash?: string;
+  crossMoveGroupHead?: EditorRecoveryCrossMoveGroupHead }
+type CapturePurpose = { kind: 'background' } | { kind: 'close'; requestId: string; closeGeneration: number }
 type SchemaRow = { type: string; name: string; tbl_name: string; sql: string | null }
 const schemaRows = (db: Database.Database) => db.prepare('SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY name').all() as SchemaRow[]
 let expectedSchema: string | undefined
@@ -87,7 +91,8 @@ function basePointer(value: unknown): BasePointer {
 function storedJson(value: EditorRecoveryRecord, base: BasePointer, previousRecordId: string | null): string {
   return JSON.stringify({ kind: 'knowbook-editor-recovery-stored-draft', version: 1, recordId: value.recordId, capturedAt: value.capturedAt,
     base, previousRecordId, draft: value.draft, writePermit: false, businessOperationCommitted: false,
-    ...(value.canonicalOriginalAliasHash === undefined ? {} : { canonicalOriginalAliasHash: value.canonicalOriginalAliasHash }) })
+    ...(value.canonicalOriginalAliasHash === undefined ? {} : { canonicalOriginalAliasHash: value.canonicalOriginalAliasHash }),
+    ...(value.crossMoveGroupHead ? { crossMoveGroupHead: value.crossMoveGroupHead } : {}) })
 }
 
 /** Owns only a local private side database, never the canonical workspace DB.
@@ -166,7 +171,8 @@ export class EditorRecoveryDraftStore {
     const pointer = basePointer(stored.base), base = this.readBaseOwned(pointer)
     const value = validateEditorRecoveryRecord({ kind: 'knowbook-editor-recovery-draft', version: 1, recordId: stored.recordId,
       capturedAt: stored.capturedAt, base, draft: stored.draft, writePermit: stored.writePermit, businessOperationCommitted: stored.businessOperationCommitted,
-      ...(Object.hasOwn(stored, 'canonicalOriginalAliasHash') ? { canonicalOriginalAliasHash: stored.canonicalOriginalAliasHash } : {}) })
+      ...(Object.hasOwn(stored, 'canonicalOriginalAliasHash') ? { canonicalOriginalAliasHash: stored.canonicalOriginalAliasHash } : {}),
+      ...(Object.hasOwn(stored, 'crossMoveGroupHead') ? { crossMoveGroupHead: stored.crossMoveGroupHead } : {}) })
     if (storedJson(value, pointer, row.previous_record_id) !== row.payload.toString('utf8') || pointer.baseId !== row.base_id
       || value.recordId !== row.record_id || value.capturedAt !== row.captured_at
       || value.draft.draftSessionId !== row.draft_session_id || value.draft.generation !== row.generation) return editorRecoveryInvalid('record columns/closed bytes differ')
@@ -189,17 +195,47 @@ export class EditorRecoveryDraftStore {
     }
     return head
   }
+  /** Include live and parked records. The public list has deliberate exclusions. */
+  someHead(matches: (record: EditorRecoveryRecord) => boolean): boolean {
+    return this.ownRead(() => {
+      const rows = this.db.prepare('SELECT * FROM recovery_heads ORDER BY draft_session_id').iterate() as Iterable<Head>
+      for (const head of rows) {
+        const actual = this.actualRecord(head.record_id)
+        if (actual.hash !== head.payload_hash || actual.value.draft.draftSessionId !== head.draft_session_id
+          || actual.value.draft.generation !== head.generation) return editorRecoveryInvalid('head does not bind its exact record')
+        if (matches(actual.value)) return true
+      }
+      return false
+    })
+  }
   /** bases are Main-owned facts, never an IPC proof/DTO supplied by renderer. */
-  write(captures: readonly { base: EditorRecoveryBase | BasePointer; draft: EditorRecoveryDraftInput; canonicalOriginalAliasHash?: string }[], purpose:
-    { kind: 'background' } | { kind: 'close'; requestId: string; closeGeneration: number }): EditorRecoveryReceipt {
+  write(captures: readonly Capture[], purpose: CapturePurpose): EditorRecoveryReceipt {
+    return this.writeCaptures(captures, purpose)
+  }
+  /** Retire the old group only with the receiving generation. Main may also
+   * settle the initiating host head of a fully attested batch in that commit. */
+  transferCrossMoveGroup(source: EditorRecoveryExpected, base: BasePointer, draft: EditorRecoveryDraftInput, retireBatchHost = false): EditorRecoveryReceipt {
+    return this.writeCaptures([{ base, draft }], { kind: 'background' }, source, retireBatchHost)
+  }
+  private writeCaptures(captures: readonly Capture[], purpose: CapturePurpose, source?: EditorRecoveryExpected, retireBatchHost = false): EditorRecoveryReceipt {
     if (this.db.readonly || this.db.inTransaction) return editorRecoveryInvalid('write requires own writable side-store transaction')
     const values = captures.map(item => ({ base: Object.hasOwn(item.base, 'baseId') ? basePointer(item.base) : validateEditorRecoveryBase(item.base),
-      draft: validateEditorRecoveryDraftInput(item.draft), canonicalOriginalAliasHash: item.canonicalOriginalAliasHash }))
+      draft: validateEditorRecoveryDraftInput(item.draft), canonicalOriginalAliasHash: item.canonicalOriginalAliasHash, crossMoveGroupHead: item.crossMoveGroupHead }))
     if (new Set(values.map(item => item.draft.draftSessionId)).size !== values.length) return editorRecoveryInvalid('capture repeats draft owner')
     const receipt: EditorRecoveryReceipt = validateEditorRecoveryReceipt({ kind: 'knowbook-editor-recovery-receipt', version: 1, receiptId: randomUUID(),
       purpose: purpose.kind, requestId: purpose.kind === 'close' ? purpose.requestId : null, closeGeneration: purpose.kind === 'close' ? purpose.closeGeneration : null, records: [] })
     this.db.transaction(() => {
       assertSchema(this.db)
+      const originalTransfer = source && this.readCurrentCrossMoveGroupOwned(source)
+      if (source && (!originalTransfer || values.length !== 1 || values[0].draft.generation !== 1
+        || this.currentHead(values[0].draft.draftSessionId) || originalTransfer.draft.draftSessionId === values[0].draft.draftSessionId)) {
+        return editorRecoveryInvalid('the original paired draft or empty receiving head changed')
+      }
+      for (const { crossMoveGroupHead } of values) if (crossMoveGroupHead) {
+        const group = this.readLinkedGroupHeadOwned(crossMoveGroupHead)
+        if (!group || values.some(value => value.draft.draftSessionId === crossMoveGroupHead.draftSessionId
+          && value.draft.generation !== crossMoveGroupHead.generation)) return editorRecoveryInvalid('cross-host pending capture no longer has its exact group W')
+      }
       for (const item of values) {
         const head = this.currentHead(item.draft.draftSessionId)
         if (head?.generation !== item.draft.generation && (head?.generation ?? 0) !== item.draft.expectedPreviousGeneration) return editorRecoveryInvalid('stale capture generation')
@@ -220,7 +256,8 @@ export class EditorRecoveryDraftStore {
         if ((head?.generation ?? 0) !== item.draft.expectedPreviousGeneration) return editorRecoveryInvalid('stale capture generation')
         const record = validateEditorRecoveryRecord({ kind: 'knowbook-editor-recovery-draft', version: 1, recordId: randomUUID(), capturedAt: new Date().toISOString(),
           base, draft: item.draft, writePermit: false, businessOperationCommitted: false,
-          ...(item.canonicalOriginalAliasHash === undefined ? {} : { canonicalOriginalAliasHash: item.canonicalOriginalAliasHash }) })
+          ...(item.canonicalOriginalAliasHash === undefined ? {} : { canonicalOriginalAliasHash: item.canonicalOriginalAliasHash }),
+          ...(item.crossMoveGroupHead ? { crossMoveGroupHead: item.crossMoveGroupHead } : {}) })
         if (original && JSON.stringify(original.value.base) !== JSON.stringify(base)) return editorRecoveryInvalid('generation changed its original base')
         const previous = head?.record_id ?? null, raw = Buffer.from(storedJson(record, pointer, previous)), hash = editorRecoveryHash('record', raw)
         this.db.prepare('INSERT INTO recovery_records VALUES(?,?,?,?,?,?,?,?)').run(record.recordId, item.draft.draftSessionId, item.draft.generation,
@@ -235,6 +272,15 @@ export class EditorRecoveryDraftStore {
       this.db.prepare('INSERT INTO recovery_receipts VALUES(?,?,?)').run(receipt.receiptId, raw, editorRecoveryHash('receipt', raw))
       const link = this.db.prepare('INSERT INTO recovery_receipt_records VALUES(?,?)')
       for (const item of receipt.records) link.run(receipt.receiptId, item.recordId)
+      const retired = originalTransfer ? [originalTransfer] : []
+      if (source && retireBatchHost) retired.push(this.actualRecord(source.recordId).value)
+      for (const original of retired) {
+        this.db.prepare("INSERT INTO recovery_decisions VALUES(?,'discard',?) ON CONFLICT(record_id) DO UPDATE SET decision=excluded.decision,decided_at=excluded.decided_at")
+          .run(original.recordId, new Date().toISOString())
+        const removed = this.db.prepare('DELETE FROM recovery_heads WHERE draft_session_id=? AND record_id=? AND generation=?')
+          .run(original.draft.draftSessionId, original.recordId, original.draft.generation)
+        if (removed.changes !== 1) return editorRecoveryInvalid('an original head changed before transfer')
+      }
     }).immediate()
     // The exact real COMMIT with synchronous=FULL happened before this read.
     // A COMMIT error never returns a receipt; independent cold-process tests
@@ -305,6 +351,22 @@ export class EditorRecoveryDraftStore {
       const head = this.currentHead(sessionId)
       return head ? { record: this.actualRecord(head.record_id).value, expected: { recordId: head.record_id, generation: head.generation, hash: head.payload_hash } } : null
     })
+  }
+  private readLinkedGroupHeadOwned(link: EditorRecoveryCrossMoveGroupHead): EditorRecoveryRecord | undefined {
+    const head = this.currentHead(link.draftSessionId)
+    if (head?.record_id !== link.recordId || head.generation !== link.generation || head.payload_hash !== link.hash) return undefined
+    const { value } = this.actualRecord(head.record_id)
+    return value.base.owner.kind === 'group' ? value : undefined
+  }
+  readCurrentCrossMoveGroup(expected: EditorRecoveryExpected): EditorRecoveryRecord | undefined {
+    return this.ownRead(() => this.readCurrentCrossMoveGroupOwned(expected))
+  }
+  private readCurrentCrossMoveGroupOwned(expected: EditorRecoveryExpected): EditorRecoveryRecord | undefined {
+    const { value, hash } = this.actualRecord(expected.recordId)
+    const head = this.currentHead(value.draft.draftSessionId)
+    if (!value.crossMoveGroupHead || hash !== expected.hash || value.draft.generation !== expected.generation
+      || head?.record_id !== expected.recordId) return undefined
+    return this.readLinkedGroupHeadOwned(value.crossMoveGroupHead)
   }
   /** Reclaim superseded private drafts, not canonical history. Every retained
    * head is independently checked. Explicit current discard first requires its

@@ -10,11 +10,15 @@ function revealFocusedViewTab(event: ReactFocusEvent<HTMLDivElement>): void {
   const strip = event.currentTarget, target = event.target
   if (!target.matches('button.dbw-view-tab, button.dbw-view-tab-menu') || !target.matches(':focus-visible')) return
   const bounds = target.getBoundingClientRect(), viewport = strip.getBoundingClientRect()
-  const left = viewport.left + strip.clientLeft, right = left + strip.clientWidth
+  const style = getComputedStyle(strip)
+  const borderLeft = parseFloat(style.borderLeftWidth), borderRight = parseFloat(style.borderRightWidth)
+  const scrollbar = Math.max(0, strip.offsetWidth - strip.clientWidth - Math.round(borderLeft + borderRight))
+  const left = viewport.left + borderLeft, right = viewport.right - borderRight - scrollbar
+  const physicalPixel = 1 / (target.ownerDocument.defaultView?.devicePixelRatio || 1)
   // Native focus scrolling can leave a long tab partly clipped. Reveal its
   // whole button inside this strip without moving the outer page vertically.
-  if (bounds.left < left) strip.scrollLeft += bounds.left - left
-  else if (bounds.right > right) strip.scrollLeft += bounds.right - right
+  if (bounds.left <= left + physicalPixel / 2) strip.scrollLeft -= Math.ceil((left - bounds.left + physicalPixel / 2) / physicalPixel) * physicalPixel
+  else if (bounds.right >= right - physicalPixel / 2) strip.scrollLeft += Math.ceil((bounds.right - right + physicalPixel / 2) / physicalPixel) * physicalPixel
 }
 
 function visible(element: HTMLElement): boolean {

@@ -1,6 +1,6 @@
 import type { DocumentBlockDraft } from './contracts'
 import { validateSyncedInstanceGuard } from './syncedBlockInputs'
-import type { SyncedCanonicalEdit, SyncedInstanceGuard, SyncedInstancePosition } from './synced-blocks'
+import type { SyncedCanonicalEdit, SyncedGroupSnapshot, SyncedInstanceGuard, SyncedInstancePosition, SyncedStructureApplied } from './synced-blocks'
 import type { MarkdownBlockFormat } from './markdownFormat'
 import type { SyncedEditingBaselineResult } from './synced-editing-session'
 import type { AttestedCanonicalRecoveryFloor, CanonicalRecoveryAcceptedFrame } from './editor-recovery-canonical'
@@ -58,6 +58,7 @@ export interface EditorRecoveryRecord {
   recordId: string; capturedAt: string; base: EditorRecoveryBase; draft: EditorRecoveryDraftInput
   writePermit: false; businessOperationCommitted: false
   canonicalOriginalAliasHash?: string
+  crossMoveGroupHead?: EditorRecoveryCrossMoveGroupHead
 }
 export interface EditorRecoveryReceipt {
   kind: 'knowbook-editor-recovery-receipt'; version: 1
@@ -71,6 +72,7 @@ export interface EditorRecoveryRecordSummary {
 }
 export type EditorRecoveryDecision = 'restore-draft' | 'keep' | 'discard'
 export interface EditorRecoveryExpected { recordId: string; generation: number; hash: string }
+export type EditorRecoveryCrossMoveGroupHead = EditorRecoveryExpected & { draftSessionId: string }
 export interface LegacyEditorRecoverySummary extends EditorRecoveryExpected {
   kind: 'document' | 'group' | 'source'; targetId: string; updatedAt: string
 }
@@ -80,7 +82,9 @@ export interface EditorRecoveryCandidate {
   status: 'candidate'; recoveryOwnerId: string; record: EditorRecoveryRecord
   mode: 'editable-ordinary-draft' | 'editable-source-draft' | 'view-only'; reasons: string[]
   canonicalFollowupAvailable?: true
+  canonicalSourceAvailable?: true
   canonicalHostDocumentId?: string
+  canonicalCrossMoveRecovery?: { group: EditorRecoveryExpected; hostDocumentId: string; instanceId?: string; proofHash: string; writePermit: false }
   pending: Array<{ clientOperationId: string; status: 'unknown' | 'committed-attested' | 'idempotency-mismatch' | 'unverifiable' }>
   writePermit: false; historicalKeyLineageComplete: false
   hostSourcePins?: 'unchanged' | 'changed' | 'unverifiable'
@@ -96,6 +100,18 @@ export interface PrepareEditorRecoveryGroupInput { recoveryOwnerId: string; sess
 export interface PreparedEditorRecoveryGroup { record: EditorRecoveryRecord; baseline: SyncedEditingBaselineResult; writePermit: false; historicalKeyLineageComplete: false; canonicalOriginalAliasVerified?: true }
 export interface PrepareEditorRecoveryGroupFloorInput extends PrepareEditorRecoveryGroupInput { instance: SyncedInstanceGuard }
 export interface PreparedEditorRecoveryGroupFloor { record: EditorRecoveryRecord; floor: AttestedCanonicalRecoveryFloor; writePermit: false; historicalKeyLineageComplete: false }
+export interface PrepareEditorRecoveryCrossMoveInput extends PrepareEditorRecoveryGroupFloorInput {
+  targetDraftSessionId: string
+  proofHash: string
+}
+export interface PreparedEditorRecoveryCrossMove {
+  record: EditorRecoveryRecord
+  head: EditorRecoveryExpected
+  baseline: SyncedGroupSnapshot
+  writePermit: false
+}
+export interface ApplyEditorRecoveryCrossMoveInput { sessionId: string; hostHead: EditorRecoveryExpected }
+export type ApplyEditorRecoveryCrossMoveResult = { status: 'moved'; result: SyncedStructureApplied } | { status: 'rejected' }
 export interface CompleteEditorRecoveryGroupInput extends PrepareEditorRecoveryGroupInput {
   readOwnerId?: string
   accepted: CanonicalRecoveryAcceptedFrame[]
@@ -262,6 +278,15 @@ export function validatePrepareEditorRecoveryGroupFloorInput(value: unknown): Pr
   const row = object(value, ['recoveryOwnerId', 'sessionId', 'instance'])
   return { recoveryOwnerId: uuid(row.recoveryOwnerId), sessionId: uuid(row.sessionId), instance: validateSyncedInstanceGuard(row.instance) }
 }
+export function validatePrepareEditorRecoveryCrossMoveInput(value: unknown): PrepareEditorRecoveryCrossMoveInput {
+  const row = object(value, ['recoveryOwnerId', 'sessionId', 'instance', 'targetDraftSessionId', 'proofHash'])
+  return { recoveryOwnerId: uuid(row.recoveryOwnerId), sessionId: uuid(row.sessionId), instance: validateSyncedInstanceGuard(row.instance),
+    targetDraftSessionId: uuid(row.targetDraftSessionId), proofHash: hash(row.proofHash) }
+}
+export function validateApplyEditorRecoveryCrossMoveInput(value: unknown): ApplyEditorRecoveryCrossMoveInput {
+  const row = object(value, ['sessionId', 'hostHead'])
+  return { sessionId: uuid(row.sessionId), hostHead: validateEditorRecoveryExpected(row.hostHead) }
+}
 export function validateCompleteEditorRecoveryGroupInput(value: unknown): Omit<CompleteEditorRecoveryGroupInput, 'accepted'> & { accepted: unknown[] } {
   const row = object(value, ['recoveryOwnerId', 'sessionId', 'accepted'], ['readOwnerId'])
   return { recoveryOwnerId: uuid(row.recoveryOwnerId), sessionId: uuid(row.sessionId), accepted: list(row.accepted, item => item),
@@ -312,14 +337,23 @@ export function validateEditorRecoveryBase(value: unknown): EditorRecoveryBase {
   return { ...base, hostSourcePins: readHostSourcePins(row.hostSourcePins, owner.documentId) }
 }
 export function validateEditorRecoveryRecord(value: unknown): EditorRecoveryRecord {
-  const row = object(value, ['kind', 'version', 'recordId', 'capturedAt', 'base', 'draft', 'writePermit', 'businessOperationCommitted'], ['canonicalOriginalAliasHash'])
+  const row = object(value, ['kind', 'version', 'recordId', 'capturedAt', 'base', 'draft', 'writePermit', 'businessOperationCommitted'], ['canonicalOriginalAliasHash', 'crossMoveGroupHead'])
   if (row.kind !== 'knowbook-editor-recovery-draft' || row.version !== 1 || row.writePermit !== false || row.businessOperationCommitted !== false) return editorRecoveryInvalid('record version/permissions invalid')
   const base = validateEditorRecoveryBase(row.base), draft = validateEditorRecoveryDraftInput(row.draft)
   if (base.owner.kind !== draft.working.kind) return editorRecoveryInvalid('working/base owner domain differs')
   const hasAlias = Object.hasOwn(row, 'canonicalOriginalAliasHash')
   if (hasAlias && (base.owner.kind !== 'group' || !draft.canonicalReadOwnerId)) return editorRecoveryInvalid('canonical original alias proof has no actual source hint')
+  let crossMoveGroupHead: EditorRecoveryCrossMoveGroupHead | undefined
+  if (Object.hasOwn(row, 'crossMoveGroupHead')) {
+    const { draftSessionId: rawSession, ...expected } = object(row.crossMoveGroupHead, ['draftSessionId', 'recordId', 'generation', 'hash'])
+    const draftSessionId = uuid(rawSession)
+    if (base.owner.kind !== 'host' || draft.pending.length !== 1 || draft.pending[0].method !== 'applySyncedHostStructure'
+      || draftSessionId === draft.draftSessionId) return editorRecoveryInvalid('cross-host recovery link differs from its pending host draft')
+    crossMoveGroupHead = { draftSessionId, ...validateEditorRecoveryExpected(expected) }
+  }
   return { kind: row.kind, version: 1, recordId: uuid(row.recordId), capturedAt: time(row.capturedAt), base, draft, writePermit: false, businessOperationCommitted: false,
-    ...(hasAlias ? { canonicalOriginalAliasHash: hash(row.canonicalOriginalAliasHash) } : {}) }
+    ...(hasAlias ? { canonicalOriginalAliasHash: hash(row.canonicalOriginalAliasHash) } : {}),
+    ...(crossMoveGroupHead ? { crossMoveGroupHead } : {}) }
 }
 export function validateEditorRecoveryReceipt(value: unknown): EditorRecoveryReceipt {
   const row = object(value, ['kind', 'version', 'receiptId', 'purpose', 'requestId', 'closeGeneration', 'records'])

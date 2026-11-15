@@ -18,7 +18,7 @@ export interface BackupVersion {
   createdAt: string
   documentCount: number | null
   current: boolean
-  /** V3 discovery is separate from the not-yet-installed restore consumer. */
+  /** Display format for the backup version. Restore validates the full archive. */
   format?: 'synced-v3'
   restorable?: false
 }

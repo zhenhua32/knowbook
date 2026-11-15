@@ -1,14 +1,17 @@
-import { decodeCanonicalRecoveryData, decodeCanonicalRecoveryFollowupData, type CanonicalRecoveryAcceptedFrame, type CanonicalRecoveryData } from '@shared/editor-recovery-canonical'
+import { decodeCanonicalRecoveryData, decodeCanonicalRecoveryFollowupData, readCanonicalRecoveryClosedFrames,
+  type CanonicalRecoveryAcceptedFrame, type CanonicalRecoveryData } from '@shared/editor-recovery-canonical'
 import type { SyncedInstanceGuard } from '@shared/synced-blocks'
-import type { CompleteEditorRecoveryGroupInput } from '@shared/editor-recovery-drafts'
+import type { CompleteEditorRecoveryGroupInput, PreparedEditorRecoveryCrossMove, PrepareEditorRecoveryCrossMoveInput } from '@shared/editor-recovery-drafts'
 import type { ControllerReadOwnerContext, SyncedReadSourcesPort } from '../synced-blocks/sourceReadOwner'
 import { installCanonicalRecoveryOwnerPort, type ColdCanonicalRecoveryOwner } from '../synced-blocks/canonicalRecoveryOwnerPort'
 export { closeColdCanonicalRecoveryOwner } from '../synced-blocks/canonicalRecoveryOwnerPort'
+type CompletionInput = Omit<CompleteEditorRecoveryGroupInput, 'accepted'>
 type Owned = { data: CanonicalRecoveryData; context: ControllerReadOwnerContext | null; consumed: boolean; closed: boolean;
-  completion: Omit<CompleteEditorRecoveryGroupInput, 'accepted'>; tracked: boolean }
-type Completion = { members: readonly object[]; accepted: CanonicalRecoveryAcceptedFrame[]; input: Owned['completion'] }
+  completion: CompletionInput | null; tracked: boolean }
+type Completion = { members: readonly object[]; accepted: CanonicalRecoveryAcceptedFrame[]; input: CompletionInput }
 const owners = new WeakMap<ColdCanonicalRecoveryOwner, Owned>(), issuer = Object.freeze({})
 const completions = new WeakMap<object, Completion>()
+const actualTransfers = new WeakMap<PreparedEditorRecoveryCrossMove, CanonicalRecoveryData>()
 installCanonicalRecoveryOwnerPort(issuer, {
   read(owner) { const actual = owners.get(owner); return actual && !actual.consumed && !actual.closed ? actual : null },
   consume(owner, expected) {
@@ -23,7 +26,7 @@ installCanonicalRecoveryOwnerPort(issuer, {
   },
   track(owner, frames) {
     const actual = owners.get(owner)
-    if (!actual?.consumed || actual.tracked || !frames.length || frames.length !== actual.data.frames.length + actual.data.redoFrames.length) return
+    if (!actual?.consumed || !actual.completion || actual.tracked || !frames.length || frames.length !== actual.data.frames.length + actual.data.redoFrames.length) return
     actual.tracked = true
     const completion = { members: [...frames], accepted: [], input: actual.completion }
     for (const frame of frames) completions.set(frame, completion)
@@ -75,5 +78,24 @@ export async function openColdCanonicalFollowupOwner(recoveryOwnerId: string, se
   const owner: ColdCanonicalRecoveryOwner = Object.freeze({ kind: 'actual-cold-canonical-recovery-owner' })
   owners.set(owner, { data, context: null, consumed: false, closed: false, tracked: false,
     completion: { recoveryOwnerId, sessionId } })
+  return owner
+}
+
+export async function requestColdCanonicalCrossMove(input: PrepareEditorRecoveryCrossMoveInput): Promise<PreparedEditorRecoveryCrossMove> {
+  const prepared = await window.knowbook.prepareEditorRecoveryCrossMove(input)
+  if (prepared.writePermit !== false) throw new Error('The actual Main transfer response is required')
+  const { record, baseline } = structuredClone(prepared)
+  actualTransfers.set(prepared, readCanonicalRecoveryClosedFrames(record, baseline, record.base.workspaceScope))
+  return prepared
+}
+
+export function openColdCanonicalCrossMoveOwner(prepared: PreparedEditorRecoveryCrossMove): ColdCanonicalRecoveryOwner {
+  const data = actualTransfers.get(prepared)
+  if (!data) throw new Error('The actual Main transfer response is required')
+  actualTransfers.delete(prepared)
+  const owner: ColdCanonicalRecoveryOwner = Object.freeze({ kind: 'actual-cold-canonical-recovery-owner' })
+  // Main has durably redirected the editable head to the current producer.
+  // There is no older head to retire after an ordinary accepted Save.
+  owners.set(owner, { data, context: null, consumed: false, closed: false, tracked: false, completion: null })
   return owner
 }

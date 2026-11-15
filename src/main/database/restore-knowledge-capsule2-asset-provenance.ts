@@ -5,12 +5,13 @@ import { lstat, open, realpath } from 'node:fs/promises'
 import { dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createHash } from 'node:crypto'
-import { parseSyncedPortableAssetUri } from '../../shared/syncedBlockPortable'
+import { buildSyncedPortableAssetUri, parseSyncedPortableAssetUri } from '../../shared/syncedBlockPortable'
 import { ATTACHMENT_MAX_FILE_BYTES } from '../../shared/attachments'
 import { capsuleBytesHash, capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { readOwnedRawCapsuleOriginal, assertOwnedRawCapsuleOriginal, type OwnedRawCapsuleOriginal } from './restore-knowledge-capsule-files'
 import type { Capsule2ManagedTreeData } from './restore-knowledge-capsule2-managed-assets-files'
 import { assertRestorePath } from './restore-safety-files'
+import { CAPSULE_V3_ASSET_MAX_FILE_BYTES } from './restore-knowledge-capsule2-assets-model'
 
 export interface Capsule2AssetReferenceBinding1 {
   readonly sourceContentHash: string; readonly workspaceHistoryObservationHash: string
@@ -52,6 +53,16 @@ function fileUri(value: unknown): string {
 /** Pure closure codec. Its only supported authority is a pinned source
  * material/seal/qualified-original chain, never this DTO or its matching hash. */
 export function validateCapsule2AssetReferenceProvenance1(value: unknown, binding: Capsule2AssetReferenceBinding1, tree: Capsule2ManagedTreeData): Capsule2AssetReferenceProvenance1 {
+  return validateProvenance(value, binding, tree)
+}
+
+export function validateCapsuleInstalledAssetProvenance(value: unknown, binding: Capsule2AssetReferenceBinding1,
+  tree: Capsule2ManagedTreeData, installedPaths: ReadonlySet<string>) {
+  return validateProvenance(value, binding, tree, installedPaths)
+}
+
+function validateProvenance(value: unknown, binding: Capsule2AssetReferenceBinding1, tree: Capsule2ManagedTreeData,
+  installedPaths?: ReadonlySet<string>): Capsule2AssetReferenceProvenance1 {
   const row = capsuleRecord(value, ['kind', 'version', 'sourceContentHash', 'workspaceHistoryObservationHash', 'assetReferencesObservationHash', 'referenceUrisHash', 'managedTreeHash',
     'assetRoot', 'rootSpellings', 'identities', 'entries', 'knownReferenceClassificationComplete', 'certified', 'semanticValidationComplete', 'permit'])
   if (row.kind !== 'capsule2-captured-managed-reference-provenance' || row.version !== 1 || row.knownReferenceClassificationComplete !== true
@@ -74,7 +85,8 @@ export function validateCapsule2AssetReferenceProvenance1(value: unknown, bindin
   if (rootSpellings.some((item, index) => index > 0 && rootSpellings[index - 1].uri >= item.uri)) return fail('根拼写集合未严格排序')
   const identities = row.identities.map(value => { const item = capsuleRecord(value, ['aliasIndex', 'device', 'inode', 'bytes', 'links', 'mode'])
     const aliasIndex = number(item.aliasIndex, tree.aliases.length - 1), alias = tree.aliases[aliasIndex]
-    const result = { aliasIndex, device: whole(item.device), inode: whole(item.inode, true), bytes: number(item.bytes, ATTACHMENT_MAX_FILE_BYTES), links: whole(item.links, true), mode: whole(item.mode) }
+    const limit = alias && installedPaths?.has(alias.relativePath) ? CAPSULE_V3_ASSET_MAX_FILE_BYTES : ATTACHMENT_MAX_FILE_BYTES
+    const result = { aliasIndex, device: whole(item.device), inode: whole(item.inode, true), bytes: number(item.bytes, limit), links: whole(item.links, true), mode: whole(item.mode) }
     if (!alias || result.bytes !== alias.bytes) return fail('实际FD证据不对应原alias长度')
     return result })
   if (identities.some((item, index) => index > 0 && identities[index - 1].aliasIndex >= item.aliasIndex)) return fail('原FD证据alias重复')
@@ -101,6 +113,44 @@ export function validateCapsule2AssetReferenceProvenance1(value: unknown, bindin
   return freezeCapsuleValue({ kind: row.kind, version: 1, sourceContentHash: binding.sourceContentHash, workspaceHistoryObservationHash: binding.workspaceHistoryObservationHash,
     assetReferencesObservationHash: binding.assetReferencesObservationHash, referenceUrisHash: uriHash(binding.referenceUris), managedTreeHash: treeHash(tree), assetRoot,
     rootSpellings, identities, entries, knownReferenceClassificationComplete: true, certified: false, semanticValidationComplete: false, permit: false })
+}
+
+function v3PortableEntries(binding: Capsule2AssetReferenceBinding1, tree: Capsule2ManagedTreeData): Capsule2AssetReferenceEntry1[] {
+  const aliases = new Map(tree.aliases.map((alias, index) => [buildSyncedPortableAssetUri(alias), index]))
+  const used = new Set<number>()
+  const entries = binding.referenceUris.map((uri, index): Capsule2AssetReferenceEntry1 => {
+    if (!/^knowbook-asset:/i.test(uri)) return [index, 'unresolved', /^file:/i.test(uri) ? 'foreign-uri' : 'unsupported-scheme']
+    const alias = aliases.get(uri)
+    if (alias === undefined) return fail('V3 SQL中的portable URI不是归档原alias')
+    used.add(alias)
+    return [index, 'portable', alias]
+  })
+  if (used.size !== aliases.size) return fail('V3原alias没有同次SQL typed scope支持')
+  return entries
+}
+
+export function validateCapsuleV3PortableAssetProvenance(value: unknown, binding: Capsule2AssetReferenceBinding1,
+  tree: Capsule2ManagedTreeData): Capsule2AssetReferenceProvenance1 {
+  const result = validateCapsule2AssetReferenceProvenance1(value, binding, tree)
+  if (result.rootSpellings.length || result.identities.length
+    || capsuleJson(result.entries) !== capsuleJson(v3PortableEntries(binding, tree))) return fail('V3证明必须严格限定在原portable alias，不能证明本机路径')
+  return result
+}
+
+/** Describe only the private copied-blob root. Its URI never participates in
+ * resolving a reference or locating an original after transport. */
+export async function captureCapsuleV3PortableAssetProvenance(binding: Capsule2AssetReferenceBinding1, tree: Capsule2ManagedTreeData,
+  copiedBlobRoot: string, profileRoot: string): Promise<Capsule2AssetReferenceProvenance1> {
+  await assertRestorePath(copiedBlobRoot, profileRoot)
+  const stat = await lstat(copiedBlobRoot, { bigint: true })
+  if (!stat.isDirectory() || stat.isSymbolicLink() || !samePath(await realpath(copiedBlobRoot), copiedBlobRoot))
+    return fail('V3原blob私有目录不可识别')
+  return validateCapsuleV3PortableAssetProvenance({ kind: 'capsule2-captured-managed-reference-provenance', version: 1,
+    sourceContentHash: binding.sourceContentHash, workspaceHistoryObservationHash: binding.workspaceHistoryObservationHash,
+    assetReferencesObservationHash: binding.assetReferencesObservationHash, referenceUrisHash: uriHash(binding.referenceUris), managedTreeHash: treeHash(tree),
+    assetRoot: { uri: pathToFileURL(copiedBlobRoot).href, present: true, device: stat.dev.toString(), inode: stat.ino.toString() },
+    rootSpellings: [], identities: [], entries: v3PortableEntries(binding, tree),
+    knownReferenceClassificationComplete: true, certified: false, semanticValidationComplete: false, permit: false }, binding, tree)
 }
 
 const regular = (value: BigIntStats) => value.isFile() && !value.isSymbolicLink() && value.ino > 0n && value.nlink > 0n
@@ -143,10 +193,10 @@ async function restrictedRootAlias(candidate: string, canonical: string): Promis
   }
   return true
 }
-async function readCanonicalAlias(path: string, root: string, expected: { hash: string; bytes: number }): Promise<BigIntStats> {
+async function readCanonicalAlias(path: string, root: string, expected: { hash: string; bytes: number }, limit = ATTACHMENT_MAX_FILE_BYTES): Promise<BigIntStats> {
   await assertRestorePath(path, root)
   const prior = await lstat(path, { bigint: true })
-  if (!regular(prior) || prior.size !== BigInt(expected.bytes) || expected.bytes > ATTACHMENT_MAX_FILE_BYTES) return fail('源alias不是原25MiB范围内的准确普通文件')
+  if (!regular(prior) || prior.size !== BigInt(expected.bytes) || expected.bytes > limit) return fail('源alias不在已认证的文件字节范围')
   const fd = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
   try {
     const before = await fd.stat({ bigint: true })
@@ -192,6 +242,16 @@ async function assertActualAliasIdentity(candidate: string, canonical: string, r
  * Restricted URI metadata can establish real 8.3 aliases, never file authority
  * by a suffix or hash. Cold readers never call this factory on old source paths. */
 export async function captureCapsule2AssetReferenceProvenanceOwned3(original: OwnedRawCapsuleOriginal, binding: Capsule2AssetReferenceBinding1, tree: Capsule2ManagedTreeData): Promise<Capsule2AssetReferenceProvenance1> {
+  return captureProvenance(original, binding, tree)
+}
+
+export async function captureCapsuleInstalledAssetProvenance(original: OwnedRawCapsuleOriginal, binding: Capsule2AssetReferenceBinding1,
+  tree: Capsule2ManagedTreeData, installed: ReadonlyMap<string, { dev: string; ino: string }>) {
+  return captureProvenance(original, binding, tree, installed)
+}
+
+async function captureProvenance(original: OwnedRawCapsuleOriginal, binding: Capsule2AssetReferenceBinding1, tree: Capsule2ManagedTreeData,
+  installed?: ReadonlyMap<string, { dev: string; ino: string }>) {
   const info = readOwnedRawCapsuleOriginal(original)
   await assertOwnedRawCapsuleOriginal(original)
   await assertRestorePath(info.profileRoot)
@@ -203,6 +263,12 @@ export async function captureCapsule2AssetReferenceProvenanceOwned3(original: Ow
     if (!rootStat.isDirectory() || rootStat.isSymbolicLink() || !rootStat.ino || !inside(root, canonicalProfile)) return fail('实际管理根不是Main原profile的普通真实目录')
   }
   const aliases = new Map(tree.aliases.map((alias, index) => [alias.relativePath, { alias, index }]))
+  const read = async (canonical: string, alias: Capsule2ManagedTreeData['aliases'][number]) => {
+    const pin = installed?.get(alias.relativePath)
+    const stat = await readCanonicalAlias(canonical, root, alias, pin ? CAPSULE_V3_ASSET_MAX_FILE_BYTES : ATTACHMENT_MAX_FILE_BYTES)
+    if (pin && (stat.dev.toString() !== pin.dev || stat.ino.toString() !== pin.ino)) return fail('安装附件与原 transfer 的 FD 不同')
+    return stat
+  }
   const identities = new Map<number, { stat: BigIntStats; path: string }>(), roots = new Map<string, BigIntStats>()
   const pending: Array<{ entry: Capsule2AssetReferenceEntry1; rootUri?: string }> = []
   for (const [index, uri] of binding.referenceUris.entries()) {
@@ -231,7 +297,7 @@ export async function captureCapsule2AssetReferenceProvenanceOwned3(original: Ow
     const found = aliases.get(relative(root, physical).split(sep).join('/'))
     if (!found) { unresolved('missing-managed-alias'); continue }
     const canonical = join(root, ...found.alias.relativePath.split('/'))
-    const captured = identities.get(found.index) ?? { stat: await readCanonicalAlias(canonical, root, found.alias), path: canonical }
+    const captured = identities.get(found.index) ?? { stat: await read(canonical, found.alias), path: canonical }
     identities.set(found.index, captured)
     await assertActualAliasIdentity(candidate, canonical, root, captured.stat)
     const spelling = pathToFileURL(prefix).href
@@ -240,7 +306,7 @@ export async function captureCapsule2AssetReferenceProvenanceOwned3(original: Ow
   // A bounded final byte pass catches contents changed with matching timestamp
   // observations. This is not a filesystem snapshot or exclusion lease.
   for (const [aliasIndex, captured] of identities) {
-    const actual = await readCanonicalAlias(captured.path, root, tree.aliases[aliasIndex])
+    const actual = await read(captured.path, tree.aliases[aliasIndex])
     if (!sameFd(captured.stat, actual)) return fail('capture结束前真实源FD身份变化')
   }
   if (rootStat) {
@@ -253,13 +319,14 @@ export async function captureCapsule2AssetReferenceProvenanceOwned3(original: Ow
   const rootIndices = new Map(rootSpellings.map((row, index) => [row.uri, index]))
   const entries = pending.map(({ entry, rootUri }): Capsule2AssetReferenceEntry1 => entry[1] === 'file'
     ? [entry[0], 'file', entry[2], rootIndices.get(rootUri!) ?? fail('root spelling索引遗漏')] : entry)
-  return validateCapsule2AssetReferenceProvenance1({ kind: 'capsule2-captured-managed-reference-provenance', version: 1,
+  return validateProvenance({ kind: 'capsule2-captured-managed-reference-provenance', version: 1,
     sourceContentHash: binding.sourceContentHash, workspaceHistoryObservationHash: binding.workspaceHistoryObservationHash,
     assetReferencesObservationHash: binding.assetReferencesObservationHash, referenceUrisHash: uriHash(binding.referenceUris), managedTreeHash: treeHash(tree),
     assetRoot: { uri: pathToFileURL(root).href, present: tree.rootPresent, device: rootStat?.dev.toString() ?? null, inode: rootStat?.ino.toString() ?? null }, rootSpellings,
     identities: [...identities].sort(([left], [right]) => left - right).map(([aliasIndex, value]) => ({ aliasIndex, device: value.stat.dev.toString(), inode: value.stat.ino.toString(),
       bytes: Number(value.stat.size), links: value.stat.nlink.toString(), mode: value.stat.mode.toString() })), entries,
-    knownReferenceClassificationComplete: true, certified: false, semanticValidationComplete: false, permit: false }, binding, tree)
+    knownReferenceClassificationComplete: true, certified: false, semanticValidationComplete: false, permit: false }, binding, tree,
+  installed && new Set(installed.keys()))
 }
 
 /** Archive v3 has a distinct combined-observation proof. The published base
@@ -276,6 +343,14 @@ const nativeBinding2 = (binding: Capsule2AssetReferenceBinding2): Capsule2AssetR
 export const capsule2AssetReferenceProvenance2Hash = (value: Capsule2AssetReferenceProvenance2) => digest('knowbook.capsule2.captured-reference-provenance.v2', value)
 export function validateCapsule2AssetReferenceProvenance2(value: unknown, binding: Capsule2AssetReferenceBinding2,
   tree: Capsule2ManagedTreeData): Capsule2AssetReferenceProvenance2 {
+  return validateCombinedReferenceProvenance(value, binding, tree)
+}
+export function validateCapsuleInstalledCombinedAssetProvenance(value: unknown, binding: Capsule2AssetReferenceBinding2,
+  tree: Capsule2ManagedTreeData, installedPaths: ReadonlySet<string>): Capsule2AssetReferenceProvenance2 {
+  return validateCombinedReferenceProvenance(value, binding, tree, installedPaths)
+}
+function validateCombinedReferenceProvenance(value: unknown, binding: Capsule2AssetReferenceBinding2,
+  tree: Capsule2ManagedTreeData, installedPaths?: ReadonlySet<string>): Capsule2AssetReferenceProvenance2 {
   const row = capsuleRecord(value, ['kind', 'version', 'sourceContentHash', 'workspaceHistoryObservationHash', 'assetReferencesObservationHash',
     'assetScopeSupplementHash', 'referenceUrisHash', 'managedTreeHash', 'assetRoot', 'rootSpellings', 'identities', 'entries',
     'knownReferenceClassificationComplete', 'certified', 'semanticValidationComplete', 'permit'])
@@ -284,9 +359,15 @@ export function validateCapsule2AssetReferenceProvenance2(value: unknown, bindin
   const { version: _version, assetScopeSupplementHash: _supplement, ...native } = row
   // Reuse the exact native-fact grammar, not a persisted v1 authority. This
   // temporary value never crosses an archive/material boundary as proof1.
-  const checked = validateCapsule2AssetReferenceProvenance1({ ...native, version: 1 }, nativeBinding2(binding), tree)
+  const checked = validateProvenance({ ...native, version: 1 }, nativeBinding2(binding), tree, installedPaths)
   return freezeCapsuleValue({ ...checked, version: 2, assetReferencesObservationHash: binding.assetReferencesObservationHash,
     assetScopeSupplementHash: binding.assetScopeSupplementHash })
+}
+export async function captureCapsuleInstalledCombinedAssetProvenance(original: OwnedRawCapsuleOriginal,
+  binding: Capsule2AssetReferenceBinding2, tree: Capsule2ManagedTreeData, installed: Parameters<typeof captureCapsuleInstalledAssetProvenance>[3]) {
+  const native = await captureCapsuleInstalledAssetProvenance(original, nativeBinding2(binding), tree, installed)
+  return validateCapsuleInstalledCombinedAssetProvenance({ ...native, version: 2,
+    assetScopeSupplementHash: binding.assetScopeSupplementHash }, binding, tree, new Set(installed.keys()))
 }
 export async function captureCapsule2AssetReferenceProvenance2Owned3(original: OwnedRawCapsuleOriginal,
   binding: Capsule2AssetReferenceBinding2, tree: Capsule2ManagedTreeData): Promise<Capsule2AssetReferenceProvenance2> {

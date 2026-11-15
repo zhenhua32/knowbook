@@ -83,6 +83,7 @@ export interface WebDavSyncProgress {
 
 export interface WebDavSyncStatus {
   protocol5?: true
+  protocol5RestoreRejoin?: true
   protocol5Preview?: WebDavProtocol5ConflictPreview
   protocol5DeletionPreview?: WebDavProtocol5DeletionPreview
   config: WebDavSyncConfig

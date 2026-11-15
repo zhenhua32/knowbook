@@ -79,8 +79,27 @@ async function layout(root: string, profile: string): Promise<Layout> {
 /** Filesystem data only. The Main owner supplies its fixed root/output; this
  * copies the entire native managed tree and never interprets a reference URI. */
 export async function captureCapsule2ManagedTreeData(root: string, profile: string, filesDirectory: string): Promise<Capsule2ManagedTreeData> {
+  return captureManagedTree(root, profile, filesDirectory)
+}
+
+/** Called only by the installed-continuity archive producer. Its specific
+ * alias is independently verified/copy-pinned by the previous install owner. */
+export async function captureCapsule2ManagedTreeWithInstalledAssets(root: string, profile: string, filesDirectory: string,
+  installed: (path: string, filesDirectory?: string) => Promise<Alias | undefined>) {
+  return captureManagedTree(root, profile, filesDirectory, installed)
+}
+
+async function captureManagedTree(root: string, profile: string, filesDirectory: string,
+  installed?: (path: string, filesDirectory?: string) => Promise<Alias | undefined>): Promise<Capsule2ManagedTreeData> {
   const initial = await layout(root, profile), aliases: Alias[] = [], files = new Map<string, number>()
   let sourceBytes = 0, uniqueBytes = 0
+  const readInstalled = async (path: string, output?: string) => {
+    if (!installed) return
+    const named = join(root, path)
+    await assertRestorePath(named, root)
+    const info = await lstat(named)
+    if (info.isFile() && info.size > ATTACHMENT_MAX_FILE_BYTES) return installed(path, output)
+  }
   const read = async (path: string) => {
     await directory(root, profile)
     await assertRestorePath(join(root, path), root)
@@ -90,20 +109,24 @@ export async function captureCapsule2ManagedTreeData(root: string, profile: stri
     return result
   }
   for (const path of initial.paths) {
-    const source = await read(path)
-    sourceBytes += source.bytes.length
+    const hash = path.split('/')[2], imported = await readInstalled(path, files.has(hash) ? undefined : filesDirectory)
+    const source = imported ?? await read(path)
+    const bytes = typeof source.bytes === 'number' ? source.bytes : source.bytes.length
+    sourceBytes += bytes
     if (sourceBytes > maxBytes) return bad('完整alias字节集合超有限准备预算')
-    aliases.push({ relativePath: path, hash: source.hash, name: source.name, bytes: source.bytes.length })
+    aliases.push({ relativePath: path, hash: source.hash, name: source.name, bytes })
     if (!files.has(source.hash)) {
-      uniqueBytes += source.bytes.length
+      uniqueBytes += bytes
       if (uniqueBytes > maxBytes) return bad('完整blob集合超有限准备预算')
-      await writeNew(join(filesDirectory, source.hash), source.bytes, profile); files.set(source.hash, source.bytes.length)
-    } else if (files.get(source.hash) !== source.bytes.length) return bad('同hash实际长度不同')
+      if (typeof source.bytes !== 'number') await writeNew(join(filesDirectory, source.hash), source.bytes, profile)
+      files.set(source.hash, bytes)
+    } else if (files.get(source.hash) !== bytes) return bad('同hash实际长度不同')
   }
   await syncRestoreDirectory(filesDirectory)
   for (const alias of aliases) {
-    const source = await read(alias.relativePath)
-    if (source.hash !== alias.hash || source.name !== alias.name || source.bytes.length !== alias.bytes) return bad('manifest前管理alias变化')
+    const source = await readInstalled(alias.relativePath) ?? await read(alias.relativePath)
+    if (source.hash !== alias.hash || source.name !== alias.name
+      || (typeof source.bytes === 'number' ? source.bytes : source.bytes.length) !== alias.bytes) return bad('manifest前管理alias变化')
   }
   if (capsuleJson(await layout(root, profile)) !== capsuleJson(initial)) return bad('完整实时目录闭集在读取期间变化')
   return freezeCapsuleValue({ rootPresent: initial.rootPresent, directories: initial.directories, aliases,

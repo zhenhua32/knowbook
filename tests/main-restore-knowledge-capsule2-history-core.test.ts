@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { writeSyncedBackupV3 } from '../src/main/backup/v3-export'
 import { readRawCapsule2ObserverOwned } from '../src/main/database/restore-knowledge-capsule2-observer-read'
 import { readRawCapsule2HistoricalEvidenceOwned } from '../src/main/database/restore-knowledge-capsule2-history-read'
-import { assertRawSyncedHistoricalEvidenceOwned } from '../src/main/database/synced-operation-history-read'
+import { assertRawSyncedHistoricalEvidenceOwned, readRawSyncedHistoricalEvidenceWithCoverageOwned } from '../src/main/database/synced-operation-history-read'
 import { coverageOperationId, coverageReceiptKey } from '../src/main/database/restore-knowledge-coverage-model'
 import { withV3Fixture } from './helpers/synced-backup-v3-fixture'
 import { editCreatedGroup } from './helpers/synced-host-command-create-fixture'
@@ -23,6 +23,11 @@ test('total historical2 keeps real Main B R retained ACK journals pins and later
     const before = db.prepare('SELECT total_changes() AS n').get()
     assert.throws(() => db.transaction(() => assertRawSyncedHistoricalEvidenceOwned(db))())
     const value = db.transaction(() => readRawCapsule2HistoricalEvidenceOwned(db))()
+    const runtime = db.transaction(() => readRawSyncedHistoricalEvidenceWithCoverageOwned(db))()
+    assert.deepEqual(runtime.legacyHistory.facts, value.legacyFacts)
+    assert.deepEqual(runtime.coverage, value.observer.coverage.requirements)
+    assert.ok(runtime.coverage.entries[0].supports.boundary)
+    assert.ok(runtime.coverage.entries[0].supports.epoch)
     assert.ok(value.legacyFacts.some(fact => fact.family === 'recovery-boundary'))
     assert.ok(value.legacyFacts.some(fact => fact.family === 'recovery-epoch'))
     assert.ok(value.legacyFacts.some(fact => fact.family === 'backup-v3'))
@@ -68,6 +73,7 @@ test('observer2 treats UUID nonzero-member new-channel exposure as ordinary and 
     .run(orphan, '1'.repeat(64), 'recovery-knowledge-coverage-v99', '2'.repeat(64), '3'.repeat(64), '2051-02-02T03:04:05.006Z')
   await withObserver2Copy(f.db, f.file, db => {
     assert.throws(() => db.transaction(() => readRawCapsule2ObserverOwned(db))())
+    assert.throws(() => db.transaction(() => readRawSyncedHistoricalEvidenceWithCoverageOwned(db))())
     assert.ok(db.prepare('SELECT 1 FROM synced_exposure_attempts WHERE id=?').get(orphan))
   })
 }))

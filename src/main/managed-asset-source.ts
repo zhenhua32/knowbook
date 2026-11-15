@@ -9,8 +9,8 @@ import { buildSyncedPortableAssetUri, parseSyncedPortableAssetUri } from '../sha
 
 export interface ManagedAssetSource { uri: string; path: string; hash: string; name: string; bytes: Buffer }
 type Located = Omit<ManagedAssetSource, 'bytes'> & { store: AttachmentStore; localUrl: string; info: Stats }
-const bad = (): never => { throw new Error('附件原路径、25MiB边界、文件身份或managed hash在读取期间无效。') }
-function locate(root: string, uri: string): Located {
+const bad = (): never => { throw new Error('附件原路径、字节上限、文件身份或 managed hash 在读取期间无效。') }
+function locate(root: string, uri: string, maxBytes: number): Located {
   const store = new AttachmentStore(root)
   let path: string, hash: string, name: string, localUrl = uri
   if (/^file:/i.test(uri)) {
@@ -26,7 +26,8 @@ function locate(root: string, uri: string): Located {
     path = store.resolve(localUrl)
   }
   const info = lstatSync(path)
-  if (!info.isFile() || !Number.isSafeInteger(info.size) || info.size < 0 || info.size > ATTACHMENT_MAX_FILE_BYTES) return bad()
+  if (!info.isFile() || !Number.isSafeInteger(info.size) || info.size < 0) return bad()
+  if (info.size > maxBytes) throw new Error(`附件超过 ${maxBytes / (1024 * 1024)}MiB 边界。`)
   return { uri, path, hash, name, store, localUrl, info }
 }
 function same(a: Stats, b: Stats, pathStat = false): boolean {
@@ -50,8 +51,8 @@ function finish(source: Located, before: Stats, after: Stats, buffer: Buffer, le
 }
 /** Byte source only. Existing Main callers authenticate their root/capture;
  * this does not mint file ownership, certification or an installation permit. */
-export function readManagedAssetSourceSync(root: string, uri: string): ManagedAssetSource {
-  const source = locate(root, uri), fd = openSync(source.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+export function readManagedAssetSourceSync(root: string, uri: string, maxBytes = ATTACHMENT_MAX_FILE_BYTES): ManagedAssetSource {
+  const source = locate(root, uri, maxBytes), fd = openSync(source.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
   try {
     const before = fstatSync(fd), bytes = buffer(source, before)
     let length = 0
@@ -62,7 +63,7 @@ export function readManagedAssetSourceSync(root: string, uri: string): ManagedAs
 /** Async publication keeps native reads off the Main event loop. Same complete
  * locator/descriptor/byte checks as the synchronous V3 export path. */
 export async function readManagedAssetSource(root: string, uri: string): Promise<ManagedAssetSource> {
-  const source = locate(root, uri), fd = await open(source.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+  const source = locate(root, uri, ATTACHMENT_MAX_FILE_BYTES), fd = await open(source.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
   try {
     const before = await fd.stat(), bytes = buffer(source, before)
     let length = 0

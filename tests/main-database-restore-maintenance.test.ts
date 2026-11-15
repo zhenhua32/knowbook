@@ -7,7 +7,9 @@ import { join, resolve } from 'node:path'
 import test from 'node:test'
 import { spawn } from 'node:child_process'
 import { KnowbookStore } from '../src/main/database/store'
-import { parseDatabaseRestoreArgument, recoverInterruptedDatabaseRestore, restoreKnowbookDatabase } from '../src/main/database/restore-maintenance'
+import { BACKUP_V3_RESTORE_ARGUMENT, BACKUP_V3_RESTORE_INVENTORY_ARGUMENT, BACKUP_V3_RESTORE_INTERACTIVE_ARGUMENT, BACKUP_V3_RESTORE_REQUEST_ARGUMENT,
+  parseBackupV3RestoreArgument, parseBackupV3RestoreInventoryArgument, parseBackupV3RestoreInteractiveArgument, parseBackupV3RestoreRequestArgument,
+  parseDatabaseRestoreArgument, recoverInterruptedDatabaseRestore, restoreKnowbookDatabase } from '../src/main/database/restore-maintenance'
 import { listWindowsRestoreProcesses, parseRestoreProcessQueryTrace, stopDatabaseRestoreProcesses, type RestoreProcessIdentity, type RestoreObservedProcess } from '../src/main/database/restore-process-guard'
 import { unknownGroup27 } from './helpers/synced-lifecycle-fixture'
 
@@ -37,6 +39,37 @@ test('database restore arguments reject relative, duplicate, malformed and confl
   for (const args of [ ['--knowbook-restore-database=relative.db'], ['--knowbook-restore-database'],
     [`--knowbook-restore-database=${path}`, `--knowbook-restore-database=${path}`],
     [`--knowbook-restore-database=${path}`, '--knowbook-uninstall-cleanup'] ]) assert.throws(() => parseDatabaseRestoreArgument(args))
+})
+
+test('V3 plan confirmation is explicit and requires one pinned archive inventory', () => {
+  const directory = resolve('V3 备份目录'), hash = 'a'.repeat(64)
+  const source = `${BACKUP_V3_RESTORE_ARGUMENT}=${directory}`, inventory = `${BACKUP_V3_RESTORE_INVENTORY_ARGUMENT}=${hash}`
+  const interactive = BACKUP_V3_RESTORE_INTERACTIVE_ARGUMENT, args = [source, inventory, interactive]
+  assert.equal(parseBackupV3RestoreArgument(args), directory)
+  assert.equal(parseBackupV3RestoreInventoryArgument(args, directory), hash)
+  assert.equal(parseBackupV3RestoreInteractiveArgument(args, directory, hash), true)
+  assert.equal(parseBackupV3RestoreInteractiveArgument([source], directory), false)
+  assert.throws(() => parseBackupV3RestoreInteractiveArgument([interactive], null))
+  assert.throws(() => parseBackupV3RestoreInteractiveArgument([source, interactive], directory))
+  for (const invalid of [[...args, interactive], [source, inventory, interactive + '=false'], [source, inventory, interactive + '-unknown']])
+    assert.throws(() => parseBackupV3RestoreInteractiveArgument(invalid, directory, hash))
+})
+
+test('V3 maintenance accepts one exact request UUID with a pinned archive for replay', () => {
+  const directory = resolve('V3 备份目录'), hash = 'a'.repeat(64)
+  const source = `${BACKUP_V3_RESTORE_ARGUMENT}=${directory}`, inventory = `${BACKUP_V3_RESTORE_INVENTORY_ARGUMENT}=${hash}`
+  const requestId = '12345678-abcd-4567-890a-12345678abcd', request = BACKUP_V3_RESTORE_REQUEST_ARGUMENT + '=' + requestId
+  const args = [source, inventory, BACKUP_V3_RESTORE_INTERACTIVE_ARGUMENT, request]
+  assert.equal(parseBackupV3RestoreArgument(args), directory)
+  assert.equal(parseBackupV3RestoreRequestArgument(args, directory, hash), requestId)
+  assert.equal(parseBackupV3RestoreRequestArgument([source, inventory], directory, hash), undefined)
+  assert.throws(() => parseBackupV3RestoreRequestArgument([request], null))
+  assert.throws(() => parseBackupV3RestoreRequestArgument([source, request], directory))
+  for (const invalid of [request + ' ', request.toUpperCase().replace('--KNOWBOOK-RESTORE-BACKUP-V3-REQUEST-ID', BACKUP_V3_RESTORE_REQUEST_ARGUMENT),
+    BACKUP_V3_RESTORE_REQUEST_ARGUMENT, BACKUP_V3_RESTORE_REQUEST_ARGUMENT + '-unknown=' + requestId,
+    BACKUP_V3_RESTORE_REQUEST_ARGUMENT + '=12345678-abcd-1567-890a-12345678abcd'])
+    assert.throws(() => parseBackupV3RestoreRequestArgument([source, inventory, invalid], directory, hash))
+  assert.throws(() => parseBackupV3RestoreRequestArgument([...args, request], directory, hash))
 })
 
 test('restore accepts a damaged current database, preserves DB/WAL/SHM, and disables restored Full Trust without changing source', async () => {

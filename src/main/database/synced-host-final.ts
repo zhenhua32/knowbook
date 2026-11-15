@@ -11,6 +11,7 @@ import { randomUUID } from 'node:crypto'
 import type Database from 'better-sqlite3'
 import type { SyncedFailure, SyncedGroupSnapshot, SyncedGroupWire, SyncedRestoreHostInput,
   SyncedStableBlockDraft, SyncedStructureApplied, SyncedStructureInput, SyncedStructureResult } from '../../shared/synced-blocks'
+import type { SyncedCrossHostMoveHistory } from '../../shared/synced-editing-session'
 import { validateSyncedRestoreHostInput, validateSyncedStructureInput } from '../../shared/syncedBlockInputs'
 import { assertSyncedShape, isSyncedUuid, parseSyncedBlockPayload, SYNCED_MAX_BLOCKS, SyncedValidationError, validateSyncedGroupWire } from '../../shared/syncedBlockValidation'
 import { validateSyncedWorkspaceGraph } from '../../shared/syncedBlockGraph'
@@ -40,6 +41,11 @@ import { assertCreateHeadingContinuity, hasCreateHeadings } from './synced-host-
 import { assertDetachHeadingContinuity, captureDetachDestinations, detachUsers, planSyncedHostDetach,
   requiresDetachHeadingProof, UnsupportedSyncedHostDetach, type DetachSource } from './synced-host-detach-legacy'
 export type { SyncedHostCreateApplied } from './synced-host-create-codec'
+import { captureCrossHostJournal4, captureCrossHostBatchJournal, captureCrossHostLinkJournal, decodeCrossHostJournal4, decodeCrossHostJournal8,
+  assertNoOutsideCrossMoveLinks, CrossMoveJournalError } from './synced-cross-host-journal4'
+import { MoveRefused } from './synced-host-cross-move-plan'
+import { isHostMoveBatchInput, type HostMoveBatchInput } from './synced-host-cross-move-batch-plan'
+import { checkBatchMoveDraftOwned, checkCrossMoveDraftOwned } from './synced-cross-move-draft-guard'
 
 export { getSyncedHostHistory }
 export type SyncedHostFinalResult = SyncedStructureResult | SyncedHostCreateApplied | { status: 'unsupported'; reason: 'command' | 'title-change' | 'owner-transfer' | 'journal-kind' | 'heading-rewrite' | 'working-structure' | 'move-selection' | 'semantic-binding' | 'create-selection' | 'lifecycle' }
@@ -61,6 +67,7 @@ function mutation(db: Database.Database, run: () => SyncedMainHostSuccess): Sync
   catch (error) {
     if (error instanceof Refused) return error.result
     if (error instanceof UnsupportedSyncedHostMove) return { status: 'unsupported', reason: error.reason }
+    if (error instanceof MoveRefused) return { status: 'unsupported', reason: error.reason === 'heading-rewrite' ? 'heading-rewrite' : 'semantic-binding' }
     if (error instanceof UnsupportedSyncedHostCreate) return { status: 'unsupported', reason: error.reason }
     if (error instanceof UnsupportedSyncedHostDetach) return { status: 'unsupported', reason: error.reason }
     if (error instanceof SyncedValidationError) return { status: 'invalid', code: error.code, blockingInstances: error.blockingInstances }
@@ -334,6 +341,244 @@ function result(db: Database.Database, operationId: string, status: 'applied' | 
   return { status, operationId, historyToken: token, replayed: false, hosts: logicalBefore.map(side => ({ documentId: side.documentId,
     logicalBefore: side.content, logicalBeforeHash: hostHash(side.content), after: host(db, side.documentId).detail })), groups, affectedInstanceIds, blockIdMap: [] }
 }
+
+type CrossJournal = ReturnType<typeof decodeCrossHostJournal4> | ReturnType<typeof decodeCrossHostJournal8>
+
+function crossMovePlaceholders(original: CrossJournal) {
+  if ('sourcePlaceholders' in original.crossMove) return original.crossMove.sourcePlaceholders
+  if (!original.crossMove.sourcePlaceholder) return []
+  if (!isHostMoveInput(original.input)) throw new Error('跨页移动补位须绑定原来源宿主。')
+  return [{ ...original.crossMove.sourcePlaceholder, documentId: original.input.action.selection.documentId }]
+}
+
+export function matchesCrossMovePlaceholder(db: Database.Database, original: CrossJournal, undo: boolean): boolean {
+  return crossMovePlaceholders(original).every(({ blockId, createdAt, documentId }) => {
+    const identity = new BlockIdentityRepository(db).get(blockId)
+    if (identity?.state !== (undo ? 'live' : 'retained') || identity.owner.kind !== 'document'
+      || identity.owner.id !== documentId || identity.createdAt !== createdAt) return false
+    const physical = db.prepare('SELECT document_id,created_at FROM blocks WHERE id=?').get(blockId) as
+      { document_id: string; created_at: string } | undefined
+    return undo ? physical?.document_id === documentId && physical.created_at === createdAt : !physical
+  })
+}
+
+function writeCrossHostMove4(db: Database.Database, hosts: Hosts, groups: Groups, graph: ReturnType<typeof finalGraph>,
+  sides: HostSide[], original: CrossJournal, row: SyncedHostHistoryBranchRow, now: string, undo = false): string[] {
+  const old = new Map([...groups.values()].flatMap(group => group.instances.map(instance => [instance.instanceId, { ...instance, groupId: group.groupId }] as const)))
+  const next = new Map([...graph.occurrences.values()].flatMap(positions => positions.map(position => [position.instanceId, position] as const)))
+  const affected = new Set<string>(), changedGroups = new Set<string>()
+  const detach = db.prepare('DELETE FROM synced_instances WHERE instance_id=? AND host_document_id=? AND binding_version=?')
+  for (const side of sides) for (const block of side.content.blocks) if (block.type === 'synced-block') {
+    const original = old.get(block.id), position = next.get(block.id)
+    if (!original || !position) invalid('binding', '跨页移动须保留全部已注册同步引用。')
+    if (original.hostDocumentId === side.documentId && original.parentBlockId === position.parentBlockId && original.depth === position.depth
+      && original.parentType === position.parentType) continue
+    if (detach.run(block.id, original.hostDocumentId, original.bindingVersion).changes !== 1) conflict('topology', groups, hosts)
+    affected.add(block.id); changedGroups.add(original.groupId)
+  }
+  const transfer = db.prepare('UPDATE blocks SET document_id=? WHERE id=? AND document_id=? AND created_at=?')
+  for (const move of original.crossMove.transfers) if (transfer.run(undo ? move.from : move.to, move.blockId, undo ? move.to : move.from,
+    move.createdAt).changes !== 1) conflict('history', groups, hosts)
+  const placeholders = new Map(crossMovePlaceholders(original).map(placeholder => [placeholder.blockId, placeholder]))
+  if (undo) for (const { blockId, documentId, createdAt } of placeholders.values()) {
+    if (db.prepare('DELETE FROM blocks WHERE id=? AND document_id=? AND created_at=?').run(blockId, documentId, createdAt).changes !== 1)
+      conflict('history', groups, hosts)
+  }
+  const append = db.prepare(`INSERT INTO blocks(id,document_id,parent_block_id,sort_order,type,content,checked,depth,tags_json,language,
+    list_start,markdown_format_json,highlight,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+  const change = db.prepare(`UPDATE blocks SET parent_block_id=?,sort_order=?,type=?,content=?,checked=?,depth=?,tags_json=?,language=?,
+    list_start=?,markdown_format_json=?,highlight=?,updated_at=? WHERE id=? AND document_id=? AND created_at=?`)
+  const add = db.prepare('INSERT INTO synced_instances(instance_id,group_id,host_document_id,binding_version,parent_block_id,depth) VALUES(?,?,?,?,?,?)')
+  const oldBirths = new Map([...hosts.values()].flatMap(host => [...host.births]))
+  const identities = new BlockIdentityRepository(db)
+  const dependencies = new Set(original.crossMove.outsideIncoming)
+  for (const side of sides) {
+    for (const [index, block] of side.content.blocks.entries()) {
+      const oldBirth = oldBirths.get(block.id)
+      // An inbound link in ordinary content grants no write to a registered
+      // reference elsewhere in that dependent page, even to its timestamp.
+      if (dependencies.has(side.documentId) && block.type === 'synced-block') {
+        if (oldBirth === undefined || affected.has(block.id)) invalid('binding', '依赖页的同步引用必须保持原登记。')
+        continue
+      }
+      const values = [block.parentBlockId, index, block.type, block.content, block.checked ? 1 : 0, block.depth, hostEncode(block.tags ?? []),
+        block.language ?? null, block.listStart ?? null, block.markdownFormat === undefined ? null : hostEncode(block.markdownFormat), block.highlight ?? null]
+      if (oldBirth !== undefined) {
+        if (change.run(...values, now, block.id, side.documentId, oldBirth).changes !== 1) conflict('host', groups, hosts)
+      } else {
+        const retained = identities.get(block.id)
+        if (retained && (retained.state !== 'retained' || retained.owner.kind !== 'document' || retained.owner.id !== side.documentId
+          || retained.createdAt === null)) invalid('identity', '跨页移动 W 新块归属已变化。')
+        const createdAt = placeholders.get(block.id)?.createdAt ?? retained?.createdAt ?? row.created_at
+        append.run(block.id, side.documentId, ...values, createdAt, now)
+      }
+      if (affected.has(block.id)) {
+        const previous = old.get(block.id)!
+        if (add.run(block.id, previous.groupId, side.documentId, randomUUID(), block.parentBlockId, block.depth).changes !== 1) conflict('topology', groups, hosts)
+      }
+    }
+    if (db.prepare('UPDATE documents SET summary=?,updated_at=? WHERE id=? AND updated_at=?')
+      .run(side.content.summary, now, side.documentId, hosts.get(side.documentId)!.detail.updatedAt).changes !== 1) conflict('host', groups, hosts)
+  }
+  const addRoute = db.prepare('INSERT OR IGNORE INTO document_block_routes(document_path,block_id) VALUES(?,?)')
+  for (const move of original.crossMove.transfers) {
+    addRoute.run(hosts.get(move.from)!.detail.path, move.blockId)
+    addRoute.run(hosts.get(move.to)!.detail.path, move.blockId)
+  }
+  for (const id of changedGroups) {
+    const group = groups.get(id)!
+    if (db.prepare('UPDATE synced_groups SET topology_revision=? WHERE id=? AND revision=? AND topology_revision=?')
+      .run(randomUUID(), id, group.revision, group.topologyRevision).changes !== 1) conflict('topology', groups, hosts)
+  }
+  // A moved stable source block still has its old indexed PK until both
+  // old source scopes are cleared. Request-side page order is immaterial.
+  db.prepare('DELETE FROM markdown_link_sources WHERE source_document_id IN (SELECT value FROM json_each(?))')
+    .run(JSON.stringify(sides.map(side => side.documentId)))
+  syncLinks(db, sides.map(side => side.documentId), now)
+  return [...affected]
+}
+
+function assertCrossMoveInverse4(db: Database.Database, journal: CrossJournal, hosts: Hosts, groups: Groups, undo: boolean,
+  row: SyncedHostHistoryBranchRow, input: SyncedRestoreHostInput): void {
+  const ids = [...hosts.keys()]
+  const previous = replay(db, journal.input.clientOperationId, hostHash({ method: 'applySyncedHostCommand', input: journal.input }))
+  if (!previous || 'createdLifecycle' in previous || !crossMoveReceiptMatches(previous, journal, row.id)) conflict('history', groups, hosts)
+  for (const page of journal.persisted) if (hosts.get(page.documentId)?.detail.path !== page.path || hosts.get(page.documentId)?.createdAt !== page.createdAt) {
+    conflict('history', groups, hosts)
+  }
+  if (!matchesCrossMovePlaceholder(db, journal, undo)
+    || undo && crossMovePlaceholders(journal).some(({ blockId, documentId }) => hasInboundReferences(db, hosts.get(documentId)!, [blockId], groups))) {
+    conflict('history', groups, hosts)
+  }
+  for (const id of journal.crossMove.outsideIncoming) if (!checkCrossMoveDraftOwned(db, id, hosts.get(id)!.content, input)) conflict('history', groups, hosts)
+  if (isHostMoveBatchInput(journal.input)) for (const [id, page] of hosts) {
+    if (!checkBatchMoveDraftOwned(db, id, page.content, input)) conflict('history', groups, hosts)
+  }
+  const identities = new BlockIdentityRepository(db)
+  for (const move of journal.crossMove.transfers) {
+    const currentOwner = undo ? move.to : move.from
+    const identity = identities.get(move.blockId)
+    if (hosts.get(currentOwner)?.births.get(move.blockId) !== move.createdAt || identity?.state !== 'live'
+      || identity.owner.kind !== 'document' || identity.owner.id !== currentOwner || identity.createdAt !== move.createdAt) conflict('history', groups, hosts)
+  }
+  for (const [id, host] of hosts) {
+    const page = journal.persisted.find(page => page.documentId === id)!
+    const originalBirths = new Map(page.births.map(item => [item.blockId, item.createdAt]))
+    for (const [id, birth] of host.births) if (!journal.crossMove.transfers.some(item => item.blockId === id) &&
+      (originalBirths.get(id) ?? row.created_at) !== birth) conflict('history', groups, hosts)
+  }
+  try {
+    for (const host of hosts.values()) assertNoOutsideCrossMoveLinks(db, host.detail.path, journal.crossMove.transfers, ids)
+  } catch (error) {
+    if (error instanceof CrossMoveJournalError) conflict('history', groups, hosts)
+    throw error
+  }
+}
+
+export function crossMoveReceiptMatches(receipt: SyncedStructureApplied, original: CrossJournal, historyToken: string): boolean {
+  return receipt.status === 'applied' && receipt.historyToken === historyToken && receipt.hosts.length === original.before.length
+    && receipt.hosts.every((item, index) => item.documentId === original.before[index].documentId && item.after.id === original.after[index].documentId
+      && hostEqual(item.logicalBefore, original.before[index].content) && sameHostContent({ title: item.after.title, summary: item.after.summary,
+        blocks: item.after.blocks.map(({ sortOrder: _sortOrder, ...block }) => block) }, original.after[index].content))
+}
+
+/** Reopen only an executable paired tail from the genuine current host. The
+ * original ACK and install-era cuts remain authoritative after a cold launch. */
+export function getOwnedSyncedCrossHostMoveHistory(db: Database.Database, input: unknown): SyncedCrossHostMoveHistory[] {
+  return db.transaction(() => {
+    assertSyncedShape(input, ['documentId'])
+    requireSyncedMetadataEditingFenceOwned2(db)
+    if (!db.prepare('SELECT 1 FROM synced_host_history_state WHERE document_id=?').get(input.documentId)) return []
+    const { undoToken, redoToken } = getSyncedHostHistory(db, input)
+    const candidates = [{ direction: 'undo', token: undoToken }, { direction: 'redo', token: redoToken }] as const
+    const entries: SyncedCrossHostMoveHistory[] = []
+    for (const { direction, token } of candidates) {
+      if (!token || readSyncedRecoveryHostCut(db, token) || readSyncedExchangeHostCut(db, token)) continue
+      const row = db.prepare('SELECT * FROM synced_host_history WHERE id=?').get(token) as SyncedHostHistoryBranchRow | undefined
+      if (!row) continue
+      const packet = hostJson(row.action_json) as { kind?: unknown; version?: unknown } | null
+      if (packet?.kind !== 'host-command' || packet.version !== 4 && packet.version !== 6 && packet.version !== 7
+        && packet.version !== 8 && packet.version !== 9 && packet.version !== 10 && packet.version !== 11 && packet.version !== 12) continue
+      const journal = decodeHostJournal(row)
+      if (!('crossMove' in journal)) throw new Error('跨页移动日志版本不一致。')
+      const operationId = journal.input.clientOperationId
+      const operation = db.prepare('SELECT client_operation_id,request_hash,result_json,created_at FROM synced_operations WHERE client_operation_id=?')
+        .get(operationId) as (NonNullable<ReturnType<typeof readSyncedGroupOperationRow>> & { created_at: string }) | undefined
+      if (!operation || operation.request_hash !== hostHash({ method: 'applySyncedHostCommand', input: journal.input })
+        || operation.created_at !== row.created_at) throw new Error('跨页移动历史缺少可验证的原回执。')
+      const receipt = decodeMainHostOperationWithHeadingBirthOwned2(db, operation)
+      if ('createdLifecycle' in receipt || !crossMoveReceiptMatches(receipt, journal, token)) throw new Error('跨页移动历史与原回执不一致。')
+      const from = direction === 'undo' ? journal.after : journal.before
+      const versions = from.map(side => {
+        const original = journal.persisted.find(page => page.documentId === side.documentId)!
+        const current = readStrictHostDocument(db, side.documentId)
+        if (!current || current.createdAt !== original.createdAt || current.detail.path !== original.path
+          || !sameHostContent(side.content, current.content)) return null
+        assertHostChain(db, side.documentId)
+        const history = getSyncedHostHistory(db, { documentId: side.documentId })
+        if ((direction === 'undo' ? history.undoToken : history.redoToken) !== token) return null
+        return [side.documentId, current.detail.updatedAt] as const
+      })
+      const before = journal.before.find(side => side.documentId === input.documentId)
+      const after = journal.after.find(side => side.documentId === input.documentId)
+      if (!before || !after || versions.some(version => !version) || !matchesCrossMovePlaceholder(db, journal, direction === 'undo')) continue
+      entries.push({ operationId, historyToken: token, direction, versions: Object.fromEntries(versions.flatMap(version => version ? [version] : [])),
+        groupIds: journal.groups.map(group => group.groupId), before: before.content, after: after.content })
+    }
+    return entries
+  })()
+}
+
+function applyCrossHostMove4(db: Database.Database, input: HostMoveInput | HostMoveBatchInput, requestHash: string, previous: SyncedMainHostSuccess | null): SyncedStructureApplied {
+  if (previous) {
+    if ('createdLifecycle' in previous || !previous.historyToken) throw new Error('跨页移动回执缺少原日志。')
+    const row = db.prepare('SELECT * FROM synced_host_history WHERE id=?').get(previous.historyToken) as SyncedHostHistoryBranchRow | undefined
+    if (!row) throw new Error('跨页移动回执缺少原日志。')
+    const original = decodeHostJournal(row)
+    if (!('crossMove' in original) || !hostEqual(original.input, input) || !crossMoveReceiptMatches(previous, original, row.id))
+      throw new Error('跨页原回执与已提交原日志不一致。')
+    return previous
+  }
+  const all = readAllHosts(db), groups = allGroups(db), ids = input.hostsWorkingBefore.map(item => item.documentId), hosts = participating(all, ids)
+  checkUpdatedAt(input.hostsWorkingBefore.map(item => ({ documentId: item.documentId, expectedUpdatedAt: item.expectedPersistedUpdatedAt })), hosts, groups)
+  if (ids.length < 2) unsupported('command')
+  const before = input.hostsWorkingBefore.map(item => ({ documentId: item.documentId, content: item.workingBefore }))
+  const required = guards(input, persistedSides(hosts), before, groups, hosts), now = time(hosts)
+  let row: SyncedHostHistoryBranchRow
+  try { row = isHostMoveBatchInput(input) ? captureCrossHostBatchJournal(db, input, now)
+    : (ids.length === 2 ? captureCrossHostJournal4 : captureCrossHostLinkJournal)(db, input, now) }
+  catch (error) {
+    if (error instanceof CrossMoveJournalError) unsupported('semantic-binding')
+    throw error
+  }
+  const original = decodeHostJournal(row)
+  if (!('crossMove' in original)) throw new Error('跨页移动日志版本不一致。')
+  for (const id of original.crossMove.outsideIncoming) if (!checkCrossMoveDraftOwned(db, id, hosts.get(id)!.content)) conflict('host', groups, hosts)
+  if (isHostMoveBatchInput(input)) for (const side of before) {
+    if (!checkBatchMoveDraftOwned(db, side.documentId, hosts.get(side.documentId)!.content, { apply: input, working: side.content }))
+      conflict('host', groups, hosts)
+  }
+  const graph = finalGraph(all, groups, original.after)
+  try {
+    for (const page of original.persisted) assertNoOutsideCrossMoveLinks(db, page.path, original.crossMove.transfers, ids)
+  } catch (error) {
+    if (error instanceof CrossMoveJournalError) unsupported('semantic-binding')
+    throw error
+  }
+  // The narrow v4 cannot prove historical births of already-retained W-only
+  // ordinary blocks. Such blocks must use the original rejection path here.
+  const identities = new BlockIdentityRepository(db)
+  if (crossMovePlaceholders(original).some(({ blockId }) => identities.get(blockId))) unsupported('semantic-binding')
+  for (const side of before) for (const block of side.content.blocks) if (!hosts.get(side.documentId)!.births.has(block.id) && identities.get(block.id)) {
+    unsupported('semantic-binding')
+  }
+  prune(db, ids)
+  const affected = writeCrossHostMove4(db, hosts, groups, graph, original.after, original, row, now)
+  insertHostJournal(db, row)
+  appendHostHistory(db, ids, row.id, original.groups, now)
+  for (const id of ids) assertHostChain(db, id)
+  return receipt(db, result(db, input.clientOperationId, 'applied', row.id, before, required, affected), requestHash, now)
+}
 function checkUpdatedAt(expected: Array<{ documentId: string; expectedUpdatedAt: string }>, hosts: Hosts, groups: Groups): void {
   for (const item of expected) if (hosts.get(item.documentId)!.detail.updatedAt !== item.expectedUpdatedAt) conflict('host', groups, hosts)
 }
@@ -365,6 +610,10 @@ function applyHostMutationOwned(db: Database.Database, request: SyncedStructureI
   const requestHash = hostHash({ method, input: request }), previous = replay(db, request.clientOperationId, requestHash)
   if (method === 'applySyncedHostCommand' && isHostCreateInput(request)) return applyCreate(db, request, requestHash, previous)
   if (method === 'applySyncedHostCommand' && isHostDetachInput(request)) return applyDetach(db, request, requestHash, previous)
+  if (method === 'applySyncedHostCommand' && (isHostMoveBatchInput(request)
+    || isHostMoveInput(request) && request.action.selection.documentId !== request.action.target.documentId)) {
+    return applyCrossHostMove4(db, request, requestHash, previous)
+  }
   if (previous && 'createdLifecycle' in previous) throw new Error('原create回执不能当其它结构请求重放。')
   const input = acceptedInput(request, method), after = plannedSides(input)
   if (previous) {
@@ -428,17 +677,21 @@ function detachDocument(host: StrictHostDocument) {
   return { documentId: host.detail.id, path: host.detail.path, createdAt: host.createdAt }
 }
 
-function refuseDetachInboundReferences(db: Database.Database, target: StrictHostDocument, removed: readonly string[], groups: Groups): void {
+function hasInboundReferences(db: Database.Database, target: StrictHostDocument, removed: readonly string[], groups: Groups): boolean {
   const removedIds = new Set(removed)
-  if ([...groups.values()].some(group => group.bindings.some(binding => binding.target.kind === 'block' && removedIds.has(binding.target.id)))) unsupported('semantic-binding')
+  if ([...groups.values()].some(group => group.bindings.some(binding => binding.target.kind === 'block' && removedIds.has(binding.target.id)))) return true
   // An internal link whose source is also removed does not survive the operation.
-  if (db.prepare(`WITH removed(id) AS (SELECT value FROM json_each(?))
+  return Boolean(db.prepare(`WITH removed(id) AS (SELECT value FROM json_each(?))
     SELECT 1 FROM removed AS destination JOIN markdown_link_sources AS source
       ON source.fragment IN (destination.id, '^' || destination.id)
     WHERE source.source_block_id NOT IN (SELECT id FROM removed)
       AND (source.target_path=? OR EXISTS (SELECT 1 FROM document_block_routes AS route
         WHERE route.block_id=destination.id AND route.document_path=source.target_path)) LIMIT 1`)
-    .get(JSON.stringify(removed), target.detail.path)) unsupported('semantic-binding')
+    .get(JSON.stringify(removed), target.detail.path))
+}
+
+function refuseDetachInboundReferences(db: Database.Database, target: StrictHostDocument, removed: readonly string[], groups: Groups): void {
+  if (hasInboundReferences(db, target, removed, groups)) unsupported('semantic-binding')
 }
 
 function planDetachWithHostHeadings(db: Database.Database, input: HostDetachInput, target: StrictHostDocument, all: Hosts,
@@ -617,7 +870,7 @@ export function restoreSyncedHostOperation(db: Database.Database, value: unknown
     }
     nonempty(to)
     if (!('legacyDetach' in journal) || !journal.legacyDetach.headingHash) checkTitlesAndHeadings(hosts, persisted, to)
-    if (isHostMoveInput(journal.input)) assertSyncedHostMoveContext(persisted[0].content, to[0].content)
+    if (!('crossMove' in journal) && isHostMoveInput(journal.input)) assertSyncedHostMoveContext(persisted[0].content, to[0].content)
     const required = guards(input, persisted, to, groups, hosts, journal.groups.map(item => item.groupId))
     if ('legacyDetach' in journal) {
       const { legacyDetach: detach } = journal, { instanceId } = journal.input.action, snapshot = groups.get(detach.source.id)!
@@ -645,10 +898,12 @@ export function restoreSyncedHostOperation(db: Database.Database, value: unknown
         journal.detach.allocation, new Map(journal.births.map(birth => [birth.blockId, birth.createdAt])))
       if (!hostEqual(planned.projection, journal.detach.projection) || !hostEqual(planned.after, journal.after[0].content)) conflict('history', groups, hosts)
     }
-    const now = time(hosts), acceptedBirths = births(db, [...from, ...to], hosts, now, journal.births), graph = finalGraph(all, groups, to)
+    const now = time(hosts), acceptedBirths = 'crossMove' in journal ? null : births(db, [...from, ...to], hosts, now, journal.births), graph = finalGraph(all, groups, to)
+    if ('crossMove' in journal) assertCrossMoveInverse4(db, journal, hosts, groups, undo, row, input)
     if (to.every(side => sameHostContent(hosts.get(side.documentId)!.content, side.content))) return receipt(db,
       result(db, input.clientOperationId, 'noop', null, persisted, required, []), requestHash, now)
-    const affected = writeHosts(db, hosts, to, acceptedBirths, groups, graph, now, true)
+    const affected = 'crossMove' in journal ? writeCrossHostMove4(db, hosts, groups, graph, to, journal, row, now, undo)
+      : writeHosts(db, hosts, to, acceptedBirths!, groups, graph, now, true)
     const mappingsById = new Map(mappings.map(item => [item.document_id, item]))
     for (const id of ids) {
       const current = db.prepare('SELECT cursor,position FROM synced_host_history_state WHERE document_id=?').get(id) as { cursor: string; position: number }

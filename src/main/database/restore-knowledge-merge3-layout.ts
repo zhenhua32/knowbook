@@ -1,6 +1,8 @@
-import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
+import Database from 'better-sqlite3'
+import { capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_RAW_MAX_VALUE_BYTES } from './restore-knowledge-capsule2-raw-model'
-import { graph3Conflict, graph3Encode, graph3Rows, graph3Text, type Graph3Inputs } from './restore-knowledge-graph3-data'
+import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
+import { findGraph3OriginalRow, graph3Conflict, graph3Encode, graph3Value, type Graph3Inputs } from './restore-knowledge-graph3-data'
 import type { RawRestoreSqlCell } from './restore-knowledge-sql-cell'
 import { assertMerge3JsonBudget, type FinishedMerge3Table, type MergedRow3 } from './restore-knowledge-merge3-storage'
 
@@ -10,74 +12,120 @@ export interface Merge3LayoutConflict {
 }
 type Change = { rowKey: string; targetDocumentId: string; column: string; before: RawRestoreSqlCell; after: RawRestoreSqlCell; reason: string }
 const text = (value: unknown): string => typeof value === 'string' ? value : graph3Conflict('merge-layout-text', typeof value)
-const nullable = (value: unknown): string | null => value === null ? null : text(value)
-function values(table: Table, row: MergedRow3): Record<string, unknown> {
-  return Object.fromEntries(table.columns.map((name, index) => {
-    const cell = row.cells[index]
-    return [name, cell[0] === 'null' ? null : cell[0] === 'text' ? graph3Text(cell, table.encoding)
-      : cell[0] === 'integer' ? BigInt(cell[1]) : cell[0] === 'real-ieee754-le' ? Buffer.from(cell[1], 'hex').readDoubleLE() : Buffer.from(cell[1], 'base64')]
-  }))
+// An unsigned big-endian BLOB compares exactly like JavaScript UTF-16 code units,
+// and preserves embedded NULs in stable IDs and slugs.
+const sortKey = (value: string) => Buffer.from(value, 'utf16le').swap16()
+const fromKey = (value: Buffer) => value.swap16().toString('utf16le')
+function readColumn(table: Pick<Table, 'columns' | 'encoding'>, name: string) {
+  const index = table.columns.indexOf(name)
+  return (row: Pick<MergedRow3, 'cells'>) => index < 0 ? undefined : graph3Value(row.cells[index], table.encoding)
 }
 
-/** Layout the actual selected document forest, including untouched current
- * descendants. Original row references remain intact. Links, bindings, routes,
- * execution versions and link_count still require their later final transforms. */
-export function applyMerge3DocumentLayout3(data: Graph3Inputs, tables: readonly Table[]) {
-  const documents = tables.find(table => table.name === 'documents') ?? graph3Conflict('merge-layout-missing-documents', null)
-  const blocks = tables.find(table => table.name === 'blocks') ?? graph3Conflict('merge-layout-missing-blocks', null)
-  const rows = documents.rows.map(row => ({ row, value: values(documents, row) }))
-  const byId = new Map(rows.map(item => [text(item.value.id), item]))
-  if (byId.size !== rows.length) return graph3Conflict('merge-layout-duplicate-document-id', null)
-  const conflicts: Merge3LayoutConflict[] = [], children = new Map<string | null, string[]>()
-  const blockCounts = new Map<string, number>(), paths = new Map<string, string>(), pathSizes = new Map<string, number>()
-  for (const row of blocks.rows) {
-    const id = text(values(blocks, row).document_id)
-    blockCounts.set(id, (blockCounts.get(id) ?? 0) + 1)
+function layoutForest(db: Database.Database, documents: Table, blocks: Table, conflicts: Merge3LayoutConflict[]) {
+  db.exec(`CREATE TEMP TABLE layout_document (ordinal INTEGER PRIMARY KEY, id BLOB NOT NULL UNIQUE,
+    parent BLOB, title BLOB, path BLOB, path_bytes INTEGER, slug BLOB);
+    CREATE INDEX temp.layout_parent ON layout_document(parent,id);
+    CREATE TEMP TABLE layout_block_count (owner BLOB PRIMARY KEY, count INTEGER NOT NULL) WITHOUT ROWID;
+    CREATE TEMP TABLE layout_queue (position INTEGER PRIMARY KEY, ordinal INTEGER NOT NULL);`)
+  db.pragma('temp.cache_size=-2048')
+  const insert = db.prepare('INSERT OR IGNORE INTO layout_document(ordinal,id) VALUES(?,?)')
+  const readId = readColumn(documents, 'id'), readParent = readColumn(documents, 'parent_id'), readTitle = readColumn(documents, 'title')
+  for (const [ordinal, row] of documents.rows.entries()) {
+    if (insert.run(ordinal, sortKey(text(readId(row)))).changes !== 1) return graph3Conflict('merge-layout-duplicate-document-id', null)
   }
-  for (const [id, item] of byId) {
-    const parent = nullable(item.value.parent_id), title = text(item.value.title)
+  const addBlock = db.prepare(`INSERT INTO layout_block_count VALUES(?,1)
+    ON CONFLICT(owner) DO UPDATE SET count=count+1`)
+  const readBlockOwner = readColumn(blocks, 'document_id')
+  for (const row of blocks.rows) addBlock.run(sortKey(text(readBlockOwner(row))))
+  const hasDocument = db.prepare('SELECT 1 FROM layout_document WHERE id=?')
+  const setParent = db.prepare('UPDATE layout_document SET parent=?,title=? WHERE ordinal=?')
+  for (const [ordinal, row] of documents.rows.entries()) {
+    const owner = readParent(row), parent = owner === null ? null : text(owner), title = text(readTitle(row))
     if (!title || title.trim() !== title || title === '.' || title === '..' || /[/\\\x00-\x1f]/.test(title))
-      return graph3Conflict('merge-layout-original-title', id)
-    if (parent !== null && !byId.has(parent)) {
-      conflicts.push({ code: 'missing-document-parent', table: 'documents', rowKeys: [item.row.key], detail: { documentId: id, parentId: parent } })
-      continue
-    }
-    const list = children.get(parent) ?? []; list.push(id); children.set(parent, list)
+      return graph3Conflict('merge-layout-original-title', text(readId(row)))
+    const parentKey = parent === null ? null : sortKey(parent)
+    if (parentKey !== null && !hasDocument.get(parentKey)) conflicts.push({ code: 'missing-document-parent', table: 'documents',
+      rowKeys: [row.key], detail: { documentId: text(readId(row)), parentId: parent } })
+    setParent.run(parentKey, sortKey(title), ordinal)
   }
-  const queue = [...(children.get(null) ?? [])].sort(), reached = new Set<string>()
+  const queued = db.prepare(`SELECT child.ordinal,child.id,child.title,base.path AS parentPath,base.path_bytes AS parentBytes
+    FROM layout_queue pos JOIN layout_document child ON child.ordinal=pos.ordinal
+    LEFT JOIN layout_document base ON base.id=child.parent WHERE pos.position=?`)
+  const setPath = db.prepare('UPDATE layout_document SET path=?,path_bytes=? WHERE ordinal=?')
+  const appendChildren = db.prepare(`INSERT INTO layout_queue(ordinal) SELECT ordinal FROM layout_document WHERE parent=? ORDER BY id`)
+  const rootCount = db.prepare(`INSERT INTO layout_queue(ordinal) SELECT ordinal FROM layout_document WHERE parent IS NULL ORDER BY id`).run().changes
+  const separatorBytes = documents.encoding === 'UTF-8' ? 1 : 2
   let pathBytes = 0
-  for (let cursor = 0; cursor < queue.length; cursor++) {
-    const id = queue[cursor], item = byId.get(id)!, parent = nullable(item.value.parent_id), title = text(item.value.title)
-    const width = documents.encoding === 'UTF-8' ? Buffer.byteLength(title) : title.length * 2
-    const bytes = (parent === null ? 0 : pathSizes.get(parent)! + (documents.encoding === 'UTF-8' ? 1 : 2)) + width
+  let count = rootCount
+  for (let position = 1; position <= count; position++) {
+    const entry = queued.get(position) as { ordinal: number; id: Buffer; title: Buffer; parentPath: Buffer | null; parentBytes: number | null }
+    const title = fromKey(entry.title)
+    const titleBytes = documents.encoding === 'UTF-8' ? Buffer.byteLength(title) : title.length * 2
+    const bytes = (entry.parentBytes === null ? 0 : entry.parentBytes + separatorBytes) + titleBytes
     if (!Number.isSafeInteger(bytes) || bytes > CAPSULE2_RAW_MAX_VALUE_BYTES - pathBytes)
       return graph3Conflict('merge-layout-complete-path-budget', null)
     pathBytes += bytes
-    paths.set(id, parent === null ? title : paths.get(parent)! + '/' + title); pathSizes.set(id, bytes); reached.add(id)
-    for (const child of (children.get(id) ?? []).sort()) queue.push(child)
+    const path = entry.parentPath === null ? title : fromKey(entry.parentPath) + '/' + title
+    setPath.run(sortKey(path), bytes, entry.ordinal)
+    count += appendChildren.run(entry.id).changes
   }
-  if (reached.size !== rows.length) conflicts.push({ code: 'cyclic-or-unreachable-document-layout', table: 'documents',
-    rowKeys: rows.filter(item => !reached.has(text(item.value.id))).map(item => item.row.key), detail: null })
-  const current = new Map(graph3Rows(data.inputs.current.source.sourceContent, 'documents').map(row => [row.original.sourceRowId, row.value]))
-  const changes: Change[] = [], slugs = new Map<string, MergedRow3[]>(), occupiedPaths = new Map<string, MergedRow3[]>()
+  if (count !== documents.rows.length) {
+    const ordinals = db.prepare('SELECT ordinal FROM layout_document WHERE path IS NULL ORDER BY ordinal').pluck().iterate() as IterableIterator<number>
+    conflicts.push({ code: 'cyclic-or-unreachable-document-layout', table: 'documents',
+      rowKeys: Array.from(ordinals, ordinal => documents.rows[ordinal].key), detail: null })
+  }
+}
+
+function retainedSlug(data: Graph3Inputs) {
+  const raw = data.inputs.current.source.sourceContent
+  const table = raw.tables.find(item => item.name === 'documents') ?? graph3Conflict('missing-source-table', 'documents')
+  const readSlug = readColumn({ columns: table.columns, encoding: raw.encoding }, 'slug')
+  return (sourceRowId: string, documentId: string) => {
+    const original = findGraph3OriginalRow(table, sourceRowId) ?? graph3Conflict('merge-layout-missing-replaced-document', documentId)
+    return text(readSlug(original))
+  }
+}
+
+function appendDuplicates(db: Database.Database, rows: Table['rows'], conflicts: Merge3LayoutConflict[], column: 'slug' | 'path') {
+  // Key each collision by its first physical input occurrence, like the original
+  // insertion-ordered grouping. Member keys also retain that input order.
+  const duplicates = db.prepare(`WITH repeated AS (SELECT ${column} AS value,min(ordinal) AS first FROM layout_document
+    WHERE ${column} IS NOT NULL GROUP BY ${column} HAVING count(*)>1)
+    SELECT repeated.first,repeated.value,doc.ordinal FROM repeated JOIN layout_document doc ON doc.${column}=repeated.value
+    ORDER BY repeated.first,doc.ordinal`).iterate() as IterableIterator<{ first: number; value: Buffer; ordinal: number }>
+  let first = -1, rowKeys: string[] = []
+  for (const item of duplicates) {
+    if (first !== item.first) {
+      first = item.first
+      rowKeys = []
+      conflicts.push({ code: 'duplicate-document-' + column, table: 'documents', rowKeys, detail: { [column]: fromKey(item.value) } })
+    }
+    rowKeys.push(rows[item.ordinal].key)
+  }
+}
+
+function layoutRows(db: Database.Database, data: Graph3Inputs, documents: Table, conflicts: Merge3LayoutConflict[]) {
+  const readId = readColumn(documents, 'id'), readSlug = readColumn(documents, 'slug'), previousSlug = retainedSlug(data)
+  const changes: Change[] = []
+  const layout = db.prepare(`SELECT path,(SELECT count(*) FROM layout_document child WHERE child.parent=doc.id) AS childCount,
+    coalesce((SELECT count FROM layout_block_count WHERE owner=doc.id),0) AS blockCount FROM layout_document doc WHERE ordinal=?`)
+  const setSlug = db.prepare('UPDATE layout_document SET slug=? WHERE ordinal=?')
   let changeBytes = 0
-  const changedRows = rows.map(({ row, value }): MergedRow3 => {
-    const id = text(value.id), next: Record<string, string | bigint> = {
-      block_count: BigInt(blockCounts.get(id) ?? 0), child_count: BigInt(children.get(id)?.length ?? 0)
+  const changedRows = documents.rows.map((row, ordinal): MergedRow3 => {
+    const id = text(readId(row))
+    const planned = layout.get(ordinal) as { path: Buffer | null; childCount: number; blockCount: number }
+    const next: Record<string, string | bigint> = {
+      block_count: BigInt(planned.blockCount), child_count: BigInt(planned.childCount)
     }
     const reasons: Record<string, string> = { block_count: 'rebuild-physical-block-count', child_count: 'rebuild-physical-child-count' }
-    const path = paths.get(id)
-    if (path !== undefined) { next.path = path; reasons.path = 'layout-complete-document-parent-forest' }
+    if (planned.path !== null) { next.path = fromKey(planned.path); reasons.path = 'layout-complete-document-parent-forest' }
     if (row.sourceRef.side === 'source') {
-      // Match existing restore behavior: a reused target keeps its own slug;
-      // a newly inserted document receives the target identity's stable slug.
-      next.slug = row.replaces ? text((current.get(row.replaces.sourceRowId)
-        ?? graph3Conflict('merge-layout-missing-replaced-document', id)).slug) : 'doc-' + id
+      next.slug = row.replaces ? previousSlug(row.replaces.sourceRowId, id) : 'doc-' + id
       reasons.slug = row.replaces ? 'preserve-current-document-slug' : 'allocate-target-document-slug'
     }
     const cells = row.cells.map((before, index) => {
       const column = documents.columns[index]
-      if (!Object.hasOwn(next, column) || next[column] === value[column]) return before
+      if (!Object.hasOwn(next, column) || next[column] === graph3Value(before, documents.encoding)) return before
       const after: RawRestoreSqlCell = typeof next[column] === 'bigint' ? ['integer', next[column].toString()] : graph3Encode(next[column], documents.encoding)
       const change: Change = { rowKey: row.key, targetDocumentId: id, column, before, after, reason: reasons[column] }
       // Storage payloads are validated ASCII decimal/hex/base64 strings. Size
@@ -87,21 +135,36 @@ export function applyMerge3DocumentLayout3(data: Graph3Inputs, tables: readonly 
       if (bytes > CAPSULE2_RAW_MAX_JSON_BYTES - changeBytes) return graph3Conflict('merge-layout-complete-change-budget', null)
       changeBytes += bytes; changes.push(change); return after
     })
-    const result = { ...row, cells }, slug = typeof next.slug === 'string' ? next.slug : text(value.slug)
-    const sameSlug = slugs.get(slug) ?? []; sameSlug.push(result); slugs.set(slug, sameSlug)
-    if (path !== undefined) { const samePath = occupiedPaths.get(path) ?? []; samePath.push(result); occupiedPaths.set(path, samePath) }
-    return result
+    setSlug.run(sortKey(typeof next.slug === 'string' ? next.slug : text(readSlug(row))), ordinal)
+    return { ...row, cells }
   })
-  for (const [slug, items] of slugs) if (items.length > 1)
-    conflicts.push({ code: 'duplicate-document-slug', table: 'documents', rowKeys: items.map(row => row.key), detail: { slug } })
-  for (const [path, items] of occupiedPaths) if (items.length > 1)
-    conflicts.push({ code: 'duplicate-document-path', table: 'documents', rowKeys: items.map(row => row.key), detail: { path } })
+  appendDuplicates(db, documents.rows, conflicts, 'slug')
+  appendDuplicates(db, documents.rows, conflicts, 'path')
+  return { changedRows, changes }
+}
+
+/** Layout the selected forest, including current descendants. The file-backed
+ * index holds only layout fields, while exact original cells stay with their rows. */
+export function applyMerge3DocumentLayout3(data: Graph3Inputs, tables: readonly Table[]) {
+  const documents = tables.find(table => table.name === 'documents') ?? graph3Conflict('merge-layout-missing-documents', null)
+  const blocks = tables.find(table => table.name === 'blocks') ?? graph3Conflict('merge-layout-missing-blocks', null)
+  const db = new Database(':memory:'), conflicts: Merge3LayoutConflict[] = []
+  const { changedRows, changes } = (() => {
+    try {
+      db.pragma('temp_store=FILE')
+      if (db.pragma('temp_store', { simple: true }) !== 1) return graph3Conflict('merge-layout-file-index-unavailable', null)
+      return db.transaction(() => {
+        layoutForest(db, documents, blocks, conflicts)
+        return layoutRows(db, data, documents, conflicts)
+      })()
+    } finally { db.close() }
+  })()
   const result = tables.map(table => table.name === 'documents' ? { ...table, rows: changedRows } : table)
   const body = { changes, conflicts, documentHierarchyLaidOut: conflicts.length === 0, navigationRewritten: false as const,
     sourceHistoryReplayed: false as const, permit: false as const }
   const hashInput = { ...body, documents: result.find(table => table.name === 'documents')! }
   assertMerge3JsonBudget(hashInput)
-  const encoded = capsuleJson(hashInput)
-  if (Buffer.byteLength(encoded) > CAPSULE2_RAW_MAX_JSON_BYTES) return graph3Conflict('merge-layout-complete-json-budget', null)
-  return freezeCapsuleValue({ tables: result, ...body, layoutHash: capsuleBytesHash('knowbook.restore.merge3.document-layout.v1\0' + encoded) })
+  const layoutHash = hashBoundedCapsuleJson(hashInput, CAPSULE2_RAW_MAX_JSON_BYTES, 'knowbook.restore.merge3.document-layout.v1\0')
+  if (layoutHash === null) return graph3Conflict('merge-layout-complete-json-budget', null)
+  return freezeCapsuleValue({ tables: result, ...body, layoutHash })
 }

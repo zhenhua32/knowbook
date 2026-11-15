@@ -3,9 +3,9 @@ import { validateSyncedProtocol5Record, validateSyncedProtocol5Snapshot,
   type SyncedProtocol5Record } from './synced-protocol5-model'
 import { readInitialIncomingLocal, readInitialIncomingReceipt, readInitialIncomingBaseline, readInitialIncomingIdentityDigest, type InitialIncomingLocal } from '../database/synced-initial-incoming-read'
 import { readSyncedPersistentPublicationSnapshot } from '../database/synced-publication'
-import { MarkdownLinkIndex } from '../database/markdown-link-index'
+import { installSyncedRestoreRecords } from '../database/synced-restore-write'
 import { parseDatabaseViewPayload } from '../../shared/databaseViewBlock'
-import { SYNC_TABLE_COLUMNS, SYNC_TABLES, type SyncDatabases } from './model'
+import { SYNC_TABLES, type SyncDatabases } from './model'
 import { initialIncomingTargetFingerprint, initialIncomingRequestHash, initialIncomingBaselineKey, initialIncomingReservationKey,
   initialIncomingPortableDigest, initialIncomingReservationDigest, incomingComponents, inverseInitialIncomingCatalog,
   validateInitialIncomingReceipt, validateInitialIncomingBaseline, type InitialIncomingRequest, type InitialIncomingReceipt,
@@ -97,7 +97,8 @@ function environment(db: Database.Database, input: SyncedPublicationPrepareInput
   return { paths: { root, databasePath: realpathSync(expectedDatabase), assetRoot, spoolRoot, directory: join(spoolRoot, input.attemptId) }, target }
 }
 function storedTarget(target: WebDavSyncConfig): StoredTarget { return { url: target.url, username: target.username, directory: target.directory, allowInsecureHttp: target.allowInsecureHttp } }
-function targetFingerprint(target: WebDavSyncConfig): string { return publicationHash(publicationJson({ kind: 'webdav-target', version: 1, channel: 'webdav-manifest5', url: target.url, username: target.username, directory: target.directory })) }
+export function initialPublicationTargetFingerprint(target: Pick<WebDavSyncConfig, 'url' | 'username' | 'directory'>): string { return publicationHash(publicationJson({ kind: 'webdav-target', version: 1, channel: 'webdav-manifest5', url: target.url, username: target.username, directory: target.directory })) }
+const targetFingerprint = initialPublicationTargetFingerprint
 function runtime(input: SyncedPublicationRuntime): SyncedPublicationRuntime {
   assertSyncedShape(input, ['password'], ['signal'])
   if (typeof input.password !== 'string' || input.signal !== undefined && !(input.signal instanceof AbortSignal)) return publicationInvalid('runtime credentials/signal 无效。')
@@ -210,13 +211,15 @@ async function spoolFile(paths: Paths, name: string, expected?: { hash: string; 
   if (bytes.length !== info.size || expected && publicationHash(bytes) !== expected.hash) throw new Error('spool准确原bytes哈希不符。')
   return bytes
 }
-async function loadSpool(paths: Paths): Promise<LoadedSpool> {
+type SpoolFileReader = (name: string, expected?: { hash: string; bytes: number }) => Promise<Buffer>
+type SpoolAssetReader = (asset: PublicationAssetDescriptor) => Promise<void>
+async function inspectSpool(paths: Paths, read: SpoolFileReader, readAsset: SpoolAssetReader): Promise<Omit<LoadedSpool, 'assets'>> {
   try {
     assertSafe(paths.directory, paths.spoolRoot)
-    const readyBytes = await spoolFile(paths, 'ready.json'), ready = decodePublicationJson(readyBytes, Math.max(1, readyBytes.length))
+    const readyBytes = await read('ready.json'), ready = decodePublicationJson(readyBytes, Math.max(1, readyBytes.length))
     assertSyncedShape(ready, ['kind', 'version', 'attemptId', 'publicationHash', 'requestHash', 'stateHash'])
     if (ready.kind !== 'synced-publication-ready' || ready.version !== 1) throw new Error('spool未完成。')
-    const stateBytes = await spoolFile(paths, 'state.json'); if (publicationHash(stateBytes) !== ready.stateHash) throw new Error('原stateHash不符。')
+    const stateBytes = await read('state.json'); if (publicationHash(stateBytes) !== ready.stateHash) throw new Error('原stateHash不符。')
     const raw = decodePublicationJson(stateBytes, Math.max(1, stateBytes.length))
     assertSyncedShape(raw, ['kind', 'version', 'attemptId', 'databasePath', 'target', 'descriptor', 'publicationHash', 'requestHash'])
     assertSyncedShape(raw.target, ['url', 'username', 'directory', 'allowInsecureHttp'])
@@ -229,9 +232,9 @@ async function loadSpool(paths: Paths): Promise<LoadedSpool> {
     const state: SpoolState = { kind: 'synced-publication-spool', version: 1, attemptId: raw.attemptId, databasePath: raw.databasePath,
       target: { url: raw.target.url, username: raw.target.username, directory: raw.target.directory, allowInsecureHttp: raw.target.allowInsecureHttp },
       descriptor, publicationHash: raw.publicationHash, requestHash: raw.requestHash }
-    const manifest = await spoolFile(paths, 'manifest.json', descriptor.manifest), objects = new Map<string, Buffer>(), assets = new Map<string, Buffer>()
-    for (const object of descriptor.objects) objects.set(object.key, await spoolFile(paths, object.path, object))
-    for (const asset of descriptor.assets) assets.set(asset.hash, await spoolFile(paths, asset.path, asset))
+    const manifest = await read('manifest.json', descriptor.manifest), objects = new Map<string, Buffer>()
+    for (const object of descriptor.objects) objects.set(object.key, await read(object.path, object))
+    for (const asset of descriptor.assets) await readAsset(asset)
     const files = ['state.json', 'ready.json', 'manifest.json', ...descriptor.objects.map(item => item.path), ...descriptor.assets.map(item => item.path)].sort(publicationCompare), found: string[] = []
     for (const entry of await readdir(paths.directory, { withFileTypes: true })) {
       if (entry.isSymbolicLink()) throw new Error('spool含symlink。')
@@ -245,15 +248,47 @@ async function loadSpool(paths: Paths): Promise<LoadedSpool> {
     if (validated.manifest.workspaceId !== descriptor.workspaceScope) throw new Error('manifest workspace不符。')
     if (validated.manifest.history && publicationJson(validated.manifest.history)
       !== publicationJson(protocol5HistoryLink(protocol5HistoryTarget(state.target), state.attemptId, null))) throw new Error('初始历史根与原发布尝试不符。')
-    const expectedAssets = [...validated.assetNames].map(([hash, names]) => ({ path: 'assets/' + hash, hash, bytes: assets.get(hash)?.length ?? -1,
+    const assetSizes = new Map(descriptor.assets.map(asset => [asset.hash, asset.bytes]))
+    const expectedAssets = [...validated.assetNames].map(([hash, names]) => ({ path: 'assets/' + hash, hash, bytes: assetSizes.get(hash) ?? -1,
       names: [...names].sort(publicationCompare) })).sort((a, b) => publicationCompare(a.path, b.path))
     if (publicationJson(expectedAssets) !== publicationJson(descriptor.assets)) throw new Error('实际资产名/bytes闭集不符。')
     const actualGroups = validated.records.filter(item => item.record.kind === 'synced-group'), memberMap = new Map(descriptor.members.map(item => [item.groupId, item]))
     if (actualGroups.length !== descriptor.members.length) throw new Error('实际groups与members不符。')
     for (const item of actualGroups) { if (item.record.kind !== 'synced-group') continue; const member = memberMap.get(item.record.id)
       if (!member || member.creationId !== item.record.creationId || member.portableHash !== validated.manifest.entries[item.key]) throw new Error('实际portable group hash不符。') }
-    return { state, manifest, objects, assets }
+    return { state, manifest, objects }
   } catch (cause) { if (cause instanceof SyncedPublicationError && cause.code === 'spool') throw cause; throw new SyncedPublicationError('spool', '私有完整原bytes缺失、损坏或不是该原spool。', cause) }
+}
+async function loadSpool(paths: Paths): Promise<LoadedSpool> {
+  const assets = new Map<string, Buffer>()
+  const original = await inspectSpool(paths, (name, expected) => spoolFile(paths, name, expected), async asset => {
+    assets.set(asset.hash, await spoolFile(paths, asset.path, asset))
+  })
+  return { ...original, assets }
+}
+
+/** Authentic publisher seed from its fixed original spool. A restored
+ * caller independently binds the original attempt and scope before using it. */
+export async function readFixedConfirmedPublicationSeed(profileRoot: string, attemptId: string) {
+  if (!isSyncedUuid(attemptId) || !isAbsolute(profileRoot)) return publicationInvalid('恢复续接原发布路径或 ID 无效。')
+  const storage = join(profileRoot, 'storage'), spoolRoot = join(storage, 'synced-publications-v1')
+  const loaded = await loadSpool({ root: profileRoot, databasePath: join(storage, 'knowbook.db'), assetRoot: join(storage, 'assets'),
+    spoolRoot, directory: join(spoolRoot, attemptId) })
+  if (loaded.state.attemptId !== attemptId) return publicationInvalid('恢复续接 spool 不属于原发布。')
+  return { state: loaded.state, manifest: loaded.manifest }
+}
+/** The V3 original reader supplies its held-FD byte reader for this fixed
+ * namespace. This helper reads the same typed format without a live target or
+ * SQL connection and does not mint a publication claim. */
+export async function readSyncedPublicationSpoolOriginal(profileRoot: string, attemptId: string, read: SpoolFileReader, readAsset: SpoolAssetReader) {
+  if (!isSyncedUuid(attemptId) || !isAbsolute(profileRoot)) return publicationInvalid('恢复原发布的固定profile/attempt无效。')
+  const storage = join(profileRoot, 'storage'), spoolRoot = join(storage, 'synced-publications-v1')
+  const paths = { root: profileRoot, databasePath: join(storage, 'knowbook.db'), assetRoot: join(storage, 'assets'), spoolRoot,
+    directory: join(spoolRoot, attemptId) }
+  const { state } = await inspectSpool(paths, read, readAsset)
+  if (state.attemptId !== attemptId || !isAbsolute(state.databasePath) || state.descriptor.targetFingerprint !== targetFingerprint(state.target))
+    return publicationInvalid('原发布spool不属于准确attempt/target。')
+  return state
 }
 function originalSpool(data: Prepared, loaded: LoadedSpool): void { if (publicationJson(data.state) !== publicationJson(loaded.state)) throw new SyncedPublicationError('spool', 'spool不是该真实handle的原状态。') }
 export async function prepareInitialSyncedPublication(db: Database.Database, input: SyncedPublicationPrepareInput, history = false): Promise<SyncedPublicationPrepareResult> {
@@ -813,73 +848,6 @@ async function publishIncomingAssets(remote: Remote, root: string, operationId: 
     throw new SyncedPublicationError('asset', '接收私有 stage/无覆盖 hardlink 发布失败；未写知识。', cause)
   }
 }
-function installIncomingKnowledge(db: Database.Database, plan: IncomingPlan, now: string): void {
-  const documents = plan.records.filter(record => record.kind === 'document'), groups = plan.records.filter(record => record.kind === 'synced-group')
-  const positions = new Map<string, { groupId: string; documentId: string; bindingVersion: string; parentBlockId: string | null; depth: number }>()
-  for (const doc of documents) for (const block of doc.content.blocks) if (block.type === 'synced-block') positions.set(block.id, {
-    groupId: parseSyncedBlockPayload(block.content).groupId, documentId: doc.id, bindingVersion: randomUUID(), parentBlockId: block.parentBlockId, depth: block.depth })
-  const insertDocument = db.prepare('INSERT INTO documents(id,title,slug,parent_id,path,summary,sort_order,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?)')
-  // Validated parent chains are installed in parent-first order; no cycle healer is involved.
-  for (const doc of [...documents].sort((a, b) => plan.documentPaths.get(a.id)!.split('/').length - plan.documentPaths.get(b.id)!.split('/').length || publicationCompare(a.id, b.id))) {
-    insertDocument.run(doc.id, doc.content.title, 'doc-' + doc.id, doc.parentId, plan.documentPaths.get(doc.id), doc.content.summary, doc.sortOrder, doc.createdAt, now)
-    db.prepare('INSERT INTO synced_host_history_state(document_id,cursor,position) VALUES(?,?,0)').run(doc.id, randomUUID())
-  }
-  const insertGroup = db.prepare('INSERT INTO synced_groups(id,creation_id,created_at,origin_json,bindings_json,revision,topology_revision,history_cursor,history_position) VALUES(?,?,?,?,?,?,?,?,0)')
-  const insertLife = db.prepare("INSERT INTO synced_group_lifecycle(group_id,creation_id,state,state_version,exposure_state,create_history_id,activation_revision,activation_topology_revision,activation_hash,activation_instances_json,created_at,updated_at) VALUES(?,?,'active',1,'unknown',NULL,?,?,?,?,?,?)")
-  const byGroup = new Map<string, Array<{ instanceId: string; hostDocumentId: string; bindingVersion: string }>>()
-  for (const [id, item] of positions) { const list = byGroup.get(item.groupId) ?? []; list.push({ instanceId: id, hostDocumentId: item.documentId, bindingVersion: item.bindingVersion }); byGroup.set(item.groupId, list) }
-  for (const group of groups) {
-    const revision = randomUUID(), topology = randomUUID()
-    insertGroup.run(group.id, group.creationId, group.createdAt, publicationJson(group.origin), publicationJson(group.bindings), revision, topology, randomUUID())
-    const instances = (byGroup.get(group.id) ?? []).sort((a, b) => publicationCompare(a.instanceId, b.instanceId))
-    insertLife.run(group.id, group.creationId, revision, topology, syncedLifecycleSemanticHash(group), publicationJson(instances), now, now)
-  }
-  const insertCanonical = db.prepare('INSERT INTO synced_group_blocks(id,group_id,parent_block_id,sort_order,type,content,checked,depth,tags_json,language,list_start,markdown_format_json,highlight,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-  for (const group of groups) group.blocks.forEach((block, index) => insertCanonical.run(block.id, group.id, block.parentBlockId, index, block.type, block.content,
-    block.checked ? 1 : 0, block.depth, block.tags === undefined ? null : publicationJson(block.tags), block.language ?? null, block.listStart ?? null,
-    block.markdownFormat === undefined ? null : publicationJson(block.markdownFormat), block.highlight ?? null, block.createdAt))
-  const insertBlock = db.prepare('INSERT INTO blocks(id,document_id,parent_block_id,sort_order,type,content,checked,depth,tags_json,language,list_start,markdown_format_json,highlight,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-  const insertInstance = db.prepare('INSERT INTO synced_instances(instance_id,group_id,host_document_id,binding_version,parent_block_id,depth) VALUES(?,?,?,?,?,?)')
-  for (const doc of documents) {
-    doc.content.blocks.forEach((block, index) => insertBlock.run(block.id, doc.id, block.parentBlockId, index, block.type, block.content, block.checked ? 1 : 0,
-      block.depth, publicationJson(block.tags ?? []), block.language ?? null, block.listStart ?? null, block.markdownFormat === undefined ? null : publicationJson(block.markdownFormat), block.highlight ?? null, now, now))
-    for (const block of doc.content.blocks) {
-      db.prepare('INSERT INTO document_block_routes(document_path,block_id) VALUES(?,?)').run(plan.documentPaths.get(doc.id), block.id)
-      const item = positions.get(block.id)
-      if (item) insertInstance.run(block.id, item.groupId, item.documentId, item.bindingVersion, item.parentBlockId, item.depth)
-    }
-  }
-  const reserve = db.prepare("INSERT INTO block_identities(id,last_owner_kind,last_owner_id,state,created_at) VALUES(?,'reserved',?,'retained',NULL)")
-  for (const id of plan.reservedIds) reserve.run(id, plan.reservationSourceKey)
-  const catalog = plan.records.find((record): record is SyncDatabases => record.kind === 'databases')!
-  for (const table of SYNC_TABLES) {
-    const columns: readonly string[] = SYNC_TABLE_COLUMNS[table], updated = [...columns, 'updated_at']
-    const insert = db.prepare('INSERT INTO ' + table + '(' + updated.join(',') + ') VALUES(' + updated.map(() => '?').join(',') + ')')
-    for (const row of catalog.tables[table]) {
-      if (table === 'databases' && row.id === plan.local.snapshot.catalogId) {
-        if (db.prepare('UPDATE databases SET name=?,description=?,updated_at=? WHERE id=? AND created_at=?').run(row.name, row.description, now, row.id, row.created_at).changes !== 1) return publicationInvalid('默认 catalog 原 birth 在提交中已变。')
-      } else insert.run(...columns.map(column => row[column]), now)
-    }
-  }
-  const ids = documents.map(doc => doc.id), index = new MarkdownLinkIndex(db)
-  for (const id of ids) index.syncDocument(id)
-  db.prepare('DELETE FROM links WHERE source_document_id IN (SELECT value FROM json_each(?))').run(JSON.stringify(ids))
-  const links = db.prepare(`SELECT DISTINCT source.source_document_id,target.id AS target_id,source.url
-    FROM markdown_link_sources source JOIN documents target ON target.path=source.target_path
-    WHERE (source.kind IN ('wiki','wiki-heading') OR target.id<>source.source_document_id)
-      AND source.source_document_id IN (SELECT value FROM json_each(?))`).all(JSON.stringify(ids)) as Array<{ source_document_id: string; target_id: string; url: string }>
-  const insertLink = db.prepare('INSERT INTO links(id,source_document_id,target_document_id,label,created_at) VALUES(?,?,?,?,?)')
-  for (const row of links) insertLink.run(randomUUID(), row.source_document_id, row.target_id, row.url, now)
-  const stats = db.prepare(`SELECT 1 FROM documents d WHERE d.id IN (SELECT value FROM json_each(?)) AND (
-    d.block_count<>(SELECT count(*) FROM blocks WHERE document_id=d.id) OR d.link_count<>(SELECT count(*) FROM links WHERE source_document_id=d.id)
-    OR d.child_count<>(SELECT count(*) FROM documents WHERE parent_id=d.id)) LIMIT 1`).get(JSON.stringify(ids))
-  if (stats) return publicationInvalid('接收 commit 前实际 stats 不完整；不会依赖 Store 重开 repair。')
-  if (db.prepare(`SELECT 1 FROM blocks b LEFT JOIN block_search_ids i ON i.block_id=b.id LEFT JOIN block_search s ON s.rowid=i.search_rowid
-    WHERE b.document_id IN (SELECT value FROM json_each(?)) AND (i.block_id IS NULL OR s.block_id IS NOT b.id OR s.document_id IS NOT b.document_id OR s.content IS NOT b.content) LIMIT 1`).get(JSON.stringify(ids))
-    || db.prepare(`SELECT 1 FROM documents d LEFT JOIN document_search_ids i ON i.document_id=d.id LEFT JOIN document_search s ON s.rowid=i.search_rowid
-      WHERE d.id IN (SELECT value FROM json_each(?)) AND (i.document_id IS NULL OR s.document_id IS NOT d.id OR s.title IS NOT d.title OR s.path IS NOT d.path OR s.summary IS NOT d.summary) LIMIT 1`).get(JSON.stringify(ids))) return publicationInvalid('接收 commit 前实际 FTS 闭集缺失。')
-}
-
 /** Initial introduction/exact-noop only. All incoming authority stays inside this real HTTP consumer. */
 export async function receiveInitialSyncedSnapshot(db: Database.Database, input: SyncedInitialIncomingInput, options: SyncedPublicationRuntime): Promise<SyncedInitialIncomingResult> {
   return publicBoundary(async (): Promise<SyncedInitialIncomingResult> => {
@@ -934,7 +902,8 @@ export async function receiveInitialSyncedSnapshot(db: Database.Database, input:
         const actual = readInitialIncomingLocal(db, request)
         if (actual.fingerprint !== plan.local.fingerprint) return frozenPublicationFacts({ status: 'stale', side: 'local' })
         const now = new Date().toISOString()
-        if (plan.mode === 'applied') installIncomingKnowledge(db, plan, now)
+        if (plan.mode === 'applied') installSyncedRestoreRecords(db, { records: plan.records, documentPaths: plan.documentPaths,
+          reservedIds: plan.reservedIds, reservationSourceKey: plan.reservationSourceKey, targetCatalogId: plan.local.snapshot.catalogId }, now)
         // Real post-SQL rows, not the plan or baseline, must reproduce every portable entry/Key/dependency.
         const after = readSyncedPersistentPublicationSnapshot(db), portable = incomingPortableRecords(after, data.root)
         const validated = validateInitialSnapshot(remote.facts.manifest, portable.map(record => ({ key: publicationRecordKey(record), record })))
@@ -998,6 +967,41 @@ type ExchangeMaterial = { data: Observation; snapshot: SyncedPublicationLocalSna
   records: InitialPublicationRecord[]; assets: Map<string, Buffer> }
 const exchangeRemoteSources = new WeakMap<SyncedExchangeRemoteSource, ExchangeRemote>()
 const exchangeLocalMaterials = new WeakMap<SyncedExchangeLocalMaterial, ExchangeMaterial>()
+type Protocol5RemoteClosure = ExchangeRemote['remote']
+
+export function fetchProtocol5RemoteClosure(client: WebDavClient) {
+  return loadProtocol5RemoteClosure(client, remote => remote)
+}
+
+async function loadProtocol5RemoteClosure<T>(client: WebDavClient, complete: (remote: Protocol5RemoteClosure) => T): Promise<
+  { status: 'missing' } | { status: 'unsupported' } | { status: 'ready'; remote: T }> {
+  const response = await network(() => client.getVersioned('manifest.json', PUBLICATION_RECORD_MAX_BYTES))
+  if (!response) return { status: 'missing' }
+  const raw = parseStrictJson(Buffer.from(response.bytes).toString('utf8'), { maxBytes: PUBLICATION_RECORD_MAX_BYTES, maxDepth: 32 })
+  if (!raw || typeof raw !== 'object' || !('version' in raw)) return publicationInvalid('增量清单版本缺失。')
+  if (raw.version !== 5) return { status: 'unsupported' }
+  const manifest = validateInitialManifest5(decodePublicationJson(response.bytes))
+  const values: Array<{ key: string; record: unknown }> = [], objects = new Map<string, Buffer>()
+  for (const [key, hash] of Object.entries(manifest.entries)) {
+    const object = await network(() => client.get('objects/' + hash + '.json', PUBLICATION_RECORD_MAX_BYTES))
+    if (!object || publicationHash(object.bytes) !== hash) return publicationInvalid('增量对象原 bytes/hash 缺失或损坏。')
+    const record = validateSyncedProtocol5Record(decodePublicationJson(object.bytes), key)
+    objects.set(key, Buffer.from(object.bytes)); values.push({ key, record })
+  }
+  const checked = validateSyncedProtocol5Snapshot(manifest, values), assets = new Map<string, Buffer>()
+  const assetFacts: PublicationAssetDescriptor[] = []
+  for (const [hash, names] of checked.assetNames) {
+    const object = await network(() => client.get('assets/' + hash, ATTACHMENT_MAX_FILE_BYTES))
+    if (!object || publicationHash(object.bytes) !== hash) return publicationInvalid('增量资产原 bytes/hash 缺失或损坏。')
+    assets.set(hash, Buffer.from(object.bytes))
+    assetFacts.push({ path: 'assets/' + hash, hash, bytes: object.bytes.length, names: [...names].sort(publicationCompare) })
+  }
+  const remote = { manifest: Buffer.from(response.bytes), manifestEtag: response.etag, objects, assets,
+    facts: frozenPublicationFacts({ manifest: checked.manifest,
+      records: checked.records.map(item => ({ ...item, bytes: objects.get(item.key)!.length })),
+      assets: assetFacts.sort((a, b) => publicationCompare(a.path, b.path)) }) }
+  return { status: 'ready', remote: complete(remote) }
+}
 function exchangeObservation(db: Database.Database, input: { userDataRoot: string; target: WebDavSyncConfig }): Observation {
   const environment = observationEnvironment(db, input)
   if (db.pragma('user_version', { simple: true }) !== 27) return unavailable('增量读取只接受原 schema27。')
@@ -1011,36 +1015,16 @@ export async function readObservedSyncedProtocol5(db: Database.Database, input: 
   return publicBoundary(async () => {
     const data = exchangeObservation(db, input), credentials = runtime(options), known = knownObservationIncarnations(data)
     const client = new WebDavClient(data.target, credentials.password, credentials.signal)
-    const response = await network(() => client.getVersioned('manifest.json', PUBLICATION_RECORD_MAX_BYTES))
-    if (!response) return Object.freeze({ status: 'missing' as const })
-    const raw = parseStrictJson(Buffer.from(response.bytes).toString('utf8'), { maxBytes: PUBLICATION_RECORD_MAX_BYTES, maxDepth: 32 })
-    if (!raw || typeof raw !== 'object' || !('version' in raw)) return publicationInvalid('增量清单版本缺失。')
-    if (raw.version !== 5) return Object.freeze({ status: 'unsupported' as const, reason: 'protocol5-required' as const })
-    const manifest = validateInitialManifest5(decodePublicationJson(response.bytes))
-    const values: Array<{ key: string; record: unknown }> = [], objects = new Map<string, Buffer>()
-    for (const [key, hash] of Object.entries(manifest.entries)) {
-      const object = await network(() => client.get('objects/' + hash + '.json', PUBLICATION_RECORD_MAX_BYTES))
-      if (!object || publicationHash(object.bytes) !== hash) return publicationInvalid('增量对象原 bytes/hash 缺失或损坏。')
-      const record = validateSyncedProtocol5Record(decodePublicationJson(object.bytes), key)
-      objects.set(key, Buffer.from(object.bytes)); values.push({ key, record })
-    }
-    const checked = validateSyncedProtocol5Snapshot(manifest, values), assets = new Map<string, Buffer>()
-    const assetFacts: PublicationAssetDescriptor[] = []
-    for (const [hash, names] of checked.assetNames) {
-      const object = await network(() => client.get('assets/' + hash, ATTACHMENT_MAX_FILE_BYTES))
-      if (!object || publicationHash(object.bytes) !== hash) return publicationInvalid('增量资产原 bytes/hash 缺失或损坏。')
-      assets.set(hash, Buffer.from(object.bytes))
-      assetFacts.push({ path: 'assets/' + hash, hash, bytes: object.bytes.length, names: [...names].sort(publicationCompare) })
-    }
-    const remote: ExchangeRemote['remote'] = { manifest: Buffer.from(response.bytes), manifestEtag: response.etag, objects, assets,
-      facts: frozenPublicationFacts({ manifest: checked.manifest,
-        records: checked.records.map(item => ({ ...item, bytes: objects.get(item.key)!.length })),
-        assets: assetFacts.sort((a, b) => publicationCompare(a.path, b.path)) }) }
-    // No await or cancellation check can interpose between verified closure and its sticky/durable observation.
-    const proof = completeObservedRemote(data, remote, known)
-    const source = Object.freeze({ kind: 'synced-exchange-remote-source' as const })
-    exchangeRemoteSources.set(source, { data, remote, proof })
-    return Object.freeze({ status: 'ready' as const, source })
+    const closure = await loadProtocol5RemoteClosure(client, remote => {
+      // No await or cancellation check can interpose between verified closure and its sticky/durable observation.
+      const proof = completeObservedRemote(data, remote, known)
+      const source = Object.freeze({ kind: 'synced-exchange-remote-source' as const })
+      exchangeRemoteSources.set(source, { data, remote, proof })
+      return source
+    })
+    if (closure.status === 'missing') return Object.freeze({ status: 'missing' as const })
+    if (closure.status === 'unsupported') return Object.freeze({ status: 'unsupported' as const, reason: 'protocol5-required' as const })
+    return Object.freeze({ status: 'ready' as const, source: closure.remote })
   })
 }
 export function readObservedSyncedProtocol5Facts(source: SyncedExchangeRemoteSource): Readonly<SyncedExchangeRemoteFacts> | null {

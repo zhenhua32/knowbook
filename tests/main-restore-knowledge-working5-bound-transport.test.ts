@@ -3,8 +3,8 @@ import test from 'node:test'
 import { randomUUID } from 'node:crypto'
 import { mkdir, realpath } from 'node:fs/promises'
 import { join } from 'node:path'
-import { captureQualifiedOriginalBundleFromReferences, prepareQualifiedOriginalImport, captureReopenedQualifiedOriginalBundle,
-  readCompleteOriginalContentPair3 } from '../src/main/database/restore-knowledge-qualified-originals'
+import { captureQualifiedOriginalBundleFromReferences, prepareQualifiedOriginalImport,
+  captureReopenedQualifiedOriginalContent5 } from '../src/main/database/restore-knowledge-qualified-originals'
 import { withWorking5References, assertReferenceBaseFiles5 } from './helpers/working5-reference-fixture'
 
 test('real bound C input copies preserve archive5 base and working index originals through both root and referenced parent domains',
@@ -19,8 +19,9 @@ test('real bound C input copies preserve archive5 base and working index origina
     await mkdir(receiver); const profileRoot = await realpath(receiver), operationId = randomUUID()
     const copy = await prepareQualifiedOriginalImport({ profileRoot, operationId, sourceDirectory: captured.directory, expectedDescriptorHash: captured.descriptorHash })
     assert.equal(copy.scope, 'copied-original-bytes-only'); assert.equal(copy.semanticValidationComplete, false)
-    const reopened = await captureReopenedQualifiedOriginalBundle({ profileRoot, operationId, mountId: copy.mountId, expectedDescriptorHash: captured.descriptorHash })
-    const content = await readCompleteOriginalContentPair3(reopened.bundle)
+    const reopened = await captureReopenedQualifiedOriginalContent5({ profileRoot, operationId, mountId: copy.mountId,
+      expectedDescriptorHash: captured.descriptorHash })
+    const content = reopened.pair
     await assertReferenceBaseFiles5(f, content.originalPackage)
     assert.equal(content.source.materialHash, f.next.value.materialHash); assert.equal(content.source.assetArchiveHash, f.next.value.assetArchiveHash)
     assert.equal(content.current.materialHash, f.current.value.materialHash)

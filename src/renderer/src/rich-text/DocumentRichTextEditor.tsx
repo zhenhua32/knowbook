@@ -45,7 +45,11 @@ import { planRichDatabaseViewInsertion } from './databaseViewInsertion'
 import DatabaseViewPortal from './DatabaseViewPortal'
 import type { SyncedForestScope } from '../features/synced-blocks/types'
 import { syncedScopeDomKey } from '../features/synced-blocks/types'
-import { canApplyCanonicalHostDraftChange, beginCanonicalInlineAsyncEdit, waitForCanonicalInlineUnlock } from '../features/synced-blocks/inlineBridge'
+import { canApplyCanonicalHostDraftChange, beginCanonicalInlineAsyncEdit, canonicalInlineInputLocked,
+  openCanonicalHostEdit, readSyncedClipboardScope, waitForCanonicalInlineUnlock } from '../features/synced-blocks/inlineBridge'
+import { copySyncedClipboardRange, readSyncedClipboardFragment } from '../features/synced-blocks/blockClipboard'
+import { getBlockSubtreeEndIndex } from '../utils/draftTreeMove'
+import { validateSyncedHostForest } from '@shared/syncedBlockValidation'
 import { isIndependentEditorIsland } from '../utils/editorIsland'
 import './rich-text.css'
 import '../styles/inline-text-presentation.css'
@@ -112,6 +116,35 @@ function captureRichBookmark(state: EditorState): EditorHistoryBookmark {
   return { blockId: anchor.blockId, index: anchor.index, start: anchor.offset, end: head.offset,
     direction: state.selection.anchor > state.selection.head ? 'backward' : 'forward',
     richText: { anchor, head, ...(kind === 'text' ? {} : { kind }) } }
+}
+
+function selectedRichReferences(doc: RichNode, from: number, to: number): Set<string> {
+  const references = new Set<string>()
+  doc.nodesBetween(from, to, (node, pos) => {
+    if (node.attrs.block?.type === 'synced-block' && pos >= from && pos + node.nodeSize <= to) references.add(node.attrs.block.id)
+    return !node.isTextblock && !node.isAtom
+  })
+  return references
+}
+
+function completeRichRootRange(state: EditorState, blocks: DocumentBlockDraft[]) {
+  const { from, to, empty } = state.selection
+  if (empty) return null
+  const entries = richBlockEntries(state.doc)
+  const start = entries.findIndex(({ node, pos }) => from === pos || node.isTextblock && from === pos + 1)
+  let end = -1
+  for (const { index, node, pos } of entries) {
+    if (to === pos + node.nodeSize || node.isTextblock && to === pos + node.nodeSize - 1) end = index
+  }
+  const root = blocks[start]
+  if (!root || end < start || entries.length !== blocks.length) return null
+  const parent = root.parentBlockId ?? null
+  for (let index = start; index <= end;) {
+    const block = blocks[index], subtreeEnd = getBlockSubtreeEndIndex(blocks, index)
+    if (block.depth !== root.depth || (block.parentBlockId ?? null) !== parent || subtreeEnd > end) return null
+    index = subtreeEnd + 1
+  }
+  return { start, end }
 }
 
 function clipboardHtml(markdown: string): string {
@@ -675,6 +708,91 @@ export function ForestRichTextEditor(input: ForestProps) {
       return state.tr.insertText(match[1], start, end).addMark(start, start + match[1].length, richTextSchema.marks[mark].create())
         .removeStoredMark(richTextSchema.marks[mark])
     })) })
+    const clipboardOpening = () => {
+      const { blocks, binding } = latest.current, { scope } = binding
+      if (scope.owner.kind !== 'document' || !scope.isCurrent() || editor.composing || canonicalInlineInputLocked()) return null
+      const documentId = scope.owner.documentId, proof = readSyncedClipboardScope(documentId)
+      if (!proof || !areDocumentDraftBlocksEqual(blocks, richDocToDraftBlocks(editor.state.doc))) return null
+      const { doc, selection } = editor.state
+      return { blocks, doc, selection, address: { documentId, workspaceScope: proof.workspaceScope, recoveryEpoch: proof.recoveryEpoch },
+        current: () => {
+          const live = readSyncedClipboardScope(documentId)
+          return viewRef.current === editor && scope.isCurrent() && !editor.composing
+            && editor.state.doc === doc && editor.state.selection.eq(selection) && editor.hasFocus()
+            && areDocumentDraftBlocksEqual(latest.current.blocks, blocks)
+            && live?.workspaceScope === proof.workspaceScope && live.recoveryEpoch === proof.recoveryEpoch
+        } }
+    }
+    const commitHostClipboard = async (opening: NonNullable<ReturnType<typeof clipboardOpening>>, after: DocumentBlockDraft[], focusIndex: number,
+      newRefSources: NonNullable<ReturnType<typeof readSyncedClipboardFragment>>['newRefSources'] = []) => {
+      if (!opening.current() || canonicalInlineInputLocked()) return false
+      const blocks = validateSyncedHostForest(after.map(block => ({ ...block, parentBlockId: block.parentBlockId ?? null })))
+      const nodes = new Map(richBlockEntries(opening.doc).map(({ node }) => [node.attrs.block?.id, node]))
+      const doc = rebuildRichStructure(blocks, nodes), entry = richBlockEntries(doc)[focusIndex]
+      const selection = entry?.node.isTextblock ? TextSelection.create(doc, entry.pos + 1)
+        : entry && NodeSelection.isSelectable(entry.node) ? NodeSelection.create(doc, entry.pos) : Selection.atStart(doc)
+      const afterBookmark = captureRichBookmark(EditorState.create({ doc, selection }))
+      const isPaste = newRefSources.length > 0, scope = latest.current.binding.scope
+      const focus = isPaste ? captureAsyncHistoryFocusPermission() : null
+      let scheduledFocus = false
+      try {
+        return await openCanonicalHostEdit(opening.blocks, blocks, { ...(isPaste ? { reason: 'paste' as const, newRefSources } : {}),
+          opener: editor.dom, shouldContinue: opening.current, afterBookmark,
+          ...(focus ? { onAccepted: () => {
+            requestAnimationFrame(() => {
+              try {
+                if (viewRef.current === editor && latest.current.binding.scope === scope && scope.isCurrent()
+                  && !editor.composing && !canonicalInlineInputLocked() && editor.hasFocus() && focus.canRestore()
+                  && afterBookmark.richText && areDocumentDraftBlocksEqual(emitted.current, blocks)
+                  && areDocumentDraftBlocksEqual(richDocToDraftBlocks(editor.state.doc), blocks)) {
+                  editor.dispatch(editor.state.tr.setSelection(richSelectionFromBookmark(editor.state.doc, afterBookmark.richText)).scrollIntoView())
+                }
+              } finally { focus.dispose() }
+            })
+            scheduledFocus = true
+          } } : {}) })
+      } finally { if (!scheduledFocus) focus?.dispose() }
+    }
+    const clipboardRejected = () => setMessage(latest.current.isZh ? '请选择完整的同级块和子块后重试，正文未更改。'
+      : 'Select complete sibling blocks and their children, then retry. The body is unchanged.')
+    const copyHostClipboard = (event: ClipboardEvent, cut: boolean) => {
+      const { doc, selection } = editor.state
+      if (latest.current.binding.scope.owner.kind !== 'document' || !selectedRichReferences(doc, selection.from, selection.to).size) return false
+      // DataTransfer is writable only during the original DOM event. The
+      // shared renderer clipboard producer uses the actual Main OS writer
+      // after resolving the captured groups, so no native fallback may run.
+      event.preventDefault()
+      const opening = clipboardOpening(), range = opening && completeRichRootRange(editor.state, opening.blocks)
+      if (!opening || !range) { clipboardRejected(); return true }
+      void (async () => {
+        if (!await copySyncedClipboardRange(opening.blocks, range, opening.address,
+          () => opening.current() && !canonicalInlineInputLocked())) return
+        if (!cut) { setMessage(''); return }
+        const after = [...opening.blocks.slice(0, range.start), ...opening.blocks.slice(range.end + 1)]
+        if (!after.length) after.push({ id: createDraftBlockId(), type: 'paragraph', content: '', checked: false, depth: 0, parentBlockId: null })
+        if (await commitHostClipboard(opening, after, Math.min(range.start, after.length - 1))) setMessage('')
+      })().catch(error => { if (opening.current()) setMessage(error instanceof Error ? error.message : String(error)) })
+      return true
+    }
+    const pasteHostClipboard = (plain: string, html: string) => {
+      const opening = clipboardOpening()
+      const source = opening && readSyncedClipboardFragment(plain, html, opening.address)
+      if (!opening || !source) return false
+      const { blocks, selection } = opening
+      const range = selection.empty ? null : completeRichRootRange(editor.state, blocks)
+      if (!selection.empty && !range) { clipboardRejected(); return true }
+      const targetId = selection.$from.parent.attrs.block?.id
+      const index = range?.start ?? richBlockEntries(opening.doc).find(({ node }) => node.attrs.block?.id === targetId)?.index
+      const target = index === undefined ? undefined : blocks[index]
+      if (index === undefined || !target) { clipboardRejected(); return true }
+      const start = range?.start ?? getBlockSubtreeEndIndex(blocks, index) + 1
+      const end = range ? range.end + 1 : start
+      const fragment = source.fragment.map(block => ({ ...block, depth: target.depth + block.depth,
+        parentBlockId: block.parentBlockId === null ? target.parentBlockId ?? null : block.parentBlockId }))
+      void commitHostClipboard(opening, [...blocks.slice(0, start), ...fragment, ...blocks.slice(end)], start, source.newRefSources)
+        .then(accepted => { if (accepted) setMessage('') }, error => { if (opening.current()) setMessage(error instanceof Error ? error.message : String(error)) })
+      return true
+    }
     const editor = new EditorView(mount.current, {
       state: EditorState.create({ doc: draftBlocksToRichDoc(props.blocks), plugins: [identities, inlineRules, shortcuts] }),
       attributes: { class: 'knowbook-rich-text-editor', role: 'textbox', 'aria-multiline': 'true',
@@ -685,6 +803,38 @@ export function ForestRichTextEditor(input: ForestProps) {
         if (!latest.current.binding.scope.isCurrent()) return
         const blocks = result.transactions.some(item => item.docChanged) ? richDocToDraftBlocks(result.state.doc) : null
         if (blocks) latest.current.binding.rememberSelection?.(captureRichBookmark(editor.state))
+        const { doc, selection } = editor.state, scope = latest.current.binding.scope
+        if (blocks && scope.owner.kind === 'document' && latest.current.blocks.some(block => block.type === 'synced-block')) {
+          const remaining = new Set(blocks.filter(block => block.type === 'synced-block').map(block => block.id))
+          const removed = latest.current.blocks.filter(block => block.type === 'synced-block' && !remaining.has(block.id))
+          if (removed.length) {
+            boundary.current = false
+            editor.updateState(editor.state)
+            const selected = selectedRichReferences(doc, selection.from, selection.to)
+            if (editor.composing || transaction.getMeta('composition') !== undefined || !removed.every(block => block.id && selected.has(block.id))) {
+              setMessage(latest.current.isZh ? '请完整选中同步引用后再替换。' : 'Select the complete synced reference before replacing it.')
+              return
+            }
+            const before = latest.current.blocks, afterBookmark = captureRichBookmark(result.state)
+            const viewIsCurrent = () => viewRef.current === editor && scope.isCurrent() && !editor.composing
+            const focus = captureAsyncHistoryFocusPermission()
+            void openCanonicalHostEdit(before, blocks, { reason: transaction.getMeta('paste') ? 'paste' : 'selection-edit',
+              opener: editor.dom, shouldContinue: () => viewIsCurrent() && editor.state.doc.eq(doc), afterBookmark,
+              onAccepted: () => requestAnimationFrame(() => {
+                try {
+                  if (!viewIsCurrent()) return
+                  setMessage('')
+                  if (focus.canRestore() && editor.hasFocus() && afterBookmark.richText && areDocumentDraftBlocksEqual(emitted.current, blocks)) {
+                    editor.dispatch(editor.state.tr.setSelection(richSelectionFromBookmark(editor.state.doc, afterBookmark.richText)).scrollIntoView())
+                  }
+                } finally { focus.dispose() }
+              }) }).then(accepted => { if (!accepted) focus.dispose() }, error => {
+                focus.dispose()
+                if (viewIsCurrent()) setMessage(error instanceof Error ? error.message : String(error))
+              })
+            return
+          }
+        }
         if (blocks && !latest.current.binding.apply(blocks, captureRichBookmark(result.state))) {
           boundary.current = false
           editor.updateState(editor.state)
@@ -753,6 +903,7 @@ export function ForestRichTextEditor(input: ForestProps) {
         },
         copy(_editor, event) {
           if (!event.clipboardData || editor.state.selection.empty) return false
+          if (copyHostClipboard(event, false)) return true
           const slice = editor.state.selection.content(), markdown = sliceMarkdown(slice)
           event.clipboardData.setData('text/plain', markdown)
           event.clipboardData.setData('text/html', clipboardHtml(markdown))
@@ -761,6 +912,7 @@ export function ForestRichTextEditor(input: ForestProps) {
         },
         cut(_editor, event) {
           if (!event.clipboardData || editor.state.selection.empty || editor.composing) return false
+          if (copyHostClipboard(event, true)) return true
           const slice = editor.state.selection.content(), markdown = sliceMarkdown(slice)
           event.clipboardData.setData('text/plain', markdown); event.clipboardData.setData('text/html', clipboardHtml(markdown))
           event.clipboardData.setData('application/x-knowbook-markdown', markdown)
@@ -800,6 +952,7 @@ export function ForestRichTextEditor(input: ForestProps) {
         if (event.clipboardData?.files.length) { void insertFiles(Array.from(event.clipboardData.files)); return true }
         const html = event.clipboardData?.getData('text/html')
         const plain = event.clipboardData?.getData('text/plain') ?? ''
+        if (html?.includes('data-knowbook-synced-clipboard') && pasteHostClipboard(plain, html)) return true
         const internal = event.clipboardData?.getData('application/x-knowbook-markdown')
         const sourceCopy = html?.includes('data-knowbook-markdown-source="true"')
         const markdown = internal || (sourceCopy ? plain : html ? htmlClipboardToMarkdown(html) : plain)
@@ -807,7 +960,7 @@ export function ForestRichTextEditor(input: ForestProps) {
         const fragment = normalizeDraftBlocks(parsePastedMarkdown(markdown).map(block => ({ ...block, id: createDraftBlockId() })))
         if (!fragment.length) return false
         latest.current.checkpoint(); boundary.current = true
-        const base = deleteCrossColumnSelection(editor.state) ?? editor.state.tr
+        const base = (deleteCrossColumnSelection(editor.state) ?? editor.state.tr).setMeta('paste', true)
         const treePaste = planRichTextTreePaste(base.doc, base.selection, fragment)
         if (treePaste) {
           const tr = base.replaceWith(0, base.doc.content.size, treePaste.doc.content)
@@ -833,6 +986,10 @@ export function ForestRichTextEditor(input: ForestProps) {
         if (erased) {
           latest.current.checkpoint(); boundary.current = true
           editor.dispatch(erased.insertText(text).scrollIntoView()); return true
+        }
+        if (from !== to && latest.current.binding.scope.owner.kind === 'document'
+          && latest.current.blocks.some(block => block.type === 'synced-block') && selectedRichReferences(editor.state.doc, from, to).size) {
+          editor.dispatch(editor.state.tr.insertText(text, from, to).scrollIntoView()); return true
         }
         const { $from } = editor.state.selection
         if ($from.parent.type.name !== 'text_block' || !$from.parent.attrs.block || from !== to) return false

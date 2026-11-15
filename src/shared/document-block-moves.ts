@@ -30,3 +30,5 @@ export interface DocumentBlockMoveResult {
   affectedDocumentIds: string[]
   expectedUpdatedAtByDocument: Record<string, string>
 }
+
+export type ControlledDocumentBlockMove = { state: 'controlled-required'; dependencies: Array<{ documentId: string; updatedAt: string }> }

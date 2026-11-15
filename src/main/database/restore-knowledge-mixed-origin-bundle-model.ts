@@ -1,11 +1,13 @@
 import { capsule5WorkingIndex, capsule5TransportFiles, type TransportWorkingTexts5, type TransportWorkingIndex5 } from './restore-knowledge-capsule5-transport-model'
 import { parseStrictJson } from '../../shared/strictJson'
+import { isBackupV3AssetPath } from '../backup/v3-format'
 import { capsuleBytesHash, capsuleJson, capsuleRecord, freezeCapsuleValue, parseDurableSqlCapsuleManifest,
   durableSqlCapsuleManifestHash, CAPSULE_MAX_MANIFEST_BYTES, CAPSULE_MAX_INDEX_BYTES } from './restore-knowledge-capsule-model'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_READER } from './restore-knowledge-capsule2-raw-model'
 import { parseCapsule2NoPriorSourceCertificate, CAPSULE2_SOURCE_CERTIFICATE_MAX_BYTES } from './restore-knowledge-capsule2-source-certificate-model'
 import { parseCapsule2SourceManifest } from './restore-knowledge-capsule2-source-seal-model'
-import { parseCapsule2CompleteAssetArchiveManifest } from './restore-knowledge-capsule2-asset-archive'
+import { isWorkingAssetArchive5, parseCapsule2CompleteAssetArchiveManifest, type Capsule2AssetArchiveManifest } from './restore-knowledge-capsule2-asset-archive'
+import { CAPSULE_V3_CONTENT_DIRECTORY } from './restore-knowledge-capsule-v3-assets'
 import { validateCoverageRootReference, type CoverageInputBinding, type CoverageRootReference } from './restore-knowledge-coverage-model'
 import { parseRequiredSqlDagNode, requiredSqlDagRootHash, requiredDagDatabaseFilesHash } from './restore-knowledge-required-dag-model'
 import { DURABLE_SQL_DAG_MAX_ORIGINAL_BYTES, DURABLE_SQL_DAG_MAX_NODE_BYTES } from './restore-knowledge-dag-model'
@@ -23,6 +25,17 @@ export interface MixedOriginBundleDescriptor {
 export const MIXED_ORIGIN_BUNDLE_MAX_DESCRIPTOR_BYTES = CAPSULE2_RAW_MAX_JSON_BYTES
 export const MIXED_ORIGIN_BUNDLE_MAX_FILES = ORIGIN_BUNDLE_MAX_FILES + 10_000
 const metadataBudget = 6 * CAPSULE2_RAW_MAX_JSON_BYTES + 2 * CAPSULE_MAX_INDEX_BYTES + DURABLE_SQL_DAG_MAX_NODE_BYTES
+export function capsuleV3TransportContentFiles(archive: Capsule2AssetArchiveManifest, assetDirectory: string): OriginBundleFile[] {
+  if (archive.version !== 6) return []
+  return archive.backupV3.files.filter(file => !isBackupV3AssetPath(file.relativePath))
+    .map(file => ({ path: assetDirectory + '/' + CAPSULE_V3_CONTENT_DIRECTORY + '/' + file.relativePath, bytes: file.bytes, sha256: file.hash }))
+}
+
+export function isCapsuleV3TransportContentPath(path: string): boolean {
+  const [catalog, backups, restore, , assets, , content] = path.split('/')
+  return catalog === 'catalog' && backups === 'backups' && restore === 'database-restore'
+    && assets === 'knowledge-complete-assets-v2' && content === CAPSULE_V3_CONTENT_DIRECTORY
+}
 function text(value: unknown, max = CAPSULE2_RAW_MAX_JSON_BYTES): string {
   if (typeof value !== 'string' || Buffer.byteLength(value) > max || Buffer.from(value).toString('utf8') !== value) return bad('mixed原TEXT无效或超完整预算')
   return value
@@ -54,6 +67,7 @@ function side(value: unknown, binding: CoverageInputBinding, workingText?: strin
   const certificate=parseCapsule2NoPriorSourceCertificate(certificateText,ref.operationId,ref.capsuleId,ref.manifestHash)
   const manifest=parseCapsule2SourceManifest(sourceManifestText,ref.operationId,ref.capsuleId,certificate.sourceManifestHash)
   const archive=parseCapsule2CompleteAssetArchiveManifest(assetManifestText,ref.capsuleId,manifest.assetArchiveHash)
+  if (archive.version === 9 || archive.version === 10) return bad('首代无父域不支持混合已安装 V3 原件')
   if (manifest.requiredRoots!==0 || certificate.schemaVersion!==manifest.schemaVersion || archive.schemaVersion!==manifest.schemaVersion
     || certificate.sourceMaterialHash!==manifest.sourceMaterialHash || certificate.sourceKnowledgeHash!==manifest.sourceKnowledgeHash
     || capsuleJson(manifest.files)!==capsuleJson(archive.sourceInventory)
@@ -64,13 +78,14 @@ function side(value: unknown, binding: CoverageInputBinding, workingText?: strin
   const assets=mixedOriginCapsulePath(binding,'knowledge-complete-assets-v2');add(assets+'/manifest.json',assetManifestText)
   for (const file of manifest.files) if(file.present) files.push({path:base+'/original/'+file.name,bytes:file.bytes,sha256:file.sha256!})
   for (const file of archive.tree.files) files.push({path:assets+'/files/'+file.hash,bytes:file.bytes,sha256:file.hash})
+  files.push(...capsuleV3TransportContentFiles(archive, assets))
   if ((archive.version === 3 || archive.version === 4)) for (const file of archive.contextOriginals.files) files.push({path:assets+'/contexts/'+file.sha256,bytes:file.bytes,sha256:file.sha256})
-  if (archive.version === 4 || archive.version === 5) files.push({ path: assets + '/base-provenance.json',
+  if (archive.version === 4 || isWorkingAssetArchive5(archive)) files.push({ path: assets + '/base-provenance.json',
     bytes: archive.baseProjection.baseManifestFile.bytes, sha256: archive.baseProjection.baseManifestFile.sha256 })
   if (!copyOnly) files.push(...capsule5TransportFiles(archive, assets, workingText))
   const workingIndex = capsule5WorkingIndex(archive, assets)
   return { value:{kind:'complete-capsule2',certificateText,sourceManifestText,assetManifestText} as const, files, inventory:manifest.files, workingIndex,
-    emptyDirectory:assets+'/files', ...((archive.version === 3 || archive.version === 4 || archive.version === 5) ? { emptyDirectories: [assets+'/contexts', ...(archive.version === 5 ? [assets+'/contexts/files'] : [])] } : {}) }
+    emptyDirectory:assets+'/files', ...((archive.version === 3 || archive.version === 4 || isWorkingAssetArchive5(archive)) ? { emptyDirectories: [assets+'/contexts', ...(isWorkingAssetArchive5(archive) ? [assets+'/contexts/files'] : [])] } : {}) }
 }
 function components(value: MixedOriginBundleDescriptor, workingTexts: TransportWorkingTexts5 = {}, copyOnly = false) {
   const node=parseRequiredSqlDagNode(value.nodeText),source=side(value.source,node.source,workingTexts.source,copyOnly),current=side(value.current,node.current,workingTexts.current,copyOnly)
@@ -94,7 +109,7 @@ function validateMixedDescriptor(value: unknown, workingTexts: TransportWorkingT
 function expectedFiles(descriptor: MixedOriginBundleDescriptor, workingTexts: TransportWorkingTexts5 = {}) {
   const {source,current}=components(descriptor,workingTexts),files=[{path:originBundleNodePath(descriptor.root),bytes:Buffer.byteLength(descriptor.nodeText),sha256:capsuleBytesHash(descriptor.nodeText)},...source.files,...current.files]
     .sort((a,b)=>a.path<b.path?-1:a.path>b.path?1:0)
-  const data=files.filter(f=>/\/(?:original|files|contexts)\//.test(f.path)||/\/base-provenance\.json$/.test(f.path)).reduce((n,f)=>n+f.bytes,0),total=files.reduce((n,f)=>n+f.bytes,0)
+  const data=files.filter(f=>/\/(?:original|files|contexts)\//.test(f.path)||/\/base-provenance\.json$/.test(f.path)||isCapsuleV3TransportContentPath(f.path)).reduce((n,f)=>n+f.bytes,0),total=files.reduce((n,f)=>n+f.bytes,0)
   if(files.length>MIXED_ORIGIN_BUNDLE_MAX_FILES||files.some((f,i)=>i>0&&files[i-1].path===f.path)
     ||!Number.isSafeInteger(total)||data>DURABLE_SQL_DAG_MAX_ORIGINAL_BYTES||total-data>metadataBudget)return bad('mixed完整文件重复或超原件/metadata预算')
   return freezeCapsuleValue(files)

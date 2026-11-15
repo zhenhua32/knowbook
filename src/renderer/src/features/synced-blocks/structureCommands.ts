@@ -1,13 +1,20 @@
+import type { DocumentBlockDraft } from '@shared/contracts'
 import type { SyncedGroupListResult, SyncedStructureApplied, SyncedStructureInput, SyncedOperationResult,
   SyncedGroupGuard, SyncedInstanceGuard, SyncedPlacement } from '@shared/synced-blocks'
 import type { SyncedEditingHostResult } from '@shared/synced-editing-session'
-import { parseSyncedBlockPayload } from '@shared/syncedBlockValidation'
+import { parseSyncedBlockPayload, validateSyncedHostForest } from '@shared/syncedBlockValidation'
+import type { CanonicalHostEditOptions } from './inlineBridge'
 import type { SyncedHostSourceCurrent } from './SyncedHostSourceDialog'
 import { areDocumentDraftBlocksEqual } from '../../utils/documentDraftComparison'
 import { syncedCreateSelection, syncedInsertionAfter } from './structureIntent'
 
 type Guards = { groups: SyncedGroupGuard[]; expectedInstances: SyncedInstanceGuard[] }
 type Item = SyncedGroupListResult['items'][number]
+type HostFinal = Extract<SyncedStructureInput, { mode: 'host-final' }>
+type HostEdit = Pick<HostFinal, 'reason' | 'finalAfter' | 'newRefSources'> & Pick<CanonicalHostEditOptions, 'afterBookmark' | 'onAccepted' | 'preserveSameParentDraft'>
+  & { kind: 'host-edit' }
+export type HostReorderProtection = { current(): boolean; acceptsGuards(guards: Guards): boolean;
+  accepts(result: SyncedStructureApplied): boolean; release(): void; groupIdentity?: object }
 type DetachTarget = { instance: SyncedInstanceGuard; group: SyncedGroupGuard; canonicalIds: readonly string[]; settled: () => boolean }
 export interface StructureCommandPort {
   current: () => SyncedHostSourceCurrent | null
@@ -18,21 +25,23 @@ export interface StructureCommandPort {
   flushGroups: (current: () => boolean) => Promise<boolean>
   apply: (input: SyncedStructureInput) => Promise<SyncedEditingHostResult>
   operation: (operationId: string) => Promise<SyncedOperationResult>
-  protectDetach: (hostSession: object, operationId: string, current: () => boolean) => Promise<boolean>
-  adopt: (before: SyncedHostSourceCurrent, result: SyncedStructureApplied) => boolean
+  protectHostEdit: (hostSession: object, operationId: string, current: () => boolean, groupIdentity?: object) => Promise<boolean>
+  protectReorder?: (before: SyncedHostSourceCurrent, after: readonly DocumentBlockDraft[]) => HostReorderProtection | null | undefined
+  adopt: (before: SyncedHostSourceCurrent, result: SyncedStructureApplied, afterBookmark?: HostEdit['afterBookmark']) => boolean
   changed: () => void
   notify: (zh: string, en: string) => void
   isZh: () => boolean
 }
 export interface StructureCommandView {
-  id: object; kind: 'create' | 'insert' | 'detach'; documentId: string; blockCount: number; opener: HTMLElement | null
+  id: object; kind: 'create' | 'insert' | 'detach' | 'host-edit'; documentId: string; blockCount: number; opener: HTMLElement | null
   busy: boolean; loading: boolean; error: string; uncertain: boolean; hasRequest: boolean
   query: string; offset: number; total: number; items: readonly Item[]; selectedGroupId: string | null
   canReturnFocus: () => boolean
 }
 type Opening = { before: SyncedHostSourceCurrent; view: StructureCommandView; operationId: string; instanceId: string;
-  action: { kind: 'create'; rootIds: string[]; groupId: string } | { kind: 'insert'; target: SyncedPlacement } | { kind: 'detach'; target: DetachTarget };
-  input: SyncedStructureInput | null; detachReceipt: 'idle' | 'protecting' | 'dispatched'; listing: number; shouldContinue: () => boolean }
+  action: { kind: 'create'; rootIds: string[]; groupId: string } | { kind: 'insert'; target: SyncedPlacement } | { kind: 'detach'; target: DetachTarget } | HostEdit;
+  input: SyncedStructureInput | null; receipt: 'idle' | 'protecting' | 'dispatched'; preserveReorder?: true;
+  hidden: boolean; listing: number; shouldContinue: () => boolean }
 
 function matchesDetachAck(target: DetachTarget, result: SyncedStructureApplied): boolean {
   const { instanceId } = target.instance, { affectedInstanceIds, blockIdMap } = result
@@ -47,22 +56,25 @@ function matchesDetachAck(target: DetachTarget, result: SyncedStructureApplied):
 export class SyncedStructureCommands {
   private opening: Opening | null = null
   constructor(private readonly port: StructureCommandPort) {}
-  getSnapshot = (): Readonly<StructureCommandView> | null => this.opening?.view ?? null
+  getSnapshot = (): Readonly<StructureCommandView> | null => this.opening?.hidden ? null : this.opening?.view ?? null
   pending = () => this.opening !== null
-  pendingDetach(hostSession: object) {
+  runningHostEdit = () => this.opening?.action.kind === 'host-edit' && (this.opening.hidden || this.opening.view.busy)
+  preservingReorder = () => this.opening?.preserveReorder === true
+  pendingProtectedEdit(hostSession: object) {
     const opening = this.opening
-    return opening?.before.hostSession === hostSession && opening.action.kind === 'detach' && opening.detachReceipt !== 'idle' ? opening.input : null
+    return opening?.before.hostSession === hostSession && opening.receipt !== 'idle' ? opening.input : null
   }
-  canJournalDetach(hostSession: object) {
-    return this.pendingDetach(hostSession) !== null && this.opening?.detachReceipt === 'dispatched' && !this.opening.view.busy
+  canJournalProtectedEdit(hostSession: object) {
+    return this.pendingProtectedEdit(hostSession) !== null && this.opening?.receipt === 'dispatched' && !this.opening.view.busy
   }
   private update(opening: Opening, changes: Partial<StructureCommandView>) {
     if (this.opening !== opening) return
     opening.view = Object.freeze({ ...opening.view, ...changes }); this.port.changed()
   }
-  private current(opening: Opening) {
+  private current(opening: Opening, acknowledgedHostEdit = false) {
     const actual = this.port.current(), before = opening.before
-    return this.opening === opening && opening.shouldContinue() && !this.port.blocked() && actual?.hostSession === before.hostSession
+    return this.opening === opening && (acknowledgedHostEdit || opening.shouldContinue()) && !this.port.blocked()
+      && actual?.hostSession === before.hostSession
       && actual.editSequence === before.editSequence && actual.host.documentId === before.host.documentId
       && actual.host.expectedPersistedUpdatedAt === before.host.expectedPersistedUpdatedAt
       && actual.host.workingBefore.title === before.host.workingBefore.title && actual.host.workingBefore.summary === before.host.workingBefore.summary
@@ -99,15 +111,39 @@ export class SyncedStructureCommands {
     const opening = await this.begin(before, { kind: 'detach', target: captured }, captured.canonicalIds.length, shouldContinue, opener)
     return this.getSnapshot()?.id === opening.view.id && !opening.view.error
   }
+  async openHostEdit(beforeBlocks: readonly DocumentBlockDraft[], afterBlocks: readonly DocumentBlockDraft[], options: CanonicalHostEditOptions) {
+    const before = this.port.current()
+    if (this.pending() || !options.shouldContinue() || this.port.blocked() || !before
+      || !areDocumentDraftBlocksEqual(before.host.workingBefore.blocks, beforeBlocks)) return false
+    let blocks
+    try { blocks = validateSyncedHostForest(afterBlocks.map(block => ({ ...block, parentBlockId: block.parentBlockId ?? null }))) }
+    catch (error) { this.port.notify('目标结构无效，当前草稿已保留。', 'The destination is invalid. The current draft is retained.'); return false }
+    if (areDocumentDraftBlocksEqual(beforeBlocks, blocks)) return false
+    const working = before.host.workingBefore
+    const action: HostEdit = { kind: 'host-edit', reason: options.reason ?? 'selection-edit', onAccepted: options.onAccepted,
+      preserveSameParentDraft: options.preserveSameParentDraft,
+      afterBookmark: options.afterBookmark ? structuredClone(options.afterBookmark) : undefined,
+      finalAfter: [{ documentId: before.host.documentId, title: working.title, summary: working.summary, blocks }],
+      newRefSources: structuredClone([...(options.newRefSources ?? [])]) }
+    const opening = this.start(before, action, 0, options.shouldContinue, options.opener, true)
+    const applied = await this.apply()
+    if (!applied && this.opening === opening) { opening.hidden = false; this.port.changed() }
+    return applied
+  }
   private async begin(before: SyncedHostSourceCurrent, action: Opening['action'], blockCount: number, shouldContinue: () => boolean, opener: HTMLElement | null): Promise<Opening> {
+    const opening = this.start(before, action, blockCount, shouldContinue, opener, false)
+    await this.load(opening, '', 0)
+    return opening
+  }
+  private start(before: SyncedHostSourceCurrent, action: Opening['action'], blockCount: number, shouldContinue: () => boolean,
+    opener: HTMLElement | null, hidden: boolean): Opening {
     const opening: Opening = { before: { ...before, host: structuredClone(before.host) }, action,
-      operationId: crypto.randomUUID(), instanceId: crypto.randomUUID(), input: null, detachReceipt: 'idle', listing: 0, shouldContinue,
+      operationId: crypto.randomUUID(), instanceId: crypto.randomUUID(), input: null, receipt: 'idle', hidden, listing: 0, shouldContinue,
       view: Object.freeze({ id: Object.freeze({}), kind: action.kind, documentId: before.host.documentId, blockCount, opener,
-        busy: false, loading: true, error: '', uncertain: false, hasRequest: false, query: '', offset: 0, total: 0, items: [], selectedGroupId: null,
+        busy: false, loading: !hidden, error: '', uncertain: false, hasRequest: false, query: '', offset: 0, total: 0, items: [], selectedGroupId: null,
         canReturnFocus: () => !this.port.blocked() && this.port.current()?.hostSession === before.hostSession
           && this.port.current()?.host.documentId === before.host.documentId }) }
     this.opening = opening; this.port.changed()
-    await this.load(opening, '', 0)
     return opening
   }
   private async load(opening: Opening, query: string, offset: number) {
@@ -145,56 +181,79 @@ export class SyncedStructureCommands {
     const opening = this.opening
     if (!opening || opening.view.busy || opening.view.loading) return false
     const detach = opening.action.kind === 'detach' ? opening.action.target : null
-    if (!this.current(opening) && !(detach && opening.detachReceipt === 'dispatched')) {
+    const hostEdit = opening.action.kind === 'host-edit' ? opening.action : null
+    const protectedEdit = detach !== null || hostEdit !== null
+    if (!this.current(opening) && !(protectedEdit && opening.receipt === 'dispatched')) {
       this.update(opening, { error: this.port.isZh() ? '原宿主、选区或完整草稿已变化，当前草稿已保留。' : 'The original host, selection, or complete draft changed; the current draft is retained.' }); return false
     }
     if (opening.action.kind === 'insert' && !opening.input && !opening.view.selectedGroupId) return false
     const recoveringOriginal = opening.input !== null
+    const reorder = hostEdit?.preserveSameParentDraft && this.port.protectReorder?.(opening.before, hostEdit.finalAfter[0].blocks)
+    if (reorder === null || opening.preserveReorder && !reorder) {
+      this.update(opening, { error: this.port.isZh() ? '原共享草稿或宿主顺序已变化，当前草稿已保留。'
+        : 'The original group draft or host order has changed. The current draft is retained.' })
+      return false
+    }
+    if (reorder) opening.preserveReorder = true
     this.update(opening, { busy: true, error: '' })
     try {
       if (!opening.input) {
-        const groupReady = detach ? detach.settled() : await this.port.flushGroups(() => this.current(opening))
+        if (hostEdit && (!await this.port.openHost(opening.before.host.documentId) || !this.current(opening))) {
+          throw new Error('The original host or complete working body changed; the current draft is retained.')
+        }
+        const groupReady = reorder ? reorder.current() : detach ? detach.settled() : await this.port.flushGroups(() => this.current(opening))
         if (!groupReady || !this.current(opening)) {
           this.update(opening, { error: this.port.isZh() ? '共享正文保存尚未完成，请先处理原草稿。' : 'The shared body has not finished saving. Resolve its original draft first.' }); return false
         }
         const groupId = detach?.group.groupId ?? (opening.action.kind === 'insert' ? opening.view.selectedGroupId! : null)
-        const guards = await this.port.guards(opening.before.host.documentId, groupId ? [groupId] : [])
-        if (!guards || !this.current(opening)) throw new Error('The original host/group guards changed; the complete draft is retained.')
+        const hostEditGroups = hostEdit ? [...opening.before.host.workingBefore.blocks, ...hostEdit.finalAfter[0].blocks]
+          .flatMap(block => block.type === 'synced-block' ? [parseSyncedBlockPayload(block.content).groupId] : []) : []
+        const guards = await this.port.guards(opening.before.host.documentId, groupId ? [groupId] : hostEditGroups)
+        if (!guards || !this.current(opening) || reorder && !reorder.acceptsGuards(guards)) throw new Error('The original host/group guards changed; the complete draft is retained.')
         if (detach && (!detach.settled() || !guards.groups.some(group => group.groupId === detach.group.groupId
           && group.expectedRevision === detach.group.expectedRevision && group.expectedTopologyRevision === detach.group.expectedTopologyRevision)
           || !guards.expectedInstances.some(instance => instance.instanceId === detach.instance.instanceId
             && instance.hostDocumentId === detach.instance.hostDocumentId && instance.bindingVersion === detach.instance.bindingVersion))) {
           throw new Error(this.port.isZh() ? '原引用或共享正文已变化，请取消后重新打开。' : 'The original reference or shared body changed. Cancel and reopen.')
         }
-        opening.input = { clientOperationId: opening.operationId, mode: 'command', hostsWorkingBefore: [structuredClone(opening.before.host)], ...guards,
-          action: opening.action.kind === 'create' ? { kind: 'create', documentId: opening.before.host.documentId,
-            selectedRootIds: [...opening.action.rootIds], groupId: opening.action.groupId, instanceId: opening.instanceId }
-            : opening.action.kind === 'insert' ? { kind: 'insert', groupId: groupId!, instanceId: opening.instanceId, target: { ...opening.action.target } }
-              : { kind: 'detach', groupId: opening.action.target.group.groupId, instanceId: opening.action.target.instance.instanceId } }
+        const base = { clientOperationId: opening.operationId, hostsWorkingBefore: [structuredClone(opening.before.host)], ...guards }
+        const action = opening.action
+        opening.input = action.kind === 'host-edit' ? { ...base, mode: 'host-final', reason: action.reason,
+          finalAfter: action.finalAfter, newRefSources: action.newRefSources }
+          : { ...base, mode: 'command', action: action.kind === 'create' ? { kind: 'create', documentId: opening.before.host.documentId,
+              selectedRootIds: [...action.rootIds], groupId: action.groupId, instanceId: opening.instanceId }
+            : action.kind === 'insert' ? { kind: 'insert', groupId: groupId!, instanceId: opening.instanceId, target: { ...action.target } }
+              : { kind: 'detach', groupId: action.target.group.groupId, instanceId: action.target.instance.instanceId } }
         this.update(opening, { hasRequest: true })
       }
       const input = opening.input
+      if (reorder && !reorder.acceptsGuards(input)) return false
       let result: SyncedEditingHostResult | undefined
-      if (recoveringOriginal && (!detach || opening.detachReceipt === 'dispatched')) {
+      if (recoveringOriginal && (!protectedEdit || opening.receipt === 'dispatched')) {
         const observed = await this.port.operation(input.clientOperationId)
         if (observed.status === 'committed' && 'hosts' in observed.result) result = observed.result
         else if (observed.status !== 'unknown') throw new Error('The original receipt is not a host structure operation')
+        else if (hostEdit && !opening.shouldContinue()) {
+          opening.receipt = 'idle'
+          this.update(opening, { uncertain: false })
+          throw new Error(this.port.isZh() ? '原选区已离开，当前草稿已保留。' : 'The original selection is no longer active. Your draft is retained.')
+        }
       }
       if (!result) {
-        if (detach) {
-          const ready = () => this.current(opening) && detach.settled()
+        if (protectedEdit) {
+          const ready = () => this.current(opening) && (!detach || detach.settled()) && (!reorder || reorder.current())
           if (!ready()) throw new Error(this.port.isZh() ? '原引用或共享正文已变化，请重新核对原操作。' : 'The original reference or shared body changed. Check the original operation again.')
-          const previous = opening.detachReceipt
-          opening.detachReceipt = 'protecting'
+          const previous = opening.receipt
+          opening.receipt = 'protecting'
           this.port.changed()
           try {
-            if (!await this.port.protectDetach(opening.before.hostSession, input.clientOperationId, ready) || !ready())
+            if (!await this.port.protectHostEdit(opening.before.hostSession, input.clientOperationId, ready, reorder ? reorder.groupIdentity : undefined) || !ready())
               throw new Error(this.port.isZh() ? '草稿保护尚未确认，请重试原操作。' : 'Draft protection has not been confirmed. Retry the original operation.')
           } catch (error) {
-            opening.detachReceipt = previous
+            opening.receipt = previous
             throw error
           }
-          opening.detachReceipt = 'dispatched'
+          opening.receipt = 'dispatched'
         }
         try { result = await this.port.apply(input) }
         catch (error) {
@@ -205,7 +264,7 @@ export class SyncedStructureCommands {
         }
       }
       if (result.status !== 'applied') {
-        opening.detachReceipt = 'idle'
+        opening.receipt = 'idle'
         this.update(opening, { uncertain: false, error: this.port.isZh()
           ? result.status === 'unsupported' ? '当前选区、标题或正文结构暂不支持此操作，完整草稿已保留。' : '原结构操作未应用，完整草稿已保留，请取消后核对原正文。'
           : result.status === 'unsupported' ? 'This selection, heading, or working structure is not supported; the complete draft is retained.'
@@ -213,19 +272,24 @@ export class SyncedStructureCommands {
         return false
       }
       const host = result.hosts[0], before = opening.before
+      const final = hostEdit?.finalAfter[0]
       if (result.operationId !== input.clientOperationId || result.hosts.length !== 1 || host?.documentId !== before.host.documentId
         || host.after.id !== before.host.documentId || host.logicalBefore.title !== before.host.workingBefore.title
         || host.logicalBefore.summary !== before.host.workingBefore.summary
         || !areDocumentDraftBlocksEqual(host.logicalBefore.blocks, before.host.workingBefore.blocks)
-        || detach && !matchesDetachAck(detach, result)
-        || !this.current(opening) || !this.port.adopt(before, result)) {
+        || final && (!result.historyToken || host.after.title !== final.title || host.after.summary !== final.summary
+          || !areDocumentDraftBlocksEqual(host.after.blocks, final.blocks))
+        || detach && !matchesDetachAck(detach, result) || reorder && !reorder.accepts(result)
+        || !this.current(opening, hostEdit !== null) || !this.port.adopt(before, result, hostEdit?.afterBookmark)) {
         this.update(opening, { uncertain: true, error: 'Main returned an operation, but its original host/W acknowledgement could not be adopted. The full draft is retained; retry the same operation.' })
         return false
       }
       // Only the actual atomic host ACK is adopted. Main owns the structure
       // journal/history token; no ordinary updateDocument or local undo snapshot.
-      this.opening = null; this.port.changed(); return true
+      this.opening = null; this.port.changed()
+      try { hostEdit?.onAccepted?.() } catch (error) { console.warn('Could not restore selection after the accepted edit.', error) }
+      return true
     } catch (error) { this.update(opening, { error: String(error) }); return false }
-    finally { this.update(opening, { busy: false }) }
+    finally { if (reorder) reorder.release(); this.update(opening, { busy: false }) }
   }
 }

@@ -50,7 +50,7 @@ export function adoptDocumentLocalDraft(context: DocumentLocalDraftContext, befo
  * This context grants no Main authority or new ACK; callers still supply only
  * their actual original opening and the runtime's genuine Main receipt. */
 export function adoptDocumentHostResult(context: DocumentHostAdoptContext, before: SyncedHostSourceCurrent,
-  result: SyncedStructureApplied, history: boolean): boolean {
+  result: SyncedStructureApplied, history: boolean, afterBookmark?: EditorHistoryBookmark): boolean {
   const editor = context.editor, [readCurrent, busy, clearTimer, checkpoint, commit, pending] = context.hooks
   const current = readCurrent(), row = result.hosts[0]
   if (history && !busy.current || !current || current.hostSession !== before.hostSession || current.editSequence !== before.editSequence
@@ -64,7 +64,7 @@ export function adoptDocumentHostResult(context: DocumentHostAdoptContext, befor
   editor.selected.current = detail; editor.title.current = detail.title; editor.summary.current = detail.summary; editor.blocks.current = blocks
   editor.onDocument(detail); editor.setTitle(detail.title); editor.setSummary(detail.summary); editor.setBlocks(blocks)
   if (!history) {
-    if (result.historyToken) commit(blocks, null, Object.freeze({ documentId: before.host.documentId,
+    if (result.historyToken) commit(blocks, afterBookmark, Object.freeze({ documentId: before.host.documentId,
       operationId: result.operationId, historyToken: result.historyToken }))
     else commit(blocks)
   }

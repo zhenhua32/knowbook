@@ -6,13 +6,14 @@ import type { SyncedHostSourceCurrent } from './SyncedHostSourceDialog'
 import type { SyncedHostHistoryTransition } from './hostHistoryTypes'
 import { parseSyncedBlockPayload } from '@shared/syncedBlockValidation'
 import { areDocumentDraftBlocksEqual } from '../../utils/documentDraftComparison'
+import type { HostReorderProtection } from './structureCommands'
 
 type Content = SyncedHostSourceCurrent['host']['workingBefore']
 // A private projection read only from the real Main ACK below. It never mints
 // a binding, active snapshot or restoration permission, and imports no Main code.
 type ActualLifecycleGuard = { groupId: string; createHistoryId: string; state: 'active' | 'retired-create'; revision: string; topologyRevision: string }
 type Boundary = { transition: SyncedHostHistoryTransition; before: Content; after: Content; groupIds: readonly string[];
-  retired: ReadonlyMap<string, SyncedGroupGuard> }
+  retired: ReadonlyMap<string, SyncedGroupGuard>; preserveReorder: boolean }
 type OriginalRestore = { transition: SyncedHostHistoryTransition; direction: 'undo' | 'redo'; before: SyncedHostSourceCurrent;
   boundary: Boundary; input: SyncedRestoreHostInput }
 export interface HostStructureHistoryPort {
@@ -28,6 +29,8 @@ export interface HostStructureHistoryPort {
   flushHost: () => Promise<boolean>
   restore: (input: SyncedRestoreHostInput) => Promise<SyncedEditingHostResult>
   operation: (id: string) => Promise<SyncedOperationResult>
+  protectReorder?: (before: SyncedHostSourceCurrent, after: readonly Content['blocks'][number][]) => HostReorderProtection | null
+  checkpointReorder?: (hostSession: object, operationId: string, current: () => boolean, groupIdentity?: object) => Promise<boolean>
   adopt: (before: SyncedHostSourceCurrent, result: SyncedStructureApplied) => boolean
   changed: () => void
   released: () => void
@@ -49,7 +52,10 @@ export class SyncedHostStructureHistory {
   pending = () => this.original !== null
   isBusy = () => this.busy
   owns(transition: SyncedHostHistoryTransition) { return this.original !== null && key(this.original.transition) === key(transition) }
-  remember(before: SyncedHostSourceCurrent, result: SyncedStructureApplied) {
+  pendingProtectedReorder(hostSession: object) {
+    return this.original?.boundary.preserveReorder && this.original.before.hostSession === hostSession ? this.original : null
+  }
+  remember(before: SyncedHostSourceCurrent, result: SyncedStructureApplied, preserveReorder = false) {
     const row = result.hosts[0]
     if (!result.historyToken || result.hosts.length !== 1 || row?.documentId !== before.host.documentId
       || row.after.id !== before.host.documentId || !sameContent(row.logicalBefore, before.host.workingBefore)) return
@@ -58,7 +64,8 @@ export class SyncedHostStructureHistory {
     for (const side of [row.logicalBefore, content(row.after)]) for (const block of side.blocks) {
       if (block.type === 'synced-block') ids.add(parseSyncedBlockPayload(block.content).groupId)
     }
-    this.boundaries.set(key(transition), { transition, before: structuredClone(row.logicalBefore), after: content(row.after), groupIds: [...ids], retired: new Map() })
+    this.boundaries.set(key(transition), { transition, before: structuredClone(row.logicalBefore), after: content(row.after), groupIds: [...ids],
+      retired: new Map(), preserveReorder })
   }
   private sameOpening(before: SyncedHostSourceCurrent, compareVersion = true) {
     const actual = this.port.current()
@@ -108,6 +115,8 @@ export class SyncedHostStructureHistory {
       this.port.notify('当前普通编辑尚未回到原结构边界，完整草稿已保留。', 'Ordinary edits are not at the original structure boundary; the complete draft is retained.'); return false
     }
     if (this.original && (key(this.original.transition) !== key(transition) || this.original.direction !== direction)) return false
+    const reopen = boundary.preserveReorder && this.port.protectReorder?.(opening, (direction === 'undo' ? boundary.before : boundary.after).blocks)
+    if (boundary.preserveReorder && !reopen) return false
     this.busy = true; this.port.changed()
     try {
       if (!this.original) {
@@ -119,22 +128,22 @@ export class SyncedHostStructureHistory {
         // This flush uses the existing writer only after W exactly matches the
         // real structure boundary. It cannot save a later unrelated ordinary W
         // merely to make an old inverse appear applicable.
-        if (!await this.port.flushGroups(() => this.sameOpening(opening, false)) || !this.sameOpening(opening, false)
-          || !await this.port.flushHost() || !this.sameOpening(opening, false)) return false
+        if (!reopen && (!await this.port.flushGroups(() => this.sameOpening(opening, false)) || !this.sameOpening(opening, false)
+          || !await this.port.flushHost() || !this.sameOpening(opening, false))) return false
         const submitted = this.port.current(), persisted = await this.port.readHost(transition.documentId)
         if (!submitted || !this.sameOpening(submitted) || !persisted || persisted.id !== transition.documentId
           || persisted.updatedAt !== submitted.host.expectedPersistedUpdatedAt || !sameContent(submitted.host.workingBefore, content(persisted))) return false
         const history = await this.port.readHistory(transition.documentId)
         if (history.cursor !== firstHistory.cursor || (direction === 'undo' ? history.undoToken : history.redoToken) !== transition.historyToken || !this.sameOpening(submitted)) return false
         const guards = await this.guards(boundary, submitted)
-        if (!guards || !this.sameOpening(submitted)) return false
+        if (!guards || !this.sameOpening(submitted) || reopen && !reopen.acceptsGuards(guards)) return false
         const input: SyncedRestoreHostInput = { clientOperationId: crypto.randomUUID(), historyToken: transition.historyToken, direction,
           expectedHosts: [{ documentId: transition.documentId, expectedUpdatedAt: submitted.host.expectedPersistedUpdatedAt }], ...guards }
         this.original = { transition: { ...transition }, direction, boundary, before: { ...submitted, host: structuredClone(submitted.host) }, input }
         this.port.changed()
       }
       const original = this.original
-      if (!this.sameOpening(original.before)) return false
+      if (!this.sameOpening(original.before) || reopen && !reopen.acceptsGuards(original.input)) return false
       let result: SyncedEditingHostResult | undefined
       if (recoveringOriginal) {
         // A successful inverse may remove/rebind an old captured instance.
@@ -145,6 +154,10 @@ export class SyncedHostStructureHistory {
         else if (known.status !== 'unknown') throw Error('The original inverse receipt is not a host operation')
       }
       if (!result) {
+        if (reopen) {
+          const current = () => this.original === original && this.sameOpening(original.before) && reopen.current()
+          if (!await this.port.checkpointReorder?.(original.before.hostSession, original.input.clientOperationId, current, reopen.groupIdentity) || !current()) return false
+        }
         try { result = await this.port.restore(original.input) }
         catch (error) {
           const known = await this.port.operation(original.input.clientOperationId)
@@ -160,7 +173,8 @@ export class SyncedHostStructureHistory {
       if (result.operationId !== original.input.clientOperationId || result.historyToken !== transition.historyToken || result.hosts.length !== 1
         || row?.documentId !== transition.documentId || row.after.id !== transition.documentId
         || !sameContent(row.logicalBefore, original.before.host.workingBefore) || !this.sameOpening(original.before)
-        || !sameContent(content(row.after), direction === 'undo' ? boundary.before : boundary.after)) throw Error('The actual inverse acknowledgement does not match the original host/whole W/history boundary')
+        || !sameContent(content(row.after), direction === 'undo' ? boundary.before : boundary.after)
+        || reopen && !reopen.accepts(result)) throw Error('The actual inverse acknowledgement does not match the original host/whole W/history boundary')
       this.noteLifecycle(boundary, result)
       if (!this.port.adopt(original.before, result)) throw Error('The actual inverse committed but this original host could not adopt it; retry the same operation')
       this.original = null; return true
@@ -168,6 +182,7 @@ export class SyncedHostStructureHistory {
       this.port.notify('原结构回执尚未确认，完整正文已保留；请重试同一撤销或重做。' + String(error), 'The original structure acknowledgement is unsettled; the complete body is retained. Retry the same Undo or Redo. ' + String(error))
       return false
     } finally {
+      if (reopen) reopen.release()
       this.busy = false; this.port.changed()
       if (!this.original) this.port.released()
     }

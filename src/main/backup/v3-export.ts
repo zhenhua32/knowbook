@@ -5,7 +5,7 @@ import { readManagedAssetSourceSync as readAlias, type ManagedAssetSource } from
 import { assertSyncedShape, isSyncedUuid, validateSyncedHostForest } from '../../shared/syncedBlockValidation'
 import { buildSyncedPortableAssetUri, rewriteSyncedGroupAssets, rewriteSyncedPortableHostAssets,
   syncedManagedAssetBudgetUri, syncedPortableAssetBackupPath, measureSyncedPortableGroup, measureSyncedPortableHost } from '../../shared/syncedBlockPortable'
-import { backupV3FileDigest, backupV3InventoryHash, buildBackupV3Files, type ArchiveV3Snapshot, type BackupV3File } from './v3-format'
+import { BACKUP_V3_MAX_ASSET_BYTES, backupV3FileDigest, backupV3InventoryHash, buildBackupV3Files, type ArchiveV3Snapshot, type BackupV3File } from './v3-format'
 import { verifyBackupV3Archive } from './v3-reader'
 import { captureSyncedBackupV3, readSyncedBackupV3Capture, claimSyncedBackupV3, confirmSyncedBackupV3,
   type SyncedBackupV3Snapshot } from '../database/synced-backup-v3'
@@ -75,7 +75,8 @@ function portable(snapshot: SyncedBackupV3Snapshot, paths: Paths): { snapshot: A
   try {
     for (const uri of wanted) {
       // Read every source alias even when another name/URI already has the same content hash.
-      const alias = readAlias(paths.assets, uri), canonical = buildSyncedPortableAssetUri(alias), relativePath = syncedPortableAssetBackupPath(canonical)
+      const alias = readAlias(paths.assets, uri, BACKUP_V3_MAX_ASSET_BYTES)
+      const canonical = buildSyncedPortableAssetUri(alias), relativePath = syncedPortableAssetBackupPath(canonical)
       aliases.push(alias); replacements.set(uri, canonical)
       const existing = files.get(relativePath)
       if (existing) { if (!Buffer.from(existing.bytes).equals(alias.bytes)) throw new Error('同资产 alias 原字节不一致。') }
@@ -98,7 +99,7 @@ function portable(snapshot: SyncedBackupV3Snapshot, paths: Paths): { snapshot: A
 function verifyAliases(aliases: Alias[], paths: Paths): void {
   try {
     for (const old of aliases) {
-      const current = readAlias(paths.assets, old.uri)
+      const current = readAlias(paths.assets, old.uri, BACKUP_V3_MAX_ASSET_BYTES)
       if (spelling(current.path) !== spelling(old.path) || current.hash !== old.hash || current.name !== old.name || !current.bytes.equals(old.bytes)) throw new Error('附件来源或原字节变化。')
     }
   } catch (cause) { return error('asset', 'V3 首文件前附件原映射/bytes 失效。', cause) }

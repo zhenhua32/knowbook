@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { DocumentBlockDraft, UpdateDocumentInput } from '../../shared/contracts'
-import type { DocumentBlockMoveHistoryEntry, DocumentBlockMoveResult, MoveDocumentBlocksInput, RestoreDocumentBlockMoveInput } from '../../shared/document-block-moves'
+import type { ControlledDocumentBlockMove, DocumentBlockMoveHistoryEntry, DocumentBlockMoveResult, MoveDocumentBlocksInput, RestoreDocumentBlockMoveInput } from '../../shared/document-block-moves'
 import { planDocumentBlockTransfer } from '../../shared/documentBlockTransfer'
 import type { KnowbookStore } from './store'
 import type { MarkdownLinkIndex, MarkdownIndexedDocument } from './markdown-link-index'
@@ -11,6 +11,21 @@ type OperationRow = {
   moved_ids_json: string; before_json: string; after_json: string; expected_versions_json: string
 }
 const staleMessage = '移动涉及的文档已变化，请重新打开后操作；不会覆盖后续编辑。'
+
+export class DocumentBlockMoveNeedsControlledWrite extends Error {
+  constructor(readonly dependencies: ControlledDocumentBlockMove['dependencies']) {
+    super('移动涉及的依赖页含同步块，须由完整结构事务提交。')
+  }
+}
+
+function assertMoveAddress(input: MoveDocumentBlocksInput): void {
+  if (!input || typeof input.fromDocumentId !== 'string' || typeof input.toDocumentId !== 'string'
+    || input.fromDocumentId === input.toDocumentId || !Array.isArray(input.blockIds) || !input.blockIds.length
+    || input.blockIds.some(id => typeof id !== 'string' || !id.trim())
+    || typeof input.expectedFromUpdatedAt !== 'string' || typeof input.expectedToUpdatedAt !== 'string') {
+    throw new Error('请选择不同的来源和目标文档及有效块，并提供双方当前版本。')
+  }
+}
 
 /** The journal, original block IDs, history and link projections commit together. */
 export class DocumentBlockTransfers {
@@ -96,13 +111,32 @@ export class DocumentBlockTransfers {
       expectedUpdatedAtByDocument: expected }
   }
 
+  readControlledDependencies(input: MoveDocumentBlocksInput): ControlledDocumentBlockMove | null {
+    assertMoveAddress(input)
+    return this.store.runInTransaction(() => {
+      const endpoint = this.db.prepare('SELECT path,updated_at FROM documents WHERE id=?')
+      const source = endpoint.get(input.fromDocumentId) as { path: string; updated_at: string } | undefined
+      const destination = endpoint.get(input.toDocumentId) as { path: string; updated_at: string } | undefined
+      if (source?.updated_at !== input.expectedFromUpdatedAt || destination?.updated_at !== input.expectedToUpdatedAt) throw new Error(staleMessage)
+      // Installed descendants and bound Markdown source rows are enough to
+      // choose the writer. The original writer still derives every exact edit.
+      const dependencies = this.db.prepare(`WITH RECURSIVE moved(id) AS (
+        SELECT id FROM blocks WHERE document_id=? AND id IN (SELECT value FROM json_each(?))
+        UNION SELECT child.id FROM blocks AS child JOIN moved ON child.parent_block_id=moved.id WHERE child.document_id=?
+      ), fragments(fragment) AS (SELECT id FROM moved UNION ALL SELECT '^' || id FROM moved)
+      SELECT DISTINCT d.id AS documentId,d.updated_at AS updatedAt
+      FROM markdown_link_sources AS link JOIN documents AS d ON d.id=link.source_document_id
+      WHERE link.target_path=? AND link.fragment IN (SELECT fragment FROM fragments)
+        AND d.id NOT IN (?,?) AND link.kind NOT IN ('image','wiki-heading')
+        AND EXISTS(SELECT 1 FROM blocks AS ref WHERE ref.document_id=d.id AND ref.type='synced-block')
+      ORDER BY d.id`).all(input.fromDocumentId, JSON.stringify(input.blockIds), input.fromDocumentId, source.path,
+        input.fromDocumentId, input.toDocumentId) as ControlledDocumentBlockMove['dependencies']
+      return dependencies.length ? { state: 'controlled-required', dependencies } : null
+    })
+  }
+
   move(input: MoveDocumentBlocksInput): DocumentBlockMoveResult {
-    if (!input || typeof input.fromDocumentId !== 'string' || typeof input.toDocumentId !== 'string'
-      || input.fromDocumentId === input.toDocumentId || !Array.isArray(input.blockIds) || !input.blockIds.length
-      || input.blockIds.some(id => typeof id !== 'string' || !id.trim())
-      || typeof input.expectedFromUpdatedAt !== 'string' || typeof input.expectedToUpdatedAt !== 'string') {
-      throw new Error('请选择不同的来源和目标文档及有效块，并提供双方当前版本。')
-    }
+    assertMoveAddress(input)
     if (input.beforeBlockId !== undefined && (typeof input.beforeBlockId !== 'string' || !input.beforeBlockId.trim())
       || input.parentBlockId !== undefined && input.parentBlockId !== null
         && (typeof input.parentBlockId !== 'string' || !input.parentBlockId.trim())) {
@@ -118,6 +152,11 @@ export class DocumentBlockTransfers {
         sourceBlocks: plan.sourceBlocks, targetBlocks: plan.targetBlocks, movedIds: plan.movedIds },
       id => this.indexed(this.snapshot(id)))
       const before = rewritten.map(update => this.snapshot(update.documentId))
+      const controlled = before.filter(page => page.documentId !== source.documentId && page.documentId !== target.documentId
+        && page.content.blocks.some(block => block.type === 'synced-block'))
+      if (controlled.length && ![source, target].some(page => page.content.blocks.some(block => block.type === 'synced-block'))) {
+        throw new DocumentBlockMoveNeedsControlledWrite(controlled.map(({ documentId, updatedAt }) => ({ documentId, updatedAt })))
+      }
       const desired = rewritten.map((update, index) => ({ ...before[index], content: { ...before[index].content, blocks: update.blocks } }))
       this.checkpoint(before)
       const alias = this.db.prepare('INSERT OR IGNORE INTO document_block_routes (document_path, block_id) VALUES (?, ?)')

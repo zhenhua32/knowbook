@@ -8,7 +8,7 @@ import type { CanonicalInlineRuntime } from '../synced-blocks/inlineRuntime'
 /** Eligibility only shows the explicit check action. The actual Main original,
  * new read owner and complete private frame decoder still decide restoration. */
 function canCheckCanonical(candidate: EditorRecoveryCandidate): boolean {
-  if (candidate.canonicalFollowupAvailable === true) return true
+  if (candidate.canonicalFollowupAvailable || candidate.canonicalSourceAvailable || candidate.canonicalCrossMoveRecovery) return true
   if (candidate.record.base.owner.kind !== 'group' || candidate.record.draft.sources.length || candidate.record.draft.pending.length
     || candidate.record.draft.composing || candidate.record.draft.importing || candidate.reasons.some(reason => reason !== 'cold-semantic-source-replay-required')) return false
   try {
@@ -41,6 +41,7 @@ export function RecoveryDraftsPanel({ documents, runtime, isZh, notify, ready }:
   const [expanded, setExpanded] = useState(false), [candidate, setCandidate] = useState<EditorRecoveryCandidate | null>(null)
   const [busy, setBusy] = useState(false)
   useSyncExternalStore(runtime.subscribe, runtime.getSnapshot, runtime.getSnapshot)
+  const retainedCrossMoveRevision = runtime.retainedCrossMoveRevision
   const review = runtime.reviewingRecovery()
   const dialog = useRef<HTMLDialogElement>(null), latest = useRef({ documents, runtime }); latest.current = { documents, runtime }
   const labelId = useId()
@@ -56,7 +57,7 @@ export function RecoveryDraftsPanel({ documents, runtime, isZh, notify, ready }:
     setLegacy(previous => after ? { records: [...previous.records, ...page.records], next: page.next } : page)
   }
   const refresh = () => { void load().catch(failed); void loadLegacy().catch(failed) }
-  useEffect(() => { if (ready) refresh() }, [ready])
+  useEffect(() => { if (ready) refresh() }, [ready, retainedCrossMoveRevision])
   useEffect(() => {
     if (expanded) dialog.current?.showModal()
     else dialog.current?.close()
@@ -85,9 +86,12 @@ export function RecoveryDraftsPanel({ documents, runtime, isZh, notify, ready }:
     try {
       if (decision === 'restore-draft') {
         const owner = candidate.record.base.owner
-        if (owner.kind === 'group') {
+        const moved = candidate.canonicalCrossMoveRecovery
+        if (owner.kind === 'group' || moved) {
           if (!canCheckCanonical(candidate)) throw new Error(text('此草稿需要保留并检查当前内容。', 'Keep this draft and review the current content.'))
-          const target = latest.current.runtime.recoveryGroupTarget(owner.groupId, candidate.canonicalHostDocumentId)
+          const group = owner.kind === 'group' ? owner : (await window.knowbook.readEditorRecoveryDraft(moved!.group)).record.base.owner
+          if (group.kind !== 'group') throw new Error(text('没有找到原共享正文，草稿仍保留。', 'The original shared body is unavailable. The draft is retained.'))
+          const target = moved?.hostDocumentId ?? latest.current.runtime.recoveryGroupTarget(group.groupId, candidate.canonicalHostDocumentId)
           if (!target) throw new Error(text('找不到这组共享正文的当前位置，草稿仍保留。', 'This shared body has no current location. Its draft is retained.'))
           const current = latest.current.documents.getSyncedHostEditorState()
           if (!current || current.host.documentId !== target) {
@@ -99,7 +103,8 @@ export function RecoveryDraftsPanel({ documents, runtime, isZh, notify, ready }:
             throw new Error(text('请先保留并处理当前文档中的输入，草稿仍保留。', 'Finish the current document input first. The draft is retained.'))
           }
           try {
-            if (!await latest.current.runtime.restoreRecoveryGroup(candidate.recoveryOwnerId, owner.groupId, current, candidate.canonicalFollowupAvailable)) throw new Error('The actual recovery visit changed')
+            const kind = moved ? { proofHash: moved.proofHash, instanceId: moved.instanceId } : candidate.canonicalSourceAvailable ? 'source' : candidate.canonicalFollowupAvailable ? 'body-followup' : 'body'
+            if (!await latest.current.runtime.restoreRecoveryGroup(candidate.recoveryOwnerId, group.groupId, current, kind)) throw new Error('The actual recovery visit changed')
           } catch (error) {
             console.warn('Canonical recovery original/source verification did not finish', error)
             throw new Error(text('当前正文或原有记录无法核对，草稿仍保留；可复制后手动处理。', 'The current body or original record could not be verified. The draft is retained and available to copy.'))
@@ -180,8 +185,10 @@ export function RecoveryDraftsPanel({ documents, runtime, isZh, notify, ready }:
         </>}
       </section>}
       {candidate && <section>
-        <p>{candidate.canonicalFollowupAvailable ? text('原提交已确认。恢复只载入后续未保存的正文，等待你明确保存。', 'The original save is confirmed. Restore loads the later unsaved body for your review before you save it.')
+        <p>{candidate.canonicalCrossMoveRecovery ? text('原移动已确认。恢复会在当前宿主页载入未保存的共享正文和重做记录。', 'The original move is confirmed. Restore loads the draft shared body and its redo history in its current document.')
+          : candidate.canonicalFollowupAvailable ? text('原提交已确认。恢复只载入后续未保存的正文，等待你明确保存。', 'The original save is confirmed. Restore loads the later unsaved body for your review before you save it.')
           : changed ? text('当前内容已变化。草稿可保留或复制，不能直接替换当前正文。', 'The current content changed. Keep or copy this draft before reconciling it.')
+          : candidate.canonicalSourceAvailable ? text('恢复会打开共享源码。应用更改后才会更新正文。', 'Restore opens the shared source. The body updates when you apply changes.')
           : canonicalCheck ? text('选择恢复后将再次核对当前共享正文与原有记录，再载入待检查的本地草稿。', 'Restore checks the current shared body and its original record before loading a local draft for review.')
             : candidate.mode !== 'view-only' ? text('当前内容未变化，可恢复为待检查的本地草稿。', 'The current content is unchanged. Restore this as a local draft for review.')
             : text('草稿已保留；这份源码或共享正文需要进一步检查后才能恢复。', 'The draft is retained. This source or shared body needs further review before restoration.')}</p>

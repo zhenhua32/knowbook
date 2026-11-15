@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
-import { canonicalRecoveryHasUnsettledWork, decodeCanonicalRecoveryFollowupData } from '../../shared/editor-recovery-canonical'
+import { canonicalRecoveryHasUnsettledWork, decodeCanonicalRecoveryFollowupData, readCanonicalRecoveryClosedFrames } from '../../shared/editor-recovery-canonical'
+import { readCanonicalRecoverySource } from '../../shared/editor-recovery-canonical-source'
+import { canonicalSyncedPortableJson } from '../../shared/syncedBlockPortable'
 import { alreadySavedCanonicalRecoveryOwned, attestCanonicalRecoveryCompletionOwned, prepareCanonicalRecoveryCompletionOwned, prepareCanonicalRecoveryFollowupCompletionOwned,
   type PreparedCanonicalRecoveryCompletion } from './canonical-completion'
 import { attestCanonicalRecoveryAcceptedFloorOwned } from './canonical-accepted-floor'
@@ -11,24 +13,37 @@ import { readSyncedBaselineMetadataCaptureOwned2 } from '../database/synced-bind
 import { readSyncedMetadataCaptureRecordOwned2, reopenSyncedMetadataCaptureRecordOwned2, SYNCED_METADATA_BASELINE2_PREFIX } from '../database/synced-metadata-capture-record2'
 import { isSyncedUuid, syncedCanonicalEdits } from '../../shared/syncedBlockValidation'
 import { getSyncedGroupSnapshots } from '../database/synced-blocks-read'
-import { sameHostContent } from '../database/synced-host-journal'
+import { hostEqual, hostHash, sameHostContent } from '../database/synced-host-journal'
 import type { HostContent } from '../database/synced-host-document-read'
 import { editorRecoveryInvalid, validateEditorRecoveryBase, validateEditorRecoveryBatch, validateEditorRecoveryExpected, validateOpenEditorRecoveryDraftInput,
   type EditorRecoveryBase, type EditorRecoveryDecision, type EditorRecoveryExpected, type EditorRecoveryOriginal,
   validateRetireEditorRecoveryDraftInput, validateEditorRecoveryWorking,
   validatePrepareEditorRecoveryGroupInput, validatePrepareEditorRecoveryGroupFloorInput, validateCompleteEditorRecoveryGroupInput,
-  type PreparedEditorRecoveryGroup, type PreparedEditorRecoveryGroupFloor,
+  type PreparedEditorRecoveryGroup, type PreparedEditorRecoveryGroupFloor, type PreparedEditorRecoveryCrossMove,
+  type ApplyEditorRecoveryCrossMoveResult, validatePrepareEditorRecoveryCrossMoveInput, validateApplyEditorRecoveryCrossMoveInput,
   validateParkEditorRecoveryDraftInput,
   type EditorRecoveryDraftInput, type EditorRecoveryReceipt, type EditorRecoveryRecord, type EditorRecoveryCandidate, type EditorRecoveryOpened, type EditorRecoveryWorking } from '../../shared/editor-recovery-drafts'
 import { EditorRecoveryDraftStore } from './draft-store'
-import { readOrdinaryHostRecoverySource } from '../../shared/editor-recovery-source'
+import { readHostRecoverySource } from '../../shared/editor-recovery-source'
 import { attestEditorRecoveryPendingOwned } from './pending-original'
+import { canCaptureCanonicalCrossMoveGroupOwned, prepareCanonicalCrossMoveTransferOwned, readCanonicalCrossMoveRecoveryOwned,
+  readCanonicalCrossMoveRequest } from './canonical-cross-move-recovery'
 import { captureHostSourcePinsOwned } from './host-source-pins'
+import type { CrossMoveDraftCheck } from '../database/synced-cross-move-draft-guard'
+import { validateSyncedRestoreHostInput, validateSyncedStructureInput } from '../../shared/syncedBlockInputs'
+import { parseStrictJson } from '../../shared/strictJson'
+import { captureCrossHostBatchJournal, captureCrossHostJournal4, captureCrossHostLinkJournal,
+  CrossMoveJournalError, decodeCrossHostJournal4 } from '../database/synced-cross-host-journal4'
+import { matchesCanonicalV4CrossMoveForest, readCanonicalBatchCrossMoveJournal, readCanonicalBatchInitiatingHost,
+  readCanonicalLinkedCrossMoveJournal, readCanonicalStationaryInstances } from './canonical-cross-move-original4'
+import { MoveRefused } from '../database/synced-host-cross-move-plan'
+import type { SyncedEditingRequest, SyncedEditingResult } from '../../shared/synced-editing-session'
 
 type OriginalRow = { client_operation_id: string; request_hash: string; result_json: string; created_at: string }
 type Live = { sender: EditorCloseIpcEvent['sender']; frame: NonNullable<EditorCloseIpcEvent['senderFrame']>; base: { baseId: string; hash: string };
-  groupSessionId?: string; alias?: { readOwnerId: string; hash: string } }
+  groupSessionId?: string; alias?: { readOwnerId: string; hash: string }; receivedCrossMove?: true }
 type Cold = { sender: EditorCloseIpcEvent['sender']; frame: NonNullable<EditorCloseIpcEvent['senderFrame']>; expected: EditorRecoveryExpected;
+  crossMoveTransfer?: { requestHash: string; head: EditorRecoveryExpected; baselineHash: string };
   completion?: { sessionId: string; draftSessionId: string; owner: PreparedCanonicalRecoveryCompletion } & (
     { kind: 'baseline'; readOwnerId: string } | { kind: 'floor'; groupId: string; instance: SyncedInstanceGuard }
   ) }
@@ -62,6 +77,7 @@ export class EditorRecoveryDraftService {
   private readonly dormant = new Map<string, Live & { expected: EditorRecoveryExpected }>()
   private readonly openings = new Map<string, { sender: Live['sender']; frame: Live['frame']; inputJson: string; draftSessionId: string }>()
   private readonly cold = new Map<string, Cold>()
+  private readonly completedCrossMoves = new Map<string, Pick<Live, 'sender' | 'frame'> & { sessionId: string; hostHead: EditorRecoveryExpected }>()
   constructor(private readonly side: EditorRecoveryDraftStore, private readonly store: KnowbookStore,
     private readonly admission: (event: EditorCloseIpcEvent) => void) {}
   private frame(event: EditorCloseIpcEvent) {
@@ -93,6 +109,42 @@ export class EditorRecoveryDraftService {
   activeDraftSessionIds(event: EditorCloseIpcEvent): string[] {
     const frame = this.frame(event)
     return [...this.live].filter(([, entry]) => entry.sender === event.sender && entry.frame === frame).map(([id]) => id).sort()
+  }
+  /** Third-page link rewrites never consume a preserved editor draft. For an
+   * inverse initiated in that page itself, permit only its exact pending W=P. */
+  crossMoveDraftCheck(event: EditorCloseIpcEvent): CrossMoveDraftCheck {
+    const frame = this.frame(event)
+    return (documentId, current, operation) => {
+      if (this.side.legacy?.hasHostDraft(documentId)) return false
+      const db = this.store.getUnsafeDatabaseHandle(), boundary = this.workspaceOwned()
+      const actual = db.prepare('SELECT created_at FROM documents WHERE id=?').get(documentId) as { created_at: string } | undefined
+      if (!actual) return false
+      const apply = operation && 'apply' in operation ? operation : undefined
+      const request = operation && ('apply' in operation ? operation.apply : operation)
+      const method = apply ? 'applySyncedHostStructure' : 'restoreSyncedHostOperation'
+      const working = apply?.working ?? current
+      const target = (base: EditorRecoveryRecord['base']) => base.owner.kind === 'host' && base.owner.documentId === documentId
+      const approved = new Set<string>()
+      if (this.side.someHead(record => {
+        if (!target(record.base)) return false
+        const { draft } = record, owner = this.live.get(draft.draftSessionId), pending = draft.pending[0]
+        if (!request || !owner || owner.frame !== frame || owner.sender !== event.sender || draft.pending.length !== 1
+          || record.base.owner.kind !== 'host' || record.base.owner.createdAt !== actual.created_at
+          || record.base.workspaceScope !== boundary.workspaceScope || record.base.recoveryEpoch !== boundary.recoveryEpoch
+          || pending.method !== method || pending.clientOperationId !== request.clientOperationId
+          || draft.sources.length || draft.composing || draft.importing
+          || !samePersistedWorking(draft.working, { kind: 'host', ...working })
+          || !samePersistedWorking(pending.submittedWorking, { kind: 'host', ...working })
+          || apply && !samePersistedWorking(record.base.persistedWorking, { kind: 'host', ...current })) return true
+        const invocation = parseStrictJson(pending.inputJson, { maxBytes: Math.max(1, Buffer.byteLength(pending.inputJson)), maxDepth: 32 })
+        if (hostHash({ method: pending.method, input: invocation }) !== pending.requestHash
+          || !hostEqual(apply ? validateSyncedStructureInput(invocation) : validateSyncedRestoreHostInput(invocation), request)) return true
+        approved.add(draft.draftSessionId)
+        return false
+      })) return false
+      return (!apply || sameHostContent(current, working) || approved.size > 0)
+        && ![...this.live, ...this.dormant].some(([id, entry]) => !approved.has(id) && target(this.side.readBase(entry.base)))
+    }
   }
   assertCloseBoundary(event: EditorCloseIpcEvent, boundary: { workspaceScope: string; recoveryEpoch: string }): void {
     const frame = this.frame(event), owners = [...this.live.values(), ...this.dormant.values()].filter(entry => entry.sender === event.sender && entry.frame === frame)
@@ -170,7 +222,8 @@ export class EditorRecoveryDraftService {
       this.sameFrame(event, owner)
       // This is its ORIGINAL already-sealed Main base, even if current SQL has
       // since conflicted. Reading today cannot silently change historical B.
-      return { base: owner.base, draft, canonicalOriginalAliasHash: this.captureAlias(event, owner, draft) }
+      return { base: owner.base, draft, canonicalOriginalAliasHash: this.captureAlias(event, owner, draft),
+        crossMoveGroupHead: this.captureCrossMoveGroupHead(owner, draft, drafts) }
     })
     if (purpose.kind === 'close') for (const [id, owner] of this.dormant) {
       if (owner.sender !== event.sender || owner.frame !== event.senderFrame) continue
@@ -181,6 +234,28 @@ export class EditorRecoveryDraftService {
     const receipt = this.side.write(captures, purpose)
     this.collect([receipt.receiptId])
     return receipt
+  }
+  private captureCrossMoveGroupHead(hostOwner: Live, draft: EditorRecoveryDraftInput, batch: readonly EditorRecoveryDraftInput[]) {
+    if (draft.pending.length !== 1 || draft.pending[0].method !== 'applySyncedHostStructure') return undefined
+    const db = this.store.getUnsafeDatabaseHandle()
+    if (db.inTransaction) return undefined
+    try {
+      const host = this.side.readBase(hostOwner.base), move = readCanonicalCrossMoveRequest(host, draft)
+      if (!move) return undefined
+      return db.transaction(() => {
+        const boundary = this.workspaceOwned()
+        if (host.workspaceScope !== boundary.workspaceScope || host.recoveryEpoch !== boundary.recoveryEpoch) return undefined
+        const matching = []
+        for (const [draftSessionId, groupOwner] of this.live) {
+          if (groupOwner.sender !== hostOwner.sender || groupOwner.frame !== hostOwner.frame || !groupOwner.groupSessionId) continue
+          const head = this.side.head(draftSessionId), capture = batch.find(item => item.draftSessionId === draftSessionId)
+          if (!head || capture && capture.generation !== head.expected.generation
+            || !canCaptureCanonicalCrossMoveGroupOwned(db, host, move, head.record)) continue
+          matching.push({ draftSessionId, ...head.expected })
+        }
+        return matching.length === 1 ? matching[0] : undefined
+      })()
+    } catch { return undefined } // An unproved relation must never prevent retaining the real pending host input.
   }
   private captureAlias(event: EditorCloseIpcEvent, owner: Live, draft: EditorRecoveryDraftInput): string | undefined {
     const readOwnerId = draft.canonicalReadOwnerId, sessionId = owner.groupSessionId
@@ -267,7 +342,8 @@ export class EditorRecoveryDraftService {
   }
   list(event: EditorCloseIpcEvent, input: { afterSessionId?: string; limit: number }) {
     this.frame(event)
-    const excludeSessionIds = this.liveDraftSessionIds(event), records: ReturnType<EditorRecoveryDraftStore['list']>['records'] = []
+    const receiving = [...this.live, ...this.dormant].filter(([, owner]) => owner.receivedCrossMove).map(([id]) => id)
+    const excludeSessionIds = [...new Set([...this.liveDraftSessionIds(event), ...receiving])], records: ReturnType<EditorRecoveryDraftStore['list']>['records'] = []
     let afterSessionId = input.afterSessionId, next: string | null = null
     do {
       const page = this.side.list({ ...(afterSessionId ? { afterSessionId } : {}), limit: input.limit - records.length, excludeSessionIds })
@@ -286,8 +362,9 @@ export class EditorRecoveryDraftService {
     // draft must not retire the live close attempt's actual receipt.
     return { records, next }
   }
-  private examine(record: EditorRecoveryRecord, includeCanonicalHost = false): Pick<EditorRecoveryCandidate,
-    'mode' | 'reasons' | 'pending' | 'canonicalFollowupAvailable' | 'canonicalHostDocumentId' | 'hostSourcePins'> {
+  private examine(record: EditorRecoveryRecord, includeCanonicalHost = false, crossMoveGroup?: EditorRecoveryRecord): Pick<EditorRecoveryCandidate,
+    'mode' | 'reasons' | 'pending' | 'canonicalFollowupAvailable' | 'canonicalSourceAvailable' | 'canonicalHostDocumentId'
+    | 'canonicalCrossMoveRecovery' | 'hostSourcePins'> {
     const db = this.store.getUnsafeDatabaseHandle()
     if (db.inTransaction) return editorRecoveryInvalid('cold candidate requires own actual Main snapshot')
     return db.transaction(() => {
@@ -347,17 +424,27 @@ export class EditorRecoveryDraftService {
       try { pending = attestEditorRecoveryPendingOwned(db, record).map(item => ({ clientOperationId: item.clientOperationId, status: item.status })) }
       catch { pending = record.draft.pending.map(item => ({ clientOperationId: item.clientOperationId, status: 'unverifiable' })) }
       if (pending.length) reasons.push('pending-needs-original-request-attestation')
-      // Raw text alone is insufficient to restore ordinary block anchors and
-      // attrs, just as it cannot reconstruct canonical lineage. The upcoming
-      // full Source snapshot/replay producer must remove this explicit gate.
-      let ordinarySource = false
+      let hostSource = false
       if (record.draft.sources.length) {
-        try { readOrdinaryHostRecoverySource(record); ordinarySource = true }
+        try { readHostRecoverySource(record); hostSource = !originalPins || hostSourcePins === 'unchanged' }
         catch { reasons.push('source-snapshot-rehydration-required') }
       }
       const hasReferences = record.draft.working.kind === 'group' || record.draft.working.blocks.some(block => block.type === 'synced-block')
-        || record.draft.sources.some(source => source.kind === 'canonical' || source.kind !== 'ordinary-host' && !ordinarySource)
-      if (hasReferences || originalPins) reasons.push('cold-semantic-source-replay-required')
+        || record.draft.sources.some(source => source.kind === 'canonical' || source.kind !== 'ordinary-host' && !hostSource)
+      if (!hostSource && (hasReferences || originalPins)) reasons.push('cold-semantic-source-replay-required')
+      let canonicalSourceAvailable: true | undefined
+      if (owner.kind === 'group' && record.draft.sources.length && record.base.originals.length === 1
+        && record.base.originals[0].kind === 'metadata2-baseline'
+        && reasons.every(reason => reason === 'source-snapshot-rehydration-required' || reason === 'cold-semantic-source-replay-required')) {
+        try {
+          const { accepted } = readCanonicalRecoverySource(record)
+          const [actual] = getSyncedGroupSnapshots(db, { groupIds: [owner.groupId] }).items
+          if (actual?.status === 'ready'
+            && canonicalSyncedPortableJson(accepted.initialBlocks) === canonicalSyncedPortableJson(syncedCanonicalEdits(actual.snapshot.blocks))) {
+            canonicalSourceAvailable = true
+          }
+        } catch { /* An incomplete or stale source remains available for review. */ }
+      }
       let canonicalFollowupAvailable: true | undefined
       if (owner.kind === 'group' && !record.draft.sources.length && reasons.includes('base-version-changed')) {
         const floor = attestCanonicalRecoveryAcceptedFloorOwned(db, record)
@@ -366,14 +453,27 @@ export class EditorRecoveryDraftService {
           catch { /* Preserve the readonly candidate when the later branch is incomplete. */ }
         }
       }
-      return { mode: reasons.length ? 'view-only' as const : ordinarySource ? 'editable-source-draft' as const : 'editable-ordinary-draft' as const, reasons, pending,
+      let canonicalCrossMoveRecovery: EditorRecoveryCandidate['canonicalCrossMoveRecovery']
+      if (crossMoveGroup) {
+        try { canonicalCrossMoveRecovery = readCanonicalCrossMoveRecoveryOwned(db, record, crossMoveGroup) }
+        catch { /* The two original drafts stay available for review. */ }
+      }
+      return { mode: reasons.length ? 'view-only' as const : hostSource ? 'editable-source-draft' as const : 'editable-ordinary-draft' as const, reasons, pending,
         ...(canonicalFollowupAvailable ? { canonicalFollowupAvailable } : {}),
+        ...(canonicalSourceAvailable ? { canonicalSourceAvailable } : {}),
         ...(canonicalHostDocumentId ? { canonicalHostDocumentId } : {}),
+        ...(canonicalCrossMoveRecovery ? { canonicalCrossMoveRecovery } : {}),
         ...(hostSourcePins ? { hostSourcePins } : {}) }
     })()
   }
   read(event: EditorCloseIpcEvent, input: unknown): EditorRecoveryCandidate {
-    const frame = this.frame(event), expected = validateEditorRecoveryExpected(input), record = this.side.read(expected), state = this.examine(record, true), recoveryOwnerId = randomUUID()
+    const frame = this.frame(event), expected = validateEditorRecoveryExpected(input), record = this.side.read(expected), recoveryOwnerId = randomUUID()
+    let crossMoveGroup: EditorRecoveryRecord | undefined
+    if (record.crossMoveGroupHead) {
+      try { crossMoveGroup = this.side.readCurrentCrossMoveGroup(expected) }
+      catch { /* The host pending request remains available for review. */ }
+    }
+    const state = this.examine(record, true, crossMoveGroup)
     this.cold.set(recoveryOwnerId, { sender: event.sender, frame, expected })
     return { status: 'candidate', recoveryOwnerId, record, ...state, writePermit: false, historicalKeyLineageComplete: false }
   }
@@ -386,6 +486,8 @@ export class EditorRecoveryDraftService {
     this.sameFrame(event, cold)
     const record = this.side.read(cold.expected), head = this.side.head(record.draft.draftSessionId)
     if (!head || JSON.stringify(head.expected) !== JSON.stringify(cold.expected)) return editorRecoveryInvalid('old cold owner cannot prepare a newer durable recovery generation')
+    const producer = this.live.get(record.draft.draftSessionId) ?? this.dormant.get(record.draft.draftSessionId)
+    if (producer?.receivedCrossMove) return editorRecoveryInvalid('the transferred draft already belongs to its receiving producer')
     const examined = this.examine(record), owner = record.base.owner
     if (owner.kind !== 'group' || record.draft.working.kind !== 'group' || record.draft.pending.length
       || record.draft.composing || record.draft.importing || record.draft.sources.some(source => source.composing || source.importing || source.applying)
@@ -426,6 +528,117 @@ export class EditorRecoveryDraftService {
     cold.completion = { kind: 'floor', owner, draftSessionId, ...occurrence }
     return { record, floor, writePermit: false, historicalKeyLineageComplete: false }
   }
+  /** This transfers a local durable draft. The new canonical Save/Undo/Redo
+   * still use the actual editing session and ordinary revision fences. */
+  prepareGroupCrossMove(event: EditorCloseIpcEvent, value: unknown): PreparedEditorRecoveryCrossMove {
+    const input = validatePrepareEditorRecoveryCrossMoveInput(value), cold = this.cold.get(input.recoveryOwnerId)
+    if (!cold) return editorRecoveryInvalid('the original host recovery visit is unavailable')
+    this.sameFrame(event, cold)
+    const target = this.live.get(input.targetDraftSessionId)
+    if (!target || target.groupSessionId !== input.sessionId) return editorRecoveryInvalid('the receiving producer does not belong to the actual new editing session')
+    this.sameFrame(event, target)
+    const base = this.side.readBase(target.base), groupOwner = base.owner, requestHash = hostHash(input)
+    if (groupOwner.kind !== 'group') return editorRecoveryInvalid('a cross-host draft needs its actual receiving group producer')
+    const occurrence = { sessionId: input.sessionId, groupId: groupOwner.groupId, instance: input.instance }
+    if (cold.crossMoveTransfer) {
+      const settled = cold.crossMoveTransfer, head = this.side.head(input.targetDraftSessionId)
+      if (settled.requestHash !== requestHash || !head || !hostEqual(head.expected, settled.head)) return editorRecoveryInvalid('the committed transfer receipt or receiving generation changed')
+      const baseline = this.store.readSyncedRecoveryGroup(event.senderFrame!, occurrence, db => {
+        const [actual] = getSyncedGroupSnapshots(db, { groupIds: [groupOwner.groupId] }).items
+        if (actual?.status !== 'ready' || hostHash(actual.snapshot) !== settled.baselineHash) return editorRecoveryInvalid('the receiving group changed after the transfer')
+        return actual.snapshot
+      })
+      return { record: head.record, head: head.expected, baseline, writePermit: false }
+    }
+    const host = this.side.read(cold.expected), group = this.side.readCurrentCrossMoveGroup(cold.expected)
+    if (!group || [host, group].some(record => this.live.has(record.draft.draftSessionId) || this.dormant.has(record.draft.draftSessionId))) {
+      return editorRecoveryInvalid('the original paired heads must still be current and detached')
+    }
+    const { baseline, head } = this.store.readSyncedRecoveryGroup(event.senderFrame!, occurrence, db => {
+      const plan = prepareCanonicalCrossMoveTransferOwned(db, host, group, { base, draftSessionId: input.targetDraftSessionId,
+        instance: input.instance, proofHash: input.proofHash })
+      const { canonicalOriginalAliasHash: _oldAlias, ...record } = group
+      readCanonicalRecoveryClosedFrames({ ...record, base, draft: plan.draft }, plan.snapshot, base.workspaceScope)
+      const [{ draftSessionId: _session, ...head }] = this.side.transferCrossMoveGroup(cold.expected, target.base, plan.draft, plan.retireBatchHost).records
+      return { baseline: plan.snapshot, head }
+    })
+    cold.crossMoveTransfer = { requestHash, head, baselineHash: hostHash(baseline) }
+    target.receivedCrossMove = true
+    return { record: this.side.read(head), head, baseline, writePermit: false }
+  }
+  /** Hot moves carry only a durable head address. The actual fenced writer
+   * receives the immutable original invocation from Main's own side store. */
+  applyHotCrossMove(event: EditorCloseIpcEvent, value: unknown,
+    dispatch: (input: SyncedEditingRequest<'applySyncedHostStructure'>) => SyncedEditingResult<'applySyncedHostStructure'>): ApplyEditorRecoveryCrossMoveResult {
+    const frame = this.frame(event), { sessionId, hostHead } = validateApplyEditorRecoveryCrossMoveInput(value)
+    const host = this.side.read(hostHead), group = this.side.readCurrentCrossMoveGroup(hostHead)
+    if (!group) return { status: 'rejected' }
+    const move = readCanonicalCrossMoveRequest(host.base, host.draft)
+    if (!move) return { status: 'rejected' }
+    const hostId = host.draft.draftSessionId, groupId = group.draft.draftSessionId
+    const prior = this.completedCrossMoves.get(hostId), db = this.store.getUnsafeDatabaseHandle()
+    const committed = () => db.transaction(() => {
+      const [row] = attestEditorRecoveryPendingOwned(db, host)
+      if (row?.status !== 'committed-attested' || !('hosts' in row.result)) return null
+      return readCanonicalCrossMoveRecoveryOwned(db, host, group) ? row.result : null
+    })()
+    if (prior) {
+      this.sameFrame(event, prior)
+      if (prior.sessionId !== sessionId || !hostEqual(prior.hostHead, hostHead)) return { status: 'rejected' }
+      const result = committed()
+      return result ? { status: 'moved', result } : { status: 'rejected' }
+    }
+    const hostOwner = this.live.get(hostId), groupOwner = this.live.get(groupId)
+    if (!hostOwner || !groupOwner || groupOwner.groupSessionId !== sessionId) return { status: 'rejected' }
+    this.sameFrame(event, hostOwner); this.sameFrame(event, groupOwner)
+    const alreadyCommitted = committed()
+    if (!alreadyCommitted) {
+      const admissible = this.store.readSyncedRecoveryGroup(frame, { sessionId, groupId: move.groupId, instance: move.binding }, db => {
+        try {
+          const now = new Date().toISOString(), dependencyIds = move.dependencyDocumentIds
+          const batch = move.kind === 'batch' ? readCanonicalBatchCrossMoveJournal(captureCrossHostBatchJournal(db, move.input, now)) : undefined
+          const linked = move.kind === 'single' && dependencyIds.length
+            ? readCanonicalLinkedCrossMoveJournal(captureCrossHostLinkJournal(db, move.input, now)) : undefined
+          const single = move.kind === 'single' ? linked?.original ?? decodeCrossHostJournal4(captureCrossHostJournal4(db, move.input, now)) : undefined
+          const original = batch?.original ?? single
+          if (!original || !hostEqual(original.crossMove.outsideIncoming, dependencyIds)) return false
+          if (batch && !readCanonicalBatchInitiatingHost(batch.original, host)) return false
+          const v4 = !linked && single
+          const stationary = single ? readCanonicalStationaryInstances(single, move.groupId, move.binding.instanceId) : undefined
+          if ((v4 && !matchesCanonicalV4CrossMoveForest(v4, move.binding.instanceId)) || (single && !stationary)) return false
+          if (linked || batch) {
+            const checkDraft = this.crossMoveDraftCheck(event)
+            const outside = new Set(dependencyIds)
+            if (original.persisted.some(page => outside.has(page.documentId) && !checkDraft(page.documentId, page.content))) return false
+          }
+          if (linked || batch || stationary?.length) {
+            const groups = new Set(original.groups.filter(item => batch || stationary?.length || item.groupId !== move.groupId).map(item => item.groupId))
+            if (groups.size && this.side.someHead(record => record.base.workspaceScope === host.base.workspaceScope
+              && record.base.recoveryEpoch === host.base.recoveryEpoch && record.base.owner.kind === 'group' && groups.has(record.base.owner.groupId)
+              && record.recordId !== group.recordId && !alreadySavedCanonicalRecoveryOwned(db, record))) return false
+          }
+          const target = original.after.find(page => page.documentId === move.targetDocumentId)
+          const leaf = target?.content.blocks.find(block => block.id === move.binding.instanceId)
+          if (leaf?.type !== 'synced-block') return false
+          const parent = target?.content.blocks.find(block => block.id === leaf.parentBlockId)
+          return canCaptureCanonicalCrossMoveGroupOwned(db, host.base, move, group,
+            { depth: leaf.depth, parentBlockId: leaf.parentBlockId, parentType: parent?.type ?? null }, stationary?.map(item => item.position))
+        } catch (error) {
+          if (error instanceof CrossMoveJournalError || error instanceof MoveRefused) return false
+          throw error
+        }
+      })
+      if (!admissible) return { status: 'rejected' }
+      const applied = dispatch({ sessionId, method: 'applySyncedHostStructure', input: move.input })
+      if (applied.status !== 'applied') return { status: 'rejected' }
+    }
+    const result = alreadyCommitted ?? committed()
+    if (!result) return editorRecoveryInvalid('retained cross-host move lacks its exact committed original')
+    this.live.delete(hostId); this.live.delete(groupId)
+    this.completedCrossMoves.set(hostId, { sender: event.sender, frame, sessionId, hostHead })
+    if (this.completedCrossMoves.size > 256) this.completedCrossMoves.delete(this.completedCrossMoves.keys().next().value!)
+    return { status: 'moved', result }
+  }
   /** The actual explicit Save has already used the normal business writer.
    * Only its complete accepted original branch can retire this old cold head. */
   completeGroup(event: EditorCloseIpcEvent, value: unknown): boolean {
@@ -464,10 +677,12 @@ export class EditorRecoveryDraftService {
     this.sameFrame(event, owner)
     const record = this.side.read(owner.expected), state = this.examine(record)
     const producer = this.live.get(record.draft.draftSessionId) ?? this.dormant.get(record.draft.draftSessionId)
-    if (decision === 'discard' && producer?.sender === event.sender && producer.frame === event.senderFrame) {
+    if (decision === 'discard' && (producer?.receivedCrossMove || producer?.sender === event.sender && producer.frame === event.senderFrame)) {
       return editorRecoveryInvalid('a cold discard cannot retire an actual live or dormant editor producer')
     }
-    if (decision === 'restore-draft' && state.mode === 'view-only') return editorRecoveryInvalid('candidate requires explicit review; no current database overwrite or fresh-baseline substitution')
+    if (decision === 'restore-draft' && state.mode === 'view-only' && !state.canonicalSourceAvailable) {
+      return editorRecoveryInvalid('candidate requires explicit review; no current database overwrite or fresh-baseline substitution')
+    }
     this.side.decide(owner.expected, decision)
     if (decision === 'discard') {
       const live = this.live.get(record.draft.draftSessionId)
@@ -486,7 +701,8 @@ export class EditorRecoveryDraftService {
     for (const [id, value] of this.dormant) if (value.sender === sender) this.dormant.delete(id)
     for (const [id, value] of this.cold) if (value.sender === sender) this.cold.delete(id)
     for (const [id, value] of this.openings) if (value.sender === sender) this.openings.delete(id)
+    for (const [id, value] of this.completedCrossMoves) if (value.sender === sender) this.completedCrossMoves.delete(id)
     this.collect()
   }
-  dispose(): void { this.live.clear(); this.dormant.clear(); this.cold.clear(); this.openings.clear() }
+  dispose(): void { this.live.clear(); this.dormant.clear(); this.cold.clear(); this.openings.clear(); this.completedCrossMoves.clear() }
 }

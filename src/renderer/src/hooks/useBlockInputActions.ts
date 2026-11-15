@@ -21,6 +21,8 @@ type UseBlockInputActionsParams = {
   clearBlockSelection: () => void
   detectCodeLanguage: (content: string) => string | undefined | null
   draftBlocks: DocumentBlockDraft[]
+  getDraftBlocks?: () => DocumentBlockDraft[]
+  selectedDocumentId?: string | null
   endBlockDrag: () => void
   getMultiBlockOperationRange: (range: BlockSelectionRange) => BlockSelectionRange
   normalizeCodeLanguage: (language: string | undefined | null) => string | undefined | null
@@ -38,6 +40,8 @@ export function useBlockInputActions({
   clearBlockSelection,
   detectCodeLanguage,
   draftBlocks,
+  getDraftBlocks,
+  selectedDocumentId,
   endBlockDrag,
   getMultiBlockOperationRange,
   normalizeCodeLanguage,
@@ -79,13 +83,20 @@ export function useBlockInputActions({
     updateDraftBlock
   ])
 
-  const handleBlockPaste = useCallback((index: number, pastedText: string, selectionStart: number, selectionEnd: number) => {
+  const handleBlockPaste = useCallback((index: number, pastedText: string, selectionStart: number, selectionEnd: number, clipboardHtml?: string) => {
     const current = draftBlocks[index]
     if (!current) return false
     const activeRange = selectedBlockRange && index >= selectedBlockRange.start && index <= selectedBlockRange.end
       ? getMultiBlockOperationRange(selectedBlockRange) : null
     // Source editors own their newlines. Pasting code must never invoke shortcuts.
     if (!activeRange && ['code', 'math', 'table', 'frontmatter', 'html'].includes(current.type)) return false
+    if (clipboardHtml?.includes('data-knowbook-synced-clipboard') && selectedDocumentId && getDraftBlocks) {
+      void import('../features/synced-blocks/blockClipboard').then(({ pasteSyncedBlocks }) => pasteSyncedBlocks(
+        { blocks: draftBlocks, documentId: selectedDocumentId, getDraftBlocks }, pastedText, clipboardHtml, index, activeRange,
+        () => { handleBlockPaste(index, pastedText, selectionStart, selectionEnd) },
+        [clearBlockSelection, endBlockDrag, setActiveBlockIndex, setActiveCursorPosition, setPendingFocusBlockIndex])).catch(console.error)
+      return true
+    }
     const text = pastedText.replace(/\r\n?/g, '\n')
     if (!activeRange && !text.includes('\n')) return false
     const start = activeRange?.start ?? index
@@ -135,7 +146,7 @@ export function useBlockInputActions({
     setPendingFocusBlockIndex(plan.focusIndex, cursor)
     endBlockDrag()
     return true
-  }, [buildBlockTypePatch, draftBlocks, selectedBlockRange, getMultiBlockOperationRange, normalizeCodeLanguage, detectCodeLanguage,
+  }, [buildBlockTypePatch, draftBlocks, getDraftBlocks, selectedDocumentId, selectedBlockRange, getMultiBlockOperationRange, normalizeCodeLanguage, detectCodeLanguage,
     pushToHistory, clearBlockSelection, setDraftBlocks, setActiveBlockIndex, setActiveCursorPosition,
     setPendingFocusBlockIndex, endBlockDrag])
 

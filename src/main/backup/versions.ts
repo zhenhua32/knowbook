@@ -19,7 +19,7 @@ export function writeSnapshotMetadata(root: string, documentCount: number, snaps
 function readVersion(root: string, id: string, current: boolean): BackupVersion {
   let createdAt = statSync(root).mtime.toISOString(), documentCount: number | null = null
   const v3 = readV3VersionHeader(root)
-  if (v3) return { id: current ? v3.id : id, createdAt, documentCount: v3.documentCount, current, format: 'synced-v3', restorable: false }
+  if (v3) return { id: current ? v3.id : id, createdAt, documentCount: v3.documentCount, current, format: 'synced-v3' }
   try {
     const metadata = JSON.parse(readFileSync(join(root, metadataFile), 'utf8'))
     if (current && typeof metadata.id === 'string' && versionIdPattern.test(metadata.id)) id = metadata.id
@@ -31,7 +31,7 @@ function readVersion(root: string, id: string, current: boolean): BackupVersion 
 
 /** Lightweight display classification only, never a restore/parse capability.
  * V3's closed index cannot accept the legacy snapshot.json sidecar. */
-function readV3VersionHeader(root: string): { id: string; documentCount: number } | null {
+export function readV3VersionHeader(root: string): { id: string; documentCount: number } | null {
   let declaredV3 = false
   try {
   const folders = [join(root, '__knowbook'), join(root, '__knowbook', 'databases')]

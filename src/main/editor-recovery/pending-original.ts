@@ -22,7 +22,7 @@ type Attestation = { clientOperationId: string; captureRequestHash: string; writ
       submittedWorking: EditorRecoveryWorking; submittedBinding: 'request-final' | 'source-replay-required' }
 )
 
-function request(pending: EditorRecoveryPending) {
+export function readEditorRecoveryPendingRequest(pending: EditorRecoveryPending) {
   const raw = parseStrictJson(pending.inputJson, { maxBytes: Math.max(1, Buffer.byteLength(pending.inputJson)), maxDepth: 32 })
   // This is the exact PUBLIC invocation capture hash. It is deliberately not
   // compared to an internal writer's differently domain-separated SQL hash.
@@ -37,7 +37,7 @@ function kind(row: Row): string | null {
   const packet = hostJson(row.result_json)
   return packet && typeof packet === 'object' && !Array.isArray(packet) && 'kind' in packet && typeof packet.kind === 'string' ? packet.kind : null
 }
-function businessHash(pending: EditorRecoveryPending, input: ReturnType<typeof request>, envelopeKind: string | null): string {
+function businessHash(pending: EditorRecoveryPending, input: ReturnType<typeof readEditorRecoveryPendingRequest>, envelopeKind: string | null): string {
   if (envelopeKind === HEADING_TITLE3_OPERATION_KIND || envelopeKind === TITLE2_OPERATION_KIND) {
     if (pending.method !== 'applySyncedHostStructure' && pending.method !== 'restoreSyncedHostOperation'
       || pending.method === 'applySyncedHostStructure' && (!('mode' in input) || input.mode !== 'host-final')) return editorRecoveryInvalid('pending method does not belong to the stored title namespace')
@@ -57,7 +57,7 @@ export function attestEditorRecoveryPendingOwned(db: Database.Database, value: u
   if (!db.open || !db.inTransaction || db.pragma('main.user_version', { simple: true }) !== 27) return editorRecoveryInvalid('pending attestation requires actual owned schema27 SQL')
   const record = validateEditorRecoveryRecord(value), owner = record.base.owner
   return record.draft.pending.map(pending => {
-    const input = request(pending), base = { clientOperationId: pending.clientOperationId, captureRequestHash: pending.requestHash, writePermit: false as const, sourceReplayComplete: false as const }
+    const input = readEditorRecoveryPendingRequest(pending), base = { clientOperationId: pending.clientOperationId, captureRequestHash: pending.requestHash, writePermit: false as const, sourceReplayComplete: false as const }
     const groupMethod = pending.method === 'updateSyncedBlockGroup' || pending.method === 'restoreSyncedGroupOperation'
     if (groupMethod) {
       if (owner.kind !== 'group' || !('groupId' in input) || input.groupId !== owner.groupId || pending.submittedWorking.kind !== 'group') return editorRecoveryInvalid('pending group does not belong to the sealed owner')

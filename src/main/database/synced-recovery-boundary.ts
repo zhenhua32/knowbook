@@ -17,7 +17,7 @@ import { assertSyncedRecoveryBoundaryRecords } from './synced-recovery-boundary-
 import { RECOVERY_BOUNDARY_CHANNEL, recoveryBoundaryInvalid, recoveryBoundaryKey, recoveryBoundaryJson,
   recoveryBoundaryHash, recoveryEpochMarkerId, recoveryEpochRequestHash, recoveryEpochTargetFingerprint,
   recoveryOperationRowHash, validateSyncedRecoveryHistoryBoundary, validateSyncedRecoveryEpochReceipt,
-  type SyncedRecoveryGroupHistoryRow, type SyncedRecoveryHistoryBoundary, type SyncedRecoveryOperationRow,
+  type SyncedRecoveryGroupHistoryRow, type SyncedRecoveryOperationRow,
   type SyncedRecoveryEpochReceipt } from './synced-recovery-boundary-model'
 
 /** Host-fixed allocation, not a public restore request or a knowledge proof.
@@ -127,6 +127,7 @@ export function advanceSyncedRecoveryEpoch(db: Database.Database, input: SyncedR
         allocated.add(guard.revision); allocated.add(guard.topologyRevision); allocated.add(guard.historyCursor)
       }
       for (const instance of prior.instances) { allocated.add(instance.beforeBindingVersion); allocated.add(instance.afterBindingVersion) }
+      if (prior.version === 2) for (const instance of prior.instanceChanges) allocated.add(instance.before.bindingVersion)
     }
     const fresh = (): string => { let value: string; do { value = randomUUID() } while (allocated.has(value)); allocated.add(value); return value }
     const mappings = exactRows<Mapping>(db, 'synced_host_history_documents', ['history_id', 'document_id', 'position'], ['history_id', 'document_id'])
@@ -144,7 +145,7 @@ export function advanceSyncedRecoveryEpoch(db: Database.Database, input: SyncedR
     for (const row of instances) allocated.add(row.binding_version)
     const operations = exactRows<SyncedRecoveryOperationRow>(db, 'synced_operations', ['client_operation_id', 'request_hash', 'result_json', 'created_at'])
     const pins = exactRows<{ group_id: string; kind: string; pin_id: string; created_at: string }>(db, 'synced_group_pins', ['group_id', 'kind', 'pin_id', 'created_at'])
-    const boundary: SyncedRecoveryHistoryBoundary = validateSyncedRecoveryHistoryBoundary({ kind: 'synced-recovery-history-boundary', version: 1,
+    const boundary = validateSyncedRecoveryHistoryBoundary({ kind: 'synced-recovery-history-boundary', version: 1,
       operationId: input.operationId, workspaceScope: workspace.workspace_scope, beforeEpoch: workspace.recovery_epoch,
       afterEpoch: input.recoveryEpoch, documentBoundary: input.documentBoundary, acceptedAt: input.acceptedAt,
       documents: documents.map(row => ({ documentId: row.id, beforeUpdatedAt: row.updated_at, afterUpdatedAt: input.documentBoundary })),
@@ -167,6 +168,7 @@ export function advanceSyncedRecoveryEpoch(db: Database.Database, input: SyncedR
         .sort((a, b) => publicationCompare(a.operationId, b.operationId)),
       retainedPins: pins.map(row => ({ groupId: row.group_id, kind: row.kind, pinId: row.pin_id, createdAt: row.created_at }))
         .sort((a, b) => publicationCompare(publicationJson([a.groupId, a.kind, a.pinId]), publicationJson([b.groupId, b.kind, b.pinId]))) })
+    if (boundary.version !== 1) return recoveryBoundaryInvalid('原位 epoch 旋转只能写入 v1 边界')
     const receipt = validateSyncedRecoveryEpochReceipt({ kind: 'synced-recovery-epoch', version: 1, operationId: input.operationId,
       workspaceScope: boundary.workspaceScope, beforeEpoch: boundary.beforeEpoch, afterEpoch: boundary.afterEpoch,
       boundaryHash: recoveryBoundaryHash(boundary), acceptedAt: boundary.acceptedAt })

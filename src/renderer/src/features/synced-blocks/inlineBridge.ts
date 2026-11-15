@@ -1,9 +1,10 @@
 import type { DocumentHostAdoptContext, DocumentHostHistoryContext, DocumentLocalDraftContext } from '../../utils/documentHostHistory'
-import type { SyncedStructureApplied } from '@shared/synced-blocks'
+import type { SyncedNewRefSource, SyncedStructureApplied } from '@shared/synced-blocks'
 import type { SyncedHostSourceCurrent } from './SyncedHostSourceDialog'
 import type { DocumentBlockDraft } from '@shared/contracts'
 import type { SyncedHostHistoryTransition } from './hostHistoryTypes'
 import type { PendingBlockNavigationTarget } from '../../hooks/useDocumentNavigationState'
+import type { EditorHistoryBookmark } from '../../utils/editorHistoryFocus'
 
 type HeadingCallbacks = {
   onPendingTargetResolved: (index: number, id: string, headingIndex?: number) => void
@@ -11,12 +12,22 @@ type HeadingCallbacks = {
 }
 export type CanonicalHeadingAction = (target: PendingBlockNavigationTarget, blocks: readonly DocumentBlockDraft[], callbacks: HeadingCallbacks,
   clear: () => void) => (() => void) | undefined
+export interface CanonicalHostEditOptions {
+  preserveSameParentDraft?: true
+  reason?: 'selection-edit' | 'drop' | 'paste'
+  newRefSources?: readonly SyncedNewRefSource[]
+  opener: HTMLElement | null
+  shouldContinue: () => boolean
+  onAccepted?: () => void
+  afterBookmark?: EditorHistoryBookmark
+}
+type CanonicalHostEdit = (before: readonly DocumentBlockDraft[], after: readonly DocumentBlockDraft[], options: CanonicalHostEditOptions) => Promise<boolean>
 
 // Thin lazy-chunk bridge only. These callbacks block local transitions; they
 // never create a Main session, a binding, a file claim or mutation permission.
 export interface CanonicalInlineFlushOptions {
   shouldContinue?: () => boolean
-  purpose?: 'document-navigation'
+  purpose?: 'document-navigation' | 'move'
 }
 interface InlineTransitionPort {
   flush: (options?: CanonicalInlineFlushOptions) => Promise<boolean>
@@ -27,9 +38,14 @@ interface InlineTransitionPort {
   locked: () => boolean
   restoreHistory?: (transition: SyncedHostHistoryTransition, direction: 'undo' | 'redo') => Promise<boolean>
   ownsHistory?: (transition: SyncedHostHistoryTransition) => boolean
-  adoptHostResult?: (context: DocumentHostAdoptContext, before: SyncedHostSourceCurrent, result: SyncedStructureApplied, history: boolean) => boolean
+  adoptHostResult?: (context: DocumentHostAdoptContext, before: SyncedHostSourceCurrent, result: SyncedStructureApplied, history: boolean,
+    afterBookmark?: EditorHistoryBookmark) => boolean
   runHostHistory?: (context: DocumentHostHistoryContext) => Promise<boolean>
   openHeading?: CanonicalHeadingAction
+  openHostEdit?: CanonicalHostEdit
+  deleteHostBlocks?: (before: DocumentBlockDraft[], after: DocumentBlockDraft[], index: number,
+    current: () => boolean, accepted: (index: number) => void) => void
+  clipboardScope?: (hostId: string) => { workspaceScope: string; recoveryEpoch: string } | null
   adoptLocalDraft?: (context: DocumentLocalDraftContext, before: SyncedHostSourceCurrent,
     after: { documentId?: string; title: string; summary: string; blocks: DocumentBlockDraft[] }, recovery: boolean) => boolean
 }
@@ -65,9 +81,13 @@ export const restoreCanonicalHostHistory = (transition: SyncedHostHistoryTransit
   asynchronousEdits.size ? Promise.resolve(false) : port?.restoreHistory?.(transition, direction) ?? Promise.resolve(false)
 /** A local synchronous adoption route only. No provider means no adoption. */
 export const adoptCanonicalHostResult = (context: DocumentHostAdoptContext, before: SyncedHostSourceCurrent,
-  result: SyncedStructureApplied, history: boolean): boolean => port?.adoptHostResult?.(context, before, result, history) ?? false
+  result: SyncedStructureApplied, history: boolean, afterBookmark?: EditorHistoryBookmark): boolean =>
+  port?.adoptHostResult?.(context, before, result, history, afterBookmark) ?? false
 export const getCanonicalHostHistoryAction = () => port?.runHostHistory ?? null
 export const getCanonicalHeadingAction = () => port?.openHeading
+export const openCanonicalHostEdit: CanonicalHostEdit = (...input) => port?.openHostEdit?.(...input) ?? Promise.resolve(false)
+export const deleteCanonicalHostBlocks: NonNullable<InlineTransitionPort['deleteHostBlocks']> = (...input) => port?.deleteHostBlocks?.(...input)
+export const readSyncedClipboardScope = (hostId: string) => port?.clipboardScope?.(hostId) ?? null
 export const adoptCanonicalLocalDraft = (context: DocumentLocalDraftContext, before: SyncedHostSourceCurrent,
   after: { documentId?: string; title: string; summary: string; blocks: DocumentBlockDraft[] }, recovery: boolean): boolean => port?.adoptLocalDraft?.(context, before, after, recovery) ?? false
 export const hasCanonicalInlinePendingChanges = () => asynchronousEdits.size > 0 || (port?.pending() ?? false)
@@ -81,11 +101,13 @@ export async function flushCanonicalInlinePendingChanges(options?: CanonicalInli
 }
 const refs = (blocks: readonly DocumentBlockDraft[]) => blocks.filter(block => block.type === 'synced-block')
   .map(block => [block.id ?? null, block.content, block.parentBlockId ?? null, block.depth])
+export const changesCanonicalHostReferences = (before: readonly DocumentBlockDraft[], after: readonly DocumentBlockDraft[]) =>
+  JSON.stringify(refs(before)) !== JSON.stringify(refs(after))
 /** Keep a dirty canonical mount alive until its own queue is drained. Text in
  * ordinary host rows remains independent; canonical children never enter here. */
 export function canApplyCanonicalHostDraftChange(before: readonly DocumentBlockDraft[], after: readonly DocumentBlockDraft[]): boolean {
   if (!port) return true
-  if (port.locked() || port.pending() && JSON.stringify(refs(before)) !== JSON.stringify(refs(after))) {
+  if (port.locked() || port.pending() && changesCanonicalHostReferences(before, after)) {
     port.notifyBlocked(); return false
   }
   return true

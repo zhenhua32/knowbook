@@ -1,4 +1,5 @@
-import { tryReadCertifiedCapsule2SourceInputsWithWorking5, tryAssertCertifiedCapsule2Working5OriginalBytes5 } from './restore-knowledge-capsule2-source-certificate'
+import { isWorkingAssetArchive5 } from './restore-knowledge-capsule2-asset-archive'
+import { assertCertifiedCapsule2VerificationBytes5, tryReadCertifiedCapsule2SourceInputsWithWorking5, tryAssertCertifiedCapsule2Working5OriginalBytes5 } from './restore-knowledge-capsule2-source-certificate'
 import { parseCapsule2CompleteAssetArchiveManifest } from './restore-knowledge-capsule2-asset-archive'
 import type { TransportWorkingTexts5 } from './restore-knowledge-capsule5-transport-model'
 import { capsule2AssetArchiveOriginalBytes3 } from './restore-knowledge-capsule2-asset-archive'
@@ -6,7 +7,7 @@ import { join, relative, sep } from 'node:path'
 import { capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { captureCertifiedCapsuleNoPriorSourceInputs, reopenCertifiedDurableSqlCapsule,
   type CertifiedDurableSqlCapsule } from './restore-knowledge-capsule-read'
-import { tryReadCertifiedCapsule2SourceInputs, captureReopenedCertifiedCapsule2Source,
+import { tryReadCertifiedCapsule2SourceInputs, captureReopenedCertifiedCapsule2SourceWithWorking5,
   type CertifiedCapsule2NoPriorSource } from './restore-knowledge-capsule2-source-certificate'
 import { rawPriorCoverageRequirementsHash, validateCoverageCapsuleReference, validateCoverageRootReference,
   type CoverageInputBinding } from './restore-knowledge-coverage-model'
@@ -22,7 +23,9 @@ import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_READER } from './restore-knowledg
 type Source = CertifiedDurableSqlCapsule | CertifiedCapsule2NoPriorSource
 export interface ActualFirstRequiredSqlDag { readonly kind: 'actual-first-mixed-required-sql-dag' }
 type Input = Awaited<ReturnType<typeof readInput>>
+type ContentInput = Awaited<ReturnType<typeof readActualNoPriorOriginalContentAndWorking5>>
 type Saved = { profileRoot: string; file: RequiredSqlDagNodeFile; inputs: readonly [Input,Input] }
+type ReopenedWorkingInput = { certificate: CertifiedCapsule2NoPriorSource; content: ContentInput }
 const dags = new WeakMap<ActualFirstRequiredSqlDag,Saved>()
 function fixedPath(profile: string, path: string, collection: string, leaf: string, operationId: string, capsuleId: string) {
   const parts = relative(profile,path).split(sep)
@@ -112,26 +115,30 @@ async function reopenOwnedFirstRequiredSqlDag(input: ReopenDag, captureContent: 
   const file=await readRequiredSqlDagNodeFile(profileRoot,ref),node=file.node
   if(node.parents.length||node.origins.source.kind!=='no-prior-coverage-references'||node.origins.current.kind!=='no-prior-coverage-references')
     return bad('完整非首代prior根仍须实际origin/catalog owner，不降empty')
-  const reopen=async(binding:CoverageInputBinding):Promise<Input>=>{
+  const reopen=async(binding:CoverageInputBinding):Promise<{ input: Input; workingContent?: ReopenedWorkingInput }>=>{
     const c=binding.capsule
     if(c.namespace.kind!=='native')return bad('不将imported域当成本机同UUID原件')
     if(c.readerVersion==='knowbook-durable-sql-v1')
-      return readInput(profileRoot, await reopenCertifiedDurableSqlCapsule({profileRoot,operationId:c.operationId,capsuleId:c.capsuleId,expectedManifestHash:c.manifestHash}))
+      return { input: await readInput(profileRoot, await reopenCertifiedDurableSqlCapsule({profileRoot,operationId:c.operationId,capsuleId:c.capsuleId,expectedManifestHash:c.manifestHash})) }
     if(c.readerVersion===CAPSULE2_READER) {
-      const captured = await captureReopenedCertifiedCapsule2Source({profileRoot,operationId:c.operationId,capsuleId:c.capsuleId,expectedCertificateHash:c.manifestHash})
-      return capsule2Input(profileRoot, captured.source, captured)
+      const captured = await captureReopenedCertifiedCapsule2SourceWithWorking5({profileRoot,operationId:c.operationId,capsuleId:c.capsuleId,expectedCertificateHash:c.manifestHash})
+      const input = capsule2Input(profileRoot, captured.source, captured)
+      const workingContent = captureContent && captured.working && isWorkingAssetArchive5(captured.value.assetArchive)
+        ? { certificate: captured.source, content: { input, packet: captured.value, working: captured.working } } : undefined
+      return { input, workingContent }
     }
     return bad('未知实际capsule reader，不降级或猜格式')
   }
   const results=await Promise.allSettled([reopen(node.source),reopen(node.current)])
   if(results[0].status==='rejected')throw results[0].reason
   if(results[1].status==='rejected')throw results[1].reason
-  const inputs=[results[0].value,results[1].value] as const
+  const reopened = [results[0].value, results[1].value] as const
+  const inputs=[reopened[0].input,reopened[1].input] as const
   if(capsuleJson(nodeFor(inputs))!==capsuleJson(node))return bad('真实两侧重建不等于完整持久node')
   totals(inputs)
   const entry:Saved={profileRoot,file,inputs}
   if (captureContent) {
-    const packets = await freshWithWorking5(entry)
+    const packets = await freshWithWorking5(entry, [reopened[0].workingContent, reopened[1].workingContent])
     return { dag: mint(entry), packets }
   }
   await fresh(entry)
@@ -188,7 +195,7 @@ export async function readActualFirstMixedOriginSource(handle: ActualFirstRequir
     const item=captured.find(item=>requiredDagCapsuleLocator(item.input.binding)===requiredDagCapsuleLocator(entry.file.node[name]))!
     const input=item.input
     const originalSide=name==='source'?source:current
-    if(originalSide.kind!=='complete-capsule2'||parseCapsule2CompleteAssetArchiveManifest(originalSide.assetManifestText,input.binding.capsule.capsuleId,input.knowledge.assetArchiveHash??bad('完整来源缺archive hash')).version!==5)continue
+    if(originalSide.kind!=='complete-capsule2'||!isWorkingAssetArchive5(parseCapsule2CompleteAssetArchiveManifest(originalSide.assetManifestText,input.binding.capsule.capsuleId,input.knowledge.assetArchiveHash??bad('完整来源缺archive hash'))))continue
     const working=item.working
     if(!working)return bad('archive5缺同次完整原件读取的Working原件')
     if(working)workingTexts[name]=capsuleJson(working.manifest)+'\n'
@@ -256,10 +263,16 @@ export async function readActualNoPriorOriginalContentAndWorking5(profileRoot: s
   if (captured) return { input: capsule2Input(profile, source, captured), packet: captured.value, working: captured.working }
   return { input: await readInput(profile, source), packet: null, working: undefined }
 }
-async function freshWithWorking5(entry: Saved) {
+async function freshWithWorking5(entry: Saved, reopened?: readonly [ReopenedWorkingInput | undefined, ReopenedWorkingInput | undefined]) {
   const first=await readRequiredSqlDagNodeFile(entry.profileRoot,entry.file.ref)
   if(capsuleJson(first.node)!==capsuleJson(entry.file.node))return bad('实际node被替换')
-  const captured=await Promise.allSettled(entry.inputs.map(input=>readActualNoPriorOriginalContentAndWorking5(entry.profileRoot,input.source)))
+  const captured=await Promise.allSettled(entry.inputs.map(async (input, index) => {
+    const initial = reopened?.[index]
+    if (!initial) return readActualNoPriorOriginalContentAndWorking5(entry.profileRoot,input.source)
+    if (initial.certificate !== input.source) return bad('同次冷重开Working原件身份变化')
+    await assertCertifiedCapsule2VerificationBytes5(initial.certificate)
+    return initial.content
+  }))
   if(captured[0].status==='rejected')throw captured[0].reason
   if(captured[1].status==='rejected')throw captured[1].reason
   const joined=[captured[0].value,captured[1].value] as const
@@ -267,6 +280,12 @@ async function freshWithWorking5(entry: Saved) {
   if(capsuleJson(inputs.map(commitment))!==capsuleJson(entry.inputs.map(commitment))
     || capsuleJson(nodeFor(inputs))!==capsuleJson(entry.file.node))return bad('完整实际两侧原件/要求/K/附件变化')
   totals(inputs)
+  // The complete Working packet was captured inside this reopen. Bracket the
+  // other role's real read with the same owner's full original-byte checks.
+  if (reopened?.some(Boolean)) {
+    const tails = await Promise.allSettled(reopened.map(initial => initial && assertCertifiedCapsule2VerificationBytes5(initial.certificate)))
+    for (const result of tails) if (result.status === 'rejected') throw result.reason
+  }
   const last=await readRequiredSqlDagNodeFile(entry.profileRoot,entry.file.ref)
   if(capsuleJson(last.node)!==capsuleJson(first.node))return bad('重读原件期间node变化')
   return joined

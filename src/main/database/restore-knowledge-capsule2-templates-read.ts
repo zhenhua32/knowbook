@@ -26,7 +26,7 @@ export function assertRawCapsule2TemplatesOwned(db: Database.Database): void {
   if (typeof measured[0] !== 'bigint' || typeof measured[1] !== 'bigint' || measured[0] < 0n || measured[1] < 0n
     || measured[0] > BigInt(CAPSULE2_RAW_MAX_ROWS) || measured[1] > BigInt(CAPSULE2_RAW_MAX_VALUE_BYTES)) return bad('完整来源超raw准备预算或预算无效，不截断')
   const ids = new Set<string>()
-  for (const row of db.prepare('SELECT * FROM document_templates ORDER BY _rowid_').all() as Row[]) {
+  for (const row of db.prepare('SELECT * FROM document_templates ORDER BY _rowid_').iterate() as IterableIterator<Row>) {
     const key = text(row.id, 200), name = text(row.name, 200), description = text(row.description, 2000)
     if (!isSyncedBlockId(key) || ids.has(key)) return bad('原模板身份缺失/重复')
     ids.add(key)

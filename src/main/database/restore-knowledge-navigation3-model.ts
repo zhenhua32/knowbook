@@ -1,3 +1,4 @@
+import Database from 'better-sqlite3'
 import type { SyncedLinkBinding, SyncedStableBlockDraft } from '../../shared/synced-blocks'
 import { expandSyncedGraphDocument, validateSyncedWorkspaceGraph } from '../../shared/syncedBlockGraph'
 import { parseSyncedBlockPayload, SYNCED_MAX_BLOCKS } from '../../shared/syncedBlockValidation'
@@ -5,8 +6,8 @@ import { collectDocumentMarkdownLinks, getMarkdownHeadingTargets } from '../../s
 import { parseLocalMarkdownUrl, resolveMarkdownDocumentPath } from '../../shared/markdownLinks'
 import { parseWikiReference, resolveWikiDocument, wikiDocumentPaths } from '../../shared/markdownWiki'
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
-import { CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-model'
-import { graph3Conflict, graph3Key, graph3Rows, type Graph3Inputs } from './restore-knowledge-graph3-data'
+import { CAPSULE2_RAW_MAX_JSON_BYTES, type Capsule2RawContent, type Capsule2RawSqlRow } from './restore-knowledge-capsule2-raw-model'
+import { graph3Conflict, graph3Key, graph3Value, type Graph3Inputs } from './restore-knowledge-graph3-data'
 import { captureSyncedCreateSourceFacts } from './synced-host-create-plan'
 
 type SourceLocation = { table: 'blocks' | 'synced_group_blocks' | 'documents'; sourceRowId: string; column: 'content' | 'summary';
@@ -14,6 +15,7 @@ type SourceLocation = { table: 'blocks' | 'synced_group_blocks' | 'documents'; s
   blockIdentity: IdentityReference | null; instanceIdentity: IdentityReference | null }
 type IdentityReference = { id: string; birth: string; assignmentKey: string | null; targetId: string; ownerKind: 'document' | 'group' | null; ownerId: string | null }
 type Heading = ReturnType<typeof getMarkdownHeadingTargets>[number] & { location: SourceLocation | null }
+type Side = 'source' | 'current'
 type Route = { table: 'document_block_routes'; sourceRowId: string; path: string; blockId: string }
 type Target =
   | { kind: 'document'; document: IdentityReference }
@@ -33,22 +35,65 @@ class AmbiguousLookup extends Error {
   constructor(readonly reason: string, readonly path: string, readonly candidates: IdentityReference[]) { super(reason) }
 }
 
+function originalTable(raw: Capsule2RawContent, name: string) {
+  return raw.tables.find(table => table.name === name) ?? graph3Conflict('missing-source-table', name)
+}
+
+function originalValue(raw: Capsule2RawContent, row: Capsule2RawSqlRow, column: number) {
+  return column < 0 ? undefined : graph3Value(row.cells[column], raw.encoding)
+}
+
+function indexOriginalIdentities(raw: Capsule2RawContent, name: 'documents' | 'blocks' | 'synced_group_blocks') {
+  const table = originalTable(raw, name)
+  const idColumn = table.columns.indexOf('id'), birthColumn = table.columns.indexOf('created_at')
+  const ownerColumn = table.columns.indexOf(name === 'blocks' ? 'document_id' : 'group_id')
+  const rows = new Map<string, Capsule2RawSqlRow>()
+  for (const row of table.rows) {
+    const id = text(originalValue(raw, row, idColumn))
+    if (rows.has(id)) return graph3Conflict('navigation-duplicate-original-identity', { name, id })
+    rows.set(id, row)
+  }
+  return { rows, birthColumn, ownerColumn }
+}
+
+function indexOriginalRoutes(db: Database.Database, raw: Capsule2RawContent) {
+  const table = originalTable(raw, 'document_block_routes')
+  const pathColumn = table.columns.indexOf('document_path'), blockColumn = table.columns.indexOf('block_id')
+  db.pragma('temp_store=FILE')
+  if (db.pragma('temp_store', { simple: true }) !== 1) return graph3Conflict('navigation-original-route-index-unavailable', null)
+  db.exec(`CREATE TEMP TABLE original_routes (
+    ordinal INTEGER PRIMARY KEY, path BLOB NOT NULL, block_id BLOB NOT NULL, original_rowid TEXT NOT NULL);
+    CREATE INDEX temp.original_route_key ON original_routes(path,block_id,ordinal);`)
+  db.pragma('temp.cache_size=-2048')
+  // Preserve the previous JS spelling comparison, including case, NUL and
+  // every UTF-16 code unit. A SQLite TEXT collation is not a source identity.
+  const routeKey = (value: string) => Buffer.from(value, 'utf16le')
+  const insert = db.prepare('INSERT INTO original_routes(path,block_id,original_rowid) VALUES (?,?,?)')
+  db.transaction(() => {
+    for (const row of table.rows)
+      insert.run(routeKey(text(originalValue(raw, row, pathColumn))), routeKey(text(originalValue(raw, row, blockColumn))), row.sourceRowId)
+  })()
+  const read = db.prepare('SELECT original_rowid FROM original_routes WHERE path=? AND block_id=? ORDER BY ordinal LIMIT 2').pluck()
+  return {
+    has: (path: string, id: string) => read.get(routeKey(path), routeKey(id)) !== undefined,
+    find: (path: string, id: string) => read.all(routeKey(path), routeKey(id)) as string[]
+  }
+}
+
+function deriveSideNavigationRewriteInputs3(data: Graph3Inputs, side: Side) {
+  const routes = new Database(':memory:')
+  try { return deriveSideNavigationWithRoutes3(data, side, routes) }
+  finally { routes.close() }
+}
+
 /** Fixed source-side rewrite inputs, before final paths/current retention exist.
  * Actual physical births authorize ordinary navigation observations only.
  * A canonical destination keeps its captured historical binding; resolving its
  * spelling in today's host would replace its provenance. */
-function deriveSideNavigationRewriteInputs3(data: Graph3Inputs, side: 'source' | 'current') {
+function deriveSideNavigationWithRoutes3(data: Graph3Inputs, side: Side, routeDb: Database.Database) {
   const source = data.inputs[side].source, physical = source.physical, raw = source.sourceContent
-  const rowIndex = (name: string, column: string) => {
-    const rows = new Map<string, ReturnType<typeof graph3Rows>[number]>()
-    for (const row of graph3Rows(raw, name)) {
-      const id = text(row.value[column])
-      if (rows.has(id)) return graph3Conflict('navigation-duplicate-original-identity', { name, id })
-      rows.set(id, row)
-    }
-    return rows
-  }
-  const documentRows = rowIndex('documents', 'id'), blockRows = rowIndex('blocks', 'id'), canonicalRows = rowIndex('synced_group_blocks', 'id')
+  const documentRows = indexOriginalIdentities(raw, 'documents'), blockRows = indexOriginalIdentities(raw, 'blocks')
+  const canonicalRows = indexOriginalIdentities(raw, 'synced_group_blocks')
   const documents = new Map(physical.documents.map(document => [document.documentId, document]))
   const assignments = new Map<string, typeof data.value.assignments>()
   for (const assignment of data.value.assignments) {
@@ -56,10 +101,11 @@ function deriveSideNavigationRewriteInputs3(data: Graph3Inputs, side: 'source' |
     rows.push(assignment); assignments.set(key, rows)
   }
   function identity(kind: 'document' | 'block', id: string): IdentityReference {
-    const row = (kind === 'document' ? documentRows : blockRows.has(id) ? blockRows : canonicalRows).get(id)
+    const index = kind === 'document' ? documentRows : blockRows.rows.has(id) ? blockRows : canonicalRows
+    const row = index.rows.get(id)
     if (!row) return graph3Conflict('navigation-missing-physical-row', { kind, id })
-    const birth = text(row.value.created_at), ownerKind = kind === 'document' ? null : blockRows.has(id) ? 'document' : 'group'
-    const ownerId = ownerKind === null ? null : text(row.value[ownerKind === 'document' ? 'document_id' : 'group_id'])
+    const birth = text(originalValue(raw, row, index.birthColumn)), ownerKind = kind === 'document' ? null : index === blockRows ? 'document' : 'group'
+    const ownerId = ownerKind === null ? null : text(originalValue(raw, row, index.ownerColumn))
     // Current is already in the destination namespace. This is an actual
     // physical observation, not a fabricated source allocation or write grant.
     if (side === 'current') return { id, birth, assignmentKey: null, targetId: id, ownerKind, ownerId }
@@ -81,29 +127,26 @@ function deriveSideNavigationRewriteInputs3(data: Graph3Inputs, side: 'source' |
     if (candidates.length > 1) throw new AmbiguousLookup('ambiguous-path', path, candidates.map(item => docRef(item.documentId)))
     return candidates[0]
   }
-  const routeIndex = new Map<string, Route[]>()
-  for (const row of graph3Rows(raw, 'document_block_routes')) {
-    const path = text(row.value.document_path), blockId = text(row.value.block_id), key = graph3Key(path, blockId)
-    const routes = routeIndex.get(key) ?? []
-    routes.push({ table: 'document_block_routes', sourceRowId: row.original.sourceRowId, path, blockId }); routeIndex.set(key, routes)
-  }
+  const routeIndex = indexOriginalRoutes(routeDb, raw)
   function blockAt(path: string, fragment: string, localDocumentId?: string): Extract<Target, { kind: 'block' }> | null {
-    const id = fragmentId(fragment), block = blockRows.get(id)
+    const id = fragmentId(fragment), block = blockRows.rows.get(id)
     if (!block) return null // Never turn a global canonical/retained UUID into a host route.
-    const documentId = text(block.value.document_id), owner = documents.get(documentId)
+    const documentId = text(originalValue(raw, block, blockRows.ownerColumn)), owner = documents.get(documentId)
     if (!owner) return graph3Conflict('navigation-block-owner-outside-source', id)
-    const routes = routeIndex.get(graph3Key(path, id)) ?? []
-    if (routes.length > 1) return graph3Conflict('navigation-duplicate-exact-route', { path, id })
-    if (localDocumentId !== undefined && owner.documentId !== localDocumentId && !routes.length) return null
-    if (owner.path !== path && !routes.length) return null
-    return { kind: 'block', document: docRef(documentId), block: identity('block', id), route: routes[0] ?? null }
+    const [sourceRowId, duplicate] = routeIndex.find(path, id)
+    if (duplicate !== undefined) return graph3Conflict('navigation-duplicate-exact-route', { path, id })
+    if (localDocumentId !== undefined && owner.documentId !== localDocumentId && sourceRowId === undefined) return null
+    if (owner.path !== path && sourceRowId === undefined) return null
+    const route: Route | null = sourceRowId === undefined ? null : { table: 'document_block_routes', sourceRowId, path, blockId: id }
+    return { kind: 'block', document: docRef(documentId), block: identity('block', id), route }
   }
   function bareWikiBlock(documentId: string, path: string, token: string): Extract<Target, { kind: 'block' }> | null {
     // A bare token is an opaque exact ID, not a caret fragment. Only the
     // historical route branch uses getBlockReference's caret normalization.
-    const row = blockRows.get(token)
-    if (row?.value.document_id === documentId) return { kind: 'block', document: docRef(documentId), block: identity('block', token), route: null }
-    return routeIndex.has(graph3Key(path, fragmentId(token))) ? blockAt(path, token) : null
+    const row = blockRows.rows.get(token)
+    if (row && originalValue(raw, row, blockRows.ownerColumn) === documentId)
+      return { kind: 'block', document: docRef(documentId), block: identity('block', token), route: null }
+    return routeIndex.has(path, fragmentId(token)) ? blockAt(path, token) : null
   }
   const snapshots = physical.groups.flatMap(group => group.snapshot ? [group.snapshot] : [])
   const groupKnowledge = new Map(data.inputs[side].knowledge.groups.map(group => [group.tuple.groupId, group]))
@@ -154,11 +197,11 @@ function deriveSideNavigationRewriteInputs3(data: Graph3Inputs, side: 'source' |
     let blockBytes = 0
     for (const item of expandSyncedGraphDocument(view, document.documentId)) {
       const groupId = item.instanceId === null ? null : instanceGroups.get(item.instanceId) ?? graph3Conflict('navigation-missing-instance', item.instanceId)
-      const row = (groupId === null ? blockRows : canonicalRows).get(item.block.id)
+      const row = (groupId === null ? blockRows : canonicalRows).rows.get(item.block.id)
       if (!row) return graph3Conflict('navigation-missing-expanded-row', item.block.id)
       const blockIdentity = identity('block', item.block.id)
       const id = graph3Key(item.instanceId, item.block.id)
-      locations.set(id, { table: groupId === null ? 'blocks' : 'synced_group_blocks', sourceRowId: row.original.sourceRowId,
+      locations.set(id, { table: groupId === null ? 'blocks' : 'synced_group_blocks', sourceRowId: row.sourceRowId,
         column: 'content', blockId: item.block.id, groupId, instanceId: item.instanceId,
         blockIdentity, instanceIdentity: item.instanceId === null ? null : identity('block', item.instanceId) })
       const { createdAt: _birth, ...syntax } = { ...item.block, createdAt: null }
@@ -242,7 +285,7 @@ function deriveSideNavigationRewriteInputs3(data: Graph3Inputs, side: 'source' |
     const blocks: SyncedStableBlockDraft[] = field === 'body' ? view.blocks : [{ id: summaryId, parentBlockId: null,
       type: 'paragraph', content: document.summary, checked: false, depth: 0 }]
     const locations = field === 'body' ? view.locations : new Map<string, SourceLocation>([[summaryId, { table: 'documents',
-      sourceRowId: documentRows.get(document.documentId)!.original.sourceRowId, column: 'summary', blockId: null, groupId: null, instanceId: null,
+      sourceRowId: documentRows.rows.get(document.documentId)!.sourceRowId, column: 'summary', blockId: null, groupId: null, instanceId: null,
       blockIdentity: null, instanceIdentity: null }]])
     const facts = captureSyncedCreateSourceFacts(blocks)
     // Match grammar by the exact physical range, never by URL. The strict facts

@@ -9,12 +9,15 @@ import { SyncedStructureCommands } from '../src/renderer/src/features/synced-blo
 import { parseSyncedBlockPayload, validateSyncedHostForest } from '../src/shared/syncedBlockValidation'
 import { canonicalSyncedPortableJson } from '../src/shared/syncedBlockPortable'
 import { withCanonicalSearchFixture } from './helpers/canonical-search-fixture'
+import type { EditorHistoryBookmark } from '../src/renderer/src/utils/editorHistoryFocus'
 
 test('real opaque Main sessions commit UI create/insert once, recover the actual lost ACK, keep complete W and real structure history, and reject stale openings',
   () => withCanonicalSearchFixture(async f => {
     const sender = Object.freeze({ renderer: randomUUID() }), requests: SyncedStructureInput[] = [], notices: string[] = []
     let sessionId: string | null = null, droppedReply = false, droppedLookup = false, adoptCount = 0
     let protectedNonce: string | null = null, allowProtection = true, flushCalls = 0
+    let adoptedBookmark: EditorHistoryBookmark | undefined
+    let dropBeforeApply = false
     const original = f.store.getDocumentDetail(f.ordinaryDocumentId); assert.ok(original)
     let persisted: DocumentDetail = original
     const identity = Object.freeze({})
@@ -31,14 +34,14 @@ test('real opaque Main sessions commit UI create/insert once, recover the actual
       if (result.status !== 'ready') return false
       sessionId = result.session.sessionId; return true
     }
-    const adopt = (before: SyncedHostSourceCurrent, result: SyncedStructureApplied) => {
+    const adopt = (before: SyncedHostSourceCurrent, result: SyncedStructureApplied, bookmark?: EditorHistoryBookmark) => {
       assert.equal(before.hostSession, current.hostSession); assert.equal(before.editSequence, current.editSequence)
       assert.equal(result.operationId, requests.at(-1)!.clientOperationId)
       assert.deepEqual(result.hosts[0].logicalBefore, { ...before.host.workingBefore,
         blocks: validateSyncedHostForest(before.host.workingBefore.blocks) })
       // A real Main ACK supplies this fixture's presentation state. The actual
       // React adoption callback is independently exercised by the background E2E.
-      persisted = result.hosts[0].after; adoptCount++
+      persisted = result.hosts[0].after; adoptCount++; adoptedBookmark = bookmark
       current = { hostSession: identity, editSequence: current.editSequence + 1, host: { documentId: persisted.id,
         expectedPersistedUpdatedAt: persisted.updatedAt, workingBefore: { title: persisted.title, summary: persisted.summary,
           blocks: persisted.blocks.map(({ sortOrder: _sort, ...block }) => ({ ...block, parentBlockId: block.parentBlockId ?? null })) } } }
@@ -56,17 +59,18 @@ test('real opaque Main sessions commit UI create/insert once, recover the actual
         return { groups: ready.map(snapshot => ({ groupId: snapshot.groupId, expectedRevision: snapshot.revision, expectedTopologyRevision: snapshot.topologyRevision })),
           expectedInstances: instances.map(({ instanceId, hostDocumentId, bindingVersion }) => ({ instanceId, hostDocumentId, bindingVersion })) }
       }, flushGroups: async stillCurrent => { flushCalls++; return stillCurrent() },
-      protectDetach: async (hostSession, nonce, stillCurrent): Promise<boolean> => {
+      protectHostEdit: async (hostSession, nonce, stillCurrent): Promise<boolean> => {
         assert.equal(hostSession, identity)
-        assert.equal(commands.pendingDetach(identity)?.clientOperationId, nonce)
-        assert.equal(commands.canJournalDetach(identity), false, 'The protection wait precedes Main dispatch')
+        assert.equal(commands.pendingProtectedEdit(identity)?.clientOperationId, nonce)
+        assert.equal(commands.canJournalProtectedEdit(identity), false, 'The protection wait precedes Main dispatch')
         if (!allowProtection) return false
         protectedNonce = nonce
         return stillCurrent()
       },
       apply: async input => {
-        if (input.mode === 'command' && input.action.kind === 'detach') assert.equal(input.clientOperationId, protectedNonce)
+        if (input.mode === 'host-final' || input.action.kind === 'detach') assert.equal(input.clientOperationId, protectedNonce)
         requests.push(structuredClone(input))
+        if (dropBeforeApply) throw Error('Transparent transport loss before SQL dispatch')
         const result = await invoke('applySyncedHostStructure', input)
         if (!droppedReply) { droppedReply = true; assert.equal(result.status, 'applied'); throw Error('Transparent transport loss after the real SQL commit') }
         return result
@@ -144,13 +148,13 @@ test('real opaque Main sessions commit UI create/insert once, recover the actual
       assert.equal(await commands.openDetach(target, () => true, null), true)
       assert.equal(await commands.apply(), false)
       assert.equal(requests.length, 2, 'Main dispatch waits for exact recovery protection')
-      assert.equal(commands.pendingDetach(identity), null)
+      assert.equal(commands.pendingProtectedEdit(identity), null)
       allowProtection = true; droppedReply = false; droppedLookup = false
       assert.equal(await commands.apply(), false)
       assert.equal(requests.length, 3)
       const submittedDetach = requests[2]
-      assert.equal(commands.pendingDetach(identity)?.clientOperationId, submittedDetach.clientOperationId)
-      assert.equal(commands.canJournalDetach(identity), true)
+      assert.equal(commands.pendingProtectedEdit(identity)?.clientOperationId, submittedDetach.clientOperationId)
+      assert.equal(commands.canJournalProtectedEdit(identity), true)
       assert.equal(commands.cancel(), false)
       const detached = f.store.getDocumentDetail(persisted.id)
       const changesAfterDetach = f.db.prepare('SELECT total_changes() AS n').get()
@@ -170,12 +174,55 @@ test('real opaque Main sessions commit UI create/insert once, recover the actual
       assert.equal(await commands.apply(), true, 'An exact original lookup can adopt after its selected binding is gone')
       assert.equal(requests.length, 3)
       assert.equal(adoptCount, 3)
-      assert.equal(commands.pendingDetach(identity), null)
+      assert.equal(commands.pendingProtectedEdit(identity), null)
       assert.deepEqual(f.db.prepare('SELECT total_changes() AS n').get(), changesAfterDetach)
       // The ordinary DTO omits empty tags while the strict stored ACK carries
       // them explicitly. Compare every physical field with that one normalization.
       const physical = (document: DocumentDetail) => canonicalSyncedPortableJson({ ...document,
         blocks: document.blocks.map(block => ({ ...block, tags: block.tags ?? [] })) })
       assert.equal(physical(persisted), physical(detached))
+
+      const beforeMove = current, priorBlocks = current.host.workingBefore.blocks
+      assert.ok(priorBlocks.length > 1 && priorBlocks.some(block => block.type === 'synced-block'))
+      const nextBlocks = [...priorBlocks.slice(1), priorBlocks[0]]
+      const bookmark: EditorHistoryBookmark = { index: 0, start: 0, end: 0, direction: 'none', blockId: nextBlocks[0].id }
+      let acceptedMoves = 0, activeOpening = true
+      droppedReply = false; droppedLookup = false
+      assert.equal(await commands.openHostEdit(priorBlocks, nextBlocks, { reason: 'drop', opener: null,
+        shouldContinue: () => activeOpening, afterBookmark: bookmark, onAccepted: () => { acceptedMoves++ } }), false)
+      assert.equal(requests.length, 4)
+      const [move] = requests.slice(-1)
+      assert.equal(move.mode, 'host-final'); if (move.mode !== 'host-final') throw Error('Expected the actual host-final request')
+      assert.equal(move.reason, 'drop')
+      assert.deepEqual(move.finalAfter[0].blocks, validateSyncedHostForest(nextBlocks))
+      assert.equal(commands.canJournalProtectedEdit(identity), true)
+      assert.equal(acceptedMoves, 0)
+      assert.equal(commands.cancel(), false)
+      assert.equal(current, beforeMove)
+      const committedMove = f.store.getDocumentDetail(persisted.id)
+      assert.deepEqual(committedMove?.blocks.map(block => block.id), nextBlocks.map(block => block.id))
+      const changesAfterMove = f.db.prepare('SELECT total_changes() AS n').get()
+      current = { ...current, editSequence: current.editSequence + 1 }
+      assert.equal(await commands.apply(), false)
+      assert.equal(acceptedMoves, 0)
+      assert.equal(requests.length, 4)
+      current = beforeMove; activeOpening = false
+      assert.equal(await commands.apply(), true, 'A lost original ACK can be read after its editor intent closes, when W is still exact')
+      assert.deepEqual(adoptedBookmark, bookmark)
+      assert.equal(acceptedMoves, 1)
+      assert.equal(requests.length, 4)
+      assert.deepEqual(f.db.prepare('SELECT total_changes() AS n').get(), changesAfterMove)
+      assert.equal(physical(persisted), physical(committedMove!))
+
+      const undoOrder = current.host.workingBefore.blocks
+      dropBeforeApply = true; activeOpening = true
+      assert.equal(await commands.openHostEdit(undoOrder, priorBlocks, { opener: null, shouldContinue: () => activeOpening }), false)
+      assert.equal(requests.length, 5)
+      dropBeforeApply = false; activeOpening = false
+      assert.equal(await commands.apply(), false, 'An unknown nonce cannot retry after its original view intent expires')
+      assert.equal(requests.length, 5)
+      assert.equal(commands.canJournalProtectedEdit(identity), false)
+      assert.equal(commands.cancel(), true, 'An expired operation without a receipt can be canceled')
+      assert.deepEqual(f.db.prepare('SELECT total_changes() AS n').get(), changesAfterMove)
     } finally { if (sessionId) f.store.releaseSyncedEditingSession(sender, sessionId) }
   }))

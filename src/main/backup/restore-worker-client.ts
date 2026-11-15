@@ -58,8 +58,16 @@ export const parseRestoreMarkdownInWorker: RestoreMarkdownParseRunner = (markdow
 
 /** Main-only inspection of a complete V3 directory. No restore plan or write authority. */
 export function readBackupV3ArchiveInWorker(root: string): Promise<ReturnType<typeof import('./v3-format').parseBackupV3Files>> {
+  return runBackupV3Inspection(root, 'synced-v3', 'archive')
+}
+
+export function verifyBackupV3ArchiveInWorker(root: string): Promise<ReturnType<typeof import('./v3-reader').verifyBackupV3Archive>> {
+  return runBackupV3Inspection(root, 'verify-synced-v3', 'verification')
+}
+
+function runBackupV3Inspection<T, Key extends string>(root: string, kind: 'synced-v3' | 'verify-synced-v3', resultKey: Key): Promise<T> {
   return new Promise((resolve, reject) => {
-    const worker = createRestoreParseWorker({ workerData: { kind: 'synced-v3', root } })
+    const worker = createRestoreParseWorker({ workerData: { kind, root } })
     let settled = false
     const fail = (error: Error): void => {
       if (settled) return
@@ -72,13 +80,13 @@ export function readBackupV3ArchiveInWorker(root: string): Promise<ReturnType<ty
       fail(new Error('V3 backup inspection worker timed out.'))
       void worker.terminate()
     }, RESTORE_PARSE_WORKER_TIMEOUT_MS)
-    worker.once('message', (response: { ok: true; archive: ReturnType<typeof import('./v3-format').parseBackupV3Files> }
+    worker.once('message', (response: ({ ok: true } & Record<Key, T>)
       | { ok: false; message: string; stack?: string }) => {
       if (settled) return
       if (!response.ok) { const error = new Error(response.message); error.stack = response.stack ?? error.stack; fail(error); return }
       settled = true
       clearTimeout(timeout)
-      resolve(response.archive)
+      resolve(response[resultKey])
     })
     worker.once('error', fail)
     worker.once('exit', (code: number) => {

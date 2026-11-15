@@ -7,18 +7,21 @@
   }
   phase('process-started')
   const { qualifiedLocator, identityLocator, referenceLocator, stageLocator, expected } = JSON.parse(process.argv[2])
-  const { reopenRootRestorePendingReferenceFromQualified5 } = await import('../../src/main/database/restore-knowledge-reference3-read.ts')
+  const { withReopenedRootRestorePendingReferenceFromQualified5 } = await import('../../src/main/database/restore-knowledge-reference3-read.ts')
   const { reopenRootRestoreSqlAssetStage5 } = await import('../../src/main/database/restore-knowledge-sql-asset-stage5.ts')
   const { referenceContextObjectPath } = await import('../../src/main/database/restore-knowledge-reference-context-model.ts')
   const { graph3Text } = await import('../../src/main/database/restore-knowledge-graph3-data.ts')
   phase('imports-completed')
-  const reference = await reopenRootRestorePendingReferenceFromQualified5(qualifiedLocator, identityLocator, referenceLocator)
-  phase('pending-reference-reopened')
-  const pending = reference.value.candidate.pendingLocalBody
-  assert.ok(pending)
-  assert.equal(pending.proofHash, expected.proofHash)
-  assert.equal(reference.value.candidate.checkedCanonicalCandidateHash, expected.candidateHash)
-  const reopened = await reopenRootRestoreSqlAssetStage5(reference.plan, stageLocator)
+  const { pending, reopened } = await withReopenedRootRestorePendingReferenceFromQualified5(
+    qualifiedLocator, identityLocator, referenceLocator, async (reference, scope) => {
+      phase('pending-reference-reopened')
+      const pending = reference.value.candidate.pendingLocalBody
+      assert.ok(pending)
+      assert.equal(pending.proofHash, expected.proofHash)
+      assert.equal(reference.value.candidate.checkedCanonicalCandidateHash, expected.candidateHash)
+      const reopened = await reopenRootRestoreSqlAssetStage5(reference.plan, stageLocator, scope)
+      return { pending, reopened }
+    })
   phase('combined-stage-reopened')
   assert.equal(reopened.assets.value.version, 4)
   assert.equal(reopened.assets.value.pendingCellProofHash, expected.proofHash)

@@ -175,6 +175,7 @@ export function useWebDavSettingsState(isZh: boolean) {
   }, [run])
   const testConnection = useCallback(() => run('test', () => window.knowbook.testWebDavConnection()), [run])
   const syncNow = useCallback(() => run('sync', () => window.knowbook.syncWebDavNow()), [run])
+  const rejoinAfterRestore = useCallback(() => run('sync', () => window.knowbook.rejoinWebDavAfterRestore()), [run])
   const previewProtocol5 = useCallback(() => run('sync', () => window.knowbook.previewWebDavProtocol5Conflicts()), [run])
   const resolveProtocol5 = useCallback((input: ResolveWebDavProtocol5Conflict) =>
     run('sync', () => window.knowbook.resolveWebDavProtocol5Conflict(input)), [run])
@@ -195,5 +196,5 @@ export function useWebDavSettingsState(isZh: boolean) {
   return { status, config, password, clearPassword, intervalDraft, intervalError,
     dirty: isDirty(draft, savedRef.current, savedProtocol5.current), readLoading, readError, actionError, actionErrorTarget, actionTarget, actionKind, working, canStop,
     edit, setProtocol5, protocol5, setPassword, setClearPassword, setIntervalDraft, refreshStatus, save, testConnection, syncNow,
-    previewProtocol5, resolveProtocol5, previewProtocol5Deletions, resolveProtocol5Deletion, resolve, cancel }
+    rejoinAfterRestore, previewProtocol5, resolveProtocol5, previewProtocol5Deletions, resolveProtocol5Deletion, resolve, cancel }
 }

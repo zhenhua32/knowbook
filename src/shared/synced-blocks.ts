@@ -210,6 +210,9 @@ export interface SyncedGroupListResult {
   items: Array<{ groupId: string; preview: string; originPath: string; liveInstances: number }>
   total: number
 }
+export interface SyncedGroupIdentityListResult extends SyncedGroupListResult {
+  items: Array<SyncedGroupListResult['items'][number] & { creationId: string }>
+}
 export type SyncedOperationResult =
   | { status: 'committed'; result: SyncedGroupSaved | SyncedStructureApplied }
   | { status: 'unknown' }

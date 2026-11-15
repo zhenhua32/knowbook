@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { collectStoredMarkdownAssetDestinations, projectSyncedPortableMarkdownAssetEdits } from '../../shared/syncedBlockPortable'
+import { ATTACHMENT_MAX_FILE_BYTES } from '../../shared/attachments'
 import { capsuleBytesHash, capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { readCapsule2AssetManifest } from './restore-knowledge-capsule2-assets-files'
+import { CAPSULE_V3_ASSET_MAX_FILE_BYTES } from './restore-knowledge-capsule-v3-assets'
 import { durableSqlDagHash, durableSqlDagUuid } from './restore-knowledge-dag-model'
 import { graph3Rows, graph3Text } from './restore-knowledge-graph3-data'
 import { assertMerge3JsonBudget, type Merge3OriginalRowRef, type MergedRow3 } from './restore-knowledge-merge3-storage'
@@ -14,7 +16,7 @@ import { assertRootRestoreReferenceOriginalBytes3, readRootRestoreReferenceCopyS
   type RootRestoreReferencePlan3, type RootRestoreStageInputs5 } from './restore-knowledge-reference3-read'
 import { readRootRestoreWorkingAssetSources5 } from './restore-knowledge-working-asset-authority5'
 import { projectWorkingAssetBodyCells5, workingAssetCellPosition5, workingAssetPosition5 } from './restore-knowledge-working-asset-cells5'
-import { selectRootRestoreNativeAssetScopes5, type NativeAssetCellContext5 } from './restore-knowledge-selected-native-assets5'
+import { selectRootRestoreNativeAssetScopes5, type NativeAssetCellContext5, type VerifiedBackupV3Asset5 } from './restore-knowledge-selected-native-assets5'
 import type { ReferenceContextFile } from './restore-knowledge-reference-context-model'
 import { restoreDirectory, syncRestoreDirectory } from './restore-safety-files'
 
@@ -29,7 +31,7 @@ type PendingContext = { kind: 'pending-working-content'; proofHash: string; bloc
 type Context = NativeAssetCellContext5 | PendingContext | null
 type Selection = Range & { sourceRef: Merge3OriginalRowRef; targetRowId: string; column: 'summary' | 'content' | 'blocks_json';
   finalFrom: number; finalTo: number; finalCellHash: string;
-  hash: string; bytes: number; logicalName: string; occurrenceIds: string[]; context: Context }
+  hash: string; bytes: number; logicalName: string; occurrenceIds: string[]; context: Context; backupV3?: VerifiedBackupV3Asset5 }
 type Format = 2 | 3 | 4
 type Locator = { reference: RootRestoreReferencePlan3; stageId: string; expectedManifestHash: string; format: Format }
 type Saved = Locator & { directory: string; descriptorText: string; files: readonly ReferenceContextFile[] }
@@ -87,7 +89,9 @@ function selectAssets(actual: Actual, format: Format) {
     addFile(target, column, original, range, finalText, item.id, item.logicalName, file, null)
   }
   function addFile(target: MergedRow3, column: Selection['column'], original: Range, range: { from: number; to: number },
-    finalText: string, occurrenceId: string, logicalName: string, file: OriginalFrameCopy, context: Context) {
+    finalText: string, occurrenceId: string, logicalName: string, file: OriginalFrameCopy, context: Context, backupV3?: VerifiedBackupV3Asset5) {
+    if (!Number.isSafeInteger(file.bytes) || file.bytes < 0 || file.bytes > (backupV3 ? CAPSULE_V3_ASSET_MAX_FILE_BYTES : ATTACHMENT_MAX_FILE_BYTES))
+      return fail('原附件超过本 occurrence 的来源预算')
     const localAsset = context?.kind === 'template-content' ? context.asset : null
     const coordinates = [target.sourceRef, target.targetRowId, column, original.from, original.to]
     const key = capsuleJson(localAsset ? [...coordinates, localAsset] : coordinates)
@@ -95,12 +99,12 @@ function selectAssets(actual: Actual, format: Format) {
     if (previous) {
       if (previous.hash !== file.sha256 || previous.bytes !== file.bytes || previous.logicalName !== logicalName
         || previous.finalCellHash !== finalCellHash || previous.finalFrom !== range.from || previous.finalTo !== range.to
-        || capsuleJson(previous.context) !== capsuleJson(context))
+        || capsuleJson(previous.context) !== capsuleJson(context) || capsuleJson(previous.backupV3 ?? null) !== capsuleJson(backupV3 ?? null))
         return fail('同入选原始 cell 的附件证明相冲突')
       previous.occurrenceIds.push(occurrenceId)
     } else selections.set(key, { sourceRef: target.sourceRef, targetRowId: target.targetRowId, column,
       from: original.from, to: original.to, raw: original.raw, finalFrom: range.from, finalTo: range.to, finalCellHash,
-      hash: file.sha256, bytes: file.bytes, logicalName, occurrenceIds: [occurrenceId], context })
+      hash: file.sha256, bytes: file.bytes, logicalName, occurrenceIds: [occurrenceId], context, ...(backupV3 ? { backupV3 } : {}) })
     const originalFile = files.get(file.sha256)
     if (originalFile && originalFile.bytes !== file.bytes) return fail('同 SHA 封存文件的长度相冲突')
     if (!originalFile) files.set(file.sha256, { ...file, frame: [], path: 'files/' + file.sha256 })
@@ -219,7 +223,8 @@ function selectAssets(actual: Actual, format: Format) {
   }
 
   if (format !== 2) for (const asset of selectRootRestoreNativeAssetScopes5(actual))
-    addFile(asset.target, asset.column, asset.original, asset.final, asset.finalText, asset.proof.id, asset.proof.logicalName, asset.proof.file, asset.context)
+    addFile(asset.target, asset.column, asset.original, asset.final, asset.finalText, asset.proof.id, asset.proof.logicalName,
+      asset.proof.file, asset.context, asset.proof.backupV3)
   const pending = candidate.pendingLocalBody
   if (pending) {
     if (format !== 4) return fail('旧附件格式无法携带入选 pending 正文')
@@ -281,7 +286,9 @@ async function readStageInputs(reference: RootRestoreReferencePlan3, stageId: st
   const actual = await readRootRestoreWorkingAssetSources5(reference, scope), pending = actual.captured.actual.candidate.pendingLocalBody
   if (source.pendingCellProofHash !== pending?.proofHash) return fail('附件与 Reference 的 pending 选择不同')
   const format = savedFormat ?? (pending ? 4 : 3), selection = selectAssets(actual, format)
-  if (!selection.value.selected.length) return fail('没有具备确切原件证明的入选原生附件')
+  // An empty selection can still have retained original occurrences. The
+  // final closure independently enumerates every scope and reports gaps.
+  if (!selection.value.selected.length && (format === 2 || format === 4)) return fail('没有具备确切原件证明的入选原生附件')
   const value = manifest(actual, stageId, selection.value, format), text = capsuleJson(value) + '\n'
   return { value, text, manifestHash: capsuleBytesHash(text), files: selection.copies,
     location: source.location, directory: join(collection(source.location), stageId), sources: actual }

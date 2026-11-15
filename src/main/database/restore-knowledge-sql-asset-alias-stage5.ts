@@ -3,10 +3,12 @@ import { createHash, randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { localAttachmentFileUrl, managedLocalAttachmentPath } from '../attachments'
 import { collectStoredMarkdownAssetDestinations } from '../../shared/syncedBlockPortable'
+import { escapeMarkdownDestination, type MarkdownDestination } from '../../shared/markdownLinks'
 import { applyNavigation3TextEdits, createNavigation3RangeProjection, type Navigation3TextEdit } from './restore-knowledge-navigation3-rewrite-cells'
 import { prepareRootRestoreAssetAliasWithSqlSource5, readRootRestoreAssetAliasSqlSource5, reopenRootRestoreAssetAliasWithSqlSource5,
   type RootRestoreAssetAliasStage5 } from './restore-knowledge-asset-alias-stage5'
-import { readRawCapsule2ContentOwned } from './restore-knowledge-capsule2-content-raw-read'
+import { observeRawCapsule2TablesOwned } from './restore-knowledge-capsule2-content-raw-read'
+import { hashValidatedCapsule2RawSqlTable } from './restore-knowledge-capsule2-raw-model'
 import { readCapsule2AssetManifest, writeCapsule2AssetCopy } from './restore-knowledge-capsule2-assets-files'
 import { capsuleBytesHash, capsuleJson, capsuleRecord, freezeCapsuleValue, validateDurableSqlCapsuleInventory,
   type DurableSqlCapsuleFile } from './restore-knowledge-capsule-model'
@@ -18,10 +20,10 @@ import { assertRootRestoreStage3FilesHeld3, assertRootRestoreStage3WritableMain3
 import { assertRootRestoreStage3DatabaseReadonly3, copyRootRestoreStage3Database3, discardRootRestoreStage3Probe3, holdRootRestorePhysicalStageOriginalBytes3,
   prepareRootRestoreCanonicalAssetPhysicalWithAliasSource5, readRootRestorePhysicalStageCopySource3, readRootRestoreStage3DatabaseInventory3,
   readRootRestoreStage3NativeFtsProjection3, reopenRootRestoreCanonicalAssetPhysicalWithAliasSource5,
-  type RootRestorePhysicalStage3 } from './restore-knowledge-stage3-physical'
+  type RootRestorePhysicalStage3, type PreparedRestoreHistoryScope3 } from './restore-knowledge-stage3-physical'
 import { readRootRestoreStage3MarkerOwned } from './restore-knowledge-stage3-marker-read'
 import type { RootRestoreSqlAssetStage5 } from './restore-knowledge-sql-asset-stage5'
-import type { RootRestoreReferencePlan3 } from './restore-knowledge-reference3-read'
+import { readRootRestoreReferenceCopySource3, type RootRestoreReferencePlan3 } from './restore-knowledge-reference3-read'
 import { projectTemplate3ContentStringEdits, template3ContentStringRanges } from './restore-knowledge-template3-json'
 import { assertOriginCatalogDirectory, syncOriginCatalogAncestors } from './restore-knowledge-origin-bundle-files'
 import { restoreDirectory, syncRestoreDirectory, syncRestoreFile } from './restore-safety-files'
@@ -31,7 +33,7 @@ type Source = Awaited<ReturnType<typeof readRootRestoreAssetAliasSqlSource5>>
 type Sql = Source['source']['physical']
 type Table = Sql['tables'][number]
 type Row = Table['rows'][number]
-type Edit = Navigation3TextEdit & { uri: string; kind: 'link' | 'image' }
+type Edit = Navigation3TextEdit & { uri: string; kind: MarkdownDestination['kind']; syntax?: MarkdownDestination['syntax']; destination?: string }
 type Column = 'content' | 'summary' | 'blocks_json'
 type Token = { from: number; to: number; index: number }
 type MarkdownTarget = { content: string; edits: Edit[]; token?: Token }
@@ -90,8 +92,8 @@ function sqlBase(input: Source, canonical?: Canonical): Base {
 
 function rewriteMarkdown(target: MarkdownTarget) {
   const observed = collectStoredMarkdownAssetDestinations(target.content)
-  const destinations = new Set(observed.filter(item => !item.syntax).map(item => capsuleJson([item.start, item.end, item.url, item.kind])))
-  const edits = target.edits.filter(edit => destinations.has(capsuleJson([edit.from, edit.to, edit.uri, edit.kind])))
+  const destinations = new Set(observed.map(item => capsuleJson([item.start, item.end, item.url, item.kind, item.syntax])))
+  const edits = target.edits.filter(edit => destinations.has(capsuleJson([edit.from, edit.to, edit.uri, edit.kind, edit.syntax])))
   if (!edits.length) return null
   const rewritten = applyNavigation3TextEdits(target.content, edits), move = createNavigation3RangeProjection(edits)
   const byStart = new Map(edits.map(edit => [edit.from, edit]))
@@ -99,14 +101,13 @@ function rewriteMarkdown(target: MarkdownTarget) {
     const range = move(item.start, item.end)
     if (!range) return fail('附件改写覆盖其他语法范围')
     const edit = byStart.get(item.start)
-    return { ...item, start: range.from, end: range.to, url: edit?.after ?? item.url }
+    return { ...item, start: range.from, end: range.to, url: edit?.destination ?? edit?.after ?? item.url }
   })
   if (!same(collectStoredMarkdownAssetDestinations(rewritten), expected)) return fail('改写后的附件语法或范围不同')
   return { edits, rewritten }
 }
 
-/** Only inline Markdown document and template destinations with exact proof.
- * Unsupported syntax, blocked occurrences and colliding aliases stay visible. */
+/** Localize destinations only at exact typed SQL coordinates. */
 function plan(input: Source, format: Format, base: Base) {
   const { audit, matched, physical, location } = input.source
   const assetRoot = join(location.profileRoot, 'storage', 'assets')
@@ -115,19 +116,25 @@ function plan(input: Source, format: Format, base: Base) {
   const aliases = new Map(input.aliases.map(alias => [capsuleJson([alias.hash, alias.logicalName]), alias]))
   const conflicts = new Set(input.remaining.aliasPathConflicts.flat())
   const targets = new Map<string, Target>()
+  let alreadyLocalOccurrences = 0
   for (const { entry, selection } of matched) {
     const { cell, destination, scope } = entry
-    if (entry.domain !== 'final-sql' || !cell || destination.syntax !== 'markdown'
-      || (destination.kind !== 'link' && destination.kind !== 'image')) continue
+    if (entry.domain !== 'final-sql' || !cell) continue
+    const fromVerifiedV3 = Boolean(entry.proof.backupV3)
+    const kind = destination.kind, syntax = destination.syntax
+    const inline = syntax === 'markdown' && (kind === 'link' || kind === 'image')
+    const v3Definition = syntax === 'markdown' && kind === 'definition'
+    const v3Html = syntax === 'html' && (kind === 'link' || kind === 'image')
+    if (!(inline || fromVerifiedV3 && (v3Definition || v3Html))) continue
     const context = format !== 1 && scope[0] === 'document_templates' && entry.proof.kind === 'staged'
       ? selection?.context : null
     const template = context?.kind === 'template-content' || context?.kind === 'template-summary'
-    const ordinary = scope[0] === 'documents' && entry.proof.kind === 'sealed-original'
+    const ordinary = scope[0] === 'documents' && (entry.proof.kind === 'sealed-original' || fromVerifiedV3)
     if (!ordinary && !template) continue
     if (/^file:/i.test(destination.uri)) {
       const from = new URL(destination.uri)
       if (from.search || from.hash) continue
-    } else if (!template || !destination.uri.startsWith('knowbook-asset://')) continue
+    } else if ((!template && !fromVerifiedV3) || !destination.uri.startsWith('knowbook-asset://')) continue
     const { hash, logicalName, bytes } = entry.proof
     const alias = aliases.get(capsuleJson([hash, logicalName]))
     if (!alias || alias.bytes !== bytes) return fail('入选 occurrence 缺原别名')
@@ -136,7 +143,10 @@ function plan(input: Source, format: Format, base: Base) {
     try { managedLocalAttachmentPath(uri, assetRoot) }
     catch { continue }
     const { column, targetRowId, range } = cell
-    if (uri === destination.uri) continue
+    if (uri === destination.uri) {
+      alreadyLocalOccurrences++
+      continue
+    }
     if (ordinary ? column === 'blocks_json' || cell.token
       : context?.kind === 'template-content' ? column !== 'blocks_json' || !cell.token : column !== 'summary' || cell.token)
       return fail('附件列或模板 token 越界')
@@ -168,7 +178,10 @@ function plan(input: Source, format: Format, base: Base) {
       markdown = { content: target.original, edits: [] }
       target.markdown.set(tokenIndex, markdown)
     }
-    markdown.edits.push({ from: range.from, to: range.to, before: range.raw, after: uri, uri: destination.uri, kind: destination.kind })
+    const edit = { from: range.from, to: range.to, before: range.raw, after: uri, uri: destination.uri, kind: kind as Edit['kind'] }
+    if (syntax === 'html') {
+      markdown.edits.push({ ...edit, after: escapeMarkdownDestination(uri, syntax), syntax, destination: uri })
+    } else markdown.edits.push(edit)
   }
   const changes = new Map<string, Change>()
   const digest = createHash('sha256').update(format === 1 ? 'knowbook.restore.ordinary-sql-asset-alias-edits.v1\0'
@@ -202,10 +215,13 @@ function plan(input: Source, format: Format, base: Base) {
     }
     if (rewritten !== original) changes.set(id, { table, row, column, rewritten, navigationEdits })
   }
-  if (!changes.size) return fail('没有可按准确原范围改写的附件')
   const canonicalRewrittenOccurrences = base.physical.canonicalAssets?.rewrittenOccurrences ?? 0
-  const finalSqlOccurrences = audit.entries.filter(entry => entry.domain === 'final-sql').length - rewrittenOccurrences - canonicalRewrittenOccurrences
+  const canonicalAlreadyLocal = base.physical.canonicalAssets?.alreadyLocalOccurrences ?? 0
+  const finalSqlOccurrences = audit.entries.filter(entry => entry.domain === 'final-sql').length
+    - rewrittenOccurrences - canonicalRewrittenOccurrences - alreadyLocalOccurrences - canonicalAlreadyLocal
   if (finalSqlOccurrences < 0) return fail('原 SQL 附件范围存在重复计数')
+  if (!changes.size && (finalSqlOccurrences || input.remaining.blockedOccurrences || input.remaining.aliasPathConflicts.length))
+    return fail('没有可按准确原范围改写的附件，且最终 SQL 附件未闭合')
   return { changes, facts: { combinedStageId: input.source.combinedStageId, combinedManifestHash: input.source.combinedManifestHash,
     physicalObservationHash: base.physical.physicalObservationHash, assetClosureObservationHash: audit.observationHash,
     aliasStageId: input.stageId, aliasManifestHash: input.manifestHash, editsHash: digest.digest('hex'),
@@ -260,9 +276,9 @@ async function writeCopy(directory: string, source: PhysicalCopy, input: Plan) {
 function assertSqlReadback(db: Database.Database, physical: Sql, source: PhysicalCopy, input: Plan) {
   readRootRestoreStage3MarkerOwned(db, source.marker)
   if (!same(readRootRestoreStage3NativeFtsProjection3(db, false), physical.nativeFtsProjection)) return fail('原生 FTS 的稳定映射变化')
-  const raw = readRawCapsule2ContentOwned(db)
-  if (raw.schemaVersion !== 27 || raw.schemaHash !== source.schemaHash) return fail('原 schema 或版本变化')
-  const tables = new Map(raw.tables.map(table => [table.name, table]))
+  const content = new Map<string, Table>(physical.tables.map(table => [table.name, table]))
+  const protectedTables = new Map(physical.protectedObservations.map(table => [table.table, table]))
+  const tableNames: string[] = [], readback = new Map<string, Table>()
   const changedRows = new Map<string, Map<string, string>>()
   for (const { table, row, column, rewritten } of input.changes.values()) {
     const id = table.name + ':' + row.targetRowId
@@ -270,32 +286,44 @@ function assertSqlReadback(db: Database.Database, physical: Sql, source: Physica
     columns.set(column, rewritten)
     changedRows.set(id, columns)
   }
-  for (const expected of physical.tables) {
-    const actual = tables.get(expected.name)
-    if (!actual || raw.encoding !== expected.encoding || !same(actual.columns, expected.columns)
-      || !same(actual.primaryKey, expected.primaryKey) || actual.rows.length !== expected.rows.length) return fail('实际内容表身份变化')
-    const rows = new Map(actual.rows.map(row => [row.sourceRowId, row.cells]))
-    for (const row of expected.rows) {
-      const changed = changedRows.get(expected.name + ':' + row.targetRowId)
-      const cells = changed ? row.cells.map((cell, i) => {
-        const value = changed.get(expected.columns[i])
-        return value === undefined ? cell : graph3Encode(value, expected.encoding)
-      }) : row.cells
-      if (!same(rows.get(row.targetRowId) ?? null, cells)) return fail('原行或声明改写之外的 SQL 数据变化')
+  const header = observeRawCapsule2TablesOwned(db, (actual, encoding) => {
+    tableNames.push(actual.name)
+    const expected = content.get(actual.name), protectedTable = protectedTables.get(actual.name)
+    if (expected) {
+      if (encoding !== expected.encoding || !same(actual.columns, expected.columns) || !same(actual.primaryKey, expected.primaryKey))
+        return fail('实际内容表身份变化')
+      const rows: Row[] = []
+      for (const observed of actual.rows) {
+        const row = expected.rows[rows.length]
+        if (!row || observed.sourceRowId !== row.targetRowId) return fail('实际内容表 rowid 顺序变化')
+        const changed = changedRows.get(expected.name + ':' + row.targetRowId)
+        const cells = changed ? row.cells.map((cell, index) => {
+          const value = changed.get(expected.columns[index])
+          return value === undefined ? cell : graph3Encode(value, expected.encoding)
+        }) : row.cells
+        if (!same(observed.cells, cells)) return fail('原行或声明改写之外的 SQL 数据变化')
+        rows.push(changed ? { ...row, cells: observed.cells } : row)
+      }
+      if (rows.length !== expected.rows.length) return fail('实际内容表行数变化')
+      readback.set(actual.name, { ...expected, rows })
+      content.delete(actual.name)
+      return
     }
-    tables.delete(expected.name)
-  }
-  for (const expected of physical.protectedObservations) {
-    const actual = tables.get(expected.table)
-    if (!actual || expected.rows !== actual.rows.length
-      || capsuleBytesHash('knowbook.restore.stage3.exact-table.v1\0' + capsuleJson(actual)) !== expected.rowHash)
-      return fail('原保留 SQL 行变化：' + expected.table)
-    tables.delete(expected.table)
-  }
-  if ([...tables.keys()].some(name => name !== 'block_search_ids' && name !== 'document_search_ids'))
-    return fail('实际 SQL 回读存在未校验的表')
+    if (protectedTable) {
+      let count = 0
+      const rows = function* () { for (const row of actual.rows) { count++; yield row } }()
+      const hash = hashValidatedCapsule2RawSqlTable('knowbook.restore.stage3.exact-table.v1', { ...actual, rows })
+      if (hash !== protectedTable.rowHash || count !== protectedTable.rows) return fail('原保留 SQL 行变化：' + actual.name)
+      protectedTables.delete(actual.name)
+      return
+    }
+    if (actual.name !== 'block_search_ids' && actual.name !== 'document_search_ids') return fail('实际 SQL 回读存在未校验的表')
+    for (const _row of actual.rows) { /* The independent FTS reader verified these lookup rows. */ }
+  })
+  if (header.schemaVersion !== 27 || header.schemaHash !== source.schemaHash) return fail('原 schema 或版本变化')
+  if (content.size || protectedTables.size) return fail('实际 SQL 回读缺少候选表或受保护表')
   if ((db.prepare('SELECT total_changes() AS n').get() as { n: number }).n !== 0) return fail('独立只读回读出现写入')
-  return raw
+  return { schemaHash: header.schemaHash, tableNames, tables: physical.tables.map(table => readback.get(table.name)!) }
 }
 
 function manifest(stageId: string, format: Format, input: Plan, inventory: readonly DurableSqlCapsuleFile[], lineage?: CanonicalLineage) {
@@ -433,22 +461,30 @@ function derivationSource(alias: ReturnType<typeof mint>, readback: Awaited<Retu
   const { input, source, base, value, directory, raw, edits } = readback
   const { location, referencePlanId, referenceManifestHash, data, allocation } = input.source
   const { physical, lineage } = base
-  const actual = new Map(raw.tables.map(table => [table.name, new Map(table.rows.map(row => [row.sourceRowId, row.cells]))]))
-  const tables = physical.tables.map(table => ({ ...table, rows: table.rows.map(row => ({
-    ...row, cells: actual.get(table.name)?.get(row.targetRowId) ?? fail('附件派生来源缺实际 SQL 行')
-  })) }))
   const navigationEdits = [...edits.changes.values()].flatMap(({ table, row, column, navigationEdits }) => {
     if (!navigationEdits) return []
     if (table.name !== 'blocks' && table.name !== 'documents' || column !== 'content' && column !== 'summary')
       return fail('导航改写不属于实际普通正文或摘要')
     return [{ table: table.name, targetRowId: row.targetRowId, column, edits: navigationEdits }]
   })
-  return Object.freeze({ alias, location, referencePlanId, referenceManifestHash, physical, lineage,
-    data, allocation, raw, tables, navigationEdits, marker: source.marker, databaseDirectory: join(directory, 'database'),
-    holdOriginalBytes: () => holdAliasDatabase(directory, value, source.root), async assertOriginalBytes() {
-      await input.assertOriginalBytes()
+  const { assertOriginalBytes } = input, physicalStage = base.stage, root = source.root
+  const readPolicy = input.source.readRetainedAssetPolicy
+  const closure = { ...value.remaining, remainingCanonicalOccurrences: physical.canonicalAssets?.remainingCanonicalOccurrences ?? 0,
+    observationHash: value.assetClosureObservationHash }
+  return Object.freeze({ alias, location, referencePlanId, referenceManifestHash, physical, physicalStage, lineage,
+    closure, readPolicy, async readCoverageOriginal(reference: RootRestoreReferencePlan3) {
+      const binding = await readRootRestoreReferenceCopySource3(reference)
+      if (binding.referencePlanId !== referencePlanId || binding.referenceManifestHash !== referenceManifestHash
+        || !same(binding.location, location)) return fail('最终 SQL 不属于实际覆盖 reference owner')
+      const original = input.source.coverageOriginal
+      if (original.descriptorHash !== binding.originalDescriptorHash) return fail('最终覆盖原件 descriptor 不同')
+      return original.original
+    },
+    data, allocation, ...raw, navigationEdits, marker: source.marker, databaseDirectory: join(directory, 'database'),
+    holdOriginalBytes: () => holdAliasDatabase(directory, value, root), async assertOriginalBytes() {
+      await assertOriginalBytes()
       if (lineage) {
-        const held = await holdRootRestorePhysicalStageOriginalBytes3(base.stage)
+        const held = await holdRootRestorePhysicalStageOriginalBytes3(physicalStage)
         try { assertRootRestoreStage3FilesHeld3(held) }
         finally { closeRootRestoreStage3FilesHeld3(held) }
       }
@@ -468,8 +504,9 @@ export async function reopenRootRestoreSqlAssetAliasDerivationFromCombined5(comb
   return { aliases, source: derivationSource(mint(aliases.owner, readback.directory, readback.value), readback) }
 }
 
-export async function prepareRootRestoreCanonicalAliasDerivationFromCombined5(reference: RootRestoreReferencePlan3, combined: RootRestoreSqlAssetStage5) {
-  const { aliases, input, stage: canonical } = await prepareRootRestoreCanonicalAssetPhysicalWithAliasSource5(reference, combined)
+export async function prepareRootRestoreCanonicalAliasDerivationFromCombined5(reference: RootRestoreReferencePlan3, combined: RootRestoreSqlAssetStage5,
+  historyScope?: PreparedRestoreHistoryScope3) {
+  const { aliases, input, stage: canonical } = await prepareRootRestoreCanonicalAssetPhysicalWithAliasSource5(reference, combined, historyScope)
   const address = { reference, combined, alias: addressOf(aliases), physical: addressOf(canonical) }
   const { alias, readback } = await prepare(aliases.owner, input, sqlBase(input, canonical), address)
   return { aliases, canonical, source: derivationSource(alias, readback) }

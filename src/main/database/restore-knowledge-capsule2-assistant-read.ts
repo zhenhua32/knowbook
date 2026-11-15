@@ -70,26 +70,30 @@ export function assertRawCapsule2AssistantHistoryOwned(db: Database.Database): v
     totalRows += measured[0]; totalBytes += measured[1]
     if (totalRows > BigInt(CAPSULE2_RAW_MAX_ROWS) || totalBytes > BigInt(CAPSULE2_RAW_MAX_VALUE_BYTES)) return bad('完整助手family超来源预算，不能分页或截断')
   }
-  const sessions = db.prepare('SELECT * FROM assistant_sessions ORDER BY id').safeIntegers(true).all() as Row[]
-  const events = db.prepare('SELECT * FROM assistant_events ORDER BY session_id,seq').safeIntegers(true).all() as Row[]
-  const bySession = new Map<string, Row[]>(), eventIds = new Set<string>()
-  for (const row of sessions) {
-    const key = id(row.id)
+  const sessions = db.prepare('SELECT * FROM assistant_sessions ORDER BY id').safeIntegers(true)
+  const sessionIds = db.prepare('SELECT id FROM assistant_sessions ORDER BY id').pluck()
+  const eventOwners = db.prepare('SELECT id,session_id FROM assistant_events ORDER BY session_id,seq')
+  const sessionEvents = db.prepare('SELECT * FROM assistant_events WHERE session_id COLLATE BINARY = ? ORDER BY seq').safeIntegers(true)
+  const bySession = new Map<string, number>(), eventIds = new Set<string>()
+  for (const value of sessionIds.iterate()) {
+    const key = id(value)
     if (bySession.has(key)) return bad('原会话身份重复')
-    bySession.set(key, [])
+    bySession.set(key, 0)
   }
-  for (const row of events) {
-    const key = id(row.id), owner = bySession.get(id(row.session_id))
-    if (!owner || eventIds.has(key)) return bad('原事件孤立或身份重复')
-    eventIds.add(key); owner.push(row)
+  for (const row of eventOwners.iterate() as IterableIterator<Row>) {
+    const key = id(row.id), sessionId = id(row.session_id), count = bySession.get(sessionId)
+    if (count === undefined || eventIds.has(key)) return bad('原事件孤立或身份重复')
+    eventIds.add(key)
+    bySession.set(sessionId, count + 1)
   }
-  for (const row of sessions) {
+  // Replay only one session's events at a time from the same owned snapshot.
+  for (const row of sessions.iterate() as IterableIterator<Row>) {
     const sessionId = id(row.id), workspace = id(row.workspace_id), activeDocument = nullable(row.active_document_id)
     const createdAt = time(row.created_at), updatedAt = time(row.updated_at), config = json(row.model_config_json)
-    const nextSeq = integer(row.next_seq, 2), own = bySession.get(sessionId)!
-    if (!own.length || own.length !== nextSeq - 1) return bad('完整事件尾与next_seq不相等或缺初始事件')
-    let state: AssistantReplayState | undefined
-    for (const [index, saved] of own.entries()) {
+    const nextSeq = integer(row.next_seq, 2), eventCount = bySession.get(sessionId)!
+    if (eventCount !== nextSeq - 1) return bad('完整事件尾与next_seq不相等或缺初始事件')
+    let state: AssistantReplayState | undefined, index = 0
+    for (const saved of sessionEvents.iterate(sessionId) as IterableIterator<Row>) {
       if (integer(saved.seq, 1) !== index + 1) return bad('原事件序列不连续')
       const type = text(saved.type)
       if (!Object.hasOwn(ASSISTANT_EVENT_SURFACES, type)) return bad('未知原事件type')
@@ -118,8 +122,9 @@ export function assertRawCapsule2AssistantHistoryOwned(db: Database.Database): v
         catch { return bad('原会话转换不符合完整事件顺序') }
         state = projectAssistantSessionState(state, eventType, payload)
       }
-      if (index === own.length - 1 && at !== updatedAt) return bad('完整事件尾与会话updated_at不符')
+      if (++index === eventCount && at !== updatedAt) return bad('完整事件尾与会话updated_at不符')
     }
+    if (index !== eventCount) return bad('完整事件尾与next_seq不相等或缺初始事件')
     if (!state || text(row.title) !== state.title || text(row.status) !== state.status || nullable(row.active_turn_id) !== state.activeTurnId)
       return bad('完整原事件投影与会话状态不符')
   }

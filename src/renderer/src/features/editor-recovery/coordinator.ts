@@ -1,7 +1,8 @@
 import type { EditorRecoveryDraftInput, EditorRecoveryExpected, EditorRecoveryOpened, EditorRecoveryPending, OpenEditorRecoveryDraftInput,
-  EditorRecoveryReceipt, EditorRecoveryWorking } from '@shared/editor-recovery-drafts'
+  EditorRecoveryReceipt, EditorRecoveryWorking, PreparedEditorRecoveryCrossMove } from '@shared/editor-recovery-drafts'
 import { validateEditorRecoveryDraftInput } from '@shared/editor-recovery-drafts'
 import { canonicalSyncedPortableJson } from '@shared/syncedBlockPortable'
+import { syncedCanonicalEdits, validateSyncedGroupSnapshot } from '@shared/syncedBlockValidation'
 import { readRecoverySources, recoveryData, subscribeRecoverySources, type RecoverySourceAddress } from './sourceSnapshots'
 
 export type RecoveryContent = Omit<EditorRecoveryDraftInput, 'draftSessionId' | 'generation' | 'expectedPreviousGeneration' | 'sources'> & {
@@ -138,6 +139,37 @@ export class EditorRecoveryCoordinator {
     this.queue = pending.then(() => undefined, () => undefined)
     return pending
   }
+  /** Take the new real side head into this same serialized producer. A reply
+   * lost during transfer can only replay that exact request and generation. */
+  adoptCrossMove(identity: object, shouldContinue: () => boolean, receive: (targetDraftSessionId: string) => Promise<PreparedEditorRecoveryCrossMove>,
+    adopt: (prepared: PreparedEditorRecoveryCrossMove, current: () => boolean) => Promise<boolean>): Promise<boolean> {
+    return this.serial(async () => {
+      await this.settleOriginal()
+      const entry = this.entries.get(identity)
+      const current = () => !this.frozen && entry && !entry.detached && this.entries.get(identity) === entry && shouldContinue()
+      if (!entry || entry.address.kind !== 'group' || entry.generation !== 0 || !current()) return false
+      const opened = await entry.opening()
+      if (!current()) return false
+      const invoke = () => receive(opened.draftSessionId)
+      const prepared = await invoke().catch(invoke)
+      if (prepared.record.draft.draftSessionId !== opened.draftSessionId || prepared.head.generation !== 1
+        || prepared.record.draft.generation !== 1 || prepared.head.recordId !== prepared.record.recordId) throw new Error('The receiving recovery head differs')
+      entry.head = prepared.head; entry.generation = 1
+      let applied = false
+      try {
+        applied = Boolean(current()) && await adopt(prepared, () => Boolean(current()))
+        return applied
+      } finally {
+        if (!applied) {
+          // A changed mount must not journal a clean snapshot over the W
+          // already transferred to its durable identity.
+          entry.detached = true
+          entry.retained = { ...prepared.record.draft, authoredWork: true }
+          await this.retire(entry)
+        }
+      }
+    })
+  }
   background(): Promise<void> {
     return this.serial(async () => {
       if (this.frozen) return
@@ -149,20 +181,62 @@ export class EditorRecoveryCoordinator {
       this.lastError = null
     })
   }
-  checkpointPendingHost(identity: object, operationId: string, shouldContinue: () => boolean): Promise<boolean> {
+  settleDetachedHosts(documentIds: readonly string[]): Promise<void> {
+    const ids = new Set(documentIds)
+    return this.serial(async () => {
+      if (this.frozen) return
+      await this.settleOriginal()
+      for (const entry of this.entries.values()) {
+        if (entry.detached && entry.address.kind === 'host' && ids.has(entry.address.documentId)) await this.retire(entry)
+      }
+    })
+  }
+  checkpointPendingHost(identity: object, operationId: string, shouldContinue: () => boolean,
+    method: 'applySyncedHostStructure' | 'restoreSyncedHostOperation' = 'applySyncedHostStructure', groupIdentity?: object,
+    linkDurableGroup = false): Promise<boolean> {
     return this.serial(async () => {
       await this.settleOriginal()
       const entry = this.entries.get(identity)
+      const group = groupIdentity && this.entries.get(groupIdentity)
       const current = () => !this.frozen && shouldContinue() && entry && !entry.detached && this.entries.get(identity) === entry
+        && (!groupIdentity || group && !group.detached && this.entries.get(groupIdentity) === group)
       if (!entry || entry.address.kind !== 'host' || !current()) return false
       const captured = await this.capture(entry)
       if (!current() || captured.draft.composing || captured.draft.importing || captured.draft.sources.length
         || captured.draft.pending.length !== 1 || captured.draft.pending[0].clientOperationId !== operationId
-        || captured.draft.pending[0].method !== 'applySyncedHostStructure') return false
-      if (captured.fingerprint !== entry.fingerprint) await this.write([captured], { purpose: 'background' })
-      if (!entry.head || !current()) return false
-      return (await this.capture(entry)).fingerprint === captured.fingerprint && Boolean(current())
+        || captured.draft.pending[0].method !== method) return false
+      const shared = group && await this.capture(group)
+      if (shared && (group?.address.kind !== 'group' || shared.unedited || shared.draft.composing
+        || shared.draft.importing || shared.draft.sources.length || shared.draft.pending.length)) return false
+      if (shared) {
+        const { base } = await shared.entry.opening()
+        const owner = base.owner, body = base.persistedWorking
+        const snapshot = validateSyncedGroupSnapshot(JSON.parse(shared.draft.replayJson!).snapshot)
+        if (owner.kind !== 'group' || body.kind !== 'group' || owner.groupId !== snapshot.groupId || owner.creationId !== snapshot.creationId
+          || owner.createdAt !== snapshot.createdAt || owner.revision !== snapshot.revision || owner.topologyRevision !== snapshot.topologyRevision
+          || owner.historyCursor !== snapshot.history.cursor || canonicalSyncedPortableJson(body.blocks) !== canonicalSyncedPortableJson(syncedCanonicalEdits(snapshot.blocks))) return false
+      }
+      const captures = shared ? [captured, shared] : [captured]
+      const changed = captures.filter(item => item.fingerprint !== item.entry.fingerprint)
+      if (!current()) return false
+      if (linkDurableGroup && shared && changed.includes(shared)) {
+        // Main seals a cross-page host relation only to an already committed
+        // shared head. Ordinary same-parent moves still write a single batch.
+        await this.write([shared], { purpose: 'background' })
+        if (!current()) return false
+      }
+      const remaining = linkDurableGroup ? changed.filter(item => item !== shared) : changed
+      if (remaining.length) await this.write(remaining, { purpose: 'background' })
+      if (!current() || captures.some(item => !item.entry.head)) return false
+      const latest = await Promise.all(captures.map(item => this.capture(item.entry)))
+      return latest.every((item, index) => item.fingerprint === captures[index].fingerprint) && Boolean(current())
     })
+  }
+  durableHead(identity: object): EditorRecoveryExpected | null { return this.entries.get(identity)?.head ?? null }
+  releaseCompletedCrossMove(host: object, group: object): void {
+    // The protected Main result retired both original live producers. Their
+    // exact head bytes remain available for a cold-style receiving visit.
+    this.entries.delete(host); this.entries.delete(group)
   }
   detach(identity: object): void {
     const entry = this.entries.get(identity)
@@ -172,7 +246,7 @@ export class EditorRecoveryCoordinator {
   /** A real Save can advance P before Source opens. First register the new
    * Main-sealed B, then retire/park the old complete producer. No Source has
    * been opened yet, so this never supplies a new baseline to an old Source. */
-  renewHost(identity: object, input: Omit<Extract<OpenEditorRecoveryDraftInput, { kind: 'host' }>, 'openRequestId'>): Promise<void> {
+  renewHost(identity: object, input: Omit<Extract<OpenEditorRecoveryDraftInput, { kind: 'host' }>, 'openRequestId'>): Promise<EditorRecoveryOpened> {
     return this.serial(async () => {
       if (this.frozen) throw new Error('The editor is closing')
       await this.settleOriginal()
@@ -181,8 +255,9 @@ export class EditorRecoveryCoordinator {
       const content = this.content(previous)
       if (content.composing || content.importing || content.pending.length || content.rawPending?.length || readRecoverySources(previous.address).length) throw new Error('The previous Source/input owner is unfinished')
       const before = await previous.opening()
-      if (before.base.owner.kind === 'host' && before.base.owner.updatedAt === input.expectedUpdatedAt
-        && canonicalSyncedPortableJson(content.working) === canonicalSyncedPortableJson(before.base.persistedWorking)) return
+      const refreshPins = input.source && content.working.kind === 'host' && content.working.blocks.some(block => block.type === 'synced-block')
+      if (!refreshPins && before.base.owner.kind === 'host' && before.base.owner.updatedAt === input.expectedUpdatedAt
+        && canonicalSyncedPortableJson(content.working) === canonicalSyncedPortableJson(before.base.persistedWorking)) return before
       const captured = await this.capture(previous)
       if (!captured.unedited && captured.fingerprint !== previous.fingerprint) await this.write([captured], { purpose: 'background' })
       const opening = recoveryOpening(input), oldIdentity = Object.freeze({}), replacement: Entry = {
@@ -192,9 +267,10 @@ export class EditorRecoveryCoordinator {
       this.entries.delete(identity); this.entries.set(oldIdentity, previous); this.entries.set(identity, replacement)
       // The placeholder is part of the private whole set before IPC can mint
       // the new owner. A lost response is retried by this same original nonce.
-      await opening()
+      const opened = await opening()
       await this.retire(previous)
       this.changed()
+      return opened
     })
   }
   /** Preserve the final complete saved side before the ordinary flushed ACK.

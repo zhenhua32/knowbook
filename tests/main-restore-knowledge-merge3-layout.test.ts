@@ -9,7 +9,7 @@ import type { FinishedMerge3Table, MergedRow3 } from '../src/main/database/resto
 // original, identity, merge or installation owner.
 type Table = FinishedMerge3Table['table']
 const columns = capsule2ApplicationColumns()
-function row(name: 'documents' | 'blocks', rowid: number, side: 'source' | 'current', value: Record<string, unknown>, encoding: Capsule2Encoding): MergedRow3 {
+function row(name: 'documents' | 'blocks', rowid: number | string, side: 'source' | 'current', value: Record<string, unknown>, encoding: Capsule2Encoding): MergedRow3 {
   const original: Record<string, unknown> = name === 'documents' ? { id: 'd-' + rowid, title: 'Document ' + rowid,
     slug: 'original-' + rowid, parent_id: null, path: 'Original ' + rowid, summary: '', sort_order: 0n,
     block_count: 0n, child_count: 0n, link_count: 9n, created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z', ...value }
@@ -73,6 +73,25 @@ test('merge3 layout reports path and slug collisions without silently changing r
   assert.equal(field(actual, 'd-1', 'title'), 'Same')
   assert.equal(field(actual, 'd-2', 'title'), 'Same')
   assert.equal(actual.documentHierarchyLaidOut, false)
+})
+
+test('merge3 layout keeps original collision order and signed slug lookup in every source encoding', () => {
+  for (const encoding of ['UTF-8', 'UTF-16le', 'UTF-16be'] as const) {
+    const first = row('documents', '-9223372036854775808', 'current', { id: '\u{10000}', title: 'Zed', slug: 'first\0slug' }, encoding)
+    const second = row('documents', -3, 'current', { id: '\uE000', title: 'Aye', slug: 'second\0slug' }, encoding)
+    const third = row('documents', 2, 'current', { id: 'third', title: 'Zed', slug: 'first\0slug' }, encoding)
+    const last = row('documents', '9223372036854775807', 'current', { id: 'last', title: 'Aye', slug: 'second\0slug' }, encoding)
+    const current = table('documents', [first, second, third, last], encoding)
+    const incoming = { ...row('documents', 17, 'source', { id: 'last', title: 'Aye' }, encoding), replaces: last.sourceRef }
+    const actual = applyMerge3DocumentLayout3(data(current), [table('documents', [first, second, third, incoming], encoding), table('blocks', [], encoding)])
+    assert.equal(field(actual, 'last', 'slug'), 'second\0slug')
+    assert.deepEqual(actual.conflicts, [
+      { code: 'duplicate-document-slug', table: 'documents', rowKeys: [first.key, third.key], detail: { slug: 'first\0slug' } },
+      { code: 'duplicate-document-slug', table: 'documents', rowKeys: [second.key, incoming.key], detail: { slug: 'second\0slug' } },
+      { code: 'duplicate-document-path', table: 'documents', rowKeys: [first.key, third.key], detail: { path: 'Zed' } },
+      { code: 'duplicate-document-path', table: 'documents', rowKeys: [second.key, incoming.key], detail: { path: 'Aye' } }
+    ])
+  }
 })
 
 test('merge3 layout reports missing and cyclic document parents while retaining every selected row', () => {

@@ -18,6 +18,7 @@ export type CanonicalInlineSeed = {
 // the same native ABI as the real app. No BrowserWindow or test IPC is created.
 const profile = process.argv[2]
 const bodyBlocks = Number(process.argv[3] ?? 2)
+const nestedList = process.argv[4] === 'nested-list'
 if (!Number.isSafeInteger(bodyBlocks) || bodyBlocks < 2 || bodyBlocks > 4000) throw new Error('Invalid canonical fixture size')
 if (!profile || !isAbsolute(profile) || resolve(profile) !== profile || !existsSync(profile)
   || lstatSync(profile).isSymbolicLink()) {
@@ -37,10 +38,12 @@ try {
   const query = 'CanonicalOrbit' + randomUUID().replaceAll('-', '').slice(0, 10)
   const primaryText = query + ' 正文🙂', secondaryText = 'Independent canonical tail'
   const hostIds = [store.createDocument(null), store.createDocument(null)] as const
+  const listParentId = randomUUID()
   const titles = ['Inline origin host', 'Inline second host'] as const
   for (let index = 0; index < hostIds.length; index++) store.updateDocument(hostIds[index], {
     title: titles[index], summary: 'Isolated canonical Electron fixture', blocks: [{
-      id: randomUUID(), type: 'paragraph', content: 'Ordinary host anchor ' + index, checked: false, depth: 0, parentBlockId: null
+      id: nestedList && index === 0 ? listParentId : randomUUID(), type: nestedList && index === 0 ? 'bulleted-list' : 'paragraph',
+      content: 'Ordinary host anchor ' + index, checked: false, depth: 0, parentBlockId: null
     }]
   })
   const open = (hostDocumentId: string) => {
@@ -76,6 +79,7 @@ try {
       content: `Canonical body ${index} · 源码编辑 ${'Markdown '.repeat(5)}Markdown`, checked: false, depth: 0, parentBlockId: null, tags: [] })),
     { id: secondaryId, type: 'paragraph', content: secondaryText, checked: false, depth: 0, parentBlockId: null, tags: [] }
   ]
+  if (nestedList) for (const block of canonical) block.type = 'bulleted-list'
   first.workingBefore.blocks.push(...canonical)
   apply(open(hostIds[0]), { clientOperationId: randomUUID(), mode: 'command', hostsWorkingBefore: [first], groups: [], expectedInstances: [],
     action: { kind: 'create', documentId: hostIds[0], selectedRootIds: canonical.map(block => block.id), groupId, instanceId: instanceIds[0] } })
@@ -84,10 +88,15 @@ try {
     // manufacture a mount proof for the next command.
     const sessionId = open(documentId), snapshot = read(sessionId)
     const action: SyncedStructureAction = { kind: 'insert', groupId, instanceId,
-      target: { documentId, parentBlockId: null, beforeBlockId: null, depth: 0 } }
-    apply(sessionId, { clientOperationId: randomUUID(), mode: 'command', action, hostsWorkingBefore: [logical(documentId)],
+      target: nestedList && documentId === hostIds[0] ? { documentId, parentBlockId: listParentId, beforeBlockId: null, depth: 1 }
+        : { documentId, parentBlockId: null, beforeBlockId: null, depth: 0 } }
+    const ack = apply(sessionId, { clientOperationId: randomUUID(), mode: 'command', action, hostsWorkingBefore: [logical(documentId)],
       groups: [{ groupId, expectedRevision: snapshot.revision, expectedTopologyRevision: snapshot.topologyRevision }],
       expectedInstances: snapshot.instances.filter(item => item.hostDocumentId === documentId).map(({ instanceId, hostDocumentId, bindingVersion }) => ({ instanceId, hostDocumentId, bindingVersion })) })
+    if (nestedList && documentId === hostIds[0]) {
+      const attached = ack.hosts[0].after.blocks.find(block => block.id === instanceId)
+      assert.deepEqual([attached?.parentBlockId, attached?.depth], [listParentId, 1])
+    }
   }
   const actual = read(open(hostIds[0]))
   assert.deepEqual(actual.blocks.map(block => [block.id, block.content]), canonical.map(block => [block.id, block.content]))

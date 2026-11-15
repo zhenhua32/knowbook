@@ -79,7 +79,7 @@ export function assertSyncedEditingFenceOwned(db:Database.Database):void {
     if(ownsGroup&&request.groupId!==proof.groupId)return fail('canonical request belongs to another captured group')
   }
   if(ownsGroup)instance(request.expectedInstanceBinding)
-  if(active.method==='applySyncedHostStructure'){
+  if(active.method==='applySyncedHostStructure'||active.method==='prepareSyncedCrossHostMove'){
     if(!Array.isArray(request.hostsWorkingBefore)||!Array.isArray(request.expectedInstances))return fail('complete host guards missing')
     for(const side of request.hostsWorkingBefore)host((side as Record<string,unknown>).documentId)
     for(const guard of request.expectedInstances)instance(guard)
@@ -89,7 +89,7 @@ export function assertSyncedEditingFenceOwned(db:Database.Database):void {
     for(const side of request.expectedHosts)host((side as Record<string,unknown>).documentId)
     for(const guard of request.expectedInstances)instance(guard)
   }
-  if(active.method==='getSyncedHostHistory')host(request.documentId)
+  if(active.method==='getSyncedHostHistory'||active.method==='getSyncedCrossHostMoveHistory')host(request.documentId)
 }
 
 /** New metadata business writers are production session consumers only. They

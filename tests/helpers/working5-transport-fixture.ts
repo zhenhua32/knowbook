@@ -5,7 +5,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { dirname, join, resolve } from 'node:path'
 import { lstat, mkdir, readFile, readdir, realpath, rename } from 'node:fs/promises'
-import { capsuleBytesHash } from '../../src/main/database/restore-knowledge-capsule-model'
+import { capsuleBytesHash, capsuleJson } from '../../src/main/database/restore-knowledge-capsule-model'
 import { certifyCapsule2Source } from '../../src/main/database/restore-knowledge-capsule2-source-certificate'
 import { captureSealedCapsule2SourceWithAssetProvenance3 } from '../../src/main/database/restore-knowledge-capsule2-source-seal'
 import type { readCompleteOriginalContentPair3 } from '../../src/main/database/restore-knowledge-qualified-originals'
@@ -133,7 +133,9 @@ export async function assertWorkingTransportChild5(f: WorkingTransport5, mode: '
   assert.equal(cold.forbiddenOriginRootCount,new Set(forbiddenOriginRoots.map(path=>process.platform==='win32'?resolve(path).toLowerCase():resolve(path))).size)
   assert.equal(cold.sourceManifestHash, saved.saved.info.manifestHash)
   assert.equal(cold.sourceMaterialHash, saved.saved.value.materialHash); assert.equal(cold.sourceArchiveHash, saved.saved.value.assetArchiveHash)
-  assert.equal(cold.currentMaterialHash, current.value.materialHash); assert.equal(cold.currentArchiveVersion, 2)
+  assert.equal(cold.sourceContentSha256, capsuleBytesHash(capsuleJson(saved.saved.value.source.sourceContent)))
+  assert.equal(cold.currentMaterialHash, current.value.materialHash); assert.equal(cold.currentArchiveHash, current.value.assetArchiveHash)
+  assert.equal(cold.currentArchiveVersion, 2)
   assert.equal(cold.workingManifestHash,sourceArchive.workingOriginals.manifestHash)
   assert.equal(cold.supplementalObservationHash, sourceArchive.assetScopeSupplement.observationHash)
   assert.equal(cold.baseManifestHash, sourceArchive.baseProjection.baseManifestHash)

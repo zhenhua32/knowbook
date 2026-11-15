@@ -7,11 +7,11 @@ import test from 'node:test'
 import { promisify } from 'node:util'
 import { exchangeJobHash } from '../src/main/sync/synced-exchange-model'
 import { pendingLocalComponentHash5, type PendingLocalComponentLocator5 } from '../src/main/database/restore-knowledge-pending-local-selection5'
-import { prepareRootRestoreReferenceWithPendingLocal5 } from '../src/main/database/restore-knowledge-reference3-read'
+import { withPreparedRootRestorePendingReference5 } from '../src/main/database/restore-knowledge-reference3-read'
 import { prepareRootRestoreSqlAssetStage5 } from '../src/main/database/restore-knowledge-sql-asset-stage5'
 import { referenceContextObjectPath } from '../src/main/database/restore-knowledge-reference-context-model'
 import { allTables, withV3Fixture } from './helpers/synced-backup-v3-fixture'
-import { prepareWorking5AssetReferenceFixture } from './helpers/working5-asset-authority-fixture'
+import { withWorking5AssetReferenceFixture } from './helpers/working5-asset-authority-fixture'
 import { withPendingWorkingSource5 } from './helpers/working5-automatic-source-fixture'
 
 const tracePath = process.env.KNOWBOOK_PENDING_STAGE5_TEST_TRACE
@@ -25,9 +25,6 @@ test('pending Reference3 v2 reopens in an independent process and reads exact SQ
   return withPendingWorkingSource5(f => withV3Fixture(async receiver => {
     phase('fixture-ready')
     const sourceBefore = allTables(f.f.B.db), currentBefore = allTables(receiver.db)
-    phase('base-reference-prepare-start')
-    const { reference, qualified, identity } = await prepareWorking5AssetReferenceFixture(f, receiver.db, phase)
-    phase('base-reference-prepared')
     const recordKey = 'doc:' + f.documentId
     const record = f.working.records.find(row => row.jobSettingKey === f.row.key && row.recordKey === recordKey)
     const scope = f.working.observation.scopes.find(row => row.jobSettingKey === f.row.key && row.recordKey === recordKey)
@@ -42,9 +39,18 @@ test('pending Reference3 v2 reopens in an independent process and reads exact SQ
       archiveHash: f.value.assetArchiveHash, workingManifestHash: f.working.manifestHash, operationId: f.operationId,
       attemptId: f.job.attemptId, jobHash: exchangeJobHash(f.job), contextHash: scope.contextHash, planHash,
       componentHash: pendingLocalComponentHash5(component), recordKey, localFinalHash: entry.hash }
-    phase('pending-reference-prepare-start')
-    const prepared = await prepareRootRestoreReferenceWithPendingLocal5(reference.plan, choice)
-    phase('pending-reference-prepared')
+    phase('base-reference-prepare-start')
+    const { reference, qualified, identity, prepared, stage } = await withWorking5AssetReferenceFixture(f, receiver.db, (inputs, identityScope) => {
+      phase('base-reference-prepared')
+      phase('pending-reference-prepare-start')
+      return withPreparedRootRestorePendingReference5(inputs.reference.plan, choice, identityScope, async (prepared, stageScope) => {
+        phase('pending-reference-prepared')
+        phase('combined-stage-prepare-start')
+        const stage = await prepareRootRestoreSqlAssetStage5(prepared.plan, stageScope)
+        phase('combined-stage-prepared')
+        return { ...inputs, prepared, stage }
+      })
+    }, phase)
     const pending = prepared.value.candidate.pendingLocalBody
     assert.ok(pending)
     const manifest = JSON.parse(await readFile(join(prepared.directory, 'manifest.json'), 'utf8'))
@@ -52,9 +58,6 @@ test('pending Reference3 v2 reopens in an independent process and reads exact SQ
     assert.deepEqual(manifest.pendingSelection, choice)
     assert.equal(manifest.pendingCellProofHash, pending.proofHash)
     assert.equal(manifest.pendingBaseCandidateHash, reference.value.candidate.checkedCanonicalCandidateHash)
-    phase('combined-stage-prepare-start')
-    const stage = await prepareRootRestoreSqlAssetStage5(prepared.plan)
-    phase('combined-stage-prepared')
     assert.equal(stage.assets.value.version, 4)
     assert.equal(stage.assets.value.pendingOccurrences, 2)
     assert.equal(stage.value.installPermit, false)

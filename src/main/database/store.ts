@@ -1,9 +1,10 @@
 import { hasExistingNativeHeadingTextChange, type DocumentRenameAdmissionResult } from '../../shared/document-rename-admission'
 import { readDocumentRenameAdmissionOwned2, OrdinaryRenameRequiresTitle2 } from './ordinary-title-rename-admission2'
 import { assertCanonicalRuntimeReadableOwned, hasCanonicalRuntimeDataOwned } from './canonical-runtime-read'
+import { attachInstalledRestoreRuntime } from './restore-knowledge-runtime-authority'
 import { readCanonicalBackupRevision } from './canonical-backup-revision'
 import { readConfirmedSyncedBackupV3PublicationOwned } from './synced-backup-v3-publication-read'
-import { isTaskBlockType, isOrderedListBlockType, canBlockHaveParent, canBlockNestUnder } from '@shared/blockTypes'
+import { isTaskBlockType, isOrderedListBlockType, canBlockHaveParent, canBlockNestUnder, isListBlockType } from '@shared/blockTypes'
 import { assertColumnStructure } from '@shared/columns'
 import { assertDatabaseViewStructure } from '@shared/databaseViewBlock'
 import { canAiEditBlockText } from '@shared/blockAiEligibility'
@@ -97,7 +98,7 @@ import { WorkspaceSearchRepository } from './workspace-search'
 import { SyncedEditingSessionRepository } from './synced-editing-session'
 import { readEditorRecoveryWorkspace } from './synced-editing-fence'
 import type { OpenSyncedEditingSessionInput, OpenSyncedEditingSessionResult, SyncedEditingMethod, SyncedEditingRequest, SyncedEditingResult } from '../../shared/synced-editing-session'
-import { resolveWorkspaceSearchOccurrence, resolveSyncedInlineInstance } from './workspace-search-occurrences'
+import { resolveWorkspaceSearchOccurrence, resolveSyncedInlineInstance, resolveSyncedStoredBlockLink } from './workspace-search-occurrences'
 import { resolveSyncedCanonicalBlockAddress } from './synced-canonical-block-navigation'
 import type { WorkspaceSearchOccurrence, WorkspaceSearchOccurrenceResult } from '../../shared/workspace-search-occurrence'
 import type { ResolveSyncedInlineInstanceInput, SyncedInlineInstanceResult } from '../../shared/workspace-search-occurrence'
@@ -414,6 +415,7 @@ function preflightJournaledDatabase(databasePath: string, capability?: typeof ca
     copyFileSync(databasePath, copy, constants.COPYFILE_EXCL)
     for (const suffix of sidecars) copyFileSync(databasePath + suffix, copy + suffix, constants.COPYFILE_EXCL)
     inspection = new Database(copy, { fileMustExist: true })
+    if (capability === canonicalRuntimeStartup) attachInstalledRestoreRuntime(inspection, databasePath)
     assertSupportedDatabase(inspection, capability)
   } finally {
     inspection?.close()
@@ -460,6 +462,7 @@ export class KnowbookStore {
     const databaseAlreadyExists = !this.emptyReceiver && existsSync(databasePath)
     if (databaseAlreadyExists) preflightJournaledDatabase(databasePath, runtime)
     this.db = new Database(databasePath)
+    if (capability === canonicalRuntimeStartup) attachInstalledRestoreRuntime(this.db, databasePath)
     this.markdownLinks = new MarkdownLinkIndex(this.db, (id) => {
       if (!this.restoringTrashedDocument) this.documentRecovery?.checkpoint(id)
     })
@@ -1056,12 +1059,17 @@ export class KnowbookStore {
     }
   }
 
-  private healOrphanedBlockTree(blocks: ExportBlockRow[]): ExportBlockRow[] {
+  private healOrphanedBlockTree(blocks: Array<ExportBlockRow & { registered_reference: number }>): ExportBlockRow[] {
     const ancestors: ExportBlockRow[] = []
     let changed = false
     const healed = blocks.map(block => {
       let depth = this.normalizeNestableDepth(block.type, block.depth ?? 0)
-      while (depth > 0 && (!ancestors[depth - 1] || !canBlockNestUnder(ancestors[depth - 1].type, block.type))) depth--
+      const parent = ancestors[depth - 1]
+      const explicitListReference = block.registered_reference === 1 && depth === block.depth && parent
+        && block.parent_block_id === parent.id && isListBlockType(parent.type)
+      if (!explicitListReference) {
+        while (depth > 0 && (!ancestors[depth - 1] || !canBlockNestUnder(ancestors[depth - 1].type, block.type))) depth--
+      }
       // A read never adopts a child into an unrelated owner when its declared parent is missing.
       if (depth > 0 && block.parent_block_id !== ancestors[depth - 1].id) depth = 0
       const parentBlockId = depth > 0 ? ancestors[depth - 1].id : null
@@ -1090,11 +1098,17 @@ export class KnowbookStore {
     }
 
     const blocks = this.db.prepare(`
-      SELECT id, type, content, checked, depth, tags_json, parent_block_id, sort_order, language, list_start, markdown_format_json, highlight
-      FROM blocks
-      WHERE document_id = ?
-      ORDER BY sort_order ASC
-    `).all(documentId) as ExportBlockRow[]
+      SELECT block.id, block.type, block.content, block.checked, block.depth, block.tags_json, block.parent_block_id,
+        block.sort_order, block.language, block.list_start, block.markdown_format_json, block.highlight,
+        CASE WHEN block.type='synced-block' AND block.depth>0 THEN EXISTS(
+          SELECT 1 FROM synced_instances AS instance
+          WHERE instance.instance_id=block.id AND instance.host_document_id=block.document_id
+            AND instance.parent_block_id IS block.parent_block_id AND instance.depth=block.depth
+        ) ELSE 0 END AS registered_reference
+      FROM blocks AS block
+      WHERE block.document_id = ?
+      ORDER BY block.sort_order ASC
+    `).all(documentId) as Array<ExportBlockRow & { registered_reference: number }>
 
     const outgoingLinks = this.db.prepare(`
       SELECT target.id, target.title, target.path, links.label
@@ -1758,6 +1772,10 @@ export class KnowbookStore {
 
   moveDocumentBlocks(input: MoveDocumentBlocksInput): DocumentBlockMoveResult {
     return new DocumentBlockTransfers(this, this.markdownLinks).move(input)
+  }
+
+  readControlledDocumentBlockMoveDependencies(input: MoveDocumentBlocksInput) {
+    return new DocumentBlockTransfers(this, this.markdownLinks).readControlledDependencies(input)
   }
 
   getDocumentBlockMoveHistory(documentId: string): DocumentBlockMoveHistoryEntry | null {
@@ -2506,6 +2524,10 @@ export class KnowbookStore {
     return resolveSyncedInlineInstance(this.db,input)
   }
 
+  resolveSyncedStoredBlockLink(input: unknown) {
+    return resolveSyncedStoredBlockLink(this.db, input)
+  }
+
   private editingSessions(): SyncedEditingSessionRepository {
     return this.syncedEditingSessions??=new SyncedEditingSessionRepository(this.db)
   }
@@ -2790,7 +2812,7 @@ export class KnowbookStore {
 
   assertLegacyWorkspaceTransferAllowed(): void {
     if (this.canonicalRuntime && this.runInTransaction(() => hasCanonicalRuntimeDataOwned(this.db)))
-      throw new Error('工作区包含同步块或其保留记录，旧 Markdown 恢复/导出不能无损处理。请使用完整 V3 备份；V3 恢复入口尚待实现，原数据未修改。')
+      throw new Error('工作区包含同步块或其保留记录，请使用完整 V3 备份。')
   }
 
   assertOrdinarySyncAllowed(): void {

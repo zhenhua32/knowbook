@@ -1,6 +1,6 @@
 // Private physical restore files remain non-executable until a full history cut.
 import Database from 'better-sqlite3'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { readdir, rmdir, unlink } from 'node:fs/promises'
 import type { BigIntStats } from 'node:fs'
@@ -10,6 +10,7 @@ import { validateSyncedWorkspaceGraph } from '../../shared/syncedBlockGraph'
 import { canonicalSyncedPortableJson, projectSyncedGroupBudget } from '../../shared/syncedBlockPortable'
 import { capsuleBytesHash, capsuleJson, capsuleRecord, freezeCapsuleValue, validateDurableSqlCapsuleInventory,
   type DurableSqlCapsuleFile } from './restore-knowledge-capsule-model'
+import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
 import { graph3Encode, graph3Rows, graph3Text } from './restore-knowledge-graph3-data'
 import { readRootRestoreReferenceGraphInputs3, assertRootRestoreReferenceOriginalBytes3, readRootRestoreReferenceCopySource3,
   readRootRestoreStageInputs5, type RootRestoreReferencePlan3, type RootRestoreStageInputs5 } from './restore-knowledge-reference3-read'
@@ -41,7 +42,7 @@ import { publicationCompare, publicationHash, publicationJson } from '../sync/sy
 import { durableSqlDagHash, durableSqlDagUuid } from './restore-knowledge-dag-model'
 import { planRootRestoreStage3RetainedCut3, assertRootRestoreStage3RetainedCutObserved3 } from './restore-knowledge-stage3-cut'
 import { hasAnySyncedObservationPending } from './synced-remote-observation-pending'
-import type { RootRestoreAssetAliasStage5 } from './restore-knowledge-asset-alias-stage5'
+import type { readRootRestoreAssetAliasStageCopies5, RootRestoreAssetAliasStage5 } from './restore-knowledge-asset-alias-stage5'
 import { deriveRootRestoreCanonicalAssetPlan5, type RootRestoreCanonicalAssetPlan5 as CanonicalAssets } from './restore-knowledge-canonical-asset-plan5'
 import type { RootRestoreSqlAssetStage5 } from './restore-knowledge-sql-asset-stage5'
 
@@ -67,11 +68,27 @@ interface Saved {
   intent: Intent; intentHash: string; manifest: Manifest; manifestHash: string
 }
 const stages = new WeakMap<RootRestorePhysicalStage3, Saved>()
+export interface PreparedRestoreHistoryScope3 { readonly kind: 'main-prepared-restore-history-scope' }
+type PreparedHistory = { stage: RootRestorePhysicalStage3; value: PreparedPhysicalStage3['value']; retainedCut: Planned['retainedCut'];
+  assertAliasBytes: () => Promise<void> }
+type PreparedAliasTransfer = { owner: RootRestoreAssetAliasStage5; readCopies: () => ReturnType<typeof readRootRestoreAssetAliasStageCopies5> }
+const preparedHistoryScopes = new WeakMap<PreparedRestoreHistoryScope3, { prepared?: PreparedHistory; transfer?: PreparedAliasTransfer }>()
+
+/** Reuse one freshly prepared canonical stage during coverage and its transfer.
+ * The private scope expires with the enclosing operation. */
+export async function withPreparedRestoreHistoryScope3<T>(run: (scope: PreparedRestoreHistoryScope3) => Promise<T>): Promise<T> {
+  const scope: PreparedRestoreHistoryScope3 = Object.freeze({ kind: 'main-prepared-restore-history-scope' })
+  preparedHistoryScopes.set(scope, {})
+  try { return await run(scope) }
+  finally { preparedHistoryScopes.delete(scope) }
+}
 const contentNames = new Set<string>(MERGE3_CONTENT_TABLES)
 const ftsFootprint = new Set<string>([...capsule2DerivedFtsTables(), 'document_search_ids', 'block_search_ids'])
 const quote = (name: string) => '"' + name.replace(/"/g, '""') + '"'
 const same = (a: unknown, b: unknown) => capsuleJson(a) === capsuleJson(b)
 const hash = (domain: string, value: unknown) => capsuleBytesHash(domain + '\0' + capsuleJson(value))
+const hashStageData = (domain: string, value: object) => hashBoundedCapsuleJson(value, Number.MAX_SAFE_INTEGER, domain + '\0')
+  ?? fail('已核实的stage canonical哈希缺失')
 const fail = (message: string): never => { throw new Error('Root3非执行物理stage失败：' + message + '；未授安装/cut/accepted许可，失败私有目录保留。') }
 const maxSmallBytes = 256 * 1024
 const text = (value: unknown): string => typeof value === 'string' ? value : fail('要求实际TEXT值')
@@ -127,11 +144,11 @@ function acceptCandidate(actual: Actual) {
     return fail('候选不是准确完整12表')
 }
 function planSql(actual: Actual, preparedAt: string, cutContext: { stageId: string; copyId: string; copyManifestHash: string },
-  canonical?: CanonicalAssets) {
+  canonical?: CanonicalAssets, retainDeletedHostStates = true) {
   acceptCandidate(actual)
   const current = actual.data.inputs.current.source.sourceContent, enc = current.encoding
   const sourceCandidate = actual.candidate.tables.map(rawTarget)
-  const sourceCandidate12TablesHash=hash('knowbook.restore.stage3.planned-content.v1',sourceCandidate)
+  const sourceCandidate12TablesHash=hashStageData('knowbook.restore.stage3.planned-content.v1',sourceCandidate)
   const originalTables=canonical ? canonical.tables.map(rawTarget) : sourceCandidate
   type Change={table:'synced_groups'|'synced_instances';targetRowId:string;targetId:string;sourceId:string;
     sourceRef:Table['rows'][number]['sourceRef'];currentSourceRef:Table['rows'][number]['sourceRef']|null;
@@ -270,7 +287,7 @@ function planSql(actual: Actual, preparedAt: string, cutContext: { stageId: stri
   }
   assertAddedBudget('lifecycle', lifecycleAdded)
   const app = raw(actual, 'app_settings'), appRowIds = nextIds(app.rows), markerRowId = appRowIds(), retainedCutRowId = appRowIds()
-  const preCutPhysical12TablesHash=hash('knowbook.restore.stage3.planned-content.v1',tables)
+  const preCutPhysical12TablesHash=hashStageData('knowbook.restore.stage3.planned-content.v1',tables)
   const stageExecution={scope:'new-incoming-allocation-and-current-boundary-preservation' as const,
     canonicalCandidateHash:actual.candidate.canonicalCandidateHash,checkedCanonicalCandidateHash:actual.candidate.checkedCanonicalCandidateHash,
     sourceCandidate12TablesHash,physical12TablesHash:preCutPhysical12TablesHash,derivedReferenceAllocationHash:actual.allocation.derivedReferenceAllocationHash,
@@ -278,8 +295,8 @@ function planSql(actual: Actual, preparedAt: string, cutContext: { stageId: stri
     finalCurrentRetainedCutComplete:false as const}
   assertMerge3JsonBudget(stageExecution)
   const preCutStageExecutionHash=hash('knowbook.restore.stage3.execution-transition.v1',stageExecution)
-  const retainedCut=planRootRestoreStage3RetainedCut3(actual,tables,{...cutContext,preparedAt})
-  const physical12TablesHash=hash('knowbook.restore.stage3.planned-content.v1',retainedCut.tables)
+  const retainedCut=planRootRestoreStage3RetainedCut3(actual,tables,{...cutContext,preparedAt},retainDeletedHostStates)
+  const physical12TablesHash=hashStageData('knowbook.restore.stage3.planned-content.v1',retainedCut.tables)
   const stageExecutionHash=hash('knowbook.restore.stage3.execution-transition.v1',{
     scope:'incoming-staging-and-complete-current-retained-cut',preCutStageExecutionHash,preCutPhysical12TablesHash,
     physical12TablesHash,retainedCutHash:retainedCut.cutHash,currentExecutionBoundariesPreserved:false,
@@ -336,22 +353,24 @@ function assertSchema(db: Database.Database, actual: Actual) {
 }
 function cellsBytes(rows: readonly Row[]) { let total = 0n; for (const row of rows) for (const cell of row.cells)
   total += BigInt(cell[0]==='text'||cell[0]==='blob' ? Buffer.from(cell[1],'base64').length : 8); return total }
-function exactTable(db: Database.Database, table: Capsule2RawSqlTable, enc: Capsule2Encoding) {
+function exactTable(db: Database.Database, table: Capsule2RawSqlTable, enc: Capsule2Encoding): Capsule2RawSqlTable {
   const columns = db.prepare('SELECT * FROM main.'+quote(table.name)+' LIMIT 0').columns().map(column=>column.name)
   if (!same(columns,table.columns)) return fail('实际列序变化：'+table.name)
   const measured = db.prepare('SELECT count(*),coalesce(sum('+capsule2RawSqlValueBytesExpression(columns)+'),0) FROM main.'+quote(table.name))
     .safeIntegers(true).raw(true).get() as [bigint,bigint]
   if (measured[0]!==BigInt(table.rows.length)||measured[1]!==cellsBytes(table.rows)) return fail('实际行数/值bytes不符：'+table.name)
   const projection=columns.flatMap(column=>[`typeof(${quote(column)})`, `CASE WHEN typeof(${quote(column)})='text' THEN CAST(${quote(column)} AS BLOB) ELSE ${quote(column)} END`]).join(',')
-  const expected=[...table.rows].sort(rowOrder), output: Capsule2RawSqlRow[]=[]
+  // Original capsule rows are already in signed physical order. Keep the
+  // previous sort for local plans that supply a different row order.
+  const expected=table.rows.some((row,index)=>index>0&&rowOrder(table.rows[index-1],row)>0)?[...table.rows].sort(rowOrder):table.rows
+  let count=0
   for (const rawRow of db.prepare('SELECT _rowid_,'+projection+' FROM main.'+quote(table.name)+' ORDER BY _rowid_').safeIntegers(true).raw(true).iterate() as IterableIterator<unknown[]>) {
     if (typeof rawRow[0]!=='bigint') return fail('实际rowid非int64')
     const row={sourceRowId:rawRow[0].toString(),cells:columns.map((_column,index)=>rawRestoreSqlCell(rawRow[2*index+1],rawRow[2*index+2],enc))}
-    if (!same(row,expected[output.length])) return fail('原行/targetRowId/storage class/bytes不符：'+table.name+':'+row.sourceRowId)
-    output.push(row)
+    if (!same(row,expected[count++])) return fail('原行/targetRowId/storage class/bytes不符：'+table.name+':'+row.sourceRowId)
   }
-  if(output.length!==expected.length)return fail('实际行被截断')
-  return {...table,rows:output}
+  if(count!==expected.length)return fail('实际行被截断')
+  return expected===table.rows?table:{...table,rows:expected}
 }
 function cellParam(cell: RawRestoreSqlCell,enc:Capsule2Encoding): {sql:string; value:null|bigint|number|Buffer|string} {
   if(cell[0]==='null')return {sql:'?',value:null}
@@ -373,33 +392,62 @@ function insertRow(db:Database.Database,table:Capsule2RawSqlTable,row:Row,enc:Ca
   db.prepare('INSERT INTO main.'+quote(table.name)+'(_rowid_,'+table.columns.map(quote).join(',')+') VALUES(?,'+params.map(item=>item.sql).join(',')+')')
     .run(int64(row.sourceRowId),...params.map(item=>item.value))
 }
-/** Actual final parent graph, not rowid/depth order. Native parent-role guards
- * execute immediately even while FK constraints are deferred. Use an iterative
- * full forest order for parents first; DELETE uses the original forest reversed. */
-function parentOrdered(table:Capsule2RawSqlTable,enc:Capsule2Encoding):readonly Row[] {
-  const parentColumn=table.name==='documents'?'parent_id':table.name==='blocks'||table.name==='synced_group_blocks'?'parent_block_id':null
-  if(parentColumn===null)return table.rows
-  const ownerColumn=table.name==='blocks'?'document_id':table.name==='synced_group_blocks'?'group_id':null
-  const nodes=new Map<string,{row:Row;value:Record<string,unknown>}>(),children=new Map<string,Row[]>(),roots:Row[]=[]
-  for(const row of table.rows){const value=values({columns:table.columns,encoding:enc},row),id=text(value.id)
-    if(nodes.has(id))return fail('parent ordering发现重复物理id');nodes.set(id,{row,value})}
-  for(const node of nodes.values()){
-    const parent=node.value[parentColumn]
-    if(parent===null){roots.push(node.row);continue}
-    const id=text(parent),found=nodes.get(id)
-    if(!found||ownerColumn!==null&&found.value[ownerColumn]!==node.value[ownerColumn])return fail('parent不在同一完整物理forest')
-    if(table.name==='blocks'&&found.value.type==='synced-block')return fail('sync leaf不能拥有物理child')
-    const list=children.get(id)??[];list.push(node.row);children.set(id,list)
+/** Native parent-role guards execute even under deferred foreign keys. Keep
+ * their breadth-first order and its exact reverse, sorting siblings by signed
+ * rowid. Only the identity and placement columns need decoding to plan it. */
+function* parentOrdered(table: Capsule2RawSqlTable, enc: Capsule2Encoding, reverse = false): IterableIterator<Row> {
+  const parentColumn = table.name === 'documents' ? 'parent_id' : 'parent_block_id'
+  const ownerColumn = table.name === 'blocks' ? 'document_id' : table.name === 'synced_group_blocks' ? 'group_id' : undefined
+  if (table.name !== 'documents' && !ownerColumn) {
+    if (reverse) for (let index = table.rows.length - 1; index >= 0; index--) yield table.rows[index]
+    else yield* table.rows
+    return
   }
-  roots.sort(rowOrder);for(const list of children.values())list.sort(rowOrder)
-  const output:Row[]=[],queue=[...roots]
-  for(let offset=0;offset<queue.length;offset++){
-    const row=queue[offset];output.push(row)
-    const id=text(values({columns:table.columns,encoding:enc},row).id)
-    for(const child of children.get(id)??[])queue.push(child)
-  }
-  if(output.length!==table.rows.length)return fail('parent ordering发现循环/无根组件')
-  return output
+  if (!table.rows.length) return
+  const columns = [table.columns.indexOf('id'), table.columns.indexOf(parentColumn),
+    ownerColumn === undefined ? -1 : table.columns.indexOf(ownerColumn), table.columns.indexOf('type')]
+  const [idIndex, parentIndex, ownerIndex, typeIndex] = columns
+  if (idIndex < 0 || parentIndex < 0 || ownerColumn && ownerIndex < 0 || table.name === 'blocks' && typeIndex < 0)
+    return fail('parent ordering缺少物理布局列')
+  const scratch = new Database(':memory:')
+  try {
+    scratch.pragma('temp_store=FILE')
+    if (scratch.pragma('temp_store', { simple: true }) !== 1) return fail('parent ordering临时文件不可用')
+    scratch.exec(`CREATE TEMP TABLE forest(id TEXT PRIMARY KEY, parent TEXT, owner TEXT, row_id INTEGER NOT NULL,
+      source_index INTEGER NOT NULL, is_reference INTEGER NOT NULL) WITHOUT ROWID;
+      CREATE INDEX temp.forest_parent ON forest(parent,row_id);
+      CREATE TEMP TABLE parent_order(position INTEGER PRIMARY KEY, id TEXT NOT NULL, source_index INTEGER NOT NULL);`)
+    scratch.pragma('temp.cache_size=-2048')
+    const textAt = (row: Row, index: number) => index < 0 || row.cells[index][0] === 'null' ? null : graph3Text(row.cells[index], enc)
+    const insert = scratch.prepare('INSERT OR IGNORE INTO temp.forest VALUES(?,?,?,?,?,?)')
+    const append = scratch.prepare(`INSERT INTO temp.parent_order(id,source_index)
+      SELECT child.id,child.source_index FROM temp.parent_order base CROSS JOIN temp.forest child
+      WHERE base.position BETWEEN ? AND ? AND child.parent=base.id ORDER BY base.position,child.row_id`)
+    scratch.transaction(() => {
+      for (const [index, row] of table.rows.entries()) {
+        const reference = table.name === 'blocks' && textAt(row, typeIndex) === 'synced-block'
+        if (insert.run(text(textAt(row, idIndex)), textAt(row, parentIndex), textAt(row, ownerIndex),
+          int64(row.sourceRowId), index, Number(reference)).changes !== 1) return fail('parent ordering发现重复物理id')
+      }
+      if (scratch.prepare(`SELECT 1 FROM temp.forest child LEFT JOIN temp.forest base ON base.id=child.parent
+        WHERE child.parent IS NOT NULL AND (base.id IS NULL OR base.owner IS NOT child.owner) LIMIT 1`).get())
+        return fail('parent不在同一完整物理forest')
+      if (scratch.prepare(`SELECT 1 FROM temp.forest child JOIN temp.forest base ON base.id=child.parent
+        WHERE base.is_reference=1 LIMIT 1`).get()) return fail('sync leaf不能拥有物理child')
+      let first = 1
+      let last = scratch.prepare(`INSERT INTO temp.parent_order(id,source_index)
+        SELECT id,source_index FROM temp.forest WHERE parent IS NULL ORDER BY row_id`).run().changes
+      while (first <= last) {
+        const count = append.run(first, last).changes
+        first = last + 1
+        last += count
+      }
+      if (last !== table.rows.length) return fail('parent ordering发现循环/无根组件')
+    })()
+    const direction = reverse ? 'DESC' : 'ASC'
+    const indexes = scratch.prepare(`SELECT source_index FROM temp.parent_order ORDER BY position ${direction}`).pluck().iterate()
+    for (const index of indexes as IterableIterator<number>) yield table.rows[index]
+  } finally { scratch.close() }
 }
 function upsertTargets(db:Database.Database,table:Capsule2RawSqlTable,before:Capsule2RawSqlTable,enc:Capsule2Encoding) {
   const old=new Map(before.rows.map(row=>[row.sourceRowId,row]))
@@ -452,7 +500,7 @@ function deleteRemoved(db:Database.Database,table:Capsule2RawSqlTable,before:Cap
       if(!removed.get(child.child)?.has(row.id.toString()))return fail('DELETE会影响未声明current行：'+table.name+'→'+child.child)
     }
   }
-  for(const old of [...parentOrdered(before,enc)].reverse()){
+  for(const old of parentOrdered(before,enc,true)){
     const id=old.sourceRowId;if(!remove.has(id))continue
     if(db.prepare('DELETE FROM main.'+quote(table.name)+' WHERE _rowid_=?').run(int64(id)).changes!==1)return fail('删除目标rowid缺失')
   }
@@ -472,8 +520,16 @@ function ftsProjection(db:Database.Database,integrity:boolean) {
     const count=(name:string)=>(db.prepare('SELECT count(*) AS value FROM main.'+quote(name)).safeIntegers(true).get() as {value:bigint}).value
     if(count(config.base)!==count(config.lookup)||count(config.base)!==count(config.fts))return fail('FTS/lookup存在多缺或重复映射')
     if(integrity)db.prepare('INSERT INTO main.'+f+'('+f+") VALUES('integrity-check')").run()
-    const rows=db.prepare('SELECT _rowid_,search_rowid,CAST('+key+' AS BLOB) FROM main.'+l+' ORDER BY _rowid_').safeIntegers(true).raw(true).all() as Array<[bigint,bigint,Buffer]>
-    metrics.push({table:config.fts,rows:rows.length.toString(),lookupHash:hash('knowbook.restore.stage3.native-fts-lookup.v1',rows.map(row=>[row[0].toString(),row[1].toString(),row[2].toString('base64')]))})
+    const rows = db.prepare(`SELECT _rowid_,search_rowid,CAST(${key} AS BLOB) FROM main.${l} ORDER BY _rowid_`)
+      .safeIntegers(true).raw(true).iterate() as IterableIterator<[bigint,bigint,Buffer]>
+    const digest = createHash('sha256').update('knowbook.restore.stage3.native-fts-lookup.v1\0[')
+    let scanned = 0n
+    for (const [rowid, searchRowId, id] of rows) {
+      if (scanned > 0n) digest.update(',')
+      digest.update(capsuleJson([rowid.toString(), searchRowId.toString(), id.toString('base64')]))
+      scanned++
+    }
+    metrics.push({ table: config.fts, rows: scanned.toString(), lookupHash: digest.update(']').digest('hex') })
   }
   return metrics
 }
@@ -497,36 +553,64 @@ function observeSql(db:Database.Database,actual:Actual,plan:Planned,marker:RootR
   // This reader owns main only: scope both checks to that exact database so
   // the final marker admission can still reject any real TEMP/ATTACH database.
   if(db.pragma('main.integrity_check',{simple:true})!=='ok'||(db.pragma('main.foreign_key_check') as unknown[]).length)return fail('实际SQL/FK完整性失败')
+  // SQL exhausts and compares the true ordered rows before returning this
+  // exact view. Downstream graph reconstruction does not need a second copy
+  // of the same storage cells, including on an independent cold connection.
   const tables=plan.tables.map(table=>exactTable(db,table,plan.encoding))
-  const physical12TablesHash=hash('knowbook.restore.stage3.planned-content.v1',tables)
+  const physical12TablesHash=hashStageData('knowbook.restore.stage3.planned-content.v1',tables)
   if(physical12TablesHash!==plan.physical12TablesHash)return fail('实际physical12不等于声明execution转换')
-  const actualRows=new Map(tables.map(table=>[table.name,new Map(table.rows.map(row=>[row.sourceRowId,row]))]))
-  const protectedObservations=protectedTables(actual,plan,marker).map(table=>{const observed=exactTable(db,table,plan.encoding)
+  const exactTables = new Map(tables.map(table => [table.name, table]))
+  const protectedObservations=protectedTables(actual,plan,marker).map(table=>{
+    const verified=exactTable(db,table,plan.encoding)
     if(assets&&table.name==='app_settings'){
-      const original=raw(actual,'app_settings'), keys=new Set(original.rows.map(row=>row.sourceRowId))
-      const retained={...observed,rows:observed.rows.filter(row=>keys.has(row.sourceRowId))}
-      if(!same(retained,{...original,rows:[...original.rows].sort(rowOrder)}))return fail('实际保留设置行不等于原字节')
-      assets.settingsHash=hash('knowbook.restore.stage3.exact-table.v1',retained)
+      const {rows:originalRows,...original}=raw(actual,'app_settings'),keys=new Set(originalRows.map(row=>row.sourceRowId))
+      const {rows:observedRows,...observed}=verified,retained=observedRows.filter(row=>keys.has(row.sourceRowId))
+      const expected=[...originalRows].sort(rowOrder)
+      if(!same(observed,original)||retained.length!==expected.length||retained.some((row,index)=>!same(row,expected[index])))
+        return fail('实际保留设置行不等于原字节')
+      assets.settingsHash=hashStageData('knowbook.restore.stage3.exact-table.v1',{...observed,rows:retained})
     }
-    return {table:table.name,rows:table.rows.length,rowHash:hash('knowbook.restore.stage3.exact-table.v1',observed)}})
+    return {table:table.name,rows:table.rows.length,rowHash:hashStageData('knowbook.restore.stage3.exact-table.v1',verified)}
+  })
   const lookup=ftsProjection(db,!readonly)
   assertSyncedLifecycleCoverage(db)
-  const groups=graph3Rows({tables,encoding:plan.encoding},'synced_groups'), groupIds=groups.map(group=>text(group.value.id))
+  const groupTable = exactTables.get('synced_groups')!
+  const groupIdColumn = groupTable.columns.indexOf('id')
+  const groupIds = groupTable.rows.map(row => graph3Text(row.cells[groupIdColumn], plan.encoding))
   const lifecycles=readSyncedGroupLifecycles(db,groupIds)
   assertSyncedLogicalDeletionRecords(db)
-  const actualTables=actual.candidate.tables.map(table=>({...table,rows:table.rows.map(row=>({ ...row,
-    cells:actualRows.get(table.name)!.get(row.targetRowId)!.cells }))}))
+  // Merge3 and exactTable both retain signed physical rowid order. Match the
+  // verified rows directly before rebuilding their original source metadata.
+  const actualTables = actual.candidate.tables.map(table => {
+    const observed = exactTables.get(table.name)
+    if (!observed || observed.rows.length !== table.rows.length) return fail('实际候选表行数不符：' + table.name)
+    return { ...table, rows: table.rows.map((row, index) => {
+      const actualRow = observed.rows[index]
+      if (row.targetRowId !== actualRow.sourceRowId) return fail('实际候选表 rowid 顺序不同：' + table.name)
+      return { ...row, cells: actualRow.cells }
+    }) }
+  })
   const final=buildMerge3NavigationFinalIndex3(toReference3GraphInputs(actual.data,actual.allocation),actualTables)
   if(final.indexHash!==plan.expectedSyntaxIndexHash)return fail('实际final index与candidate不同')
   const sortedPhysical=[...final.physicalBlocks], order=new Map<string,bigint>()
-  for(const name of ['blocks','synced_group_blocks'])for(const row of graph3Rows({tables,encoding:plan.encoding},name))order.set(text(row.value.id),row.value.sort_order as bigint)
+  for (const name of ['blocks', 'synced_group_blocks']) {
+    const table = exactTables.get(name)!
+    const idIndex = table.columns.indexOf('id'), orderIndex = table.columns.indexOf('sort_order')
+    for (const row of table.rows) {
+      const cell = row.cells[orderIndex]
+      if (cell[0] !== 'integer') return fail('实际正文排序缺少原 INTEGER')
+      order.set(graph3Text(row.cells[idIndex], plan.encoding), int64(cell[1]))
+    }
+  }
   sortedPhysical.sort((a,b)=>order.get(a.id)!<order.get(b.id)!?-1:order.get(a.id)!>order.get(b.id)!?1:0)
   const byGroup=new Map<string,typeof sortedPhysical>(),byDoc=new Map<string,typeof sortedPhysical>()
   for(const block of sortedPhysical){const map=block.groupId===null?byDoc:byGroup,id=block.groupId??block.documentId!,list=map.get(id)??[];list.push(block);map.set(id,list)}
   const wanted=new Map(plan.expectedWires.map(wire=>[wire.id,wire])),wires:SyncedGroupWire[]=[]
-  for(const group of groups){const id=text(group.value.id);if(!wanted.has(id)){if((byGroup.get(id)??[]).length)return fail('inactive current组出现canonical体');continue}
-    const wire=validateSyncedGroupWire({kind:'synced-group',id,creationId:group.value.creation_id,createdAt:group.value.created_at,
-      origin:JSON.parse(text(group.value.origin_json)),bindings:JSON.parse(text(group.value.bindings_json)),
+  for(const [index, id] of groupIds.entries()){
+    if(!wanted.has(id)){if((byGroup.get(id)??[]).length)return fail('inactive current组出现canonical体');continue}
+    const group = values({ columns: groupTable.columns, encoding: plan.encoding }, groupTable.rows[index])
+    const wire=validateSyncedGroupWire({kind:'synced-group',id,creationId:group.creation_id,createdAt:group.created_at,
+      origin:JSON.parse(text(group.origin_json)),bindings:JSON.parse(text(group.bindings_json)),
       blocks:(byGroup.get(id)??[]).map(block=>({...block.block,createdAt:block.birth})) as SyncedCanonicalWire[]})
     if(!same(wire,wanted.get(id)))return fail('实际final wire不等于固定candidate')
     projectSyncedGroupBudget(wire);assertSyncedStoredBindings(db,wire.origin,wire.blocks,wire.bindings);wires.push(wire)
@@ -558,7 +642,7 @@ function observeSql(db:Database.Database,actual:Actual,plan:Planned,marker:RootR
     canonicalExpandedSearchComplete:false as const,routesRebuilt:false as const,linkCountsRebuilt:false as const,
     semanticValidationComplete:false as const,acceptedCoverage:false as const,effective:false as const,permit:false as const}
   assertMerge3JsonBudget(body)
-  return freezeCapsuleValue({...body,physicalObservationHash:hash('knowbook.restore.stage3.physical-observation.v1',body)})
+  return freezeCapsuleValue({...body,physicalObservationHash:hashStageData('knowbook.restore.stage3.physical-observation.v1',body)})
 }
 function writeRetainedCutSql(db:Database.Database,actual:Actual,plan:Planned) {
   const allowed=new Set(['synced_workspace_state','synced_host_history_state','synced_host_history_documents','synced_group_history'])
@@ -657,10 +741,11 @@ function intentBody(stageId:string,preparedAt:string,actual:Actual,copy:CopyInfo
   return {kind:'root-restore-non-executable-physical-stage-intent' as const,version:plan.canonicalAssets ? 2 as const : 1 as const,stageId,preparedAt,
     copyId:copy.copyId,copyManifestHash:copy.manifestHash,...binding(actual,copy,reference),originalRecoveryFamily,
     originalCurrentSchemaHash:actual.data.inputs.current.source.sourceContent.schemaHash,targetEncoding:plan.encoding,
-    planned12TablesHash:hash('knowbook.restore.stage3.planned-content.v1',plan.tables),
+    planned12TablesHash:hashStageData('knowbook.restore.stage3.planned-content.v1',plan.tables),
     sourceCandidate12TablesHash:plan.sourceCandidate12TablesHash,stageExecutionHash:plan.stageExecutionHash,
     preCutPhysical12TablesHash:plan.preCutPhysical12TablesHash,preCutStageExecutionHash:plan.preCutStageExecutionHash,
     retainedCutHash:plan.retainedCut.cutHash,retainedCutRecordHash:plan.retainedCut.record.hash,retainedCutRowId:plan.retainedCutRowId,
+    ...(plan.retainedCut.retainedDeletedHostIds.length ? { retainedDeletedHostStates: true as const } : {}),
     finalCurrentRetainedCutComplete:true as const,
     plannedLedgerHash:hash('knowbook.restore.stage3.planned-ledger.v1',plan.ledger),
     plannedNewLifecycleHash:hash('knowbook.restore.stage3.planned-new-lifecycle.v1',plan.lifecycleAdded),markerRowId:plan.markerRowId,
@@ -853,7 +938,8 @@ async function reconstruct(saved:Saved,assets?:RetainedAssetProof,scope?:RootRes
   // call. Copy, marker and stage readback do no second original certification.
   const { actual, canonical, assertAliasBytes } = await stageInputs(saved.reference, saved.aliases && { owner: saved.aliases }, scope)
   const copy=await readRootRestoreCurrentCopyForStage3(saved.copy)
-  const plan=planSql(actual,saved.intent.preparedAt,{stageId:saved.intent.stageId,copyId:copy.copyId,copyManifestHash:copy.manifestHash},canonical)
+  const plan=planSql(actual,saved.intent.preparedAt,{stageId:saved.intent.stageId,copyId:copy.copyId,copyManifestHash:copy.manifestHash},
+    canonical,saved.intent.retainedDeletedHostStates === true)
   const intended=intentBody(saved.intent.stageId,saved.intent.preparedAt,actual,copy,saved.reference,plan,saved.intent.originalRecoveryFamily)
   if(!same(intended,saved.intent)||intentHash(intended)!==saved.intentHash)return fail('fresh原件/reference不等于持久物化intent')
   const observed=await observeIndependent(saved,actual,plan,markerFor(saved.intent),saved.manifest.sealedInventory,assets)
@@ -869,9 +955,13 @@ function assertNoPendingObservations() {
 /** Sole physical producer. No caller DB/path/rows, mapper, loader, seed or
  * callback enters. currentCopy remains unopened; only its fresh exclusive
  * working three-file copy is opened as an independent main database. */
-async function preparePhysicalStage(reference:RootRestoreReferencePlan3, aliases?: CanonicalAliasRead, scope?: RootRestoreStageInputs5) {
+async function preparePhysicalStage(reference:RootRestoreReferencePlan3, aliases?: CanonicalAliasRead, scope?: RootRestoreStageInputs5,
+  historyScope?: PreparedRestoreHistoryScope3) {
   assertNoPendingObservations()
   const { actual, canonical, assertAliasBytes } = await stageInputs(reference, aliases, scope)
+  const history = historyScope && preparedHistoryScopes.get(historyScope)
+  if (historyScope && (!history || history.prepared || !aliases?.sameCallInput || !assertAliasBytes))
+    return fail('非本次实际 canonical 历史预镜像范围')
   acceptCandidate(actual)
   const {copy:currentCopy,info:copy}=await prepareRootRestoreCurrentCopyForStage3(reference)
   binding(actual,copy,reference)
@@ -916,7 +1006,13 @@ async function preparePhysicalStage(reference:RootRestoreReferencePlan3, aliases
   // Reuse only this invocation's actual SQL readback. Do not call reconstruct
   // here, which would add a second complete original SQL/K read to preparation.
   await assertAliasBytes?.()
-  return finishHeldStageRead(saved, observed, 'mint')
+  const result = await finishHeldStageRead(saved, observed, 'mint')
+  if (history && assertAliasBytes) {
+    if (!historyScope || preparedHistoryScopes.get(historyScope) !== history || history.prepared)
+      return fail('本次 canonical 历史预镜像范围已结束')
+    history.prepared = { stage: result.stage, value: result.value, retainedCut: plan.retainedCut, assertAliasBytes }
+  }
+  return result
 }
 export async function prepareRootRestorePhysicalStage3(reference: RootRestoreReferencePlan3, scope?: RootRestoreStageInputs5) {
   return preparePhysicalStage(reference, undefined, scope)
@@ -927,11 +1023,34 @@ export async function prepareRootRestoreCanonicalAssetPhysicalStage5(reference: 
 }
 /** The authenticated input can only be reused inside the call that minted its
  * alias owner. Reads using either durable owner still reauthenticate it. */
-export async function prepareRootRestoreCanonicalAssetPhysicalWithAliasSource5(reference: RootRestoreReferencePlan3, combined: RootRestoreSqlAssetStage5) {
+export async function prepareRootRestoreCanonicalAssetPhysicalWithAliasSource5(reference: RootRestoreReferencePlan3, combined: RootRestoreSqlAssetStage5,
+  historyScope?: PreparedRestoreHistoryScope3) {
   assertNoPendingObservations()
   const { prepareRootRestoreAssetAliasWithSqlSource5 } = await import('./restore-knowledge-asset-alias-stage5')
-  const { aliases, input } = await prepareRootRestoreAssetAliasWithSqlSource5(combined)
-  return { aliases, input, stage: await preparePhysicalStage(reference, { owner: aliases.owner, sameCallInput: input }) }
+  const { aliases, input, readTransferCopies } = await prepareRootRestoreAssetAliasWithSqlSource5(combined)
+  const stage = await preparePhysicalStage(reference, { owner: aliases.owner, sameCallInput: input }, undefined, historyScope)
+  if (historyScope) {
+    const history = preparedHistoryScopes.get(historyScope)
+    if (!history || history.prepared?.stage !== stage.stage || history.transfer)
+      return fail('附件转移不属于本次实际 canonical stage')
+    history.transfer = { owner: aliases.owner, readCopies: readTransferCopies }
+  }
+  return { aliases, input, stage }
+}
+
+/** Only the enclosing canonical preparation can consume its actual alias facts.
+ * Every independent alias and combined original still has a full byte read. */
+export async function readPreparedRootRestoreAliasTransferCopies3(owner: RootRestoreAssetAliasStage5, scope: PreparedRestoreHistoryScope3) {
+  const history = preparedHistoryScopes.get(scope), transfer = history?.transfer
+  if (!history || !transfer || transfer.owner !== owner) return fail('附件转移需要本次未消费的实际别名')
+  history.transfer = undefined
+  const copies = await transfer.readCopies()
+  if (preparedHistoryScopes.get(scope) !== history) return fail('附件转移准备范围已结束')
+  return Object.freeze({ ...copies, async assertOriginalBytes() {
+    if (preparedHistoryScopes.get(scope) !== history) return fail('附件转移尾部核验已越过原准备范围')
+    await copies.assertOriginalBytes()
+    if (preparedHistoryScopes.get(scope) !== history) return fail('附件转移尾部核验期间准备范围已结束')
+  } })
 }
 export async function prepareRootRestoreCanonicalAssetPhysicalFromCombined5(reference: RootRestoreReferencePlan3, combined: RootRestoreSqlAssetStage5) {
   const { aliases, stage } = await prepareRootRestoreCanonicalAssetPhysicalWithAliasSource5(reference, combined)
@@ -945,9 +1064,22 @@ export async function readRootRestorePhysicalStage3(stage:RootRestorePhysicalSta
 
 /** Same-call history preimage from a genuine stage and its exact current copy.
  * Returned data cannot be supplied to a factory in place of the stage owner. */
-export async function readRootRestoreStage3HistoryPreimage3(stage: RootRestorePhysicalStage3) {
+export async function readRootRestoreStage3HistoryPreimage3(stage: RootRestorePhysicalStage3, scope?: PreparedRestoreHistoryScope3) {
   const saved = stages.get(stage)
   if (!saved) return fail('不是实际Main物理stage句柄')
+  if (scope) {
+    const prepared = preparedHistoryScopes.get(scope)?.prepared
+    if (!prepared || prepared.stage !== stage) return fail('历史预镜像不属于本次实际 canonical stage')
+    const held = await holdPhysicalStageOriginalBytes(saved)
+    try {
+      const copy = await readRootRestoreCurrentCopyForStage3(saved.copy)
+      await prepared.assertAliasBytes()
+      await verifyRootRestoreStage3FilesHeld3(held)
+      if (preparedHistoryScopes.get(scope)?.prepared !== prepared) return fail('本次 canonical 历史预镜像范围已结束')
+      assertRootRestoreStage3FilesHeld3(held)
+      return { value: prepared.value, copy, retainedCut: prepared.retainedCut, stageManifestHash: saved.manifestHash }
+    } finally { closeRootRestoreStage3FilesHeld3(held) }
+  }
   const { value, copy, retainedCut } = await reconstruct(saved)
   return { value, copy, retainedCut, stageManifestHash: saved.manifestHash }
 }
@@ -1013,17 +1145,21 @@ async function reopenPhysicalStage(reference:RootRestoreReferencePlan3, input: S
   const untrustedManifest={...manifestRow,sealedInventory} as unknown as Manifest
   if(manifestFile.bytes!==capsuleJson(untrustedManifest)+'\n'||stageManifestHash(untrustedManifest)!==expected)
     return fail('cold stage完整manifest bytes/hash不符')
-  const intentFile=await coldSmall(join(directory,'intent.json'),root),intentRow=capsuleRecord(intentFile.parsed,
-    aliases ? [...coldIntentKeys,'canonicalAssets'] : coldIntentKeys)
+  const intentFile=await coldSmall(join(directory,'intent.json'),root)
+  const hasDeletedHostStates = intentFile.parsed !== null && typeof intentFile.parsed === 'object'
+    && Object.hasOwn(intentFile.parsed, 'retainedDeletedHostStates')
+  const intentRow=capsuleRecord(intentFile.parsed, [...coldIntentKeys, ...(aliases ? ['canonicalAssets'] : []),
+    ...(hasDeletedHostStates ? ['retainedDeletedHostStates'] : [])])
   const preparedAt=intentRow.preparedAt,copyId=durableSqlDagUuid(intentRow.copyId),copyHash=durableSqlDagHash(intentRow.copyManifestHash)
   if(intentRow.kind!=='root-restore-non-executable-physical-stage-intent'||intentRow.version!==version||intentRow.stageId!==stageId
     ||typeof preparedAt!=='string'||!Number.isFinite(Date.parse(preparedAt))||new Date(preparedAt).toISOString()!==preparedAt
-    ||copyId!==manifestRow.copyId||copyHash!==manifestRow.copyManifestHash)return fail('cold stage intent版本/locator/原时点不闭合')
+    ||copyId!==manifestRow.copyId||copyHash!==manifestRow.copyManifestHash
+    ||hasDeletedHostStates && intentRow.retainedDeletedHostStates !== true)return fail('cold stage intent版本/locator/原时点不闭合')
   // One complete original SQL/K read in this public call. The following extra
   // native read is only the small original recovery-family footprint, on its
   // own fresh currentCopy probe; it is not another complete certification.
   const { actual, canonical, assertAliasBytes } = await stageInputs(reference, aliases, scope)
-  const plan=planSql(actual,preparedAt,{stageId,copyId,copyManifestHash:copyHash},canonical)
+  const plan=planSql(actual,preparedAt,{stageId,copyId,copyManifestHash:copyHash},canonical,hasDeletedHostStates)
   const {copy:currentCopy,info:copy}=await reopenRootRestoreCurrentCopyForStage3(reference,{copyId,expectedManifestHash:copyHash})
   binding(actual,copy,reference)
   const originalProbe=join(checksDirectory,randomUUID())

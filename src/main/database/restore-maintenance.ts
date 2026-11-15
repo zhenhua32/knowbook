@@ -8,29 +8,72 @@ import { assertNoUnsupportedSyncedContent, assertSyncedBlockSchema } from './syn
 import { assertSyncedLifecycleSchema } from './synced-lifecycle-schema'
 import { stopDatabaseRestoreProcesses, type RestoreProcessIdentity } from './restore-process-guard'
 import { isSystemPluginManagedPath, resolveSystemPluginPhysicalPath } from '../system-plugin/managed-paths'
-import { recoverControlledDatabaseRestore, restoreControlledDatabase, type ControlledRestoreInput, type ControlledRestoreResult } from './restore-safety'
+import { recoverControlledDatabaseRestore, restoreControlledBackupV3, restoreControlledDatabase, type ControlledRestoreInput,
+  type ControlledRestoreResult, type ControlledV3RestorePreview } from './restore-safety'
 import { restoreSqliteFilename } from './restore-safety-sqlite-path'
 
 const require = createRequire(import.meta.url)
 const Database = require('better-sqlite3') as typeof import('better-sqlite3')
 const ARGUMENT = '--knowbook-restore-database'
+export const BACKUP_V3_RESTORE_ARGUMENT = '--knowbook-restore-backup-v3'
+export const BACKUP_V3_RESTORE_INVENTORY_ARGUMENT = '--knowbook-restore-backup-v3-inventory'
+export const BACKUP_V3_RESTORE_INTERACTIVE_ARGUMENT = '--knowbook-restore-backup-v3-interactive'
+export const BACKUP_V3_RESTORE_REQUEST_ARGUMENT = '--knowbook-restore-backup-v3-request-id'
 const JOURNAL = 'database-restore-pending.json'
 const SAFE_MARKER = 'database-restore-safe-mode.json'
 const FILES = ['knowbook.db', 'knowbook.db-wal', 'knowbook.db-shm'] as const
 type DatabaseFile = typeof FILES[number]
 interface RestoreJournal { version: 1; id: string; phase: 'moving' | 'installed'; originalFiles: DatabaseFile[]; safeModeAfterRollback?: boolean }
 
-export function parseDatabaseRestoreArgument(argv: readonly string[]): string | null {
-  const matches = argv.filter((argument) => argument.startsWith(ARGUMENT))
+function parseRestoreArgument(argv: readonly string[], flag: string): string | null {
+  const matches = argv.filter((argument) => argument.startsWith(flag))
   if (!matches.length) return null
-  const path = matches[0]?.slice(ARGUMENT.length + 1)
-  if (matches.length !== 1 || !matches[0]!.startsWith(`${ARGUMENT}=`) || !path || path.includes('\0') || !isAbsolute(path)) {
-    throw new Error('数据库恢复参数必须为一个 --knowbook-restore-database=<绝对备份路径>。')
+  const path = matches[0]?.slice(flag.length + 1)
+  if (matches.length !== 1 || !matches[0]!.startsWith(`${flag}=`) || !path || path.includes('\0') || !isAbsolute(path)) {
+    throw new Error(`恢复参数必须为一个 ${flag}=<绝对备份路径>。`)
   }
   if (argv.some((argument) => argument.startsWith('--knowbook-uninstall-cleanup'))) {
     throw new Error('数据库恢复与卸载维护参数不能同时使用。')
   }
   return resolve(path)
+}
+
+export function parseDatabaseRestoreArgument(argv: readonly string[]): string | null {
+  return parseRestoreArgument(argv, ARGUMENT)
+}
+
+export function parseBackupV3RestoreArgument(argv: readonly string[]): string | null {
+  const source = parseRestoreArgument(argv.filter(argument => !argument.startsWith(BACKUP_V3_RESTORE_INVENTORY_ARGUMENT)
+    && !argument.startsWith(BACKUP_V3_RESTORE_INTERACTIVE_ARGUMENT) && !argument.startsWith(BACKUP_V3_RESTORE_REQUEST_ARGUMENT)), BACKUP_V3_RESTORE_ARGUMENT)
+  if (source && argv.some(argument => argument.startsWith(ARGUMENT))) throw new Error('SQLite 文件恢复与 V3 恢复参数不能同时使用。')
+  return source
+}
+
+export function parseBackupV3RestoreInventoryArgument(argv: readonly string[], source: string | null): string | undefined {
+  const matches = argv.filter(argument => argument.startsWith(BACKUP_V3_RESTORE_INVENTORY_ARGUMENT))
+  if (!matches.length) return undefined
+  const prefix = BACKUP_V3_RESTORE_INVENTORY_ARGUMENT + '=', hash = matches[0].slice(prefix.length)
+  if (!source || matches.length !== 1 || !matches[0].startsWith(prefix) || !/^[0-9a-f]{64}$/.test(hash))
+    throw new Error('V3 恢复预检摘要无效。')
+  return hash
+}
+
+export function parseBackupV3RestoreInteractiveArgument(argv: readonly string[], source: string | null, inventoryHash?: string): boolean {
+  const matches = argv.filter(argument => argument.startsWith(BACKUP_V3_RESTORE_INTERACTIVE_ARGUMENT))
+  if (!matches.length) return false
+  if (!source || !inventoryHash || matches.length !== 1 || matches[0] !== BACKUP_V3_RESTORE_INTERACTIVE_ARGUMENT)
+    throw new Error('V3 交互恢复参数无效或缺少预检摘要。')
+  return true
+}
+
+export function parseBackupV3RestoreRequestArgument(argv: readonly string[], source: string | null, inventoryHash?: string): string | undefined {
+  const matches = argv.filter(argument => argument.startsWith(BACKUP_V3_RESTORE_REQUEST_ARGUMENT))
+  if (!matches.length) return undefined
+  const prefix = BACKUP_V3_RESTORE_REQUEST_ARGUMENT + '=', id = matches[0].slice(prefix.length)
+  if (!source || !inventoryHash || matches.length !== 1 || !matches[0].startsWith(prefix)
+    || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(id))
+    throw new Error('V3 恢复请求标识无效或缺少预检摘要。')
+  return id
 }
 
 async function durableJson(path: string, value: unknown): Promise<void> {
@@ -279,4 +322,11 @@ export async function recoverInterruptedDatabaseRestore(userDataRoot: string): P
 
 export async function restoreKnowbookDatabase(input: ControlledRestoreInput): Promise<ControlledRestoreResult> {
   return restoreControlledDatabase(input, { readCurrentIdentities, recoverLegacy: recoverInterruptedDatabaseRestoreV1 })
+}
+
+export async function restoreKnowbookBackupV3(userDataRoot: string, backupDirectory: string, expectedInventoryHash?: string,
+  confirm?: (preview: ControlledV3RestorePreview) => Promise<boolean>, requestId?: string) {
+  const input = { userDataRoot, backupDirectory, expectedInventoryHash, requestId }
+  const legacy = { readCurrentIdentities, recoverLegacy: recoverInterruptedDatabaseRestoreV1 }
+  return confirm ? restoreControlledBackupV3(input, legacy, confirm) : restoreControlledBackupV3(input, legacy)
 }

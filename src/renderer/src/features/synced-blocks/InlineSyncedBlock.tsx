@@ -44,7 +44,8 @@ export default function InlineSyncedBlock({ block, mode, isZh }: Props) {
     }
     setError(''); setOpening(null)
     void host.runtime.bind({ hostDocumentId: hostId, hostSession, instanceId, groupId: parsed.groupId, parentBlockId, depth,
-      mountEpoch: Object.freeze({}), root: () => root.current, isCurrent }).then(value => {
+      mountEpoch: Object.freeze({}), root: () => root.current, isCurrent,
+      reopenAfterCrossMove: () => { if (isCurrent()) setRetry(value => value + 1) } }).then(value => {
       if (!alive) { if (value) host.runtime.unbind(value); return }
       owned = value; setOpening(value)
       if (!value) setError(isZh ? '这一引用已失效，未展开其他同名正文。' : 'This exact reference is unavailable.')
@@ -145,16 +146,23 @@ function BoundInlineBody({ host, opening, mode, root, onReopen }: {
     const bindings = snapshot.bindings.filter(item => item.blockId === blockId && item.from === link.start && item.to === link.end
       && item.raw === row.content.slice(link.start, link.end) && item.syntax === (wiki ? 'wiki' : 'markdown'))
     if (bindings.length !== 1) return
-    const target = bindings[0].target
-    if (target.kind === 'unresolved-url' || target.state !== 'live') { setMessage(isZh ? '原链接目标不可用。' : 'The original link target is unavailable.'); return }
-    if (target.kind === 'document') host.onOpenDocument(target.id)
-    else if (target.kind === 'heading') host.onOpenAnchor(target.documentId, target.slug)
-    else if (target.documentId) host.onOpenBlock(target.documentId, target.id)
-    else {
-      const child = snapshot.blocks.find(block => block.id === target.id)
-      if (!child) { setMessage(isZh ? '该正文不属于当前引用，未跳到其他实例。' : 'The target is outside this exact instance.'); return }
-      await runtime.openSearch({ ...fresh.instance, canonicalBlockId: child.id, canonicalCreatedAt: child.createdAt }, still)
+    const { target, ...bindingKey } = bindings[0]
+    const unavailable = () => setMessage(isZh ? '原链接目标不可用。' : 'The original link target is unavailable.')
+    if (target.kind === 'block') {
+      try {
+        const current = await window.knowbook.resolveSyncedStoredBlockLink({ source: fresh.instance, binding: bindingKey })
+        if (!still()) return
+        if (current.status !== 'ready') { unavailable(); return }
+        if (current.kind === 'document') await host.onOpenBlock(current.documentId, current.blockId, still)
+        else await runtime.openSearch(current.occurrence, still)
+      } catch {
+        if (still()) unavailable()
+      }
+      return
     }
+    if (target.kind === 'unresolved-url' || target.state !== 'live') { unavailable(); return }
+    if (target.kind === 'document') host.onOpenDocument(target.id)
+    else host.onOpenAnchor(target.documentId, target.slug)
   }
   const capture = (target: EventTarget | null) => {
     const element = target instanceof Element ? target : null, owner = root()

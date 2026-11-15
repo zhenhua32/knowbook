@@ -6,8 +6,13 @@ import { canonicalSourceDraftToBlocks, createCanonicalSourceDraft } from './cano
 import type { SyncedGroupBinding } from './types'
 import { syncedSnapshotGuard } from './types'
 import { acceptSyncedCanonicalRecoveryReview } from './controller'
+import type { readCanonicalRecoverySource } from '@shared/editor-recovery-canonical-source'
 
-type Props = { binding: SyncedGroupBinding; isZh: boolean; opener: HTMLElement | null; onClose: () => void | boolean; onLocalStateChange?: (state: Readonly<MarkdownSourceLocalState>) => void }
+export type RestoredCanonicalSource = Omit<ReturnType<typeof readCanonicalRecoverySource>, 'record'> & {
+  canApply: () => boolean
+}
+type Props = { binding: SyncedGroupBinding; isZh: boolean; opener: HTMLElement | null; onClose: () => void | boolean;
+  onLocalStateChange?: (state: Readonly<MarkdownSourceLocalState>) => void; restored?: RestoredCanonicalSource }
 
 /** The instance shell supplies the real binding/opener. This dialog has no
  * second writer or history and never routes canonical content through a host. */
@@ -18,7 +23,7 @@ export function SyncedCanonicalSourceDialog(props: Props) {
   return <CanonicalSourceOpening key={openingKey} {...props} isOwnerCurrent={() => latestBinding.current === props.binding} />
 }
 
-function CanonicalSourceOpening({ binding, isZh, opener, onClose, onLocalStateChange, isOwnerCurrent }: Props & { isOwnerCurrent: () => boolean }) {
+function CanonicalSourceOpening({ binding, isZh, opener, onClose, onLocalStateChange, isOwnerCurrent, restored }: Props & { isOwnerCurrent: () => boolean }) {
   const [opening] = useState(() => {
     const state = binding.getCurrent()
     return { sessionKey: {}, editSequence: state.editSequence, guards: syncedSnapshotGuard(state.snapshot),
@@ -27,6 +32,7 @@ function CanonicalSourceOpening({ binding, isZh, opener, onClose, onLocalStateCh
   const isCurrent = () => isOwnerCurrent() && binding.isCurrent()
   return <MarkdownSourceDialog sessionKey={opening.sessionKey} isZh={isZh} onClose={onClose} onLocalStateChange={onLocalStateChange}
     recoveryAddress={{ kind: 'group', groupId: binding.scope.owner.groupId }}
+    restored={restored}
     hasUnappliedChanges={hasMarkdownSourceDraftChanges}
     createDraft={() => opening.draft} replaceChanges={(draft, changes) => replaceMarkdownSourceChanges(draft, [...changes])}
     isCurrent={isCurrent} getReturnFocus={() => opening.opener} onCompositionChange={binding.setComposing}
@@ -36,7 +42,7 @@ function CanonicalSourceOpening({ binding, isZh, opener, onClose, onLocalStateCh
       conflict: isZh ? '共享正文或引用位置已变化。当前源码已保留，请复制后重新打开以合并。'
         : 'The shared body or reference positions changed. Your source is retained; copy it and reopen to merge.' }}
     onApply={draft => {
-      if (!isCurrent()) return false
+      if (!isCurrent() || restored && !restored.canApply()) return false
       const blocks = canonicalSourceDraftToBlocks(draft)
       // An untouched source is not permission to overwrite a newer body.
       if (areDocumentDraftBlocksEqual(blocks, opening.working)) {

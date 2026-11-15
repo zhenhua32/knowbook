@@ -10,7 +10,7 @@ export default function WebDavSyncSettings({ isZh }: { isZh: boolean }) {
   const { status, config, password, clearPassword, intervalDraft, intervalError, dirty,
     readLoading, readError, actionError, actionErrorTarget, actionTarget, actionKind, working, canStop,
     edit, setProtocol5, protocol5, setPassword, setClearPassword, setIntervalDraft, refreshStatus, save, testConnection, syncNow,
-    previewProtocol5, resolveProtocol5, previewProtocol5Deletions, resolveProtocol5Deletion, resolve, cancel
+    rejoinAfterRestore, previewProtocol5, resolveProtocol5, previewProtocol5Deletions, resolveProtocol5Deletion, resolve, cancel
   } = useWebDavSettingsState(isZh)
   const intervalErrorId = useId()
   const sectionRef = useRef<HTMLElement>(null)
@@ -86,7 +86,11 @@ export default function WebDavSyncSettings({ isZh }: { isZh: boolean }) {
       <div className="settings-actions">
         <button aria-busy={actionKind === 'save'} className="primary-button" type="button" disabled={working || !status || Boolean(intervalError)} onClick={event => runAction(event.currentTarget, save)}>{actionKind === 'save' ? t('正在保存…', 'Saving…') : t('保存同步设置', 'Save sync settings')}</button>
         <button aria-busy={actionKind === 'test'} className="secondary-button" type="button" disabled={working || dirty || !status?.hasPassword} onClick={event => runAction(event.currentTarget, testConnection)}>{t('测试连接', 'Test connection')}</button>
-        <button aria-busy={actionKind === 'sync'} className="secondary-button" type="button" disabled={working || dirty || !status?.hasPassword} onClick={event => runAction(event.currentTarget, syncNow)}>{t('立即同步', 'Sync now')}</button>
+        {status?.protocol5RestoreRejoin
+          ? <button aria-busy={actionKind === 'sync'} className="secondary-button" type="button" disabled={working || dirty || !status.hasPassword}
+              onClick={event => runAction(event.currentTarget, rejoinAfterRestore)}>{t('续接原同步目录', 'Reconnect to sync folder')}</button>
+          : <button aria-busy={actionKind === 'sync'} className="secondary-button" type="button" disabled={working || dirty || !status?.hasPassword}
+              onClick={event => runAction(event.currentTarget, syncNow)}>{t('立即同步', 'Sync now')}</button>}
         {canStop || actionKind === 'cancel' ? <button aria-busy={actionKind === 'cancel'} className="secondary-button" type="button" disabled={actionKind === 'cancel'} onClick={event => runAction(event.currentTarget, cancel, () => urlRef.current)}>{actionKind === 'cancel' ? t('正在停止…', 'Stopping…') : t('停止本次同步', 'Stop this sync')}</button> : null}
       </div>
     </div>

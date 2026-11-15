@@ -183,7 +183,7 @@ export function DocumentsPage({
     downgradeBlockAt: documents.downgradeBlockAt,
     dropBlockAt: documents.dropBlockAt,
     duplicateDraftBlock: documents.duplicateDraftBlock,
-    duplicateSelectedBlocks: documents.duplicateSelectedBlocks,
+    duplicateSelectedBlocks: blockActions.duplicateSelectedBlocks,
     endBlockDrag: documents.endBlockDrag,
     endBlockRangeSelection: documents.endBlockRangeSelection,
     filteredSlashCommands: documents.filteredSlashCommands,

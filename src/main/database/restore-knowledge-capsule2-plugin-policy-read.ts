@@ -55,10 +55,10 @@ export function assertRawCapsule2PluginPolicyOwned(db: Database.Database): void 
     totalRows += size[0]; totalBytes += size[1]
     if (totalRows > BigInt(CAPSULE2_RAW_MAX_ROWS) || totalBytes > BigInt(CAPSULE2_RAW_MAX_VALUE_BYTES)) return bad('完整插件family超来源预算，不能分页或截断')
   }
-  const all = new Map<StoredPluginPolicyTable, Row[]>(), indexes = new Map<StoredPluginPolicyTable, Map<string, Row>>()
+  const indexes = new Map<StoredPluginPolicyTable, Set<string>>()
   for (const table of STORED_PLUGIN_POLICY_TABLES) {
-    const layout = layouts.get(table)!, rows: Row[] = [], index = new Map<string, Row>()
-    for (const original of db.prepare('SELECT * FROM ' + table + ' ORDER BY rowid').safeIntegers(true).all() as Row[]) {
+    const layout = layouts.get(table)!, index = new Set<string>()
+    for (const original of db.prepare('SELECT * FROM ' + table + ' ORDER BY rowid').safeIntegers(true).iterate() as IterableIterator<Row>) {
       const row: Row = Object.create(null)
       for (const column of layout.columns) {
         const value = original[column.name]
@@ -70,13 +70,22 @@ export function assertRawCapsule2PluginPolicyOwned(db: Database.Database): void 
       const key = JSON.stringify(layout.primary.map(column => row[column]))
       if (index.has(key)) return bad('原插件主身份重复')
       try { assertStoredPluginPolicyRow(table, row) } catch { return bad('原插件行不能由现有stored decoder完整读取') }
-      index.set(key, row); rows.push(row)
+      index.add(key)
     }
-    all.set(table, rows); indexes.set(table, index)
+    indexes.set(table, index)
   }
-  for (const [table, rows] of all) for (const reference of layouts.get(table)!.references) {
+  // Keep decoder failures ahead of reference failures. Scan only the fixed
+  // referencing column on this same immutable snapshot after all rows decode.
+  for (const table of STORED_PLUGIN_POLICY_TABLES) for (const reference of layouts.get(table)!.references) {
     const target = layouts.get(reference.table)!
     if (target.primary.length !== 1 || target.primary[0] !== reference.target) return bad('固定插件外键不是已知原主身份')
-    for (const row of rows) if (row[reference.column] !== null && !indexes.get(reference.table)!.has(JSON.stringify([row[reference.column]]))) return bad('原插件外键缺完整支持行')
+    const index = indexes.get(reference.table)!
+    const values = db.prepare('SELECT ' + reference.column + ' FROM ' + table + ' ORDER BY rowid')
+      .safeIntegers(true).pluck().iterate() as IterableIterator<string | bigint | null>
+    for (const value of values) {
+      // Safe INTEGER range and storage type were checked in the first pass.
+      const key = typeof value === 'bigint' ? Number(value) : value
+      if (key !== null && !index.has(JSON.stringify([key]))) return bad('原插件外键缺完整支持行')
+    }
   }
 }

@@ -190,6 +190,7 @@ for (const language of ['en-US', 'zh-CN'] as const) for (const theme of ['light'
     test.skip(!hasBuiltElectronApp(), 'Run npm run build before Electron tests.')
     test.setTimeout(120_000)
     await withElectronApp(async ({ page, app, tempRoot }) => {
+      expect(await page.evaluate(() => devicePixelRatio)).toBe(1)
       const errors: string[] = []; page.on('pageerror', error => errors.push(error.message))
       await page.evaluate(async ({ language, theme }) => {
         await window.knowbook.saveSetting('ui.language', language)
@@ -236,7 +237,7 @@ for (const language of ['en-US', 'zh-CN'] as const) for (const theme of ['light'
         }
       }
       expect(errors).toEqual([])
-    }, { PLAYWRIGHT_ELECTRON_LOCALE: language })
+    }, { PLAYWRIGHT_ELECTRON_LOCALE: language }, { deviceScaleFactor: 1 })
   })
 }
 
@@ -244,6 +245,7 @@ test('dashboard metrics preserve complete labels and value contrast in all six b
   test.skip(!hasBuiltElectronApp(), 'Run npm run build before Electron tests.')
   test.setTimeout(120_000)
   await withElectronApp(async ({ page, app, tempRoot }) => {
+    expect(await page.evaluate(() => devicePixelRatio)).toBe(1)
     await page.evaluate(() => window.knowbook.saveSetting('ui.language', 'en-US'))
     const counts = await configureAi(page, 'key-needed', 'en-US')
     await expect.poll(async () => (await page.evaluate(() => window.knowbook.listSystemPlugins()))
@@ -260,5 +262,5 @@ test('dashboard metrics preserve complete labels and value contrast in all six b
         await verifyMetrics(page, app, tempRoot, info, `${palette}-${width}`, 'en-US', 'key-needed', width, counts)
       }
     }
-  })
+  }, {}, { deviceScaleFactor: 1 })
 })

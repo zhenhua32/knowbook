@@ -1,10 +1,11 @@
 // Main-private pure derivation only. DTOs never mint a file/skip/install capability.
 import { win32, posix } from 'node:path'
+import { ATTACHMENT_MAX_FILE_BYTES } from '../../shared/attachments'
 import { buildSyncedPortableAssetUri, parseSyncedPortableAssetUri, rewriteSyncedGroupAssets,
   rewriteSyncedPortableHostAssets } from '../../shared/syncedBlockPortable'
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { capsule2AssetReferenceProvenanceHash, capsule2AssetReferenceProvenance2Hash,
-  validateCapsule2AssetReferenceProvenance1, validateCapsule2AssetReferenceProvenance2 } from './restore-knowledge-capsule2-asset-provenance'
+  validateCapsule2AssetReferenceProvenance1, validateCapsule2AssetReferenceProvenance2, validateCapsuleInstalledAssetProvenance } from './restore-knowledge-capsule2-asset-provenance'
 import { capsule2CombinedAssetUris3 } from './restore-knowledge-capsule2-asset-supplement-model'
 import { graph3Rows } from './restore-knowledge-graph3-data'
 import { root3SupplementOriginalRowHash3, type Root3SettledCandidateProjectorForMain3 } from './restore-knowledge-assets3-context'
@@ -16,7 +17,9 @@ import type { Capsule2AssetArchiveManifest } from './restore-knowledge-capsule2-
 import type { readRawCapsule2AssetReferenceSourceOwned } from './restore-knowledge-capsule2-assets-read'
 
 type ReferenceFields = 'version' | 'sourceContentHash' | 'workspaceHistoryObservationHash' | 'assetReferencesObservationHash' | 'referenceUris' | 'tree' | 'referenceProvenance'
-export type Capsule2PortableReferenceCapture3 = Pick<Extract<Capsule2AssetArchiveManifest, {version: 2}>, ReferenceFields>
+export type Capsule2PortableReferenceCapture3 = (Pick<Extract<Capsule2AssetArchiveManifest, {version: 2}>, ReferenceFields>
+  & { installedV3?: Extract<Capsule2AssetArchiveManifest, {version: 7}>['installedV3'];
+    installedV3Many?: Extract<Capsule2AssetArchiveManifest, {version: 10}>['installedV3Many'] })
   | Pick<Extract<Capsule2AssetArchiveManifest, {version: 3}>, ReferenceFields | 'assetScopeSupplement'>
 export type Capsule2SettledPortableBinding3 = { readonly sourceManifestHash: string; readonly sourceMaterialHash: string; readonly assetArchiveHash: string }
   | { readonly baseProjectionManifestHash: string; readonly baseProjectionMaterialHash: string }
@@ -84,9 +87,16 @@ function createCapturedBasePortableProjector5<Binding extends Capsule2SettledPor
     || archive.workspaceHistoryObservationHash !== assets.workspaceHistoryObservationHash || !same(baseUris, archive.referenceUris))
     return fail('genuine原SQL/base scope与捕获证明不同')
   const proofUris = archive.version === 3 ? capsule2CombinedAssetUris3(baseUris, archive.assetScopeSupplement) : baseUris
-  if (archive.version === 2) validateCapsule2AssetReferenceProvenance1(archive.referenceProvenance, {
+  const nativeBinding = {
     sourceContentHash: assets.sourceContentHash, workspaceHistoryObservationHash: assets.workspaceHistoryObservationHash,
-    assetReferencesObservationHash: assets.observationHash, referenceUris: baseUris }, archive.tree)
+    assetReferencesObservationHash: assets.observationHash, referenceUris: baseUris }
+  if (archive.version === 2) {
+    if (archive.installedV3 && archive.installedV3Many) return fail('base 原件同时声明两种安装证明')
+    const aliases = archive.installedV3?.aliases ?? archive.installedV3Many?.aliases.map(entry => entry.alias)
+    if (aliases) validateCapsuleInstalledAssetProvenance(archive.referenceProvenance, nativeBinding, archive.tree,
+      new Set(aliases.map(alias => alias.relativePath)))
+    else validateCapsule2AssetReferenceProvenance1(archive.referenceProvenance, nativeBinding, archive.tree)
+  }
   else validateCapsule2AssetReferenceProvenance2(archive.referenceProvenance, {
     sourceContentHash: assets.sourceContentHash, workspaceHistoryObservationHash: assets.workspaceHistoryObservationHash,
     assetReferencesObservationHash: assets.observationHash, assetScopeSupplementHash: archive.assetScopeSupplement.observationHash,
@@ -134,13 +144,13 @@ function createCapturedBasePortableProjector5<Binding extends Capsule2SettledPor
       if (entry[1] === 'file') {
         const physical = archive.tree.aliases[entry[2]], provenRoot = archive.referenceProvenance.rootSpellings[entry[3]]
         const logical = physical && provenRoot && logicalFileAsset(uri, provenRoot.uri, physical.hash)
-        if (!physical || !provenRoot || !logical || blobs.get(physical.hash) !== physical.bytes) { unmapped = true; throw new Error('Original export logical file alias is not reproducible') }
+        if (!physical || !provenRoot || !logical || physical.bytes > ATTACHMENT_MAX_FILE_BYTES || blobs.get(physical.hash) !== physical.bytes) { unmapped = true; throw new Error('Original export logical file alias is not reproducible') }
         mappings.set(uri, { sourceUri: uri, hash: physical.hash, bytes: physical.bytes, physicalName: physical.name,
           logicalName: logical.name, portableUri: logical.portableUri, referenceIndex, logicalRootUri: provenRoot.uri })
         return logical.portableUri
       }
       const portable = parseSyncedPortableAssetUri(uri), physical = aliasIndex.get(capsuleJson([portable.hash, portable.name]))
-      if (!physical || blobs.get(physical.hash) !== physical.bytes) { unmapped = true; throw new Error('Original portable alias bytes unavailable') }
+      if (!physical || physical.bytes > ATTACHMENT_MAX_FILE_BYTES || blobs.get(physical.hash) !== physical.bytes) { unmapped = true; throw new Error('Original portable alias bytes unavailable') }
       mappings.set(uri, { sourceUri: uri, hash: physical.hash, bytes: physical.bytes, physicalName: physical.name,
         logicalName: portable.name, portableUri: uri, referenceIndex }); return uri
     }

@@ -113,6 +113,24 @@ test('validateBlockTreeStructure reports duplicate, forward, and invalid non-nes
   assert.equal(result.errors.some((error) => error.includes('exceeds maximum')), true)
 })
 
+test('an explicit active list reference retains its parent and depth without inferring new nesting', () => {
+  const parent = block('list-parent'), reference = block('reference', 'synced-block', 1, parent.id!)
+  const actual = normalizeDraftBlocks([parent, reference])
+  assert.equal(actual[1].parentBlockId, parent.id)
+  assert.equal(actual[1].depth, 1)
+  assert.equal(validateBlockTreeStructure(actual).valid, true)
+  const missing = normalizeDraftBlocks([parent, { ...reference, parentBlockId: null }])
+  assert.equal(missing[1].parentBlockId, null)
+  assert.equal(missing[1].depth, 0)
+  const wrongDepth = normalizeDraftBlocks([parent, { ...reference, depth: 2 }])
+  assert.equal(wrongDepth[1].parentBlockId, null)
+  const closed = [parent, block('later-root'), reference]
+  assert.equal(normalizeDraftBlocks(closed)[2].parentBlockId, null)
+  assert.equal(validateBlockTreeStructure(closed).valid, false)
+  assert.equal(validateBlockTreeStructure([{ ...parent, type: 'paragraph' }, reference]).valid, false)
+  assert.equal(validateBlockTreeStructure([parent, reference, block('child', 'todo', 2, reference.id!)]).valid, false)
+})
+
 test('relationship and insertion placement prefer an explicit prior parent and expose parent text', () => {
   const relationship = resolveDraftBlockRelationship(
     'todo',

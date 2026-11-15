@@ -100,7 +100,7 @@ export type BlockEditorRowProps = {
   handleBlockContentChange: (index: number, content: string) => void
   navigateInlineReferenceAtCursor: (content: string, cursorPosition: number) => void | Promise<void>
   captureBlockCursor: (index: number, target: HTMLTextAreaElement) => void
-  handleBlockPaste: (index: number, text: string, start: number, end: number) => boolean
+  handleBlockPaste: (index: number, text: string, start: number, end: number, html?: string) => boolean
 
   // Callbacks: drag/drop
   beginBlockDrag: (index: number) => void
@@ -759,7 +759,8 @@ export const BlockEditorRow = memo(function BlockEditorRow(props: BlockEditorRow
                     index,
                     markdown || event.clipboardData.getData('text/plain'),
                     start,
-                    end
+                    end,
+                    event.clipboardData.files.length ? undefined : event.clipboardData.getData('text/html')
                   )
                 ) {
                   event.preventDefault()

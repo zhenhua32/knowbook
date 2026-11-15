@@ -1,13 +1,14 @@
 import { collectStoredMarkdownAssetDestinations, parseSyncedPortableAssetUri } from '../../shared/syncedBlockPortable'
 import type { MarkdownRenderableBlock } from '../../shared/markdown'
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
-import { CAPSULE2_RAW_MAX_JSON_BYTES, type Capsule2RawSqlTable } from './restore-knowledge-capsule2-raw-model'
-import { graph3Rows, graph3Text } from './restore-knowledge-graph3-data'
+import { CAPSULE2_RAW_MAX_JSON_BYTES, hashValidatedCapsule2RawSqlTable, type Capsule2Encoding, type Capsule2RawContent,
+  type Capsule2RawSqlRow, type Capsule2RawSqlTable } from './restore-knowledge-capsule2-raw-model'
+import { findGraph3OriginalRow, graph3Conflict, graph3Text, graph3Value } from './restore-knowledge-graph3-data'
 import type { MergedRow3 } from './restore-knowledge-merge3-storage'
 import { buildMerge3NavigationFinalIndex3, type Navigation3Table } from './restore-knowledge-navigation3-merge-context'
 import { applyNavigation3TextEdits, createNavigation3RangeProjection } from './restore-knowledge-navigation3-rewrite-cells'
 import { toReference3GraphInputs } from './restore-knowledge-reference3-model'
-import { bindRootRestoreBaseAssetBlobs5 } from './restore-knowledge-selected-native-assets5'
+import { bindRootRestoreBaseAssetBlobs5, type VerifiedBackupV3Asset5 } from './restore-knowledge-selected-native-assets5'
 import type { readRootRestorePhysicalStageAssetEvidence3 } from './restore-knowledge-stage3-physical'
 import { template3ContentStringRanges } from './restore-knowledge-template3-json'
 import { projectWorkingAssetBodyCells5, workingAssetPosition5 } from './restore-knowledge-working-asset-cells5'
@@ -23,7 +24,7 @@ type Column = 'content' | 'summary' | 'blocks_json'
 type Address = { domain: ScopeName; scope: readonly string[]; destination: Destination; cell?: {
   sourceRef: MergedRow3['sourceRef']; targetRowId: string; column: Column; range: Range; token?: { from: number; to: number }
 } }
-type Proof = { kind: 'staged' | 'sealed-original'; hash: string; bytes: number; logicalName: string; occurrenceIds: readonly string[];
+type Proof = { kind: 'staged' | 'sealed-original'; hash: string; bytes: number; logicalName: string; occurrenceIds: readonly string[]; backupV3?: VerifiedBackupV3Asset5;
   file: { frame: readonly string[]; path: string } }
 type Entry = Address & ({ status: 'matched'; proof: Proof } | { status: 'blocked'; reason: string })
 type Remainder = { domain: 'retained-policy' | 'retained-working'; scope: readonly string[]; reason: string; observedRows?: number }
@@ -49,8 +50,18 @@ export function rootRestoreStagedAssetCellKey5(row: ReturnType<typeof rootRestor
 }
 const originalAssetKey = (range: { from: number; to: number }, destination: Destination) =>
   capsuleJson([range.from, range.to, destination.uri, destination.raw, destination.kind, destination.syntax])
-const retainedTableHash = (table: Capsule2RawSqlTable) => hash('knowbook.restore.stage3.exact-table.v1', { ...table,
-  rows: [...table.rows].sort((left, right) => BigInt(left.sourceRowId) < BigInt(right.sourceRowId) ? -1 : 1) })
+// Raw capsule validation pins signed rowid order. The existing retained
+// preimage includes that order, all storage cells, and the full table layout.
+const retainedTableHash = (table: Capsule2RawSqlTable) => hashValidatedCapsule2RawSqlTable('knowbook.restore.stage3.exact-table.v1', table)
+
+function originalTable(raw: Capsule2RawContent, name: 'documents' | 'blocks' | 'app_settings') {
+  return raw.tables.find(table => table.name === name) ?? graph3Conflict('missing-source-table', name)
+}
+
+function originalCell(table: Capsule2RawSqlTable, row: Capsule2RawSqlRow | undefined, column: string, encoding: Capsule2Encoding) {
+  const index = table.columns.indexOf(column)
+  return row && index >= 0 ? graph3Value(row.cells[index], encoding) : undefined
+}
 
 function summaryAssets(value: string): Destination[] {
   return collectStoredMarkdownAssetDestinations(value).map(item => ({ section: 'summary', uri: item.url,
@@ -66,8 +77,8 @@ function originalDocuments(sources: Sources) {
   }
   const originals = new Map((['source', 'current'] as const).map(side => {
     const packet = captured.pair[side], raw = packet.source.sourceContent
-    return [side, { packet, documents: by(graph3Rows(raw, 'documents'), row => row.original.sourceRowId),
-      blocks: by(graph3Rows(raw, 'blocks'), row => row.original.sourceRowId), physical: by(packet.source.physical.documents, row => row.documentId),
+    return [side, { packet, encoding: raw.encoding, documents: originalTable(raw, 'documents'), blocks: originalTable(raw, 'blocks'),
+      physical: by(packet.source.physical.documents, row => row.documentId),
       scopes: by(packet.source.assets.scopes, row => capsuleJson(row.source)), bind: bindRootRestoreBaseAssetBlobs5(sources, side),
       bodies: new Map<string, Map<string, Candidate[]>>(), cells: new Map<string, Map<string, Destination | null>>() }] as const
   }))
@@ -76,7 +87,8 @@ function originalDocuments(sources: Sources) {
     const side = row.sourceRef.side, data = originals.get(side)!
     if (!data.bind || header.sourceRef.side !== side || header.sourceRef.materialHash !== data.packet.materialHash
       || row.sourceRef.materialHash !== data.packet.materialHash) return
-    const originalDocument = data.documents.get(header.sourceRef.sourceRowId), documentId = originalDocument?.value.id
+    const originalDocument = findGraph3OriginalRow(data.documents, header.sourceRef.sourceRowId)
+    const documentId = originalCell(data.documents, originalDocument, 'id', data.encoding)
     if (typeof documentId !== 'string') return
     const scope = data.scopes.get(capsuleJson(['documents', documentId])), document = data.physical.get(documentId)
     if (!scope || !document) return
@@ -85,9 +97,10 @@ function originalDocuments(sources: Sources) {
       matches = new Map(); data.cells.set(row.key, matches)
       const edits = editGroups.get(row.key) ?? []
       if (edits.some(edit => edit.column !== column || !same(edit.sourceRef, row.sourceRef))) return fail('普通正文改写来源不同')
-      const original = column === 'summary' ? originalDocument : data.blocks.get(row.sourceRef.sourceRowId)
-      const before = original?.value[column]
-      if (typeof before !== 'string' || column === 'content' && original?.value.document_id !== documentId
+      const table = column === 'summary' ? data.documents : data.blocks
+      const original = column === 'summary' ? originalDocument : findGraph3OriginalRow(table, row.sourceRef.sourceRowId)
+      const before = originalCell(table, original, column, data.encoding)
+      if (typeof before !== 'string' || column === 'content' && originalCell(table, original, 'document_id', data.encoding) !== documentId
         || applyNavigation3TextEdits(before, edits) !== finalText) return
       let candidates: Candidate[]
       if (column === 'summary') candidates = scope.destinations.filter(item => item.section === 'summary').map(item => ({ item, range: item }))
@@ -104,7 +117,7 @@ function originalDocuments(sources: Sources) {
             group.push({ item, range: cell }); body.set(cell.blockId, group)
           }
         }
-        candidates = body.get(String(original?.value.id)) ?? []
+        candidates = body.get(String(originalCell(table, original, 'id', data.encoding))) ?? []
       }
       const move = createNavigation3RangeProjection(edits)
       for (const old of candidates) {
@@ -119,7 +132,7 @@ function originalDocuments(sources: Sources) {
     if (!match) return
     const proof = data.bind(scope, match)
     if (proof) return { kind: 'sealed-original', hash: proof.file.sha256, bytes: proof.file.bytes, logicalName: proof.logicalName,
-      occurrenceIds: [proof.id], file: { frame: proof.file.frame, path: proof.file.path } }
+      occurrenceIds: [proof.id], file: { frame: proof.file.frame, path: proof.file.path }, ...(proof.backupV3 ? { backupV3: proof.backupV3 } : {}) }
   }
 }
 
@@ -142,7 +155,7 @@ export function observeRootRestoreFinalAssetClosure5(physical: Physical, stage: 
     const key = rootRestoreStagedAssetCellKey5(row)
     const proofs = stagedRows.get(key) ?? []
     proofs.push({ kind: 'staged', hash: row.hash, bytes: row.bytes, logicalName: row.logicalName, occurrenceIds: row.occurrenceIds,
-      file: { frame: file.frame, path: file.path } }); stagedRows.set(key, proofs)
+      file: { frame: file.frame, path: file.path }, ...(row.backupV3 ? { backupV3: row.backupV3 } : {}) }); stagedRows.set(key, proofs)
   }
   const original = originalDocuments(sources), entries: Entry[] = [], remainder: Remainder[] = []
   const seen = new Set<string>(), matchedStaged = new Set<string>()
@@ -234,7 +247,7 @@ export function observeRootRestoreFinalAssetClosure5(physical: Physical, stage: 
     for (const destination of scope.destinations) add({ domain: archived ? 'archived-current' : 'retained-sql', scope: scope.source, destination }, () => {
       const proof = archived || retained.has(name) ? bind?.(scope, destination) : undefined
       if (proof) return { kind: 'sealed-original', hash: proof.file.sha256, bytes: proof.file.bytes, logicalName: proof.logicalName,
-        occurrenceIds: [proof.id], file: { frame: proof.file.frame, path: proof.file.path } }
+        occurrenceIds: [proof.id], file: { frame: proof.file.frame, path: proof.file.path }, ...(proof.backupV3 ? { backupV3: proof.backupV3 } : {}) }
     })
   }
   const working = sources.value.roles.find(role => role.role === 'current')
@@ -246,8 +259,12 @@ export function observeRootRestoreFinalAssetClosure5(physical: Physical, stage: 
     })
     for (const holder of working.unsupportedHolders) remainder.push({ domain: 'retained-working', scope: holder.source, reason: holder.reason })
   } else {
-    const jobs = graph3Rows(raw, 'app_settings').filter(row => String(row.value.key).startsWith('sync.webdav.protocol5.exchange-job.v1.'))
-    if (jobs.length) remainder.push({ domain: 'retained-working', scope: ['app_settings'], observedRows: jobs.length, reason: 'retained-job-scopes-not-observed-by-archive5' })
+    const settings = originalTable(raw, 'app_settings')
+    let jobs = 0
+    for (const row of settings.rows) {
+      if (String(originalCell(settings, row, 'key', raw.encoding)).startsWith('sync.webdav.protocol5.exchange-job.v1.')) jobs++
+    }
+    if (jobs) remainder.push({ domain: 'retained-working', scope: ['app_settings'], observedRows: jobs, reason: 'retained-job-scopes-not-observed-by-archive5' })
   }
   for (const table of raw.tables) if (table.rows.length && table.role === 'policy-unresolved')
     remainder.push({ domain: 'retained-policy', scope: [table.name], observedRows: table.rows.length, reason: 'remaining-policy-held-payload-asset-scopes' })

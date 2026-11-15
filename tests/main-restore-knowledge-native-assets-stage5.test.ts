@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdir, readFile, unlink } from 'node:fs/promises'
+import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import test from 'node:test'
 import { KnowbookStore } from '../src/main/database/store'
@@ -171,6 +171,12 @@ test('genuine selected canonical body and template JSON/summary use their own ba
       const coldTransfer = await reopenRestoreAssetTransfer4(copies.location.profileRoot, copies.location.operationId,
         transfer.transferId, transfer.manifestHash)
       assert.equal(coldTransfer.manifestHash, transfer.manifestHash)
+      const original = copies.files[0], changed = Buffer.from(bytes)
+      changed[0] ^= 1
+      await writeFile(original.sourcePath, changed)
+      try { await assert.rejects(copies.assertOriginalBytes, /hash|哈希|摘要|原件|文件/i) }
+      finally { await writeFile(original.sourcePath, bytes) }
+      await copies.assertOriginalBytes()
       assert.equal(await restoreExists(latePath), false, 'Preparing and reopening the transfer cannot publish the live alias')
       assert.deepEqual(allTables(f.db), sourceBefore)
       assert.deepEqual(allTables(currentDb), currentBefore)

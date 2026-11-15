@@ -1,11 +1,13 @@
 import { readTransportWorkingTexts5 } from './restore-knowledge-capsule5-transport-files'
 import type { TransportWorkingTexts5 } from './restore-knowledge-capsule5-transport-model'
 import { assertCertifiedCapsule2SourceOriginalBytes5, assertCertifiedCapsule2VerificationBytes5 } from './restore-knowledge-capsule2-source-certificate'
-import { parseCapsule2CompleteAssetArchiveManifest } from './restore-knowledge-capsule2-asset-archive'
+import { isWorkingAssetArchive5, parseCapsule2CompleteAssetArchiveManifest, type Capsule2AssetArchiveManifest } from './restore-knowledge-capsule2-asset-archive'
 import { capsule2AssetArchiveOriginalBytes3 } from './restore-knowledge-capsule2-asset-archive'
+import { installedV3AliasOrigins } from './restore-knowledge-installed-v3-assets'
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { capsuleBytesHash, capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
+import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
 import { durableSqlDagHash, durableSqlDagUuid, DURABLE_SQL_DAG_MAX_CAPSULES, DURABLE_SQL_DAG_MAX_DEPTH,
   DURABLE_SQL_DAG_MAX_NODES, DURABLE_SQL_DAG_MAX_ORIGINAL_BYTES, DURABLE_SQL_DAG_MAX_TOTAL_NODE_BYTES } from './restore-knowledge-dag-model'
 import { canonicalRequiredSqlDagRoot, writeRequiredSqlDagNodeFile } from './restore-knowledge-required-dag-files'
@@ -15,7 +17,7 @@ import { readActualNoPriorOriginalInput, readActualNoPriorOriginalContentAndWork
 import { readPreparedMixedOriginBundleOriginalInputs, readPreparedMixedOriginBundleContentAndWorkingPair5, readPreparedMixedOriginalContentLocation3,
   assertPreparedMixedOriginBundleOriginalBytes, type capturePreparedMixedOriginBundleWithOriginal,
   type PreparedMixedOriginBundle } from './restore-knowledge-mixed-origin-bundle-read'
-import { parseMixedOriginBundleDescriptor, mixedOriginBundleHash, mixedOriginBundleFiles, mixedOriginBundleDirectories, mixedOriginCapsulePath,
+import { isCapsuleV3TransportContentPath, parseMixedOriginBundleDescriptor, mixedOriginBundleHash, mixedOriginBundleFiles, mixedOriginBundleDirectories, mixedOriginCapsulePath,
   mixedOriginBundleSideFiles, type MixedOriginBundleDescriptor } from './restore-knowledge-mixed-origin-bundle-model'
 import { captureReopenedCertifiedCapsuleNoPriorSourceInputs, readCertifiedDurableSqlCapsule, type CertifiedDurableSqlCapsule } from './restore-knowledge-capsule-read'
 import { captureReopenedCertifiedCapsule2SourceWithWorking5, type CertifiedCapsule2NoPriorSource } from './restore-knowledge-capsule2-source-certificate'
@@ -46,6 +48,7 @@ type Inventory = { files: readonly ReferenceContextFile[]; directories: readonly
 type NodeReaders = { profile: string; sources: Map<string, CertifiedDurableSqlCapsule | CertifiedCapsule2NoPriorSource | SealedCapsule2Source> }
 type ReaderState = Map<string, NodeReaders>
 type ContentPacket = Awaited<ReturnType<typeof readSealedCapsule2SourceInputs>>['value']
+type AssetArchivePacket = Pick<ContentPacket, 'assetArchive' | 'assetArchiveHash'>
 type WorkingOriginals = Awaited<ReturnType<typeof readSealedCapsule2SourceInputsWithWorking5>>['working']
 type ReopenedInput = { input: OriginalSourceInput; packet: ContentPacket | null; working?: WorkingOriginals }
 type View = Inventory & { directory: string; profileRoot: string; descriptorText: string; readers: ReaderState; flatMixed?: true }
@@ -122,7 +125,9 @@ function legacyData(descriptor: MixedOriginBundleDescriptor,value:LegacyMaterial
     const binding = index ? node.current : node.source, actual = value.inputs.find(input => requiredDagCapsuleLocator(input.binding) === requiredDagCapsuleLocator(binding))!
     const files = mixedOriginBundleSideFiles(side,binding,index?workingTexts.current:workingTexts.source)
     return { binding: actual.binding, origin: actual.origin, knowledge: actual.knowledge,
-      originalSqlBytes: files.inventory.reduce((n, f) => n + f.bytes, 0), managedOriginalBytes: files.files.filter(f => /\/(?:files|contexts)\/[0-9a-f]{64}$/.test(f.path) || /\/(?:base-provenance|contexts\/manifest)\.json$/.test(f.path)).reduce((n, f) => n + f.bytes, 0) }
+      originalSqlBytes: files.inventory.reduce((n, f) => n + f.bytes, 0),
+      managedOriginalBytes: files.files.filter(f => /\/(?:files|contexts)\/[0-9a-f]{64}$/.test(f.path)
+        || /\/(?:base-provenance|contexts\/manifest)\.json$/.test(f.path) || isCapsuleV3TransportContentPath(f.path)).reduce((n, f) => n + f.bytes, 0) }
   })
   if (value.originalSqlBytes !== inputs.reduce((n, i) => n + i.originalSqlBytes, 0) || value.managedOriginalBytes !== inputs.reduce((n, i) => n + i.managedOriginalBytes, 0)) return bad('legacy完整实际字节计数不等于原清单')
   return freezeCapsuleValue({ root: value.root, node: value.node, inputs, parents: [], materialHash: value.materialHash,
@@ -134,13 +139,36 @@ function assertParent(descriptor: Capsule2ReferenceContextDescriptor['parents'][
   if (!same(descriptor.originalRoot, actual.root) || descriptor.materialHash !== actual.materialHash
     || descriptor.originalSqlBytes !== actual.originalSqlBytes || descriptor.managedOriginalBytes !== actual.managedOriginalBytes) return bad('父引用必须绑定实际全量重建的root、材料和原字节')
 }
-async function contextParents(view: View, prefix: readonly string[], context: Capsule2ReferenceContextDescriptor, b: Budget, depth: number): Promise<CompleteOriginalRootData['parents']> {
+async function contextParents(view: View, prefix: readonly string[], context: Capsule2ReferenceContextDescriptor, b: Budget, depth: number,
+  installedArchive?: Extract<Capsule2AssetArchiveManifest, { version: 7 | 8 | 9 | 10 }>): Promise<CompleteOriginalRootData['parents']> {
   const mounted = referenceContextMountedRoots(context), parents: Array<CompleteOriginalRootData['parents'][number]> = []
+  const pin = installedArchive?.version === 9 || installedArchive?.version === 10 ? installedArchive.installedV3Many : installedArchive?.installedV3
+  if (installedArchive?.version === 9 || installedArchive?.version === 10) {
+    const operations = new Set(context.requirements.entries.map(entry => entry.operationId))
+    if (installedArchive.installedV3Many.transfers.some(entry => !operations.has(entry.operationId)))
+      return bad('混合大附件 transfer 不属于同次实际 SQLite 父域')
+  }
   // One shared traversal budget and sequential recursive descent: no recursive
   // fanout, hash deduplication, local fallback or caller-controlled loader.
   for (const parent of context.parents) {
-    const original = await walk(view, [...prefix, parent.mountId], parent.reader, parent.descriptorHash, b, depth)
+    const inherited: Array<AssetArchivePacket | null> = []
+    const installedParent = pin && same(pin.root, parent.reference) ? pin : undefined
+    const original = await walk(view, [...prefix, parent.mountId], parent.reader, parent.descriptorHash, b, depth, installedParent
+      ? ({ packet }) => inherited.push(packet && { assetArchive: packet.assetArchive, assetArchiveHash: packet.assetArchiveHash }) : undefined)
     assertParent(parent, original)
+    if (installedParent) {
+      const [source, current] = inherited
+      if (installedParent.qualifiedDescriptorHash !== parent.descriptorHash || !source || !current)
+        return bad('安装附件连续性缺相同的 qualified V3 父域')
+      const origins = installedV3AliasOrigins(source, current)
+      const aliases = 'backupV3' in installedParent
+        ? installedParent.aliases.map(alias => ({ alias, backupV3: installedParent.backupV3, role: undefined }))
+        : installedParent.aliases
+      if (aliases.some(({ alias, backupV3, role }) => {
+        const origin = origins.get(alias.relativePath)
+        return !origin || !same(origin.alias, alias) || !same(origin.backupV3, backupV3) || role !== undefined && origin.role !== role
+      })) return bad('已安装大附件不属于真实 V3 父归档')
+    }
     const reference = mounted.find(root => root.namespace.kind === 'imported-bundle' && root.namespace.mountId === parent.mountId)!
     parents.push({ reference, original })
   }
@@ -194,7 +222,8 @@ async function domainWorkingTexts5(view:View,prefix:readonly string[],text:strin
     return view.flatMixed?readCapsule2AssetManifest(viewPath(view,file),view.directory,REFERENCE_CONTEXT_MAX_BYTES):readOriginalFrameText(view.directory,file,REFERENCE_CONTEXT_MAX_BYTES)
   },hash)
 }
-async function walk(view: View, prefix: readonly string[], reader: CompleteOriginalPackage['reader'], hash: string, b: Budget, depth: number, rootPackets?: ReopenedInput[]): Promise<CompleteOriginalRootData> {
+async function walk(view: View, prefix: readonly string[], reader: CompleteOriginalPackage['reader'], hash: string, b: Budget, depth: number,
+  collect?: (input: ReopenedInput) => void): Promise<CompleteOriginalRootData> {
   const text = await domainText(view,prefix),workingTexts=await domainWorkingTexts5(view,prefix,text,reader,hash),stateKey=capsuleJson(prefix)
   if (reader === 'prepared-mixed-v2') {
     const descriptor = parseMixedOriginBundleDescriptor(text,workingTexts)
@@ -208,7 +237,7 @@ async function walk(view: View, prefix: readonly string[], reader: CompleteOrigi
       const captured = await reopenedInput(state, side, binding, origin, null), input = captured.input
       if (!same(input.binding, binding) || !same(input.origin, origin)) return bad('legacy实际来源与原node不同')
       actual.push(input)
-      rootPackets?.push(captured)
+      collect?.(captured)
     }
     const originalSqlBytes = actual.reduce((n, i) => n + i.originalSqlBytes, 0), managedOriginalBytes = actual.reduce((n, i) => n + i.managedOriginalBytes, 0)
     const inputs = actual.map(input => {
@@ -230,7 +259,14 @@ async function walk(view: View, prefix: readonly string[], reader: CompleteOrigi
   domainInventory(view, prefix, inventory, text); charge(b, node, depth)
   const sides=[qualifiedOriginalSide(descriptor.source,node.source,node.origins.source,workingTexts.source),qualifiedOriginalSide(descriptor.current,node.current,node.origins.current,workingTexts.current)]
   const parents: Array<CompleteOriginalRootData['parents'][number]> = []
-  for (const side of sides) if (side.context) parents.push(...await contextParents(view, [...prefix, side.context.contextId], side.context, b, depth + 1))
+  for (const side of sides) {
+    const installed = 'archive' in side && (side.archive.version === 7 || side.archive.version === 8
+      || side.archive.version === 9 || side.archive.version === 10) ? side.archive : undefined
+    const pin = installed?.version === 9 || installed?.version === 10 ? installed.installedV3Many : installed?.installedV3
+    if (pin && !side.context?.parents.some(parent => same(parent.reference, pin.root)))
+      return bad('已安装附件缺其准确原生 V3 父原件')
+    if (side.context) parents.push(...await contextParents(view, [...prefix, side.context.contextId], side.context, b, depth + 1, installed))
+  }
   parents.sort((a, z) => requiredDagRootLocator(a.reference) < requiredDagRootLocator(z.reference) ? -1 : 1)
   if (!same(parents.map(p => p.reference), node.parents)) return bad('实际父原件全集与原node不相等')
   let state = view.readers.get(stateKey)
@@ -242,15 +278,15 @@ async function walk(view: View, prefix: readonly string[], reader: CompleteOrigi
     b.bytes += actual.originalSqlBytes + actual.managedOriginalBytes
     if (b.bytes > DURABLE_SQL_DAG_MAX_ORIGINAL_BYTES) return bad('实际完整来源字节超原预算')
     inputs.push(actual)
-    rootPackets?.push(captured)
+    collect?.(captured)
   }
   const counts = totals(inputs, parents, 1 + Math.max(0, ...parents.map(p => p.original.depth)))
   counts.nodeBytes = Buffer.byteLength(descriptor.nodeText) + parents.reduce((n, p) => n + p.original.nodeBytes, 0)
   const body = { root: descriptor.root, node, inputs, parents, ...counts, scope: 'complete-original-input-closure' as const,
     originalInputsComplete: true as const, semanticValidationComplete: false as const, acceptedCoverage: false as const, effective: false as const, permit: false as const }
-  const encoded = capsuleJson(body)
-  if (Buffer.byteLength(encoded) > REFERENCE_CONTEXT_MAX_BYTES) return bad('实际完整递归来源材料超原有限预算，不截断')
-  return freezeCapsuleValue({ ...body, materialHash: capsuleBytesHash('knowbook.complete-original-inputs.v1\0' + encoded) })
+  const materialHash = hashBoundedCapsuleJson(body, REFERENCE_CONTEXT_MAX_BYTES, 'knowbook.complete-original-inputs.v1\0')
+    ?? bad('实际完整递归来源材料超原有限预算，不截断')
+  return freezeCapsuleValue({ ...body, materialHash })
 }
 function viewFor(directory: string, profileRoot: string, descriptorText: string, inventory: Inventory, readers: ReaderState = new Map()): View {
   return { directory, profileRoot, descriptorText, files: [header(descriptorText), ...inventory.files], directories: inventory.directories, readers }
@@ -265,7 +301,8 @@ async function readDirectoryBytes(directory: string, profileRoot: string, hash?:
 async function readDirectory(directory: string, profileRoot: string, hash?: string, readers: ReaderState = new Map(), rootPackets?: ReopenedInput[]): Promise<CompleteOriginalPackage> {
   const {root,text,descriptor,inventory,view,workingTexts}=await readDirectoryBytes(directory,profileRoot,hash)
   view.readers = readers
-  const actual = await walk(view, [], 'qualified-originals-v1', qualifiedOriginalDescriptorHash(descriptor,workingTexts), budget(), 1, rootPackets)
+  const actual = await walk(view, [], 'qualified-originals-v1', qualifiedOriginalDescriptorHash(descriptor,workingTexts), budget(), 1,
+    rootPackets && (input => rootPackets.push(input)))
   await assertOriginalFrameDirectory(root, text, inventory.files)
   const result = packageFrom(view, 'qualified-originals-v1', qualifiedOriginalDescriptorHash(descriptor,workingTexts), actual)
   capturedReaders.set(result, readers); return result
@@ -310,7 +347,7 @@ async function nativeInput(profileRoot: string, source: Source) {
     ? { kind: 'durable-sql-v1', manifestText: await text('knowledge-capsules', 'manifest.json') }
     : { kind: 'complete-capsule2', certificateText: await text('knowledge-source-certificates-v2', 'certificate.json', CAPSULE2_SOURCE_CERTIFICATE_MAX_BYTES),
       sourceManifestText: await text('knowledge-source-capsules-v2', 'manifest.json'), assetManifestText: await text('knowledge-complete-assets-v2', 'manifest.json') }
-  const working=side.kind==='complete-capsule2'&&parseCapsule2CompleteAssetArchiveManifest(side.assetManifestText,actual.binding.capsule.capsuleId,actual.knowledge.assetArchiveHash??bad('完整来源缺archive hash')).version===5
+  const working=side.kind==='complete-capsule2'&&isWorkingAssetArchive5(parseCapsule2CompleteAssetArchiveManifest(side.assetManifestText,actual.binding.capsule.capsuleId,actual.knowledge.assetArchiveHash??bad('完整来源缺archive hash')))
     ?captured.working??bad('archive5缺同次完整原件读取的Working原件'):undefined
   const workingText=working?capsuleJson(working.manifest)+'\n':undefined
   if(working)await assertCertifiedCapsule2SourceOriginalBytes5(source as CertifiedCapsule2NoPriorSource)
@@ -333,10 +370,22 @@ function mint(entry: Saved): QualifiedOriginalBundle {
 }
 /** Builds an independent physical input closure, including every actual C
  * reference domain. This is preparation only, not semantic coverage or install. */
-export async function captureQualifiedOriginalBundle(input: { profileRoot: string; operationId: string; dagId: string; source: Source; current: Source }) {
+type CaptureQualifiedInput = { profileRoot: string; operationId: string; dagId: string; source: Source; current: Source }
+export async function captureQualifiedOriginalBundle(input: CaptureQualifiedInput) {
+  return captureQualified(input)
+}
+async function captureQualified(input: CaptureQualifiedInput, packets?: ReopenedInput[]) {
   const row = capsuleRecord(input, ['profileRoot','operationId','dagId','source','current']), profileRoot = await canonicalRequiredSqlDagRoot(row.profileRoot)
   return buildOriginalBundle(profileRoot, row.operationId as string, row.dagId as string, [row.source as Source, row.current as Source],
-    await pair(profileRoot, row.source as Source, row.current as Source))
+    await pair(profileRoot, row.source as Source, row.current as Source), packets)
+}
+
+/** The content packets come from the independent post-copy SQL traversal,
+ * after the mounted originals and the source of the copy were verified. */
+export async function captureQualifiedOriginalBundleWithInitialContent5(input: CaptureQualifiedInput) {
+  const packets: ReopenedInput[] = []
+  const captured = await captureQualified(input, packets)
+  return Object.freeze({ ...captured, ...contentPair(captured.originalPackage, packets) })
 }
 /** One binding/root construction, accepting a genuine context instead of a
  * diagnostic packet. Shares only the full capture just made inside this call. */
@@ -362,7 +411,8 @@ export async function captureQualifiedOriginalBundleFromReferences(input: { prof
   const actual = await buildOriginalBundle(profileRoot, row.operationId as string, row.dagId as string, [bound.source, row.current as Source], [bound.initial, results[1].value])
   return Object.freeze({ ...actual, bound: bound.source, context: bound.context, contextData: bound.contextData })
 }
-async function buildOriginalBundle(profileRoot: string, operationId: string, dagId: string, handles: readonly [Source, Source], initial: readonly [Awaited<ReturnType<typeof nativeInput>>, Awaited<ReturnType<typeof nativeInput>>]) {
+async function buildOriginalBundle(profileRoot: string, operationId: string, dagId: string, handles: readonly [Source, Source],
+  initial: readonly [Awaited<ReturnType<typeof nativeInput>>, Awaited<ReturnType<typeof nativeInput>>], packets?: ReopenedInput[]) {
   const source = initial[0].input, current = initial[1].input
   const node = validateRequiredSqlDagNode({ kind: 'restore-required-sql-knowledge-dag-node', version: 2, readerVersion: 'knowbook-required-sql-knowledge-dag-v2', material: 'durable-sql-only',
     source: source.binding, current: current.binding, origins: { source: source.origin, current: current.origin }, parents: requiredDagParentUnion(source.binding.requiredRoots, current.binding.requiredRoots) })
@@ -383,7 +433,7 @@ async function buildOriginalBundle(profileRoot: string, operationId: string, dag
     }
   }
   await syncOriginCatalogAncestors(target.base, profileRoot)
-  const hash = qualifiedOriginalDescriptorHash(descriptor,workingTexts), actual = await readDirectory(target.directory, profileRoot, hash)
+  const hash = qualifiedOriginalDescriptorHash(descriptor,workingTexts), actual = await readDirectory(target.directory, profileRoot, hash, undefined, packets)
   return Object.freeze({ bundle: mint({ profileRoot, operationId, mountId: target.mountId, directory: target.directory, hash, readers: capturedReaders.get(actual)! }), value: actual.original,
     directory: target.directory, mountId: target.mountId, descriptorHash: hash, originalPackage: actual })
 }
@@ -524,7 +574,7 @@ function contentPair(actual: CompleteOriginalPackage, packets: readonly Pick<Reo
  * consumers must use the qualified package's exact original frame inventory. */
 function workingObservation(packet: ContentPacket, working: WorkingOriginals) {
   const archive = packet.assetArchive
-  if (archive.version !== 5) {
+  if (!isWorkingAssetArchive5(archive)) {
     if (working) return bad('非 archive5 角色不能获得 Working5 原件')
     return undefined
   }
@@ -549,7 +599,7 @@ export async function readMixedOriginalContentAndWorkingPair5(handle: PreparedMi
   const saved = contentReaders.get(handle)
   if (saved) view.readers.set(capsuleJson([]), saved)
   const packets: ReopenedInput[] = []
-  const original = await walk(view, [], 'prepared-mixed-v2', mounted.descriptorHash, budget(), 1, packets)
+  const original = await walk(view, [], 'prepared-mixed-v2', mounted.descriptorHash, budget(), 1, input => packets.push(input))
   const actual = packageFrom(view, 'prepared-mixed-v2', mounted.descriptorHash, original)
   const result = contentPair(actual, packets)
   await assertPreparedMixedOriginBundleOriginalBytes(handle)

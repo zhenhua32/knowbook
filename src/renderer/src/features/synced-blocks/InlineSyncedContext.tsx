@@ -11,7 +11,7 @@ export interface InlineHostView {
   ui: UiText
   isZh: boolean
   onOpenDocument: (id: string) => unknown
-  onOpenBlock: (documentId: string, blockId: string) => unknown
+  onOpenBlock: (documentId: string, blockId: string, shouldContinue?: () => boolean) => unknown
   onOpenAnchor: (documentId: string, slug: string) => unknown
 }
 const InlineContext = createContext<InlineHostView | null>(null)

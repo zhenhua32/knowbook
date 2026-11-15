@@ -45,6 +45,7 @@ test('block move preload IPC preserves identities and paired history across an i
       expectedFromUpdatedAt: source.updatedAt, expectedToUpdatedAt: target.updatedAt
     }), fixture)
     expect(moved.state).toBe('applied')
+    if (moved.state !== 'applied') throw new Error('The ordinary transfer must commit directly')
     expect(moved.operationId).toBeTruthy()
     expect(moved.movedBlockIds).toEqual(['api-task', 'api-child'])
     expect(new Set(moved.affectedDocumentIds)).toEqual(new Set([fixture.source.id, fixture.target.id]))

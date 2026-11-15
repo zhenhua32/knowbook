@@ -244,6 +244,13 @@ export interface SyncedControllerOptions {
 }
 
 /** Created only by its workspace registry, never by an individual occurrence. */
+export type HostReorderGroupHold = { current(): boolean; release(): void; expectCrossMove(operationId: string): void; retireCrossMove(): boolean }
+const hostReorderGroupHolds = new WeakMap<SyncedGroupController, () => HostReorderGroupHold | null>()
+
+export function holdGroupForHostReorder(group: SyncedGroupController): HostReorderGroupHold | null {
+  return hostReorderGroupHolds.get(group)?.() ?? null
+}
+
 class GroupController implements SyncedGroupController {
   private state: SyncedGroupDraftState
   private readonly listeners = new Set<() => void>()
@@ -259,6 +266,7 @@ class GroupController implements SyncedGroupController {
   private recoveryAccepted: { method: 'updateSyncedBlockGroup' | 'restoreSyncedGroupOperation'; input: SyncedUpdateGroupInput | SyncedRestoreGroupInput; ack: SyncedGroupSaved } | null = null
   private queue: Promise<void> = Promise.resolve()
   private historyBusy = false
+  private hostReorder: object | null = null
   private recoveryReview = false
   private workspaceInvalid = false
   private readonly knownOperations = new Set<string>()
@@ -276,6 +284,32 @@ class GroupController implements SyncedGroupController {
       phase: 'clean', incoming: null, failure: null, error: null, pending: null, composingInstanceIds: [],
       canUndo: snapshot.history.undoToken !== null, canRedo: snapshot.history.redoToken !== null })
     this.currentEndpoint = this.baselineEndpoint(this.state.working, 0, this.state.snapshot)
+    hostReorderGroupHolds.set(this, () => {
+      const state = this.state
+      if (this.hostReorder || this.workspaceInvalid || this.historyBusy || this.pending || this.hasComposition()
+        || this.recoveryReview || state.incoming || state.error || state.failure || !this.frames.length
+        || this.recoveryAccepted || this.serverRedo.length
+        || [...this.frames, ...this.redoFrames].some(frame => frame.copyLease || frame.bindingClaims?.some(claim => claim.kind === 'copy')
+          || !state.snapshot.instances.some(instance => sameInstance(instance, frame.instance)))) return null
+      const lease = Object.freeze({})
+      this.hostReorder = lease
+      const current = () => this.hostReorder === lease && this.state === state && !this.hasComposition()
+      return {
+        current,
+        release: () => { if (this.hostReorder === lease) this.hostReorder = null },
+        expectCrossMove: operationId => { if (current()) this.markOperation(operationId) },
+        retireCrossMove: () => {
+          if (!current()) return false
+          // Main already retained the complete authored chain. The obsolete
+          // mount may show its state until unmount, but cannot publish it.
+          this.workspaceInvalid = true
+          this.releaseReadOwner()
+          this.expireEndpoints()
+          this.hostReorder = null
+          return true
+        }
+      }
+    })
     recoveryGroupPorts.set(this, () => {
       const pending = this.pending
       const readSource = this.readOwner ? readControllerRecoverySource(this.readOwner) : null
@@ -502,7 +536,7 @@ class GroupController implements SyncedGroupController {
     const mount = sourceLease ? this.sourceLive(sourceLease.mount, sourceLease.callback) : this.live(input.scope)
     if (sourceLease && !mount) return { accepted: false }
     const fits = sourceLease ? this.sourceBookmarkFits(sourceLease.mount, input.bookmark) : this.bookmarkFits(input.scope, input.bookmark), snapshot = before.snapshot
-    if (!mount || !fits || this.state !== before || this.workspaceInvalid || this.historyBusy || this.hasPendingHistory()
+    if (!mount || !fits || this.state !== before || this.hostReorder || this.workspaceInvalid || this.historyBusy || this.hasPendingHistory()
       || typeof input.transactionId !== 'string' || !input.transactionId || input.expectedEditSequence !== before.editSequence
       || input.guards.groupId !== snapshot.groupId || input.guards.expectedRevision !== snapshot.revision
       || input.guards.expectedTopologyRevision !== snapshot.topologyRevision
@@ -545,7 +579,7 @@ class GroupController implements SyncedGroupController {
     try { if (validateSource && validateSource() !== true) return { accepted: false } } catch { return { accepted: false } }
     // Only immutable data/internal registry checks remain before acceptance.
     if (sourceLease && !sourceScopeMatches(sourceLease.mount, sourceLease.callback)) return { accepted: false }
-    if (!stillMounted || !stillFits || this.state !== before || this.workspaceInvalid || this.historyBusy
+    if (!stillMounted || !stillFits || this.state !== before || this.hostReorder || this.workspaceInvalid || this.historyBusy
       || this.hasPendingHistory() || input.expectedEditSequence !== before.editSequence
       || input.guards.groupId !== this.state.snapshot.groupId || input.guards.expectedRevision !== this.state.snapshot.revision
       || input.guards.expectedTopologyRevision !== this.state.snapshot.topologyRevision
@@ -751,10 +785,11 @@ class GroupController implements SyncedGroupController {
   }
 
   flush = (options: { shouldContinue?: () => boolean } = {}): Promise<boolean> => {
+    if (this.hostReorder) return Promise.resolve(false)
     this.checkpoint()
     const throughSequence = this.state.editSequence
     return this.serial(async () => {
-      if (this.recoveryReview || this.workspaceInvalid || options.shouldContinue?.() === false || this.hasComposition()) return false
+      if (this.hostReorder || this.recoveryReview || this.workspaceInvalid || options.shouldContinue?.() === false || this.hasComposition()) return false
       if (this.pending && !await this.writePending()) return false
       if (options.shouldContinue?.() === false || this.state.incoming || this.state.failure?.status === 'conflict') return false
       for (;;) {
@@ -785,11 +820,12 @@ class GroupController implements SyncedGroupController {
   }
 
   private history(scope: SyncedGroupScope, direction: 'undo' | 'redo'): Promise<boolean> {
+    if (this.hostReorder) return Promise.resolve(false)
     this.checkpoint()
     const sequence = this.state.editSequence
     return this.serial(async () => {
       const mount = this.live(scope)
-      if (!mount || this.workspaceInvalid || this.hasComposition() || sequence !== this.state.editSequence || this.state.incoming
+      if (!mount || this.hostReorder || this.workspaceInvalid || this.hasComposition() || sequence !== this.state.editSequence || this.state.incoming
         || this.state.failure?.status === 'conflict') return false
       if (this.pending && !await this.writePending()) return false
       if (this.workspaceInvalid || !this.live(scope) || sequence !== this.state.editSequence) return false
@@ -831,6 +867,7 @@ class GroupController implements SyncedGroupController {
 
   /** Content conflicts do not silently replace the baseline used by dirty edits. */
   receive(snapshot: SyncedGroupSnapshot) {
+    if (this.hostReorder && JSON.stringify(validateSyncedGroupSnapshot(snapshot)) === JSON.stringify(this.state.snapshot)) return
     // An external load is a new provenance generation even when all DTO fields match.
     this.releaseReadOwner()
     snapshot = validateSyncedGroupSnapshot(snapshot)
@@ -870,6 +907,7 @@ export interface SyncedWorkspaceController {
   getWorkspaceScope: () => string | null
   load: (groupIds: string[]) => Promise<void>
   releaseClean: (groupId: string) => boolean
+  releaseCrossMove: (groupId: string, group: SyncedGroupController, hold: HostReorderGroupHold) => boolean
   dispose: () => boolean
 }
 
@@ -964,6 +1002,12 @@ export function getSyncedWorkspaceController(api: SyncedBlocksApi, options: Sync
     getGroup: id => groups.get(id), getWorkspaceScope: () => workspaceScope,
     load: async ids => { if (disposed) throw new Error('Synced workspace is disposed.'); await Promise.all([...new Set(ids)].map(loadOne)) },
     releaseClean: id => { const group = groups.get(id); if (!group?.canRelease() || reads.has(id)) return false; group.releaseReadOwner(); return groups.delete(id) },
+    releaseCrossMove: (id, group, hold) => {
+      if (groups.get(id) !== group || !hold.retireCrossMove()) return false
+      epochs.set(id, (epochs.get(id) ?? 0) + 1)
+      flushReadEpoch++
+      return groups.delete(id)
+    },
     dispose: () => {
       if (reads.size || [...groups.values()].some(group => !group.canRelease())) return false
       disposed = true; unsubscribe(); for (const group of groups.values()) group.releaseReadOwner(); groups.clear(); workspaces.delete(api); workspaceFlushPorts.delete(workspace); recoveryWorkspacePorts.delete(workspace); return true

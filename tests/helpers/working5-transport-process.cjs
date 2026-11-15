@@ -22,14 +22,15 @@
    undo.push({object,name,original});object[name]=wrapped
   }
   module.syncBuiltinESMExports()
-  const {captureReopenedPreparedMixedOriginBundle}=await import('../../src/main/database/restore-knowledge-mixed-origin-bundle-read.ts')
-  const {captureReopenedQualifiedOriginalBundle,readCompleteOriginalContentPair3}=await import('../../src/main/database/restore-knowledge-qualified-originals.ts')
-  const {capsuleBytesHash}=await import('../../src/main/database/restore-knowledge-capsule-model.ts')
+  const {captureReopenedMixedOriginalPackageWithInitialContent3,captureReopenedQualifiedOriginalBundle,readCompleteOriginalContentPair3}=
+    await import('../../src/main/database/restore-knowledge-qualified-originals.ts')
+  const {capsuleBytesHash,capsuleJson}=await import('../../src/main/database/restore-knowledge-capsule-model.ts')
   const {capsule2SourceManifestHash}=await import('../../src/main/database/restore-knowledge-capsule2-source-seal-model.ts')
   const {parseWorkingOriginals5}=await import('../../src/main/database/restore-knowledge-capsule5-working-model.ts')
   assert.ok(input.mode==='mixed'||input.mode==='qualified')
-  const captured=input.mode==='mixed'?await captureReopenedPreparedMixedOriginBundle(input.locator):await captureReopenedQualifiedOriginalBundle(input.locator)
-  const actual=await readCompleteOriginalContentPair3(captured.bundle),source=actual.source,current=actual.current,archive=source.assetArchive
+  const captured=input.mode==='mixed'?await captureReopenedMixedOriginalPackageWithInitialContent3(input.locator):await captureReopenedQualifiedOriginalBundle(input.locator)
+  const actual='content' in captured?captured.content.pair:await readCompleteOriginalContentPair3(captured.bundle)
+  const {source,current}=actual,archive=source.assetArchive
   assert.equal(archive.version,5);assert.equal(current.assetArchive.version,2)
   const sourceAssets=`catalog/backups/database-restore/${source.operationId}/knowledge-complete-assets-v2/${source.capsuleId}`
   const ownFile=name=>{const file=actual.originalPackage.files.find(file=>!file.frame.length&&file.path===sourceAssets+'/'+name);assert.ok(file);return file}
@@ -49,11 +50,18 @@
   // path.resolve injecting the child cwd into the component suffix.
   const normalizedSuffix=process.platform==='win32'?suffix.toLowerCase():suffix
   const recreated=[...new Set(created.filter(value=>(process.platform==='win32'?value.toLowerCase():value).endsWith(path.sep+normalizedSuffix)))]
-  assert.ok(recreated.length>0);for(const directory of recreated)assert.deepEqual(await promises.readdir(directory),[])
+  assert.ok(recreated.length>0)
+  if(input.mode==='mixed')assert.equal(recreated.length,1,'The mixed content capture uses one cold verification profile')
+  for(const directory of recreated)assert.deepEqual(await promises.readdir(directory),[])
   const sourceSuffix=path.join('backups','database-restore',source.operationId,'knowledge-complete-assets-v2',source.capsuleId,'contexts')
   const sourceSuffixKey=process.platform==='win32'?sourceSuffix.toLowerCase():sourceSuffix
   const sourceDirectories=[...new Set(created.filter(value=>(process.platform==='win32'?value.toLowerCase():value).endsWith(path.sep+sourceSuffixKey)))]
   assert.ok(sourceDirectories.length>0)
+  if(input.mode==='mixed'){
+   assert.equal(sourceDirectories.length,1)
+   assert.equal(key(sourceDirectories[0].slice(0,-sourceSuffix.length)),key(recreated[0].slice(0,-suffix.length)),
+    'The same cold verification profile recreates both directories')
+  }
   for(const directory of sourceDirectories){assert.deepEqual((await promises.readdir(directory)).sort(),['files','manifest.json']);assert.deepEqual((await promises.readdir(path.join(directory,'files'))).sort(),working.files.map(file=>file.sha256))}
   const sourceManifestPath=`catalog/backups/database-restore/${source.operationId}/knowledge-source-capsules-v2/${source.capsuleId}/manifest.json`
   const sourceManifest=actual.originalPackage.files.find(file=>!file.frame.length&&file.path===sourceManifestPath);assert.ok(sourceManifest)
@@ -61,7 +69,8 @@
   assert.deepEqual(accesses,[]);assert.equal(archive.coverage.installPermit,false)
   process.stdout.write(JSON.stringify({mode:input.mode,pid:process.pid,forbiddenOriginAccesses:accesses,forbiddenOriginRootCount:forbidden.length,
    sourceManifestHash:capsule2SourceManifestHash(JSON.parse(await promises.readFile(sourceManifest.sourcePath,'utf8'))),sourceMaterialHash:source.materialHash,sourceArchiveHash:source.assetArchiveHash,
-   currentMaterialHash:current.materialHash,currentArchiveVersion:current.assetArchive.version,workingManifestHash:archive.workingOriginals.manifestHash,workingFileCount:working.files.length,
+   sourceContentSha256:capsuleBytesHash(capsuleJson(source.source.sourceContent)),currentMaterialHash:current.materialHash,currentArchiveHash:current.assetArchiveHash,
+   currentArchiveVersion:current.assetArchive.version,workingManifestHash:archive.workingOriginals.manifestHash,workingFileCount:working.files.length,
    supplementalObservationHash:archive.assetScopeSupplement.observationHash,baseManifestHash:archive.baseProjection.baseManifestHash,baseManifestRawHash:capsuleBytesHash(baseBytes),
    settledPortableBindingsHash:archive.assetScopeSupplement.settledPortableBindingsHash,managedOriginalBytes:captured.value.managedOriginalBytes,currentFilesDirectoryEmpty:true,
    acceptedCoverage:captured.value.acceptedCoverage,permit:captured.value.permit}))

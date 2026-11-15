@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { capsule2ApplicationColumns, type Capsule2RawSqlTable } from '../src/main/database/restore-knowledge-capsule2-raw-model'
-import { graph3Encode, graph3Key, type Graph3Inputs } from '../src/main/database/restore-knowledge-graph3-data'
+import { capsule2ApplicationColumns, type Capsule2Encoding, type Capsule2RawSqlTable } from '../src/main/database/restore-knowledge-capsule2-raw-model'
+import { capsuleBytesHash, capsuleJson } from '../src/main/database/restore-knowledge-capsule-model'
+import { graph3Encode, graph3Key, graph3Text, type Graph3Inputs } from '../src/main/database/restore-knowledge-graph3-data'
 import { deriveRootRestoreNavigationMergeContext3, buildMerge3NavigationFinalIndex3, resolveFinalNavigation3 } from '../src/main/database/restore-knowledge-navigation3-merge-context'
 import { finishMerge3Table, prepareMerge3Table, type Merge3Material } from '../src/main/database/restore-knowledge-merge3-storage'
 import type { deriveRootRestoreMergedContent3 } from '../src/main/database/restore-knowledge-merge3-model'
@@ -38,7 +39,7 @@ const block = (key: string, document: string, content: string, type = 'paragraph
   document_id: document, content, type, parent_block_id: null, depth: 0n, checked: 0n, sort_order: BigInt(order), tags_json: '[]',
   language: null, list_start: null, markdown_format_json: null, highlight: null, created_at: born, updated_at: born })
 const syntax = (value: Value) => ({ id: String(value.id), type: String(value.type), content: String(value.content), checked: false, depth: 0, parentBlockId: null, tags: [] })
-function fixture(repeated = false) {
+function fixture(repeated = false, originalAccess?: { source: Capsule2Encoding; current: Capsule2Encoding }) {
   const source = meta('source'), current = meta('current'), g = id(20), first = id(21), second = id(22)
   const ordinaryLink = '[document](/BeforeCurrent.md) [removed](/BeforeCurrent.md#^removed) [heading](/BeforeCurrent.md#old-heading)'
   const sourceBlocks = repeated ? [block(first, 'd', JSON.stringify({ version: 1, groupId: g }), 'synced-block'),
@@ -57,6 +58,20 @@ function fixture(repeated = false) {
     table('synced_groups', repeated ? [group] : []), table('synced_group_blocks', repeated ? [canonicalRow] : []), table('synced_instances', repeated ? instances : []), table('document_block_routes', [])]
   const currentTables = [table('documents', [doc('d', 'Current', 'BeforeCurrent'), doc('r', 'BeforeCurrent', 'Retained')]), table('blocks', [...currentBlocks, retained]),
     table('synced_groups', repeated ? [group] : []), table('synced_group_blocks', repeated ? [canonicalRow] : []), table('synced_instances', repeated ? instances : []), table('document_block_routes', [])]
+  const sourceEncoding = originalAccess?.source ?? 'UTF-8', currentEncoding = originalAccess?.current ?? 'UTF-8'
+  if (originalAccess) {
+    currentTables[currentTables.length - 1] = table('document_block_routes',
+      [{ document_path: 'Previous route 🍃', block_id: 'retained' }, { document_path: 'Removed route', block_id: 'removed' }])
+    const extremes = ['-9223372036854775808', '-2', '9223372036854775807']
+    for (const [tables, encoding] of [[sourceTables, sourceEncoding], [currentTables, currentEncoding]] as const) {
+      for (const [index, original] of tables.entries()) {
+        tables[index] = { ...original, rows: original.rows.map((row, ordinal) => ({
+          sourceRowId: original.name === 'blocks' || original.name === 'document_block_routes' ? extremes[ordinal] : row.sourceRowId,
+          cells: row.cells.map(cell => cell[0] === 'text' ? graph3Encode(graph3Text(cell, 'UTF-8'), encoding) : cell)
+        })) }
+      }
+    }
+  }
   const physicalDoc = (value: Value, blocks: Value[]) => ({ documentId: value.id, title: value.title, path: value.path, summary: value.summary,
     parentId: null, sortOrder: 0, createdAt: born, updatedAt: born, births: blocks.map(block => [block.id, born]), blocks: blocks.map(syntax) })
   const groupFact = { groupId: g, absence: null, lifecycle: null, snapshot: { groupId: g, creationId: id(23), createdAt: born,
@@ -69,10 +84,10 @@ function fixture(repeated = false) {
   ].map(assignment => ({ ...assignment, key: graph3Key('pure-fixture-assignment', assignment.kind, assignment.sourceId, assignment.birth) }))
   const knowledge = { groups: repeated ? [{ tuple: { groupId: g, creationId: id(23), createdAt: born, origin }, comparisonKey: digest(20) }] : [] }
   const data = { value: { assignments, sourceWitness: source.witness, sourcePayload: source.payload, allocationHash: digest(30) },
-    inputs: { source: { materialHash: source.materialHash, knowledge, source: { sourceContent: { encoding: 'UTF-8', tables: sourceTables },
+    inputs: { source: { materialHash: source.materialHash, knowledge, source: { sourceContent: { encoding: sourceEncoding, tables: sourceTables },
       physical: { documents: [physicalDoc(doc('d', 'Restored', 'Source literal', repeated ? '[second](#echo-1)' : '[self](#new-heading)'), sourceBlocks)], groups: repeated ? [groupFact] : [],
         instances: repeated ? instances : [] } } },
-    current: { materialHash: current.materialHash, knowledge, source: { sourceContent: { encoding: 'UTF-8', tables: currentTables },
+    current: { materialHash: current.materialHash, knowledge, source: { sourceContent: { encoding: currentEncoding, tables: currentTables },
       physical: { documents: [physicalDoc(doc('d', 'Current', 'BeforeCurrent'), currentBlocks), physicalDoc(doc('r', 'BeforeCurrent', 'Retained'), [retained])],
         groups: repeated ? [groupFact] : [], instances: repeated ? instances : [] } } },
     knowledge: { conservationHash: digest(31), constraints: { root: { kind: 'restore-knowledge-origin-root-ref', version: 1, namespace: { kind: 'native' },
@@ -81,19 +96,19 @@ function fixture(repeated = false) {
   const finished = names.map(name => {
     const sourceOriginal = sourceTables.find(table => table.name === name)!, currentOriginal = currentTables.find(table => table.name === name)!
     const p = prepareMerge3Table({ sourceOriginal, sourceCandidate: sourceOriginal, currentOriginal,
-      sourceEncoding: 'UTF-8', currentEncoding: 'UTF-8', source, current })
+      sourceEncoding, currentEncoding, source, current })
     const incomingIds = new Set(p.sourceRows.map(row => row.primaryKeyCells && JSON.stringify(row.primaryKeyCells)))
     const selected = p.sourceRows.map(row => ({ rowKey: row.key,
       replaceCurrentRowKey: p.currentRows.find(old => JSON.stringify(old.primaryKeyCells) === JSON.stringify(row.primaryKeyCells))?.key ?? null }))
     for (const row of p.currentRows) if (!incomingIds.has(row.primaryKeyCells && JSON.stringify(row.primaryKeyCells))
-      && !(name === 'blocks' && row.ref.sourceRowId !== String(currentBlocks.length + 1))) selected.push({ rowKey: row.key, replaceCurrentRowKey: null })
+      && !(name === 'blocks' && row.ref.sourceRowId !== currentOriginal.rows[currentBlocks.length].sourceRowId)) selected.push({ rowKey: row.key, replaceCurrentRowKey: null })
     const chosen = new Set(selected.map(row => row.rowKey))
     return finishMerge3Table(p, selected, [...p.sourceRows, ...p.currentRows].map(row => ({ rowKey: row.key,
       status: chosen.has(row.key) ? 'selected' : 'replaced', decision: 'pure-explicit-fixture-selection' })))
   })
   const tables = finished.map(value => value.table.name !== 'documents' ? value.table : { ...value.table,
     rows: value.table.rows.map(row => ({ ...row, cells: row.cells.map((cell, index) => value.table.columns[index] === 'path'
-      ? graph3Encode(row.sourceRef.side === 'source' ? 'Restored' : 'BeforeCurrent', 'UTF-8') : cell) })) })
+      ? graph3Encode(row.sourceRef.side === 'source' ? 'Restored' : 'BeforeCurrent', currentEncoding) : cell) })) })
   const merged = { tables, mergedContentHash: digest(50) } as unknown as ReturnType<typeof deriveRootRestoreMergedContent3>
   return { data, merged, first, second }
 }
@@ -145,3 +160,25 @@ test('navigation final resolver keeps removed caret targets missing and rejects 
   Reflect.set(blocks.rows[0].cells, birth, graph3Encode('2040-01-02T03:04:05.000Z', blocks.encoding))
   assert.throws(() => buildMerge3NavigationFinalIndex3(data, broken), /identity-or-birth/)
 })
+
+for (const [source, current] of [['UTF-8', 'UTF-16le'], ['UTF-16le', 'UTF-16be'], ['UTF-16be', 'UTF-8']] as const) {
+  test(`navigation binds exact signed original rowids and full unprojected cell bytes in ${source} and ${current}`, () => {
+    const { data, merged } = fixture(false, { source, current })
+    const final = buildMerge3NavigationFinalIndex3(data, merged.tables)
+    const retained = final.physicalBlocks.find(block => block.id === 'retained')!
+    assert.equal(retained.sourceRef.sourceRowId, '9223372036854775807')
+    assert.equal(final.routes.length, 1)
+    const route = data.inputs.current.source.sourceContent.tables.find(table => table.name === 'document_block_routes')!
+    const original = route.rows[0]
+    const expected = capsuleBytesHash('knowbook.restore.merge3.original-row.v1\0' + capsuleJson({
+      table: route.name, columns: route.columns, primaryKey: route.primaryKey, encoding: current, sourceRowId: original.sourceRowId, cells: original.cells
+    }))
+    assert.equal(final.routes[0].path, 'Previous route 🍃')
+    assert.equal(final.routes[0].sourceRowId, '-9223372036854775808')
+    assert.equal(final.routes[0].originalRowHash, expected)
+    const tampered = structuredClone(data)
+    const blocks = tampered.inputs.current.source.sourceContent.tables.find(table => table.name === 'blocks')!
+    Reflect.set(blocks.rows[2].cells, blocks.columns.indexOf('content'), graph3Encode('unprojected changed body', current))
+    assert.throws(() => buildMerge3NavigationFinalIndex3(tampered, merged.tables), /navigation-merge-original-ref/)
+  })
+}

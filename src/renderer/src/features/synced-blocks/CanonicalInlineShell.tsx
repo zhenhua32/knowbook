@@ -17,7 +17,7 @@ export default function CanonicalInlineShell({ documents, isZh, notify, workspac
   latest.current = { documents, notify, isZh, workspaceReady, initialDocumentId, isDocumentsPage }
   runtime.configure({ getPersisted: () => latest.current.documents.selectedDocument, getCurrent: () => latest.current.documents.getSyncedHostEditorState(),
     applyOrdinarySource: (before, after) => latest.current.documents.applyOrdinaryMarkdownSource(before, after),
-    adopt: (before, result) => latest.current.documents.adoptSyncedHostStructureResult(before, result),
+    adopt: (before, result, afterBookmark) => latest.current.documents.adoptSyncedHostStructureResult(before, result, afterBookmark),
     adoptHistory: (before, result) => latest.current.documents.adoptSyncedHostHistoryResult(before, result),
     flushHost: () => latest.current.documents.flushPendingChanges(),
     isComposing: () => latest.current.documents.isSyncedHostComposing(),
@@ -114,9 +114,11 @@ export default function CanonicalInlineShell({ documents, isZh, notify, workspac
   if (!dialog) return recovery
   return <>{recovery}{dialog.kind === 'canonical'
     ? <SyncedCanonicalSourceDialog binding={dialog.binding} isZh={isZh}
-      opener={dialog.opener} onLocalStateChange={dialog.report} onClose={dialog.close} />
+      restored={dialog.restored} opener={dialog.opener} onLocalStateChange={dialog.report} onClose={dialog.close} />
     : <SyncedHostSourceDialog sessionKey={dialog.id} getCurrent={runtime.sourceCurrent}
       restored={dialog.restored}
+      referencePicker={{ list: (query, offset) => runtime.listHostSourceReferences(dialog, query, offset),
+        resolve: choice => runtime.resolveHostSourceReference(dialog, choice) }}
       isCurrent={() => runtime.sourceIsCurrent(dialog)} opener={dialog.opener} isZh={isZh}
       applyPrepared={prepared => runtime.applyHostSource(dialog, prepared)}
       applySubmission={submission => runtime.applyHostSourceSubmission(dialog, submission)}

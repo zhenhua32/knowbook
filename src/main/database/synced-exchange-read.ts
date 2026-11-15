@@ -10,13 +10,14 @@ import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-re
 import type { TombstonePinFact } from '../sync/synced-exchange-tombstone-types'
 import { publicationHash, publicationInvalid, publicationJson, SyncedPublicationError } from '../sync/synced-publication-model'
 import { readExactSyncedExchangeReceipt, readSyncedExchangeReceiptById } from './synced-exchange-receipt'
+import { exchangeRejoinBaseline, readActiveExchangeRejoin } from './synced-exchange-rejoin-model'
 
 export interface SyncedExchangeLocal {
   snapshot: SyncedPublicationLocalSnapshot; fingerprint: string
   identities: InitialIncomingIdentity[]; occupiedDocumentIds: string[]; historyComponents: string[][]; pinnedGroupIds: string[]
   state: AnyExchangeState | null; stateRaw: string | null; initialBaseline: InitialIncomingBaseline | null
   keyGuards: Record<string, string>; knownGroupIds: string[]
-  deletionPins: TombstonePinFact[]
+  deletionPins: TombstonePinFact[]; rejoin?: NonNullable<ReturnType<typeof readActiveExchangeRejoin>>
 }
 function owned(db: Database.Database): void {
   if (!db.inTransaction) return publicationInvalid('exchange readonly authority requires an owned transaction。')
@@ -36,18 +37,30 @@ function snapshotReceiptReader(db: Database.Database) {
 }
 export function readSyncedExchangeState(db: Database.Database, request: ExchangeRequest,
   context: { workspaceScope: string; recoveryEpoch: string }): { value: AnyExchangeState; raw: string } | null {
+  owned(db)
   return readState(db, request, context, snapshotReceiptReader(db))
 }
+
+/** Compare original settled state to its own expected historical route scope
+ * from an actual FK-on snapshot. The result conveys no exchange authority. */
+export function readHistoricalSyncedExchangeState(db: Database.Database, request: ExchangeRequest,
+  routeScope: { workspaceScope: string; recoveryEpoch: string }): { value: AnyExchangeState; raw: string } | null {
+  return readState(db, request, routeScope, snapshotReceiptReader(db))
+}
 function readState(db: Database.Database, request: ExchangeRequest,
-  context: { workspaceScope: string; recoveryEpoch: string }, readReceipt: ReturnType<typeof snapshotReceiptReader>) {
-  owned(db)
+  context: { workspaceScope: string; recoveryEpoch: string }, readReceipt: ReturnType<typeof snapshotReceiptReader>,
+  rejoin?: NonNullable<ReturnType<typeof readActiveExchangeRejoin>>) {
+  if (!db.open || !db.inTransaction || db.pragma('foreign_keys', { simple: true }) !== 1)
+    return publicationInvalid('exchange state requires an owned FK-on snapshot。')
   const row = db.prepare('SELECT value,updated_at FROM app_settings WHERE key=?').get(exchangeStateKey(request.targetFingerprint)) as
     { value: string; updated_at: string } | undefined
   if (!row) return null
   const value = validateAnyExchangeState(parseExchangeStored(row.value))
   if (value.databasePath !== request.databasePath || value.targetFingerprint !== request.targetFingerprint || row.updated_at !== value.lastSyncAt)
     return publicationInvalid('exchange state准确路径/target/接受时点损坏。')
-  if (value.workspaceScope !== context.workspaceScope || value.recoveryEpoch !== context.recoveryEpoch)
+  const adopting = !!rejoin && row.value === rejoin.value.oldStateRaw && rejoin.value.newEpoch === context.recoveryEpoch
+    && rejoin.old.workspaceScope === context.workspaceScope
+  if (!adopting && (value.workspaceScope !== context.workspaceScope || value.recoveryEpoch !== context.recoveryEpoch))
     throw new SyncedPublicationError('unavailable', '历史exchange state属于另一workspace/recovery世代；不借旧state授新写权。')
   if (!isSyncedUuid(value.currentOperationId)) return publicationInvalid('durable exchange state缺准确最终operation。')
   const current = readReceipt(value.currentOperationId)
@@ -57,6 +70,7 @@ function readState(db: Database.Database, request: ExchangeRequest,
     || current.result.remoteWorkspaceId !== value.remoteWorkspaceId || publicationJson(current.provenance.source) !== publicationJson(value.source))
     return publicationInvalid('exchange完整state缺原结算receipt准确认证；不能删baseline row再猜新来源。')
   const acceptedIndexes = new Map<string, Map<string, ExchangeReceipt['provenance']['accepted'][number]>>()
+  const inherited = rejoin ? exchangeRejoinBaseline(rejoin.old, value.version) : undefined
   for (const entry of value.baseline) {
     // The initial source proof is authenticated separately from its original receipt/spool.
     if (entry.acceptedOperationId === value.source.operationId) continue
@@ -67,14 +81,16 @@ function readState(db: Database.Database, request: ExchangeRequest,
     const acceptedLocal = accepted && ('local' in accepted ? accepted.local : { kind: 'live', hash: accepted.afterHash })
     const expectedLocal = value.version === 2 && 'local' in entry ? entry.local : 'localHash' in entry ? { kind: 'live', hash: entry.localHash } : null
     const commonHash = accepted && ('local' in accepted ? accepted.commonHash : accepted.afterHash)
+    const exactInherited = !!rejoin && original?.result.recoveryEpoch === rejoin.old.recoveryEpoch && inherited?.has(entry.key)
+      && publicationJson(inherited.get(entry.key)) === publicationJson(entry)
     if (!original || !accepted || original.request.databasePath !== request.databasePath || original.request.targetFingerprint !== request.targetFingerprint
-      || original.result.workspaceScope !== value.workspaceScope || original.result.recoveryEpoch !== value.recoveryEpoch
+      || original.result.workspaceScope !== value.workspaceScope || original.result.recoveryEpoch !== value.recoveryEpoch && !exactInherited
       || original.result.remoteWorkspaceId !== value.remoteWorkspaceId || commonHash !== entry.remoteHash || publicationJson(expectedLocal) !== publicationJson(acceptedLocal) || entry.commonHash !== commonHash
       || entry.dependencySignature !== accepted.dependencySignature
       || publicationJson(entry.dependencyKeys) !== publicationJson(accepted.dependencyKeys)
       || publicationJson(value.source) !== publicationJson(original.provenance.source)) return publicationInvalid('exchange baseline缺少其准确结算receipt。')
   }
-  return { value, raw: row.value }
+  return { value: adopting ? { ...value, recoveryEpoch: context.recoveryEpoch } : value, raw: row.value }
 }
 /** Complete old authority remains strict; this function never repairs, transfers, or mints write permission. */
 export function readSyncedExchangeLocal(db: Database.Database,
@@ -85,7 +101,8 @@ export function readSyncedExchangeLocal(db: Database.Database,
   // State and archive checks use the same exact owned SQL snapshot. Never
   // reuse a verified receipt across another capture or a write boundary.
   const readReceipt = snapshotReceiptReader(db)
-  const state = readState(db, input.request, legacy.snapshot, readReceipt)
+  const rejoin = readActiveExchangeRejoin(db, input.request.databasePath, input.request.targetFingerprint) ?? undefined
+  const state = readState(db, input.request, legacy.snapshot, readReceipt, rejoin)
   // The schema27 snapshot already authenticated the complete deletion proof set.
   const logicalDeletions = db.pragma('user_version', { simple: true }) === 27
     ? legacy.snapshot.deletions ?? [] : assertSyncedLogicalDeletionRecords(db).values()
@@ -207,7 +224,8 @@ export function readSyncedExchangeLocal(db: Database.Database,
   return { snapshot: legacy.snapshot, identities: [...legacy.identities.values()], occupiedDocumentIds: [...legacy.historyDocuments].sort(),
     historyComponents, pinnedGroupIds: [...pinned].sort(), initialBaseline: legacy.baseline,
     state: state?.value ?? null, stateRaw: state?.raw ?? null,
-    knownGroupIds: [...legacy.groupIds].sort(), keyGuards, deletionPins,
+    knownGroupIds: [...legacy.groupIds].sort(), keyGuards, deletionPins, ...(rejoin ? { rejoin } : {}),
     fingerprint: publicationHash(publicationJson({ snapshot: legacy.snapshot.localFingerprint, keyGuards, identities: [...legacy.identities.values()], history, state: state?.raw ?? null, archives,
-      hostCuts: [...hostCuts.values()].sort((a, b) => a.historyToken < b.historyToken ? -1 : a.historyToken > b.historyToken ? 1 : 0) })) }
+      hostCuts: [...hostCuts.values()].sort((a, b) => a.historyToken < b.historyToken ? -1 : a.historyToken > b.historyToken ? 1 : 0),
+      ...(rejoin ? { rejoinHash: rejoin.hash } : {}) })) }
 }

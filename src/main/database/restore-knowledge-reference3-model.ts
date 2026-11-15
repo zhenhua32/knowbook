@@ -66,6 +66,7 @@ export interface Reference3Origin {
   readonly originalOrigin: SyncedOriginV1
   readonly origin: SyncedOriginV1
   readonly originPolicy: 'retained-current' | 'remapped-source'
+  readonly retainedComparisonKey?: string
   readonly active: boolean
   readonly absencePreserved: boolean
   readonly documentProof: 'current-domain-preserved' | 'qualified-missing' | 'inactive-not-materialized'
@@ -305,6 +306,7 @@ export function deriveRootRestoreReferenceAllocation3(data: Graph3Inputs, inputK
     return rows.length === 1 ? rows[0] : fail('physical-group-assignment', group.source)
   }
   const retainedOriginGroups = new Set<string>(), forkedGroups = new Set<string>(), originForkedGroups = new Set<string>()
+  const repeatedGroups = new Set<string>()
   const forcedGroupForks: Array<Reference3Allocation['forcedGroupForks'][number]> = []
   for (const group of source.groups) {
     const physical = sourcePhysical.get(group.tuple.groupId)
@@ -312,9 +314,16 @@ export function deriveRootRestoreReferenceAllocation3(data: Graph3Inputs, inputK
     const slot = groupSlot(group)
     if (!physical.snapshot) continue // Inactive source stays absent, never fresh-copied from a retirement wire.
     const old = currents.get(slot.targetId), oldPhysical = currentPhysical.get(slot.targetId)
+    const repeat = !!data.repeat && slot.baseReason === 'exact-installed-v3'
     const keepExisting = choices.originPolicy === 'preserve-exact-current-tuple' && !!old && old.comparisonKey === group.comparisonKey
       && !!oldPhysical?.snapshot && slot.targetCreationId === old.tuple.creationId
-    if (keepExisting) retainedOriginGroups.add(group.tuple.groupId)
+    if (repeat) {
+      if (choices.originPolicy !== 'preserve-exact-current-tuple' || !old || !oldPhysical?.snapshot || slot.targetCreationId !== old.tuple.creationId)
+        return fail('installed-v3-group-origin', group.source)
+      repeatedGroups.add(group.tuple.groupId)
+      retainedOriginGroups.add(group.tuple.groupId)
+    }
+    else if (keepExisting) retainedOriginGroups.add(group.tuple.groupId)
     else {
       slot.targetId = allocate('physical-group', 'group', group, 'physical-group', group.tuple.groupId, null, 'fresh-copy', [group.source])
       slot.targetCreationId = allocate('creation', 'creation', group, 'creation', group.tuple.creationId, null, 'fresh-copy', [group.source])
@@ -323,7 +332,7 @@ export function deriveRootRestoreReferenceAllocation3(data: Graph3Inputs, inputK
       forcedGroupForks.push({ sourceGroupId: group.tuple.groupId, sourceGroupSource: group.source, comparisonKey: group.comparisonKey,
         targetGroupId: slot.targetId, targetCreationId: slot.targetCreationId, reason: 'origin-historical-document-birth-unavailable' })
     }
-    if (slot.targetId !== group.tuple.groupId || slot.targetCreationId !== group.tuple.creationId) forkedGroups.add(group.tuple.groupId)
+    if (!repeat && (slot.targetId !== group.tuple.groupId || slot.targetCreationId !== group.tuple.creationId)) forkedGroups.add(group.tuple.groupId)
   }
   const instanceGroups = new Map(source.instances.map(i => [i.instanceId, i.groupId]))
   for (const slot of assignments) {
@@ -384,6 +393,8 @@ export function deriveRootRestoreReferenceAllocation3(data: Graph3Inputs, inputK
     let firstInstanceKnownBirth: string | null = null, originalFirstInstanceKnownBirth: string | null = null
     let firstInstanceSupports: readonly KnowledgeRowRef[] = []
     const retained = side === 'current' || retainedOriginGroups.has(sourceGroupId)
+    const repeatCurrent = side === 'source' && repeatedGroups.has(sourceGroupId) ? currents.get(targetGroupId) : undefined
+    if (repeatCurrent) origin = repeatCurrent.tuple.origin
     if (side === 'source' && !active) {
       documentProof = 'inactive-not-materialized'; firstInstanceProof = 'inactive-not-materialized'
     } else if (!retained) {
@@ -417,10 +428,12 @@ export function deriveRootRestoreReferenceAllocation3(data: Graph3Inputs, inputK
     }
     origins.push({ side, sourceGroupId, sourceGroupSource: group.source, comparisonKey: group.comparisonKey, targetGroupId, targetCreationId,
       originalOriginJson: group.originalOriginJson, originalOrigin: group.tuple.origin, origin,
+      ...(repeatCurrent ? { retainedComparisonKey: repeatCurrent.comparisonKey } : {}),
       originPolicy: retained ? 'retained-current' : 'remapped-source', active, absencePreserved: !active,
       documentProof, firstInstanceProof, firstInstanceSupports, firstInstanceKnownBirth, originalFirstInstanceKnownBirth })
   }
   const bindingTargets: Reference3BindingTarget[] = []
+  const priorBindings = new Map(data.repeat?.bindings.map(item => [graph3Key(item.sourceGroupId, item.key), item]))
   for (const side of ['source', 'current'] as const) {
     const knowledge = data.inputs[side].knowledge
     const captures = new Map<string, Array<{ capture: KnowledgeCapturedBinding; occurrence: number }>>()
@@ -441,7 +454,20 @@ export function deriveRootRestoreReferenceAllocation3(data: Graph3Inputs, inputK
           ? 'current-domain-preserved' : !active ? 'inactive-not-materialized' : 'qualified-missing'
         const originalHint = originalTarget.kind === 'block' ? originalTarget.documentId : null
         if (side === 'source' && active) {
-          if (originalTarget.kind === 'unresolved-url') proofKind = 'unresolved-url-preserved'
+          if (repeatedGroups.has(group.tuple.groupId)) {
+            const prior = priorBindings.get(graph3Key(group.tuple.groupId, key))
+            if (!prior || !same(prior.originalTarget, originalTarget) || prior.comparisonKey !== group.comparisonKey
+              || prior.proofKind !== 'qualified-missing' && prior.proofKind !== 'unresolved-url-preserved')
+              return fail('installed-v3-binding-target', group.source)
+            target = prior.target
+            proofKind = prior.proofKind
+            if (target.kind === 'block' && prior.proofKind === 'qualified-missing') {
+              const identity = currentIdentities.get(target.id)
+              if (identity?.ownerKind !== 'reserved' || identity.state !== 'retained' || identity.createdAt !== null)
+                return fail('installed-v3-binding-reservation', target.id)
+            }
+          }
+          else if (originalTarget.kind === 'unresolved-url') proofKind = 'unresolved-url-preserved'
           else if (originalTarget.kind === 'document') target = { kind: 'document', state: 'missing',
             id: allocate('binding-document', 'document', group, 'binding.target', originalTarget.id, key, 'qualified-missing', [capture.source]) }
           else if (originalTarget.kind === 'heading') target = { kind: 'heading', slug: originalTarget.slug, state: 'missing',
@@ -515,7 +541,7 @@ export function deriveRootRestoreReferenceAllocation3(data: Graph3Inputs, inputK
   const lifecycleIntents = executionGroups.filter(g => g.sourceActive).map<Reference3LifecycleIntent>(g => {
     const original = sources.get(g.sourceGroupId)!, slot = groupSlot(original)
     return { sourceGroupId: g.sourceGroupId, sourceGroupSource: original.source, targetGroupId: slot.targetId,
-      targetCreationId: slot.targetCreationId!, mode: slot.targetId === original.tuple.groupId && slot.targetCreationId === original.tuple.creationId
+      targetCreationId: slot.targetCreationId!, mode: repeatedGroups.has(g.sourceGroupId) || slot.targetId === original.tuple.groupId && slot.targetCreationId === original.tuple.creationId
         ? 'existing-current-awaits-final-cut' : 'new-import-materialization', state: 'active', exposure: 'unknown', createHistoryId: null,
       activationRevision: g.revision, activationTopologyRevision: g.topologyRevision,
       activationHashRequiredFromFinalWire: true, activationInstancesRequireFinalClosure: true,

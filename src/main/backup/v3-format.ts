@@ -38,7 +38,8 @@ export interface BackupV3Manifest {
 }
 export interface ArchiveV3 extends ArchiveV3Snapshot { manifest: BackupV3Manifest }
 
-const MIB = 1024 * 1024, maxContent = 5 * MIB, maxContentTotal = 100 * MIB, maxAsset = 50 * MIB, maxAssetTotal = 500 * MIB
+const MIB = 1024 * 1024, maxContent = 5 * MIB, maxContentTotal = 100 * MIB, maxAssetTotal = 500 * MIB
+export const BACKUP_V3_MAX_ASSET_BYTES = 50 * MIB
 const indexPath = '__knowbook/databases/index.md', catalogPath = '__knowbook/databases/catalog.md'
 const indexKind = 'standalone-database-manifest', catalogKind = 'document-catalog-database', databaseKind = 'standalone-database'
 const encoder = new TextEncoder(), decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }), compare = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0
@@ -98,7 +99,7 @@ function path(value: unknown): string {
   if (!result || result.startsWith('/') || result.includes('\\') || result.split('/').some(part => !part || part === '.' || part === '..' || /[\x00-\x1f]/.test(part))) return invalid('unsafe logical path')
   return result
 }
-function filePath(value: unknown): string {
+export function validateBackupV3ArchiveFilePath(value: unknown): string {
   const result = path(value), parts = result.split('/')
   if (parts.length > 32 || parts.some(part => /[<>:"|?*\x7f]/.test(part) || /[. ]$/.test(part) || /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\.|$)/i.test(part))) return invalid('unsafe archive path')
   return result
@@ -335,7 +336,7 @@ function documentFiles(documents: ExportDocument[]): Map<string, string> {
     let candidate = doc.path.split('/').map((segment, index) => safeSegment(segment, index === 0)).join('/') + '.md'
     if (occupied.has(candidate.toLowerCase())) candidate = candidate.slice(0, -3) + '--' + hash(doc.id) + '.md'
     if (occupied.has(candidate.toLowerCase())) invalid('document filename collision')
-    filePath(candidate); occupied.add(candidate.toLowerCase()); files.set(doc.id, candidate)
+    validateBackupV3ArchiveFilePath(candidate); occupied.add(candidate.toLowerCase()); files.set(doc.id, candidate)
   }
   return files
 }
@@ -374,11 +375,11 @@ export function buildBackupV3Files(value: ArchiveV3Snapshot, snapshotId: string)
   const assets = list(value.assets).map(value => {
     const asset = object(value, ['relativePath', 'bytes', 'hash', 'name'])
     const portable = buildSyncedPortableAssetUri({ hash: digest(asset.hash), name: text(asset.name) })
-    if (!(asset.bytes instanceof Uint8Array) || asset.bytes.byteLength > maxAsset
+    if (!(asset.bytes instanceof Uint8Array) || asset.bytes.byteLength > BACKUP_V3_MAX_ASSET_BYTES
       || asset.relativePath !== syncedPortableAssetBackupPath(portable)) return invalid('asset alias bytes/hash/path mismatch')
     const bytes = new Uint8Array(asset.bytes)
     if (hash(bytes) !== asset.hash) return invalid('asset alias bytes/hash/path mismatch')
-    return { relativePath: filePath(asset.relativePath), bytes }
+    return { relativePath: validateBackupV3ArchiveFilePath(asset.relativePath), bytes }
   })
   const { snapshot, graph } = validateArchiveContent(value, assets.map(file => ({ relativePath: file.relativePath, bytes: file.bytes.byteLength })))
   const files = documentFiles(snapshot.documents), declaration = manifest(snapshot, graph, snapshotId, files), output: BackupV3File[] = []
@@ -416,7 +417,7 @@ function parseFiles(value: BackupV3File[], fileBytesOwned: boolean): ArchiveV3 {
   const files = list(value).map(raw => {
     const file = object(raw, ['relativePath', 'bytes'])
     if (!(file.bytes instanceof Uint8Array)) return invalid('file bytes are not Uint8Array')
-    return { relativePath: filePath(file.relativePath), bytes: fileBytesOwned ? file.bytes : new Uint8Array(file.bytes) }
+    return { relativePath: validateBackupV3ArchiveFilePath(file.relativePath), bytes: fileBytesOwned ? file.bytes : new Uint8Array(file.bytes) }
   })
   const assets = files.filter(file => isBackupV3AssetPath(file.relativePath)).map(file => ({
     ...file, ...parseSyncedPortableAssetUri(assetUri(file.relativePath))
@@ -429,7 +430,7 @@ export function isBackupV3AssetPath(relativePath: string): boolean { return rela
 
 /** Verify the same content and aliases using digests captured from actual asset files. */
 export function parseCapturedBackupV3Inventory(contents: readonly BackupV3File[], assets: readonly BackupV3FileDigest[]) {
-  const allPaths = [...contents, ...assets].map(file => filePath(file.relativePath))
+  const allPaths = [...contents, ...assets].map(file => validateBackupV3ArchiveFilePath(file.relativePath))
   const byPath = new Map(contents.map(file => [file.relativePath, file])), folded = new Set(allPaths.map(path => path.toLowerCase()))
   const directories = new Set(allPaths.flatMap(path => path.split('/').slice(0, -1).map((_part, index) => path.split('/').slice(0, index + 1).join('/'))))
   if (folded.size !== allPaths.length || allPaths.length + directories.size > 20000) invalid('duplicate paths/entry budget')
@@ -484,7 +485,7 @@ export function parseCapturedBackupV3Inventory(contents: readonly BackupV3File[]
   for (const file of assets) {
     const uri = assetUri(file.relativePath), asset = parseSyncedPortableAssetUri(uri)
     if (file.hash !== asset.hash || file.relativePath !== syncedPortableAssetBackupPath(uri)
-      || !Number.isSafeInteger(file.bytes) || file.bytes < 0 || file.bytes > maxAsset)
+      || !Number.isSafeInteger(file.bytes) || file.bytes < 0 || file.bytes > BACKUP_V3_MAX_ASSET_BYTES)
       invalid('asset alias bytes/hash/path mismatch')
     expected.add(file.relativePath)
   }
