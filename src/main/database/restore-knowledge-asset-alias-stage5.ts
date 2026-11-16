@@ -9,6 +9,7 @@ import { assertMerge3JsonBudget } from './restore-knowledge-merge3-storage'
 import { syncOriginCatalogAncestors } from './restore-knowledge-origin-bundle-files'
 import { assertOriginalFrameDirectory, writeOriginalFrameDirectory, type OriginalFrameCopy } from './restore-knowledge-original-frame-files'
 import { referenceContextObjectPath } from './restore-knowledge-reference-context-model'
+import type { RootRestoreStageInputs5 } from './restore-knowledge-reference3-read'
 import { assertRootRestoreSqlAssetStageBytes5, readRootRestoreSqlAssetClosureCopySource5, type RootRestoreSqlAssetStage5 } from './restore-knowledge-sql-asset-stage5'
 import { restoreDirectory } from './restore-safety-files'
 
@@ -85,8 +86,8 @@ async function assertAliasBytes(saved: Saved, actual: ReturnType<typeof derive>)
   await assertOriginalFrameDirectory(actual.directory, actual.text, actual.files)
 }
 
-async function prepare(combined: RootRestoreSqlAssetStage5) {
-  const stageId = randomUUID(), source = await readRootRestoreSqlAssetClosureCopySource5(combined)
+async function prepare(combined: RootRestoreSqlAssetStage5, scope?: RootRestoreStageInputs5) {
+  const stageId = randomUUID(), source = await readRootRestoreSqlAssetClosureCopySource5(combined, scope)
   const actual = { ...derive(source, stageId), source }
   const base = collection(actual.location), root = actual.location.profileRoot
   await restoreDirectory(base, root)
@@ -149,8 +150,8 @@ function sqlSource(saved: Saved, actual: Awaited<ReturnType<typeof verify>>) {
 
 /** Keep this invocation's authenticated input with the alias it produced.
  * Downstream writers still check the original and persisted bytes at their tails. */
-export async function prepareRootRestoreAssetAliasWithSqlSource5(combined: RootRestoreSqlAssetStage5) {
-  const { saved, actual } = await prepare(combined)
+export async function prepareRootRestoreAssetAliasWithSqlSource5(combined: RootRestoreSqlAssetStage5, scope?: RootRestoreStageInputs5) {
+  const { saved, actual } = await prepare(combined, scope)
   const copies = transferCopies(saved, actual)
   const assertTransferBytes = async () => {
     const { assertCompleteOriginalVerificationBytes5 } = await import('./restore-knowledge-qualified-originals')

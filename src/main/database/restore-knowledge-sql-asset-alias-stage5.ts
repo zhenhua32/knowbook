@@ -23,7 +23,7 @@ import { assertRootRestoreStage3DatabaseReadonly3, copyRootRestoreStage3Database
   type RootRestorePhysicalStage3, type PreparedRestoreHistoryScope3 } from './restore-knowledge-stage3-physical'
 import { readRootRestoreStage3MarkerOwned } from './restore-knowledge-stage3-marker-read'
 import type { RootRestoreSqlAssetStage5 } from './restore-knowledge-sql-asset-stage5'
-import { readRootRestoreReferenceCopySource3, type RootRestoreReferencePlan3 } from './restore-knowledge-reference3-read'
+import { readRootRestoreReferenceCopySource3, type RootRestoreReferencePlan3, type RootRestoreStageInputs5 } from './restore-knowledge-reference3-read'
 import { projectTemplate3ContentStringEdits, template3ContentStringRanges } from './restore-knowledge-template3-json'
 import { assertOriginCatalogDirectory, syncOriginCatalogAncestors } from './restore-knowledge-origin-bundle-files'
 import { restoreDirectory, syncRestoreDirectory, syncRestoreFile } from './restore-safety-files'
@@ -505,8 +505,8 @@ export async function reopenRootRestoreSqlAssetAliasDerivationFromCombined5(comb
 }
 
 export async function prepareRootRestoreCanonicalAliasDerivationFromCombined5(reference: RootRestoreReferencePlan3, combined: RootRestoreSqlAssetStage5,
-  historyScope?: PreparedRestoreHistoryScope3) {
-  const { aliases, input, stage: canonical } = await prepareRootRestoreCanonicalAssetPhysicalWithAliasSource5(reference, combined, historyScope)
+  historyScope?: PreparedRestoreHistoryScope3, stageScope?: RootRestoreStageInputs5) {
+  const { aliases, input, stage: canonical } = await prepareRootRestoreCanonicalAssetPhysicalWithAliasSource5(reference, combined, historyScope, stageScope)
   const address = { reference, combined, alias: addressOf(aliases), physical: addressOf(canonical) }
   const { alias, readback } = await prepare(aliases.owner, input, sqlBase(input, canonical), address)
   return { aliases, canonical, source: derivationSource(alias, readback) }

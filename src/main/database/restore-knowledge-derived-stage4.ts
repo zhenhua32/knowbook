@@ -9,7 +9,7 @@ import { readCapsule2AssetManifest, writeCapsule2AssetCopy } from './restore-kno
 import { durableSqlDagHash, durableSqlDagUuid } from './restore-knowledge-dag-model'
 import { assertOriginCatalogDirectory, copyOriginCatalogFileWithIdentity3, syncOriginCatalogAncestors } from './restore-knowledge-origin-bundle-files'
 import { assertRootRestoreReferenceOriginalBytes3, readRootRestoreReferenceCopySource3,
-  type RootRestoreReferencePlan3 } from './restore-knowledge-reference3-read'
+  type RootRestoreReferencePlan3, type RootRestoreStageInputs5 } from './restore-knowledge-reference3-read'
 import { rawRestoreSqlCell } from './restore-knowledge-sql-cell'
 import { readRawRestoreSqlInventoryOwned } from './restore-knowledge-sql-inventory'
 import { assertRootRestoreStage3FilesHeld3, assertRootRestoreStage3WritableMain3, assertRootRestoreStage3WrittenMainClosed3,
@@ -426,8 +426,8 @@ export async function reopenRootRestoreDerivedFromCombinedStage4(combined: RootR
 /** A genuine combined/reference pair is the sole authority for the localized
  * canonical parent and both descendants. All three databases are non-executable. */
 export async function prepareRootRestoreFinalAssetSql5(reference: RootRestoreReferencePlan3, combined: RootRestoreSqlAssetStage5,
-  historyScope?: PreparedRestoreHistoryScope3) {
-  const { aliases, canonical, source } = await prepareRootRestoreCanonicalAliasDerivationFromCombined5(reference, combined, historyScope)
+  historyScope?: PreparedRestoreHistoryScope3, stageScope?: RootRestoreStageInputs5) {
+  const { aliases, canonical, source } = await prepareRootRestoreCanonicalAliasDerivationFromCombined5(reference, combined, historyScope, stageScope)
   const derived = await deriveAfterAlias(source, randomUUID())
   return Object.freeze({ aliases, canonical, sql: source.alias, derived })
 }

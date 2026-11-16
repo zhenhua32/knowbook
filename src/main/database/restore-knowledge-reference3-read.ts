@@ -170,15 +170,37 @@ function mint(saved: Saved): RootRestoreReferencePlan3 {
  * The durable base manifest and old public DTO/hash are never rewritten. */
 export async function prepareRootRestoreReferencePlan3(identity: RootRestoreIdentityPlan3, inputChoices?: Reference3Choices,
   scope?: PreparedRootIdentityInputs5) {
+  return (await prepareReference3(identity, inputChoices, scope)).prepared
+}
+
+async function prepareReference3(identity: RootRestoreIdentityPlan3, inputChoices?: Reference3Choices,
+  scope?: PreparedRootIdentityInputs5) {
   const choices = normalizeReference3Choices(inputChoices), base = await readRootRestoreIdentityPlanLocation3(identity)
-  const data = scope ? (await readPreparedRootRestoreIdentityInputs5(identity, scope)).actual : await readRootRestoreIdentityGraphInputs3(identity)
+  const captured = scope ? await readPreparedRootRestoreIdentityInputs5(identity, scope) : undefined
+  const data = captured?.actual ?? await readRootRestoreIdentityGraphInputs3(identity)
   const kernel: Reference3Kernel = { kind: 'root-restore-reference-kernel', version: 1, policyVersion: 1, purposeVersion: 1,
     seed: randomBytes(32).toString('hex'), preparedAt: new Date().toISOString() }
   const planId = randomUUID(), allocation = deriveRootRestoreReferenceAllocation3(data, kernel, choices)
   if (allocation.purposes.some(purpose => purpose.targetId === planId)) return invalid('引用plan locator与新分配身份碰撞')
-  const candidate = checkedCandidate(data, allocation, choices), value: Reference3Value = Object.freeze({ allocation, candidate })
-  const result = await persistReference3(identity, base, planId, data, kernel, choices, value)
+  const { candidate, ordinaryEdits, physicalBlocks } = checkedCandidateWithCells(data, allocation, choices)
+  const value: Reference3Value = Object.freeze({ allocation, candidate })
+  const prepared = await persistReference3(identity, base, planId, data, kernel, choices, value)
   if (scope) await readPreparedRootRestoreIdentityInputs5(identity, scope)
+  const actual = Object.freeze({ data, allocation, candidate, value, kernel, choices, referencePlanId: planId,
+    referenceManifestHash: prepared.manifestHash })
+  return { prepared, captured: captured && Object.freeze({ ...captured, actual, cells: Object.freeze({ ordinaryEdits, physicalBlocks }) }) }
+}
+
+/** Share only the newly persisted ordinary plan and the original SQL read
+ * owned by this invocation's prepared identity scope. */
+export async function withPreparedRootRestoreReferenceInputs5<T>(identity: RootRestoreIdentityPlan3, inputChoices: Reference3Choices | undefined,
+  identityScope: PreparedRootIdentityInputs5,
+  run: (prepared: Awaited<ReturnType<typeof prepareRootRestoreReferencePlan3>>, scope: RootRestoreStageInputs5) => Promise<T>): Promise<T> {
+  const { prepared, captured } = await prepareReference3(identity, inputChoices, identityScope)
+  if (!captured) return invalid('联合阶段需要本次准备的真实身份规划')
+  const result = await runRootRestoreStageInputs5(prepared.plan, undefined, scope => run(prepared, scope), captured)
+  await readPreparedRootRestoreIdentityInputs5(identity, identityScope)
+  await assertRootRestoreReferenceOriginalBytes3(prepared.plan)
   return result
 }
 

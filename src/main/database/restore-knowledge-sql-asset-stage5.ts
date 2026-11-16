@@ -155,15 +155,16 @@ export async function readRootRestoreSqlAssetClosure5(stage: RootRestoreSqlAsset
   return (await readClosure(stage)).audit
 }
 
-async function readClosure(stage: RootRestoreSqlAssetStage5) {
+async function readClosure(stage: RootRestoreSqlAssetStage5, scope?: RootRestoreStageInputs5) {
   const saved = owners.get(stage)
   if (!saved) return fail('不是实际合并阶段句柄')
   const binding = await readRootRestoreReferenceCopySource3(saved.reference)
-  const { sql, assets } = await withRootRestoreStageInputs5(saved.reference, binding.pendingCellProofHash, async scope => {
+  const read = async (scope: RootRestoreStageInputs5) => {
     const sql = await readRootRestorePhysicalStageAssetEvidence3(saved.sql, scope)
     const assets = await readRootRestoreWorkingAssetStageAndSources5(saved.assets, scope)
     return { sql, assets }
-  })
+  }
+  const { sql, assets } = scope ? await read(scope) : await withRootRestoreStageInputs5(saved.reference, binding.pendingCellProofHash, read)
   const audit = observeRootRestoreFinalAssetClosure5(sql, assets)
   await assertRootRestoreReferenceOriginalBytes3(saved.reference)
   await finish(saved, binding, sql.value, assets.value, 'verify')
@@ -172,8 +173,8 @@ async function readClosure(stage: RootRestoreSqlAssetStage5) {
 
 /** Actual file sources for each independently matched closure occurrence.
  * Same-byte aliases are deduplicated only after this exact role/frame lookup. */
-export async function readRootRestoreSqlAssetClosureCopySource5(stage: RootRestoreSqlAssetStage5) {
-  const { saved, binding, sql, assets, audit } = await readClosure(stage)
+export async function readRootRestoreSqlAssetClosureCopySource5(stage: RootRestoreSqlAssetStage5, scope?: RootRestoreStageInputs5) {
+  const { saved, binding, sql, assets, audit } = await readClosure(stage, scope)
   const originalFiles = new Map(assets.sources.captured.pair.originalPackage.files.map(file => [referenceContextFileKey(file), file]))
   const stagedFiles = new Map(assets.value.files.map(file => [referenceContextFileKey(file), file]))
   const stagedSelections = new Map(rootRestoreStagedAssetSelections5(assets.value).map(row => [rootRestoreStagedAssetCellKey5(row), row]))

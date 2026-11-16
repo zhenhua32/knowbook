@@ -1024,10 +1024,10 @@ export async function prepareRootRestoreCanonicalAssetPhysicalStage5(reference: 
 /** The authenticated input can only be reused inside the call that minted its
  * alias owner. Reads using either durable owner still reauthenticate it. */
 export async function prepareRootRestoreCanonicalAssetPhysicalWithAliasSource5(reference: RootRestoreReferencePlan3, combined: RootRestoreSqlAssetStage5,
-  historyScope?: PreparedRestoreHistoryScope3) {
+  historyScope?: PreparedRestoreHistoryScope3, stageScope?: RootRestoreStageInputs5) {
   assertNoPendingObservations()
   const { prepareRootRestoreAssetAliasWithSqlSource5 } = await import('./restore-knowledge-asset-alias-stage5')
-  const { aliases, input, readTransferCopies } = await prepareRootRestoreAssetAliasWithSqlSource5(combined)
+  const { aliases, input, readTransferCopies } = await prepareRootRestoreAssetAliasWithSqlSource5(combined, stageScope)
   const stage = await preparePhysicalStage(reference, { owner: aliases.owner, sameCallInput: input }, undefined, historyScope)
   if (historyScope) {
     const history = preparedHistoryScopes.get(historyScope)

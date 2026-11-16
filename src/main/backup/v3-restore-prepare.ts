@@ -12,9 +12,9 @@ import { captureSealedCapsule2SourceFromArchive, captureSealedCapsule2SourceWith
 import { certifyCapsule2Source } from '../database/restore-knowledge-capsule2-source-certificate'
 import { captureBoundOriginalInputsFromReferences } from '../database/restore-knowledge-reference-context'
 import { requiredReferenceRoots } from '../database/restore-knowledge-reference-context-model'
-import { withPreparedRootKnowledgeInputs5 } from '../database/restore-knowledge-root3-read'
-import { withPreparedRootRestoreIdentityInputs5 } from '../database/restore-knowledge-identity3-read'
-import { prepareRootRestoreReferencePlan3 } from '../database/restore-knowledge-reference3-read'
+import { withPreparedRootKnowledgeInputs5, type captureRootKnowledgeConservationPlanFromCertifiedSources3 } from '../database/restore-knowledge-root3-read'
+import { withPreparedRootRestoreIdentityInputs5, type prepareRootRestoreIdentityPlan3, type PreparedRootIdentityInputs5 } from '../database/restore-knowledge-identity3-read'
+import { prepareRootRestoreReferencePlan3, withPreparedRootRestoreReferenceInputs5, type Reference3Value } from '../database/restore-knowledge-reference3-read'
 import type { Reference3Choices } from '../database/restore-knowledge-reference3-model'
 import { restoreSqliteFilename } from '../database/restore-safety-sqlite-path'
 import { prepareRootRestoreSqlAssetStage5 } from '../database/restore-knowledge-sql-asset-stage5'
@@ -49,10 +49,20 @@ async function prepareCurrentOriginal({ profileRoot, operationId }: BackupV3Rest
 /** Prepare the native restore plan from a verified V3 source and the exact
  * current SQL inventory already sealed by the exclusive maintenance owner. */
 export async function prepareBackupV3RestorePlan(input: BackupV3RestorePreparation) {
-  return preparePlanFromCurrent(input, await prepareCurrentOriginal(input))
+  const result = await withPlanIdentityFromCurrent(input, await prepareCurrentOriginal(input), async (plan, scope) =>
+    Object.freeze({ ...plan, reference: await prepareRootRestoreReferencePlan3(plan.identity.plan, input.choices, scope) }))
+  assertBackupV3RestoreSourceCurrent(input.source)
+  return result
 }
-async function preparePlanFromCurrent(input: BackupV3RestorePreparation, currentOriginal: OwnedRawCapsuleOriginal) {
-  const { profileRoot, operationId, source, parents, installedAssets, choices } = input
+type V3PlanIdentity = {
+  v3Sql: Awaited<ReturnType<typeof prepareBackupV3RestoreSqlStage>>
+  root: Awaited<ReturnType<typeof captureRootKnowledgeConservationPlanFromCertifiedSources3>>
+  identity: Awaited<ReturnType<typeof prepareRootRestoreIdentityPlan3>>
+  prior: readonly RestoreKnowledgePriorInstall[]
+}
+async function withPlanIdentityFromCurrent<T>(input: BackupV3RestorePreparation, currentOriginal: OwnedRawCapsuleOriginal,
+  run: (plan: V3PlanIdentity, scope: PreparedRootIdentityInputs5) => Promise<T>) {
+  const { profileRoot, operationId, source, parents, installedAssets } = input
   const v3Sql = await prepareBackupV3RestoreSqlStage(source, profileRoot, operationId)
   const archive = await prepareCapsule2AssetArchiveFromVerifiedV3(v3Sql, source)
   const incoming = await captureSealedCapsule2SourceFromArchive(archive)
@@ -88,23 +98,14 @@ async function preparePlanFromCurrent(input: BackupV3RestorePreparation, current
       if (!original) throw new Error('The sealed current source is missing a verified installed original.')
       return original
     }) })).source
-  const { root, identity, reference } = await withPreparedRootKnowledgeInputs5({
+  return withPreparedRootKnowledgeInputs5({
     profileRoot, operationId, dagId: randomUUID(), source: incomingCertificate.source, current: currentInput
-  }, (root, scope) => withPreparedRootRestoreIdentityInputs5(root.knowledgePlan, scope, { repeatV3: prior }, async (identity, identityScope) => ({
-    root, identity, reference: await prepareRootRestoreReferencePlan3(identity.plan, choices, identityScope)
-  })))
-  assertBackupV3RestoreSourceCurrent(source)
-  return Object.freeze({ v3Sql, root, identity, reference, prior })
+  }, (root, scope) => withPreparedRootRestoreIdentityInputs5(root.knowledgePlan, scope, { repeatV3: prior },
+    (identity, identityScope) => run({ v3Sql, root, identity, prior }, identityScope)))
 }
 
-/** Build the exact candidate and its independently readable original, plus
- * a durable transfer and SQL proof. No live files are moved by preparation. */
-export async function prepareBackupV3RestoreCandidate(input: BackupV3RestorePreparation) {
-  const { profileRoot, operationId, source } = input, paths = restorePaths(profileRoot, operationId)
-  const currentOriginal = await prepareCurrentOriginal(input)
-  const privateSync = await readV3SettledPrivateSyncOriginals(currentOriginal)
-  const { root, identity, reference, prior } = await preparePlanFromCurrent(input, currentOriginal)
-  const { conflicts } = reference.value.candidate
+function previewResolvedReference({ candidate }: Reference3Value) {
+  const { conflicts } = candidate
   if (conflicts.length) {
     const paths = conflicts.flatMap(({ code, detail }) => code === 'duplicate-document-path' && detail && typeof detail === 'object'
       && 'path' in detail && typeof detail.path === 'string' ? [detail.path] : [])
@@ -116,7 +117,7 @@ export async function prepareBackupV3RestoreCandidate(input: BackupV3RestorePrep
     throw new Error('V3 restore requires a resolved reference plan.')
   }
   const disposition = (tableName: 'documents' | 'synced_groups') => {
-    const rows = reference.value.candidate.tables.find(table => table.name === tableName)!.rows
+    const rows = candidate.tables.find(table => table.name === tableName)!.rows
     let incoming = 0, retained = 0, replaced = 0
     for (const row of rows) {
       if (row.sourceRef.side === 'current') retained++
@@ -125,16 +126,30 @@ export async function prepareBackupV3RestoreCandidate(input: BackupV3RestorePrep
     }
     return Object.freeze({ incoming, retained, replaced })
   }
-  const preview = Object.freeze({ documents: disposition('documents'), groups: disposition('synced_groups'),
+  return Object.freeze({ documents: disposition('documents'), groups: disposition('synced_groups'),
     conflicts: conflicts.length })
-  const combined = await prepareRootRestoreSqlAssetStage5(reference.plan)
-  const { coverage, installed, transfer } = await withPreparedRestoreHistoryScope3(async scope => {
-    const final = await prepareRootRestoreFinalAssetSql5(reference.plan, combined.stage, scope)
-    const coverage = await prepareRootRestoreCoverageSql(reference.plan, final.derived.stage, prior, scope)
+}
+
+/** Build the exact candidate and its independently readable original, plus
+ * a durable transfer and SQL proof. No live files are moved by preparation. */
+export async function prepareBackupV3RestoreCandidate(input: BackupV3RestorePreparation) {
+  const { profileRoot, operationId, source } = input, paths = restorePaths(profileRoot, operationId)
+  const currentOriginal = await prepareCurrentOriginal(input)
+  const privateSync = await readV3SettledPrivateSyncOriginals(currentOriginal)
+  const { root, identity, reference, preview, coverage, installed, transfer } = await withPreparedRestoreHistoryScope3(async historyScope => {
+    const { root, identity, reference, prior, preview, final } = await withPlanIdentityFromCurrent(input, currentOriginal, (plan, identityScope) =>
+      withPreparedRootRestoreReferenceInputs5(plan.identity.plan, input.choices, identityScope, async (reference, stageScope) => {
+        assertBackupV3RestoreSourceCurrent(source)
+        const preview = previewResolvedReference(reference.value)
+        const combined = await prepareRootRestoreSqlAssetStage5(reference.plan, stageScope)
+        const final = await prepareRootRestoreFinalAssetSql5(reference.plan, combined.stage, historyScope, stageScope)
+        return { ...plan, reference, preview, final }
+      }))
+    const coverage = await prepareRootRestoreCoverageSql(reference.plan, final.derived.stage, prior, historyScope)
     const installed = coverage.value.coverage
     if (!installed) throw new Error('The V3 candidate is missing its original coverage readback.')
-    const transfer = await prepareRootRestoreAssetTransfer4(final.aliases.owner, scope)
-    return { coverage, installed, transfer }
+    const transfer = await prepareRootRestoreAssetTransfer4(final.aliases.owner, historyScope)
+    return { root, identity, reference, preview, coverage, installed, transfer }
   })
   const copy = join(paths.recovery, 'coverage-install-read')
   await copyRestoreInventory(join(coverage.directory, 'database'), copy, [...coverage.value.inventory], profileRoot)
