@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { readFile, readdir, readlink, stat } from 'node:fs/promises'
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -108,10 +109,96 @@ Write-KnowBookRestorePhase 'complete'`
   return result
 }
 
+function isGone(error: unknown): boolean {
+  return error !== null && typeof error === 'object' && 'code' in error
+    && (error.code === 'ENOENT' || error.code === 'ESRCH')
+}
+
+function isAccessDenied(error: unknown): boolean {
+  return error !== null && typeof error === 'object' && 'code' in error
+    && (error.code === 'EACCES' || error.code === 'EPERM')
+}
+
+async function readLinuxRestoreProcess(pid: number, known: boolean): Promise<RestoreObservedProcess | null> {
+  const directory = `/proc/${pid}`, statFile = `${directory}/stat`
+  const readStat = async () => {
+    const raw = await readFile(statFile, 'utf8')
+    const end = raw.lastIndexOf(')')
+    const fields = raw.slice(end + 2).trim().split(/\s+/)
+    if (!raw.startsWith(`${pid} (`) || end < 0 || !/^\d+$/.test(fields[17] ?? '') || !/^\d+$/.test(fields[19] ?? '')) {
+      throw new Error(`无法验证 Linux 后台进程 PID ${pid} 的启动身份。`)
+    }
+    const stopped = (fields[0] === 'Z' || fields[0] === 'X') && fields[17] === '1'
+    return { name: raw.slice(String(pid).length + 2, end), stopped, startToken: `linux:${fields[19]}` }
+  }
+  try {
+    const before = await readStat()
+    // The leader can exit before other threads that still hold database files.
+    if (before.stopped) return null
+    const readOptional = async <T>(read: Promise<T>) => read.catch(error => {
+      if (isGone(error) || isAccessDenied(error)) return null
+      throw error
+    })
+    const [executable, command] = await Promise.all([
+      readOptional(readlink(`${directory}/exe`)),
+      readOptional(readFile(`${directory}/cmdline`))
+    ])
+    const after = await readStat()
+    if (before.startToken !== after.startToken || after.stopped) return null
+    let argv: string[] | null = null
+    if (command?.length && command.at(-1) === 0) {
+      try { argv = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(command).slice(0, -1).split('\0') }
+      catch { /* An undecodable command line cannot prove ownership. */ }
+    }
+    if (!argv && !known) {
+      // Unrelated kernel threads and processes owned by other users cannot
+      // be identified as this user's managed detached services.
+      if (executable === null && command?.length === 0) return null
+      if ((await stat(directory)).uid !== process.getuid?.()) return null
+    }
+    const physicalExecutable = executable && isAbsolute(executable)
+      ? await resolveSystemPluginPhysicalPath(executable) : null
+    return { pid, name: after.name, startToken: after.startToken, executable: physicalExecutable, argv }
+  } catch (error) {
+    if (isGone(error)) {
+      // A known PID may be hidden by a restricted procfs mount. A live
+      // process must still block when its original identity cannot be read.
+      if (!known) return null
+      try { process.kill(pid, 0) }
+      catch (probeError) { if (isGone(probeError)) return null }
+    }
+    if (isAccessDenied(error) && !known) {
+      const owner = await stat(directory).catch(statError => { if (isGone(statError)) return null; throw statError })
+      if (owner === null || owner.uid !== process.getuid?.()) return null
+    }
+    throw error
+  }
+}
+
+export async function listLinuxRestoreProcesses(identities: readonly RestoreProcessIdentity[]): Promise<RestoreObservedProcess[]> {
+  if (process.platform !== 'linux') throw new Error('Linux 恢复进程检查需要本机 procfs。')
+  const known = new Set(identities.map(identity => identity.pid))
+  if ([...known].some(pid => !Number.isSafeInteger(pid) || pid < 1 || pid > 0x7fffffff)) {
+    throw new Error('已记录的 Linux 后台进程 PID 无效。')
+  }
+  if (await readlink('/proc/self') !== String(process.pid)) throw new Error('无法验证当前 Linux 恢复进程的 procfs。')
+  // Include recorded PIDs even if procfs does not list them.
+  const pids = new Set([...known, ...(await readdir('/proc')).filter(name => /^[1-9]\d*$/.test(name)).map(Number)])
+  if (!pids.has(process.pid)) throw new Error('无法验证当前 Linux 恢复进程的 procfs。')
+  const processes: RestoreObservedProcess[] = []
+  for (const pid of pids) {
+    if (pid === process.pid) continue
+    const row = await readLinuxRestoreProcess(pid, known.has(pid))
+    if (row) processes.push(row)
+  }
+  return processes
+}
+
 function matches(expected: RestoreProcessIdentity, actual: RestoreObservedProcess): boolean {
+  const normalize = (path: string) => actual.startToken.startsWith('windows:') ? resolve(path).toLowerCase() : resolve(path)
   return expected.pid === actual.pid && expected.startToken === actual.startToken
-    && actual.executable !== null && resolve(expected.executable).toLowerCase() === resolve(actual.executable).toLowerCase()
-    && Boolean(actual.argv?.some((arg) => isAbsolute(arg) && resolve(arg).toLowerCase() === resolve(expected.serviceEntry).toLowerCase()))
+    && actual.executable !== null && normalize(expected.executable) === normalize(actual.executable)
+    && Boolean(actual.argv?.some((arg) => isAbsolute(arg) && normalize(arg) === normalize(expected.serviceEntry)))
 }
 
 /** Stops only persisted identities. A live unidentifiable profile service blocks replacement. */
@@ -121,7 +208,9 @@ export async function stopDatabaseRestoreProcesses(input: {
   list?: () => Promise<RestoreObservedProcess[]>
   terminate?: (pid: number) => void
 }): Promise<number[]> {
-  const list = input.list ?? listWindowsRestoreProcesses
+  const list = input.list ?? (process.platform === 'linux'
+    ? () => listLinuxRestoreProcesses(input.identities)
+    : listWindowsRestoreProcesses)
   const terminating = new Map<number, string>()
   const root = await resolveSystemPluginPhysicalPath(resolve(input.userDataRoot, 'system-plugins'))
   const isProfileEntry = async (arg: string) => {
@@ -142,9 +231,9 @@ export async function stopDatabaseRestoreProcesses(input: {
       // authorizes another termination or replacement.
       const token = terminating.get(observed.pid)
       if (token !== undefined && observed.startToken === token) { owned.push(observed); continue }
-      const expected = input.identities.find((identity) => identity.pid === observed.pid)
-      if (!observed.argv && (expected || /knowbook|electron/i.test(basename(observed.executable ?? observed.name ?? '')))) {
-        // Windows can return a final process row with null command line while
+      const recorded = input.identities.filter(identity => identity.pid === observed.pid)
+      if (!observed.argv && (recorded.length || /knowbook|electron/i.test(basename(observed.executable ?? observed.name ?? '')))) {
+        // The OS can return a final process row with null command line while
         // that process is exiting. Only a fresh absence proves it is gone;
         // a still-live unreadable host must continue to block replacement.
         const refreshed = (await list()).find((item) => item.pid === observed.pid)
@@ -155,11 +244,15 @@ export async function stopDatabaseRestoreProcesses(input: {
         }
       }
       // Metadata PID reuse alone is not ownership; never terminate the replacement process.
+      const expected = recorded.find(identity => identity.startToken === observed.startToken)
       const sameIdentity = expected && matches(expected, observed)
       let profileEntry = false
       for (const arg of observed.argv ?? []) if (await isProfileEntry(arg)) { profileEntry = true; break }
+      if (expected && observed.startToken.startsWith('linux:') && !sameIdentity) {
+        throw new Error(`工作区后台进程 PID ${observed.pid} 仍在运行，但可执行文件或入口已经变化；已拒绝替换数据库。`)
+      }
       if (!sameIdentity && !profileEntry) continue
-      if (!expected || !matches(expected, observed) || !await isProfileEntry(expected.serviceEntry)) {
+      if (!expected || !sameIdentity || !await isProfileEntry(expected.serviceEntry)) {
         throw new Error(`发现工作区后台进程 PID ${observed.pid}，但持久化身份无法核验；已拒绝替换数据库。请退出该进程或重启系统后重试。`)
       }
       owned.push(observed)
@@ -167,11 +260,17 @@ export async function stopDatabaseRestoreProcesses(input: {
     return owned
   }
   const initial = await inspect()
+  // On Linux a numeric PID can be reused between inspection and sending a
+  // signal. A live, matched service blocks replacement until it exits.
+  const runningLinuxService = initial.find(observed => observed.startToken.startsWith('linux:'))
+  if (runningLinuxService) {
+    throw new Error(`工作区后台进程 PID ${runningLinuxService.pid} 仍在运行；请退出该进程后重试，数据库未替换。`)
+  }
   const stopped: number[] = []
   for (const observed of initial) {
     if (terminating.has(observed.pid)) continue
     const current = (await inspect()).find((item) => item.pid === observed.pid)
-    if (!current) continue
+    if (!current || current.startToken !== observed.startToken) continue
     ;(input.terminate ?? ((pid) => process.kill(pid, 'SIGTERM')))(current.pid)
     terminating.set(current.pid, current.startToken)
     stopped.push(current.pid)

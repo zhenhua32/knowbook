@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
-import { constants, type BigIntStats } from 'node:fs'
+import { constants, fstatSync, lstatSync, readdirSync, realpathSync, type BigIntStats } from 'node:fs'
 import { lstat, open, readdir, rename, unlink } from 'node:fs/promises'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { assertRestoreAssetTransferState4, publishRestoreAssetTransfer4, reopenRestoreAssetTransfer4,
   rollbackRestoreAssetTransfer4 } from './restore-asset-transfer4'
 import { capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
@@ -141,14 +141,22 @@ function absent(name: RestoreRawFile['name']): RestoreRawFile {
   return { name, present: false, bytes: 0, sha256: null }
 }
 type FileState = { file: RestoreRawFile; identity: Identity | null }
+type FileWitness = { assertPath: () => void; close?: () => Promise<void> }
+const assertAbsent = (path: string) => {
+  if (lstatSync(path, { throwIfNoEntry: false })) return fail('SQL 原件路径在最终提交前被占用')
+}
 async function readFile(path: string, name: RestoreRawFile['name'], root: string, expected?: RestoreRawFile,
-  maxBytes = expected?.bytes ?? Number.MAX_SAFE_INTEGER): Promise<FileState> {
+  maxBytes = expected?.bytes ?? Number.MAX_SAFE_INTEGER, witnesses?: FileWitness[]): Promise<FileState> {
   await assertRestorePath(path, root)
-  if (!await restoreExists(path)) return { file: absent(name), identity: null }
+  if (!await restoreExists(path)) {
+    witnesses?.push({ assertPath: () => assertAbsent(path) })
+    return { file: absent(name), identity: null }
+  }
   const named = await lstat(path, { bigint: true })
   if (!regular(named) || named.size > BigInt(maxBytes) || expected && named.size !== BigInt(expected.bytes))
     return fail('SQL 原件不是独立有限普通文件或长度变化')
   const fd = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+  let retained = false
   try {
     const before = await fd.stat({ bigint: true })
     if (!samePathFile(named, before) || process.platform === 'win32' && before.dev === 0n) return fail('SQL 原件 fd 身份变化')
@@ -164,19 +172,43 @@ async function readFile(path: string, name: RestoreRawFile['name'], root: string
     const current = await lstat(path, { bigint: true }), sha256 = digest.digest('hex')
     if (probe.bytesRead || !isSameRestoreOpenFileIdentity(before, after) || !samePathFile(before, after)
       || !samePathFile(current, after) || expected && sha256 !== expected.sha256) return fail('SQL 原件字节或 fd 身份变化')
+    if (witnesses) {
+      witnesses.push({
+        assertPath() {
+          const tail = fstatSync(fd.fd, { bigint: true }), named = lstatSync(path, { bigint: true, throwIfNoEntry: false })
+          if (!named || relative(realpathSync.native(path), path) !== '' || !isSameRestoreOpenFileIdentity(after, tail)
+            || !samePathFile(after, tail) || !samePathFile(named, tail)) return fail('已移动 SQL 原件在最终提交前变化')
+        },
+        close: () => fd.close()
+      })
+      retained = true
+    }
     return { file: { name, present: true, bytes, sha256 }, identity: identity({ dev: after.dev.toString(), ino: after.ino.toString() }) }
-  } finally { await fd.close() }
+  } finally { if (!retained) await fd.close() }
 }
 
-async function readInventory(path: string, root: string, exact: boolean, expected?: readonly RestoreRawFile[], maxBytes?: readonly number[]): Promise<Inventory> {
+async function readInventory(path: string, root: string, exact: boolean, expected?: readonly RestoreRawFile[],
+  maxBytes?: readonly number[], witnesses?: FileWitness[]): Promise<Inventory> {
   await assertRestorePath(path, root)
+  const directory = witnesses && lstatSync(path, { bigint: true })
   const names = (await readdir(path)).sort()
   if (names.includes('knowbook.db-journal') || exact && names.some(name => !(RESTORE_FILES as readonly string[]).includes(name)))
     return fail('SQL 目录含未声明原件或 rollback journal')
   const members = []
-  for (const [index, name] of RESTORE_FILES.entries()) members.push(await readFile(join(path, name), name, root, expected?.[index], maxBytes?.[index]))
+  for (const [index, name] of RESTORE_FILES.entries()) {
+    members.push(await readFile(join(path, name), name, root, expected?.[index], maxBytes?.[index], witnesses))
+  }
   await assertRestorePath(path, root)
   if (!equal((await readdir(path)).sort(), names)) return fail('SQL 文件目录在读取中变化')
+  if (directory && witnesses) witnesses.push({
+    assertPath() {
+      const current = lstatSync(path, { bigint: true, throwIfNoEntry: false })
+      if (!current?.isDirectory() || relative(realpathSync.native(path), path) !== ''
+        || current.dev !== directory.dev || current.ino !== directory.ino || !equal(readdirSync(path).sort(), names)) {
+        return fail('已移动 SQL 目录在最终提交前变化')
+      }
+    }
+  })
   const inventory = members.map(item => item.file)
   return { inventory, identities: identities(members.map(item => item.identity), inventory) }
 }
@@ -308,14 +340,31 @@ async function rollbackSql(intent: JointRestoreIntent4, p: Paths) {
   for (const path of [p.storage, p.original, p.recovery]) await syncRestoreDirectory(path)
 }
 
-async function assertMoved(intent: JointRestoreIntent4, p: Paths) {
+async function assertMoved(intent: JointRestoreIntent4, p: Paths, witnesses?: FileWitness[]) {
   await assertOriginals(intent, p)
-  const archive = await readInventory(p.original, p.root, true, intent.currentInventory)
-  const live = await readInventory(p.storage, p.root, false, intent.candidateInventory)
+  const archive = await readInventory(p.original, p.root, true, intent.currentInventory, undefined, witnesses)
+  const live = await readInventory(p.storage, p.root, false, intent.candidateInventory, undefined, witnesses)
   if (!equal(archive.inventory, intent.currentInventory) || !equal(archive.identities, intent.currentIdentities)
     || !equal(live.inventory, intent.candidateInventory) || !equal(live.identities, [intent.candidateIdentity, null, null])
     || await restoreExists(p.stage) || await restoreExists(p.candidateDisplaced)) return fail('已移动 SQL 的原件闭集或 fd 身份不同')
   await assertClosedStage(p)
+  witnesses?.push({ assertPath() {
+    for (const path of [p.stage, p.candidateDisplaced, p.stage + '-wal', p.stage + '-shm', p.stage + '-journal']) assertAbsent(path)
+  } })
+}
+
+/** Keep the actual moved SQL descriptors through the last asset and pointer
+ * reads. The synchronous witness runs immediately before a durable publish. */
+async function withMovedSqlWitness<T>(intent: JointRestoreIntent4, p: Paths, run: (assertSql: () => void) => Promise<T>) {
+  const witnesses: FileWitness[] = []
+  try {
+    await assertMoved(intent, p, witnesses)
+    const assertSql = () => { for (const witness of witnesses) witness.assertPath() }
+    assertSql()
+    return await run(assertSql)
+  } finally {
+    await Promise.all(witnesses.map(witness => witness.close?.()))
+  }
 }
 
 export interface JointRestoreChecks4 {
@@ -342,7 +391,8 @@ export async function assertJointRestoreInstalledResult4(intent: JointRestoreInt
   return (await verifyResult(jointRestorePaths4(intent.profileRoot, intent.operationId), resultFor(intent, 'installed'))).value
 }
 
-async function finish(intent: JointRestoreIntent4, p: Paths, fence: JointRestoreFence4, journal: Journal | null, status: Status) {
+async function finish(intent: JointRestoreIntent4, p: Paths, fence: JointRestoreFence4, journal: Journal | null, status: Status,
+  assertSql?: () => void) {
   const result = resultFor(intent, status)
   if (await restoreExists(p.result)) await verifyResult(p, result)
   await assertFence(p, fence)
@@ -351,12 +401,13 @@ async function finish(intent: JointRestoreIntent4, p: Paths, fence: JointRestore
   // An earlier atomic journal replace may have reported a directory flush
   // error after making the new phase visible. Persist it before finishing.
   await syncRestoreDirectory(p.root)
-  if (!await restoreExists(p.result)) await writeRestoreJson(p.result, result, p.root)
+  if (!await restoreExists(p.result)) await writeRestoreJson(p.result, result, p.root, false, assertSql)
   const phase = status === 'installed' ? 'installed' : 'rolledback'
-  if (phase !== fence.phase) await writeRestoreJson(p.fence, fenceFor(intent, phase), p.root)
-  if (status === 'installed') await writeRestoreJson(p.safeMarker, { id: intent.operationId, recoveryDirectory: p.recovery }, p.root)
+  if (phase !== fence.phase) await writeRestoreJson(p.fence, fenceFor(intent, phase), p.root, false, assertSql)
+  if (status === 'installed') await writeRestoreJson(p.safeMarker, { id: intent.operationId, recoveryDirectory: p.recovery }, p.root, false, assertSql)
   if (journal) {
     await assertJournal(p, journal)
+    assertSql?.()
     await unlink(p.journal)
   }
   await syncRestoreDirectory(p.root)
@@ -390,9 +441,10 @@ async function recover(root: string, checks: JointRestoreChecks4): Promise<Resul
     await assertMoved(intent, p)
     await assertRestoreAssetTransferState4(await openTransfer(intent), 'published')
     await checks.assertInstalled(intent, 'committing')
-    await assertMoved(intent, p)
-    await assertRestoreAssetTransferState4(await openTransfer(intent), 'published')
-    return finish(intent, p, fence, journal, 'installed')
+    return withMovedSqlWitness(intent, p, async assertSql => {
+      await assertRestoreAssetTransferState4(await openTransfer(intent), 'published')
+      return finish(intent, p, fence, journal, 'installed', assertSql)
+    })
   }
   if (await restoreExists(p.result)) {
     if (journal.phase !== 'rolling-back') return fail('联合 journal 尚未回退却已有终态')
@@ -444,13 +496,14 @@ export async function applyPreparedJointRestore4(profileRoot: string, intent: Jo
     await assertMoved(intent, p)
     await assertRestoreAssetTransferState4(transfer, 'published')
     await checks.assertInstalled(intent, 'committing')
-    await assertMoved(intent, p)
-    await assertRestoreAssetTransferState4(transfer, 'published')
-    await assertFence(p, fence)
-    await assertJournal(p, moving)
-    const installed = journalFor(intent, 'installed')
-    await writeRestoreJson(p.journal, installed, root)
-    return await finish(intent, p, fence, installed, 'installed')
+    return await withMovedSqlWitness(intent, p, async assertSql => {
+      await assertRestoreAssetTransferState4(transfer, 'published')
+      await assertFence(p, fence)
+      await assertJournal(p, moving)
+      const installed = journalFor(intent, 'installed')
+      await writeRestoreJson(p.journal, installed, root, false, assertSql)
+      return finish(intent, p, fence, installed, 'installed', assertSql)
+    })
   } catch (error) {
     let terminal: Result | undefined
     try {

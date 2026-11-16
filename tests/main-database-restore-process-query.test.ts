@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
-import { listWindowsRestoreProcesses, parseRestoreProcessQueryTrace, stopDatabaseRestoreProcesses, type RestoreObservedProcess } from '../src/main/database/restore-process-guard'
+import { listLinuxRestoreProcesses, listWindowsRestoreProcesses, parseRestoreProcessQueryTrace, stopDatabaseRestoreProcesses, type RestoreObservedProcess } from '../src/main/database/restore-process-guard'
 
 function identity(name: string) {
   const userDataRoot = resolve('fixture', 'restore-query-owned-exit')
@@ -149,3 +149,33 @@ test('real Windows query keeps the original case-insensitive service marker for 
   assert.deepEqual(observed.argv.slice(1), args)
   assert.match(observed.startToken, /^windows:[0-9]+$/)
 }))
+
+test('real Linux procfs keeps exact argv and blocks replacement until the recorded detached service exits', { skip: process.platform !== 'linux' }, () => withChild('node', async (child, args) => {
+  const observed = (await listLinuxRestoreProcesses([])).find(row => row.pid === child.pid)
+  assert.ok(observed?.argv)
+  assert.ok(observed.executable)
+  assert.deepEqual(observed.argv.slice(1), args)
+  assert.match(observed.startToken, /^linux:[0-9]+$/)
+  const serviceEntry = args[0], userDataRoot = resolve(serviceEntry, '../../../..')
+  const expected = { pid: observed.pid, executable: observed.executable, startToken: observed.startToken, serviceEntry }
+  for (const identities of [[], [{ ...expected, executable: expected.executable.toUpperCase() }],
+    [{ ...expected, startToken: 'linux:0' }]]) {
+    await assert.rejects(stopDatabaseRestoreProcesses({ userDataRoot, identities,
+      terminate: () => assert.fail('An unverified Linux process must not be stopped') }), /身份无法核验|入口已经变化/)
+  }
+  await assert.rejects(stopDatabaseRestoreProcesses({ userDataRoot, identities: [expected],
+    terminate: () => assert.fail('The restore process must not signal a numeric Linux PID') }), /仍在运行/)
+  const exited = once(child, 'exit')
+  child.kill()
+  await exited
+  assert.equal((await listLinuxRestoreProcesses([expected])).some(row => row.pid === expected.pid), false)
+  assert.deepEqual(await stopDatabaseRestoreProcesses({ userDataRoot, identities: [expected] }), [])
+}))
+
+test('the original Linux creation still blocks replacement after its executable or service argv changes', async () => {
+  const { userDataRoot, expected: original, observed: initial } = identity('node')
+  const recorded = { ...original, startToken: 'linux:123' }
+  const observed = { ...initial, startToken: recorded.startToken, argv: [initial.executable!, 'another-script.cjs'] }
+  await assert.rejects(stopDatabaseRestoreProcesses({ userDataRoot, identities: [recorded], list: async () => [observed],
+    terminate: () => assert.fail('Changed argv cannot authorize termination') }), /入口已经变化/)
+})

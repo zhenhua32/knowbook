@@ -21,11 +21,27 @@ test('mixed Duplicate from toolbar, shortcut and block menu creates a fresh shar
     await app.evaluate(({ clipboard }) => clipboard.write({ text: 'Duplicate sentinel', html: '<p>Duplicate sentinel</p>' }))
     const originalClipboard = await clipboard(), original = (await read())!.blocks
     for (const entry of ['toolbar', 'shortcut', 'menu'] as const) {
-      const start = await row(ordinary.id).boundingBox(), end = await row(first.id).boundingBox()
+      // Undo restores the editor's former focus and can scroll a row behind
+      // the sticky header. Use points the browser can actually hit.
+      await row(ordinary.id).evaluate(element => element.scrollIntoView({ block: 'center', behavior: 'instant' }))
+      const points = async () => page.evaluate(ids => ids.map(id => {
+        const element = document.querySelector(`.block-editor-row[data-block-id="${id}"]`)
+        if (!element) return null
+        const bounds = element.getBoundingClientRect()
+        const x = bounds.x + 2, y = bounds.y + Math.min(10, bounds.height / 2)
+        return document.elementFromPoint(x, y)?.closest('.block-editor-row') === element ? { x, y } : null
+      }), [ordinary.id, first.id])
+      let endpoints: Awaited<ReturnType<typeof points>> = []
+      await expect.poll(async () => {
+        endpoints = await points()
+        return endpoints.every(point => point !== null)
+      }, { message: `Both host rows must accept the pointer before ${entry} Duplicate` }).toBe(true)
+      const [start, end] = endpoints
       if (!start || !end) throw new Error('Both host rows must be visible')
-      await page.mouse.move(start.x + 2, start.y + Math.min(10, start.height / 2)); await page.mouse.down()
-      await page.mouse.move(end.x + 2, end.y + Math.min(10, end.height / 2), { steps: 4 }); await page.mouse.up()
-      await expect(page.locator('.block-editor-row-selected')).toHaveCount(2)
+      await page.mouse.move(start.x, start.y); await page.mouse.down()
+      await page.mouse.move(end.x, end.y, { steps: 4 }); await page.mouse.up()
+      await expect.poll(() => page.locator('.block-editor-row-selected').evaluateAll(rows => rows.map(row => row.getAttribute('data-block-id'))),
+        { message: `Select both original host rows before ${entry} Duplicate` }).toEqual([ordinary.id, first.id])
       if (entry === 'shortcut') await row(ordinary.id).locator('textarea.block-inline-textarea').press('Control+Shift+D')
       else {
         if (entry === 'menu') await row(ordinary.id).locator('.block-drag-handle').click()

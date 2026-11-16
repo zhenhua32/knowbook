@@ -9,7 +9,8 @@ import { copyRestoreInventory, readRestoreJson } from '../../src/main/database/r
 const [root, operationId, mode] = process.argv.slice(2)
 const p = jointRestorePaths4(root, operationId), input = await readRestoreJson(join(p.recovery, 'physical-test-input.json'))
 const fs = createRequire(import.meta.url)('node:fs/promises')
-const realLink = fs.link, realRename = fs.rename, realUnlink = fs.unlink
+const realLink = fs.link, realOpen = fs.open, realRename = fs.rename, realUnlink = fs.unlink
+let candidateVerified = false
 
 const checks = {
   async assertPrepared(intent) {
@@ -24,6 +25,7 @@ const checks = {
       assert.equal(db.pragma('integrity_check', { simple: true }), 'ok')
       assert.equal(db.prepare('SELECT title FROM documents WHERE id=?').pluck().get(input.expectedDocumentId), input.expectedTitle)
     } finally { db.close() }
+    candidateVerified = true
   }
 }
 
@@ -56,9 +58,27 @@ if (mode === 'committed' || mode === 'commit-error') {
 if (mode === 'terminal') {
   fs.unlink = path => path === p.journal ? process.exit(77) : realUnlink(path)
 }
+if (mode === 'tail-before-commit' || mode === 'tail-before-finish') {
+  const lastPointer = mode === 'tail-before-commit' ? p.journal : p.fence
+  let injected = false
+  fs.open = async (path, ...args) => {
+    if (candidateVerified && path === lastPointer && !injected) {
+      injected = true
+      const db = await realOpen(p.database, 'r+')
+      try {
+        const header = Buffer.alloc(1)
+        assert.equal((await db.read(header, 0, 1, 0)).bytesRead, 1)
+        header[0] ^= 1
+        await db.write(header, 0, 1, 0)
+        await db.sync()
+      } finally { await db.close() }
+    }
+    return realOpen(path, ...args)
+  }
+}
 syncBuiltinESMExports()
 
-const recover = ['recover', 'rollback-mid', 'terminal'].includes(mode)
+const recover = ['recover', 'rollback-mid', 'terminal', 'tail-before-finish'].includes(mode)
 const result = recover ? await recoverJointRestore4Owned(root, checks) : await applyPreparedJointRestore4(root,
   await prepareJointRestoreIntent4({ profileRoot: root, operationId, current: await readJointRestoreCurrent4(root),
     parentFenceHash: null, installationProofHash: input.installationProofHash, assetTransferId: input.assetTransferId,

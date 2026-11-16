@@ -69,12 +69,21 @@ test('confirmed V3 restore restarts into maintenance and opens in a new backgrou
     await dialog.getByRole('button', { name: /Complete V3 backup|完整 V3 备份/ }).click()
     await expect(dialog).toContainText(/restarts to prepare a restore plan|重启并生成恢复计划/)
     const restore = dialog.getByRole('button', { name: uiText('Restore selected backup', '恢复所选备份') })
+    let rendererFailure: string | undefined
     const rendererAction = restore.click().catch(error => {
-      if (!/Target page, context or browser has been closed|Execution context was destroyed/.test(String(error))) return String(error)
+      if (!/Target page, context or browser has been closed|Execution context was destroyed/.test(String(error))) rendererFailure = String(error)
     })
     const previewPath = join(profile, 'database-restore-e2e-preview.json')
+    const resultPath = join(profile, 'database-restore-result.json')
     let preview: { operationId: string; intentHash: string; documents: { incoming: number; replaced: number; retained: number }; conflicts: number } | undefined
     await expect.poll(async () => {
+      if (rendererFailure) throw new Error(rendererFailure)
+      try {
+        const terminal = JSON.parse(await readFile(resultPath, 'utf8')) as { status: string; error?: string }
+        if (terminal.status === 'failed' || terminal.status === 'cancelled') {
+          throw new Error(`V3 restore ended before preview (${terminal.status}): ${terminal.error ?? 'no maintenance error'}`)
+        }
+      } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
       try { preview = JSON.parse(await readFile(previewPath, 'utf8')) }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
       return preview
@@ -87,11 +96,12 @@ test('confirmed V3 restore restarts into maintenance and opens in a new backgrou
     await rename(consent + '.pending', consent)
     let result: { status: string; error?: string } | undefined
     await expect.poll(async () => {
-      try { result = JSON.parse(await readFile(join(profile, 'database-restore-result.json'), 'utf8')) }
+      try { result = JSON.parse(await readFile(resultPath, 'utf8')) }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
       return result
     }, { timeout: 90_000 }).toMatchObject({ status: 'restored' })
-    expect(await rendererAction).toBeFalsy()
+    await rendererAction
+    expect(rendererFailure).toBeUndefined()
     expect(result).toMatchObject({ status: 'restored', operationId: preview!.operationId, requestId: preview!.operationId })
     await closeElectronApp(original, { preserveUserData: true })
     context = null

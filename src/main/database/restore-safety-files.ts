@@ -131,13 +131,13 @@ export async function syncRestoreDirectory(path:string):Promise<void>{
     try{await fd.sync()}catch(error){if(!directoryUnsupported(error))throw error}
   }finally{await fd.close()}
 }
-export async function writeRestoreJson(path:string,value:unknown,root:string,exclusive=false):Promise<void>{
+export async function writeRestoreJson(path:string,value:unknown,root:string,exclusive=false,beforePublish?:()=>void):Promise<void>{
   await assertRestorePath(path,root)
-  if(exclusive){const fd=await open(path,'wx');try{await fd.writeFile(restoreJson(value));await fd.sync()}finally{await fd.close()}
+  if(exclusive){beforePublish?.();const fd=await open(path,'wx');try{await fd.writeFile(restoreJson(value));await fd.sync()}finally{await fd.close()}
     await syncRestoreDirectory(dirname(path));return}
   const temp=path+'.'+randomUUID()+'.tmp',fd=await open(temp,'wx')
   try{await fd.writeFile(restoreJson(value));await fd.sync()}finally{await fd.close()}
-  try{await assertRestorePath(path,root);await rename(temp,path);await syncRestoreDirectory(dirname(path))}
+  try{await assertRestorePath(path,root);beforePublish?.();await rename(temp,path);await syncRestoreDirectory(dirname(path))}
   catch(error){await rm(temp,{force:true}).catch(()=>undefined);throw error}
 }
 export async function readRestoreText(path:string):Promise<string>{

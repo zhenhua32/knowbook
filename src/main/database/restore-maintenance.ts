@@ -155,6 +155,7 @@ function disableRestoredPlugins(path: string): void {
 }
 
 async function readCurrentIdentities(root: string, recovery: string): Promise<RestoreProcessIdentity[]> {
+  const identityPrefix = process.platform === 'linux' ? 'linux:' : 'windows:'
   const directory = join(recovery, 'inspection')
   await mkdir(directory)
   // Inspect an independent copy: opening SQLite must not checkpoint or rewrite
@@ -174,9 +175,9 @@ async function readCurrentIdentities(root: string, recovery: string): Promise<Re
       try { identity = JSON.parse(row.health_json ?? 'null')?.detachedProcessIdentity } catch { continue }
       if (!identity || typeof identity !== 'object') continue
       const item = identity as Record<string, unknown>
-      if (item.schemaVersion === 1 && item.pid === row.pid && Number.isSafeInteger(item.pid)
+      if (item.schemaVersion === 1 && item.pid === row.pid && Number.isSafeInteger(row.pid) && row.pid > 0
         && typeof item.executable === 'string' && isAbsolute(item.executable)
-        && typeof item.startToken === 'string' && item.startToken.startsWith('windows:')
+        && typeof item.startToken === 'string' && item.startToken.startsWith(identityPrefix)
         && typeof item.serviceEntry === 'string' && isAbsolute(item.serviceEntry)
         && typeof item.launchNonce === 'string' && /^[0-9a-f-]{36}$/i.test(item.launchNonce)) {
         result.push(item as unknown as RestoreProcessIdentity)

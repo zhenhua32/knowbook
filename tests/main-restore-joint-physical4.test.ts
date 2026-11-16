@@ -1,57 +1,13 @@
 import assert from 'node:assert/strict'
-import { execFile } from 'node:child_process'
 import { constants } from 'node:fs'
-import { copyFile, lstat, mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { copyFile, lstat, readFile, rename } from 'node:fs/promises'
+import { join } from 'node:path'
 import test from 'node:test'
-import { fileURLToPath } from 'node:url'
-import { promisify } from 'node:util'
-import { prepareRestoreAssetTransfer4 } from '../src/main/database/restore-asset-transfer4'
-import { applyPreparedJointRestore4, jointRestorePaths4, prepareJointRestoreIntent4, readJointRestoreCurrent4,
+import { applyPreparedJointRestore4, prepareJointRestoreIntent4, readJointRestoreCurrent4,
   readJointRestoreFence4, readJointRestoreIntent4 } from '../src/main/database/restore-joint-journal4'
-import { assertRestoreInventory, copyRestoreInventory, readRestoreJson, restoreExists, restoreInventory,
-  writeRestoreJson } from '../src/main/database/restore-safety-files'
-import { assertOriginals, digest, randomUUID, withControlledRestore } from './helpers/controlled-restore-fixture'
-
-const worker = fileURLToPath(new URL('./helpers/restore-joint-physical4-crash.mjs', import.meta.url))
-const child = (root: string, operationId: string, mode: string) => promisify(execFile)(process.execPath,
-  ['--import', 'tsx', worker, root, operationId, mode], { windowsHide: true, timeout: 30_000,
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } })
-const observed = async (run: ReturnType<typeof child>) => JSON.parse((await run).stdout) as { status: string }
-type Fixture = Parameters<Parameters<typeof withControlledRestore>[0]>[0]
-
-async function prepare(f: Fixture, withAssets: boolean, sameBytes: boolean) {
-  if (sameBytes) f.close()
-  const old = sameBytes ? null : f.sealCurrent(), root = await realpath(f.profile), operationId = randomUUID()
-  const p = jointRestorePaths4(root, operationId)
-  await mkdir(p.recovery, { recursive: true })
-  await mkdir(p.original)
-  const current = await readJointRestoreCurrent4(root)
-  await copyRestoreInventory(p.storage, p.safety, current.inventory, root)
-  await mkdir(p.candidateOriginal)
-  await copyFile(sameBytes ? p.database : f.backup, join(p.candidateOriginal, 'knowbook.db'), constants.COPYFILE_EXCL)
-  const candidate = await restoreInventory(p.candidateOriginal)
-  await copyFile(join(p.candidateOriginal, 'knowbook.db'), p.stage, constants.COPYFILE_EXCL)
-  const origin = join(p.recovery, 'test-asset-originals'), bytes = Buffer.from('actual asset data'), hash = digest(bytes)
-  await mkdir(origin)
-  const target = (name: string) => join(p.storage, 'assets', 'attachments', hash.slice(0, 2), hash, name)
-  const oldAsset = target('retained.bin'), incoming = target('incoming.bin')
-  const assets = []
-  if (withAssets) {
-    await mkdir(dirname(oldAsset), { recursive: true })
-    await writeFile(oldAsset, bytes, { flag: 'wx' })
-    for (const logicalName of ['retained.bin', 'incoming.bin']) {
-      const sourcePath = join(origin, logicalName)
-      await writeFile(sourcePath, bytes, { flag: 'wx' })
-      assets.push({ sourceRoot: origin, sourcePath, logicalName, bytes: bytes.length, hash })
-    }
-  }
-  const transfer = await prepareRestoreAssetTransfer4(root, operationId, assets), installationProofHash = digest('actual test plan pin')
-  const input = { installationProofHash, assetTransferId: transfer.transferId, assetManifestHash: transfer.manifestHash,
-    expectedDocumentId: sameBytes ? f.currentId : f.id, expectedTitle: sameBytes ? 'Current ordinary document' : 'Ordinary source backup' }
-  await writeRestoreJson(join(p.recovery, 'physical-test-input.json'), input, root, true)
-  return { root, operationId, p, old, current, candidate, oldAsset, incoming, bytes, input }
-}
+import { assertRestoreInventory, readRestoreJson, restoreExists } from '../src/main/database/restore-safety-files'
+import { assertOriginals, withControlledRestore } from './helpers/controlled-restore-fixture'
+import { child, observed, prepare } from './helpers/restore-joint-physical4-fixture'
 
 for (const [phase, exitCode, terminal] of [
   ['prepared', 71, 'aborted-before-move'], ['old-moved', 72, 'rolled-back'],
