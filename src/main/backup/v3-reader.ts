@@ -43,13 +43,22 @@ function readArchiveChunk(fd: number, buffer: Uint8Array, offset: number, size: 
 
 type CapturedFile = { path: string; stat: BigIntStats }
 type CapturedDirectory = CapturedFile & { names: string[] }
-type ArchiveCapture<File> = { root: string; files: File[]; originals: Map<string, CapturedFile>; directories: Map<string, CapturedDirectory> }
+type ArchiveOriginals = { root: string; originals: Map<string, CapturedFile>; directories: Map<string, CapturedDirectory> }
+type ArchiveCapture<File> = ArchiveOriginals & { files: File[] }
 
 function assertOriginalDirectory(directory: CapturedDirectory): void {
   safeAncestors(directory.path)
   if (!sameDirectory(directory.stat, lstatSync(directory.path, { bigint: true }))
     || realpathSync(directory.path) !== directory.path
     || JSON.stringify(readdirSync(directory.path).sort()) !== JSON.stringify(directory.names)) invalid('archive directory inventory changed during capture')
+}
+
+function assertArchiveOriginalPaths({ directories, originals }: ArchiveOriginals): void {
+  for (const directory of directories.values()) assertOriginalDirectory(directory)
+  for (const file of originals.values()) {
+    safeAncestors(file.path)
+    if (!samePathFile(lstatSync(file.path, { bigint: true }), file.stat)) invalid('archive file identity changed before returning the complete closure')
+  }
 }
 
 /** Bounded read-only capture shared by byte inspection and streamed digests. */
@@ -108,12 +117,9 @@ function captureArchiveFiles<File>(root: string, capture: (fd: number, size: num
   // A stable fd alone cannot certify the path or the whole directory capture:
   // earlier files and already-enumerated directories may change while later
   // files are read. Recheck every captured identity without rereading payloads.
-  for (const directory of directories.values()) assertOriginalDirectory(directory)
-  for (const file of originals.values()) {
-    safeAncestors(file.path)
-    if (!samePathFile(lstatSync(file.path, { bigint: true }), file.stat)) invalid('archive file identity changed before returning the complete closure')
-  }
-  return { root, files, originals, directories }
+  const captured = { root, files, originals, directories }
+  assertArchiveOriginalPaths(captured)
+  return captured
 }
 
 export function readBackupV3Files(root: string): BackupV3File[] {
@@ -138,10 +144,64 @@ function readFileDigest(fd: number, size: number, relativePath: string, buffer: 
 
 const allocateDigestBuffer = () => new Uint8Array(1024 * 1024)
 
+function captureArchiveDigests(root: string): ArchiveCapture<BackupV3FileDigest> {
+  const buffer = allocateDigestBuffer()
+  return captureArchiveFiles(root, (fd, size, relativePath) => readFileDigest(fd, size, relativePath, buffer))
+}
+
 /** Reauthenticate a confirmed archive without retaining its payloads in memory. */
 export function readBackupV3FileDigests(root: string): BackupV3FileDigest[] {
-  const buffer = allocateDigestBuffer()
-  return captureArchiveFiles(root, (fd, size, relativePath) => readFileDigest(fd, size, relativePath, buffer)).files
+  return captureArchiveDigests(root).files
+}
+
+interface PublicationFiles {
+  readonly inventoryHash: string
+  readonly treeHash: string
+  assertCurrent(): void
+  atRenamedRoot(path: string): PublicationFiles
+}
+
+function movedArchiveOriginals(original: ArchiveOriginals, root: string): ArchiveOriginals {
+  if (!isAbsolute(root)) invalid('an absolute archive directory is required')
+  const before = original.directories.get(original.root)!.stat, moved = lstatSync(root, { bigint: true })
+  // Renaming may change the root directory timestamps. All descendants still
+  // have to match the identities, timestamps and directory entries we read.
+  if (!moved.isDirectory() || moved.isSymbolicLink() || moved.dev !== before.dev || moved.ino !== before.ino) {
+    invalid('renamed archive root does not match the captured directory')
+  }
+  const directories = new Map<string, CapturedDirectory>()
+  for (const directory of original.directories.values()) {
+    const path = join(root, relative(original.root, directory.path))
+    directories.set(path, { ...directory, path, stat: path === root ? moved : directory.stat })
+  }
+  const originals = new Map<string, CapturedFile>()
+  for (const [name, file] of original.originals) {
+    originals.set(name, { path: join(root, relative(original.root, file.path)), stat: file.stat })
+  }
+  const capture = { root, directories, originals }
+  assertArchiveOriginalPaths(capture)
+  return capture
+}
+
+function publicationFiles(capture: ArchiveOriginals, inventoryHash: string): PublicationFiles {
+  const { root, originals, directories } = capture
+  const hash = createHash('sha256').update('knowbook.backup-v3.publication-tree.v1\0')
+  for (const directory of directories.values()) {
+    const name = relative(root, directory.path).split(sep).join('/')
+    hash.update(JSON.stringify(['directory', name, directory.stat.dev.toString(), directory.stat.ino.toString()]) + '\n')
+  }
+  for (const [name, { stat }] of originals) {
+    hash.update(JSON.stringify(['file', name, stat.dev.toString(), stat.ino.toString()]) + '\n')
+  }
+  const treeHash = hash.digest('hex')
+  return Object.freeze({ inventoryHash, treeHash, assertCurrent: () => assertArchiveOriginalPaths(capture),
+    atRenamedRoot: (path: string) => publicationFiles(movedArchiveOriginals(capture, path), inventoryHash) })
+}
+
+/** Bind streamed file bytes and the captured physical archive tree for publication. */
+export function captureBackupV3PublicationFiles(root: string) {
+  const captured = captureArchiveDigests(root)
+  return publicationFiles(captured, backupV3InventoryHash(captured.files))
 }
 
 function captureVerifiedArchive(root: string) {
@@ -161,6 +221,13 @@ function captureVerifiedArchive(root: string) {
 export function verifyBackupV3Archive(root: string) {
   const { archive, files } = captureVerifiedArchive(root)
   return { manifest: archive.manifest, files }
+}
+
+/** Parse the archive and obtain its publication witness from one capture. */
+export function verifyBackupV3ArchiveForPublication(root: string) {
+  const captured = captureVerifiedArchive(root)
+  return { manifest: captured.archive.manifest, files: captured.files,
+    ...publicationFiles(captured, backupV3InventoryHash(captured.files)) }
 }
 
 /** Strict read-only inspection. It never opens a database or stages assets. */
@@ -191,11 +258,16 @@ export function readBackupV3RestoreSource(owner: BackupV3RestoreSource) {
   return structuredClone({ root, archive, files, assets, inventoryHash })
 }
 
+/** Reuse the owner's actual sealed capture for publication identity and path checks. */
+export function readBackupV3RestorePublicationSource(owner: BackupV3RestoreSource) {
+  const original = restoreSource(owner), { snapshotId, catalogId } = original.archive.manifest
+  return Object.freeze({ root: original.root, snapshotId, catalogId, ...publicationFiles(original, original.inventoryHash) })
+}
+
 /** Recheck this owner's entire inventory and physical originals before using a
  * preview for installation, even when replacement files contain equal bytes. */
 export function assertBackupV3RestoreSourceCurrent(owner: BackupV3RestoreSource): void {
-  const original = restoreSource(owner), buffer = allocateDigestBuffer()
-  const current = captureArchiveFiles(original.root, (fd, size, path) => readFileDigest(fd, size, path, buffer))
+  const original = restoreSource(owner), current = captureArchiveDigests(original.root)
   if (backupV3InventoryHash(current.files) !== original.inventoryHash || current.directories.size !== original.directories.size
     || [...original.directories].some(([path, directory]) => {
       const actual = current.directories.get(path)

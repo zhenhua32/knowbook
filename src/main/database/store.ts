@@ -3,7 +3,7 @@ import { readDocumentRenameAdmissionOwned2, OrdinaryRenameRequiresTitle2 } from 
 import { assertCanonicalRuntimeReadableOwned, hasCanonicalRuntimeDataOwned } from './canonical-runtime-read'
 import { attachInstalledRestoreRuntime } from './restore-knowledge-runtime-authority'
 import { readCanonicalBackupRevision } from './canonical-backup-revision'
-import { readConfirmedSyncedBackupV3PublicationOwned } from './synced-backup-v3-publication-read'
+import { readConfirmedSyncedBackupV3PublicationClaimOwned, readConfirmedSyncedBackupV3PublicationOwned } from './synced-backup-v3-publication-read'
 import { isTaskBlockType, isOrderedListBlockType, canBlockHaveParent, canBlockNestUnder, isListBlockType } from '@shared/blockTypes'
 import { assertColumnStructure } from '@shared/columns'
 import { assertDatabaseViewStructure } from '@shared/databaseViewBlock'
@@ -2808,6 +2808,11 @@ export class KnowbookStore {
   readConfirmedCanonicalBackup(snapshotId: string, destination: string): string {
     if (!this.canonicalRuntime) throw new Error('Canonical publication read requires the complete Main Store.')
     return this.runInTransaction(() => readConfirmedSyncedBackupV3PublicationOwned(this.db, snapshotId, destination))
+  }
+
+  readConfirmedCanonicalBackupPublication(snapshotId: string, destination: string) {
+    if (!this.canonicalRuntime) throw new Error('Canonical publication read requires the complete Main Store.')
+    return this.runInTransaction(() => readConfirmedSyncedBackupV3PublicationClaimOwned(this.db, snapshotId, destination))
   }
 
   assertLegacyWorkspaceTransferAllowed(): void {

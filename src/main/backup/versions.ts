@@ -137,7 +137,7 @@ function renameBackupDirectory(from: string, to: string, verifyRetry?: () => voi
 }
 
 /** Publish atomically, retaining the previous complete snapshot before pruning. */
-export function publishBackupSnapshot(backupRoot: string, stagingRoot: string, verifyStagingRetry?: () => void): void {
+export function publishBackupSnapshot(backupRoot: string, stagingRoot: string, verifyStagingRetry?: () => void): string | null {
   const historyRoot = `${backupRoot}-history`
   mkdirSync(historyRoot, { recursive: true })
   if (!safeDirectory(historyRoot)) throw new Error('Backup history directory is not a managed directory')
@@ -163,4 +163,5 @@ export function publishBackupSnapshot(backupRoot: string, stagingRoot: string, v
       rmSync(path, { recursive: true })
     }
   } catch (error) { console.warn('Backup published, but old backup versions could not be pruned.', error) }
+  return hadPrevious ? archiveId : null
 }

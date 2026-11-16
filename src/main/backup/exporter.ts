@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3'
 import { writeSyncedBackupV3 } from './v3-export'
-import { readBackupV3FileDigests, verifyBackupV3Archive } from './v3-reader'
+import { readBackupV3FileDigests, verifyBackupV3ArchiveForPublication } from './v3-reader'
 import { backupV3InventoryHash } from './v3-format'
 import { assertSyncedShape, isSyncedUuid } from '../../shared/syncedBlockValidation'
 import {
@@ -24,6 +24,7 @@ import { parseLocalMarkdownUrl, relativeMarkdownPath, resolveMarkdownDocumentPat
 import { KnowbookStore } from '../database/store'
 import { rewriteBackupAssetReferences } from './markdown-asset-references'
 import { listBackupVersions, publishBackupSnapshot, resolveBackupVersion, writeSnapshotMetadata } from './versions'
+import { prepareBackupV3Publication } from './v3-publication-lineage'
 import type { ExportDocument, ExportStandaloneDatabase } from '../database/store'
 import { BACKUP_V2, CATALOG_KIND, CATALOG_PATH, backupJson, backupScope, databaseFile, missingReferences, validateExportSnapshot } from './v2-format'
 
@@ -102,6 +103,32 @@ async function writeBackupSnapshotInline(job: BackupExportJob): Promise<number> 
   return writeBackupSnapshot(job)
 }
 
+const backupExports = new Map<string, Promise<void>>()
+
+function physicalBackupPath(path: string): string {
+  const parent = dirname(path)
+  if (parent === path) return path
+  const directory = existsSync(parent) ? realpathSync(parent) : physicalBackupPath(parent)
+  return join(directory, basename(path))
+}
+
+function serializeBackupExport<T>(root: string, run: () => Promise<T>): Promise<T> {
+  const path = physicalBackupPath(resolve(root))
+  const key = process.platform === 'win32' ? path.toLowerCase() : path
+  const outstanding = backupExports.get(key)
+  let release!: () => void
+  const lease = new Promise<void>(resolve => { release = resolve })
+  backupExports.set(key, lease)
+  const invoke = async () => run()
+  const result = outstanding ? outstanding.then(invoke) : invoke()
+  const finish = () => {
+    if (backupExports.get(key) === lease) backupExports.delete(key)
+    release()
+  }
+  void result.then(finish, finish)
+  return result
+}
+
 export class MarkdownBackupService {
   private inFlightExport: Promise<BackupResult> | null = null
   private lastCompletedResult: BackupResult | null = null
@@ -127,11 +154,23 @@ export class MarkdownBackupService {
       return Promise.resolve(this.lastCompletedResult)
     }
 
-    const canonicalSource = typeof this.store.getCanonicalBackupSource === 'function' ? this.store.getCanonicalBackupSource() : null
-    let exportPromise: Promise<BackupResult>
-    if (canonicalSource) {
-      exportPromise = this.performCanonicalExport(canonicalSource)
-    } else {
+    const exportPromise = serializeBackupExport(this.backupRoot, () => {
+      const canonicalSource = this.store.getCanonicalBackupSource?.()
+      return canonicalSource ? this.performCanonicalExport(canonicalSource) : this.exportLegacy()
+    }).then((result) => {
+      this.lastCompletedRevision = revision
+      this.lastCompletedResult = result
+      return result
+    })
+    this.inFlightExport = exportPromise
+    const clearExport = () => {
+      if (this.inFlightExport === exportPromise) this.inFlightExport = null
+    }
+    void exportPromise.then(clearExport, clearExport)
+    return exportPromise
+  }
+
+  private async exportLegacy(): Promise<BackupResult> {
     const getDatabasePath = (this.store as KnowbookStore & { getDatabasePath?: () => string }).getDatabasePath
     const databasePath = getDatabasePath?.call(this.store)
     let job: BackupExportJob
@@ -155,27 +194,7 @@ export class MarkdownBackupService {
       }
       fallbackExported = documents.length
     }
-    exportPromise = this.performExport(job, fallbackExported)
-    }
-    exportPromise = exportPromise.then((result) => {
-      this.lastCompletedRevision = revision
-      this.lastCompletedResult = result
-      return result
-    })
-    this.inFlightExport = exportPromise
-    exportPromise.then(
-      () => {
-        if (this.inFlightExport === exportPromise) {
-          this.inFlightExport = null
-        }
-      },
-      () => {
-        if (this.inFlightExport === exportPromise) {
-          this.inFlightExport = null
-        }
-      }
-    )
-    return exportPromise
+    return this.performExport(job, fallbackExported)
   }
 
   async waitForIdle(): Promise<void> {
@@ -198,18 +217,30 @@ export class MarkdownBackupService {
       await this.runExport(job)
       // Worker reply counts/packets are not proof. Capture the actual bounded
       // files afresh and parse their complete graph, including strict extras.
-      const archive = verifyBackupV3Archive(destination), actualHash = backupV3InventoryHash(archive.files)
+      const archive = verifyBackupV3ArchiveForPublication(destination)
       if (archive.manifest.snapshotId !== snapshotId) throw new Error('The actual V3 archive has another snapshot identity')
-      const confirmed = this.store.readConfirmedCanonicalBackup(snapshotId, destination)
-      if (confirmed !== actualHash) throw new Error('The cold V3 bytes differ from the real confirmed Main publication')
+      const profile = source.userDataRoot
+      const claim = backupRoot === join(profile, 'backups', 'markdown')
+        ? this.store.readConfirmedCanonicalBackupPublication(snapshotId, destination) : null
+      const confirmed = claim?.archiveHash ?? this.store.readConfirmedCanonicalBackup(snapshotId, destination)
+      if (confirmed !== archive.inventoryHash) throw new Error('The cold V3 bytes differ from the real confirmed Main publication')
+      const completePublication = claim ? await prepareBackupV3Publication(this.store, profile, backupRoot,
+        archive.manifest, destination, claim, archive).catch((error: unknown) => {
+        console.warn('V3 publication evidence could not be prepared.', error)
+        return null
+      }) : null
       // Recheck the complete file/directory tails after the private SQL claim
       // read. No caller archive DTO or source-path guess can authorize publish.
       const verifyConfirmedFiles = () => {
         if (backupV3InventoryHash(readBackupV3FileDigests(destination)) !== confirmed) throw new Error('The V3 archive changed after its confirmed publication read')
+        if (completePublication) archive.assertCurrent()
       }
       verifyConfirmedFiles()
-      publishBackupSnapshot(backupRoot, destination, verifyConfirmedFiles)
+      const archivedId = publishBackupSnapshot(backupRoot, destination, verifyConfirmedFiles)
       published = true
+      if (completePublication) await completePublication(archivedId).catch((error: unknown) => {
+        console.warn('V3 backup published, but its publication evidence could not be saved.', error)
+      })
       // Only an empty, successful attempt parent is removed. A partial or a
       // confirmed-but-unpublished attempt is always preserved with its claim.
       try { rmdirSync(attemptRoot) } catch (error) { console.warn('V3 backup published, but its empty attempt parent could not be removed.', error) }
