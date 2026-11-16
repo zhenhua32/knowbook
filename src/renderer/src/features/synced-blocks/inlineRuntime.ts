@@ -337,11 +337,7 @@ class InlineRuntime {
       const group = this.workspace.getGroup(id)
       return id === only?.id ? group === only.group : !group || clean(group.getSnapshot())
     })
-    if (only) {
-      const timer = this.saveTimers.get(only.id)
-      if (timer) clearTimeout(timer)
-      this.saveTimers.delete(only.id)
-    }
+    if (only) this.cancelGroupSave(only.id)
     return { current, groupIdentity, release: () => lease?.release(),
       acceptsGuards: guards => current() && (!snapshot || guards.groups.some(group => group.groupId === snapshot.groupId
         && group.expectedRevision === snapshot.revision && group.expectedTopologyRevision === snapshot.topologyRevision)
@@ -443,9 +439,7 @@ class InlineRuntime {
     return { address, binding, group }
   }
   private scheduleGroupSave(id: string, group: SyncedGroupController) {
-    const previous = this.saveTimers.get(id)
-    if (previous) clearTimeout(previous)
-    this.saveTimers.delete(id)
+    this.cancelGroupSave(id)
     const state = group.getSnapshot()
     if (this.isLocked() || this.invalid || state.recoveryReview || !state.dirty || state.pending || state.composingInstanceIds.length
       || state.incoming || state.failure || state.error) return
@@ -454,6 +448,10 @@ class InlineRuntime {
       if (this.isLocked() || this.invalid) return
       void group.flush().then(saved => { if (!saved) this.emit() }).catch(error => { this.report(String(error)); this.emit() })
     }, 800))
+  }
+  private cancelGroupSave(id: string) {
+    clearTimeout(this.saveTimers.get(id))
+    this.saveTimers.delete(id)
   }
   unbind(opening: InlineOpening) {
     const key = JSON.stringify([opening.address.hostDocumentId, opening.address.instanceId])
@@ -726,8 +724,10 @@ class InlineRuntime {
     const { groupId } = parseSyncedBlockPayload(selected.content), group = this.workspace.getGroup(groupId), identity = this.recoveryGroups.get(groupId)
     const active = [...this.mounts.values()].find(item => item.mount.hostSession === opening.hostSession
       && item.mount.instanceId === instanceId && item.mount.groupId === groupId && item.binding.isCurrent())
-    if (!group || !identity || !active || clean(group.getSnapshot())) return undefined
-    const instances = group.getSnapshot().snapshot.instances, moving = instances.find(item => item.instanceId === instanceId)
+    if (!group || !identity || !active) return undefined
+    const state = group.getSnapshot()
+    if (clean(state)) return undefined
+    const instances = state.snapshot.instances, moving = instances.find(item => item.instanceId === instanceId)
     if (!moving || batch && instances.length !== 1 || moving.hostDocumentId !== source.id
       || moving.bindingVersion !== active.binding.scope.bindingVersion || moving.depth !== selected.depth || moving.depth !== active.mount.depth
       || moving.parentBlockId !== selected.parentBlockId || moving.parentBlockId !== active.mount.parentBlockId
@@ -735,7 +735,7 @@ class InlineRuntime {
     const survivors: MountedInline[] = []
     for (const instance of instances) {
       if (instance === moving) continue
-      if (rootIds.length !== 1 || rootIds[0] !== instanceId) return undefined
+      if (rootIds.length !== 1 || rootIds[0] !== instanceId && (instances.length !== 2 || instance.hostDocumentId !== targetId)) return undefined
       if (instance.hostDocumentId === targetId) continue
       if (instance.hostDocumentId !== source.id) return undefined
       const current = this.mounts.get(JSON.stringify([source.id, instance.instanceId]))
@@ -746,9 +746,7 @@ class InlineRuntime {
     }
     const hold = holdGroupForHostReorder(group)
     if (!hold) return undefined
-    const timer = this.saveTimers.get(groupId)
-    if (timer) clearTimeout(timer)
-    this.saveTimers.delete(groupId)
+    this.cancelGroupSave(groupId)
     return { instanceId, groupId, group, identity, hold, survivors,
       current: () => hold.current() && active.binding.isCurrent() && survivors.every(item => item.binding.isCurrent()) }
   }

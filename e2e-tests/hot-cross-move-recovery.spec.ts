@@ -25,6 +25,7 @@ const scenarios = [
   ['hot-v11-before-move', ' with a V11 clean neighboring reference', false, 1],
   ['hot-nested-before-move', ' for a nested reference moved under a list item', false, 0],
   ['hot-list-parent-before-move', ' for a moved list parent with a shared and an ordinary child', false, 0],
+  ['hot-list-parent-target-peer-before-move', ' for a list parent moved into a page already sharing the same body', false, 0],
   ['hot-shared-target-before-move', ' into a page already sharing the same body', false, 0],
   ['hot-shared-source-before-move', ' while the source still displays another reference to the same body', false, 0],
   ['hot-batch-before-move', ' in a batch with a staged ordinary source and a live shared draft', false, 1],
@@ -163,7 +164,8 @@ for (const [mode, name, emptiesSource, dependencyCount] of scenarios) test(`Move
     await expect(body).toBeVisible()
     const initial = await savedGroup(seed.sourceId)
     expect(initial?.blocks[0].content).toBe(seed.raw)
-    if (placement) expect(initial?.instances[0]).toMatchObject({ parentBlockId: placement.sourceParentId, depth: 1 })
+    if (placement) expect(initial?.instances.find(item => item.instanceId === seed.instanceId))
+      .toMatchObject({ parentBlockId: placement.sourceParentId, depth: 1 })
     if (forest) await expectForest('source')
     const sharedSource = initial?.instances.find(item => item.instanceId === seed.sharedSourceId)
     if (seed.sharedSourceId) expect(sharedSource).toMatchObject({ hostDocumentId: seed.sourceId, instanceId: seed.sharedSourceId })
@@ -250,8 +252,9 @@ for (const [mode, name, emptiesSource, dependencyCount] of scenarios) test(`Move
         expect((await probe()).groupWrites).toBe(0)
       }
       if (placement) {
-        expect(targetGroup?.instances).toEqual([expect.objectContaining({ instanceId: seed.instanceId,
-          parentBlockId: targetParentId, depth: targetDepth })])
+        expect(targetGroup?.instances).toHaveLength(sharedTarget ? 2 : 1)
+        expect(targetGroup?.instances.find(item => item.instanceId === seed.instanceId))
+          .toMatchObject({ parentBlockId: targetParentId, depth: targetDepth })
         if (forest) {
           await expectForest('target')
           expect((await sourceRows()).map(block => block.id)).toEqual([forest.outsideId])
@@ -279,7 +282,11 @@ for (const [mode, name, emptiesSource, dependencyCount] of scenarios) test(`Move
       await open('V3 Target')
       const movedOccurrence = inlineInstance(page, seed.instanceId), movedBody = movedOccurrence.locator('.ProseMirror[contenteditable="true"]')
       await expect(movedBody).toBeVisible()
-      if (sharedTarget) await expect(inlineInstance(page, sharedTarget.instanceId).locator('.ProseMirror[contenteditable="true"]')).toBeVisible()
+      if (sharedTarget) {
+        const stationaryBody = inlineInstance(page, sharedTarget.instanceId).locator('.ProseMirror[contenteditable="true"]')
+        await expect(stationaryBody).toBeVisible()
+        await expect(stationaryBody).not.toContainText('hot W')
+      }
       await expect(movedBody).not.toContainText('hot W')
       await page.getByRole('button', { name: /检查保留的编辑草稿|Review retained editor drafts/ }).click()
       const panel = page.getByRole('dialog', { name: uiText('Retained editor drafts', '保留的编辑草稿'), exact: true })
@@ -294,6 +301,11 @@ for (const [mode, name, emptiesSource, dependencyCount] of scenarios) test(`Move
         await sourceCards.nth(original).click()
       } else await sourceCards.click()
       await expect(panel).toContainText(/original move is confirmed|原移动已确认/i)
+      if (sharedTarget && forest) {
+        const captured = settled.requests[0].hostHead
+        const candidate = await page.evaluate(expected => window.knowbook.readEditorRecoveryDraft(expected), captured)
+        expect(candidate.canonicalCrossMoveRecovery).toMatchObject({ hostDocumentId: seed.targetId, instanceId: seed.instanceId })
+      }
       await panel.getByRole('button', { name: uiText('Restore', '恢复'), exact: true }).click()
       await expect(panel).toHaveCount(0)
       await expect(movedBody).toContainText('hot W')
@@ -319,7 +331,9 @@ for (const [mode, name, emptiesSource, dependencyCount] of scenarios) test(`Move
         }
         if (placeholder) await expect.poll(async () => (await sourceRows()).map(row => row.id)).toEqual(originalMovedIds)
         if (seed.ordinaryRootId) await expectedMixedRows(seed.sourceId)
-        if (placement) await expect.poll(async () => (await savedGroup(seed.sourceId))?.instances[0].parentBlockId).toBe(placement.sourceParentId)
+        if (placement) await expect.poll(async () => (await savedGroup(seed.sourceId))?.instances.find(item => item.instanceId === seed.instanceId))
+          .toMatchObject({ hostDocumentId: seed.sourceId, parentBlockId: placement.sourceParentId, depth: 1 })
+        if (sharedTarget && forest) expect((await savedGroup(seed.targetId, sharedTarget.instanceId))?.instances.find(item => item.instanceId === sharedTarget.instanceId)).toEqual(sharedTarget)
         if (forest) await expectForest('source')
         if (dependency) {
           for (const peer of seed.dependencies) await expect.poll(() => dependencyLink(peer.documentId)).toBe(peer.before)
@@ -333,7 +347,9 @@ for (const [mode, name, emptiesSource, dependencyCount] of scenarios) test(`Move
         }
         if (placeholder) await expect.poll(sourceRows).toEqual([placeholder])
         if (seed.ordinaryRootId) await expectedMixedRows(seed.targetId)
-        if (placement) await expect.poll(async () => (await savedGroup(seed.targetId))?.instances[0].parentBlockId).toBe(targetParentId)
+        if (placement) await expect.poll(async () => (await savedGroup(seed.targetId))?.instances.find(item => item.instanceId === seed.instanceId))
+          .toMatchObject({ hostDocumentId: seed.targetId, parentBlockId: targetParentId, depth: targetDepth })
+        if (sharedTarget && forest) expect((await savedGroup(seed.targetId, sharedTarget.instanceId))?.instances.find(item => item.instanceId === sharedTarget.instanceId)).toEqual(sharedTarget)
         if (forest) await expectForest('target')
         if (dependency) {
           for (const peer of seed.dependencies) await expect.poll(() => dependencyLink(peer.documentId)).toBe(peer.after)

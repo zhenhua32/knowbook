@@ -303,12 +303,16 @@ function readCanonicalCrossMoveOriginalOwned(db: Database.Database, input: unkno
   let beforeInstances: SyncedInstancePosition[] = [movedBefore]
   let retained: ReturnType<typeof readCanonicalStationaryInstances>
   if (newGroup.instances.length > 1) {
-    if (!single || single.crossMove.transfers.length !== 1
-      || single.input.action.selection.selectedRootIds[0] !== instanceId) return fail()
+    if (!single) return fail()
+    const { selectedRootIds } = single.input.action.selection
+    const direct = selectedRootIds.length === 1 && selectedRootIds[0] === instanceId && single.crossMove.transfers.length === 1
+    if (!direct && (linked || selectedRootIds.length !== 1 || selectedRootIds[0] === instanceId || newGroup.instances.length !== 2
+      || !matchesCanonicalV4CrossMoveForest(single, instanceId)
+      || single.crossMove.transfers.some(move => currentHosts.get(move.to)?.births.get(move.blockId) !== move.createdAt))) return fail()
     retained = readCanonicalStationaryInstances(single, groupId, instanceId)
     const after = new Map(newGroup.instances.map(instance => [instance.instanceId, instance]))
     if (!retained || retained.length !== after.size - 1 || !retained.every(({ position, createdAt }) =>
-      (position.hostDocumentId === transfer.from || position.hostDocumentId === transfer.to)
+      (position.hostDocumentId === transfer.to || direct && position.hostDocumentId === transfer.from)
       && hostEqual(position, after.get(position.instanceId)) && currentHosts.get(position.hostDocumentId)?.births.get(position.instanceId) === createdAt)) return fail()
     beforeInstances.push(...retained.map(item => item.position))
     // Match the original SQLite BINARY order of the complete group snapshot.

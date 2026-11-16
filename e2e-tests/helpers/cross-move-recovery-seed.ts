@@ -35,14 +35,15 @@ function register(barrier: ReturnType<typeof createEditorCloseBarrier>): EditorC
 const f = createV3Fixture(process.argv[2])
 const mode = process.argv[3]
 if (['hot-before-move', 'hot-empty-before-move', 'hot-wiki-before-move', 'hot-v7-before-move', 'hot-v9-before-move',
-  'hot-v10-before-move', 'hot-v11-before-move', 'hot-nested-before-move', 'hot-list-parent-before-move',
+  'hot-v10-before-move', 'hot-v11-before-move', 'hot-nested-before-move', 'hot-list-parent-before-move', 'hot-list-parent-target-peer-before-move',
   'hot-shared-target-before-move', 'hot-shared-source-before-move', 'hot-batch-before-move', 'hot-mixed-root-pair-before-move',
   'hot-shared-wiki-before-move', 'hot-shared-markdown-before-move', 'hot-shared-multiple-dependencies-before-move',
   'hot-mixed-forest-before-move'].includes(mode)) {
   try {
     if (mode === 'hot-empty-before-move' || mode === 'hot-v9-before-move') keepOnlyV3SourceReference(f)
-    const placement = mode === 'hot-nested-before-move' || mode === 'hot-list-parent-before-move'
-      ? seedHotNestedCrossMove(f, 0, mode === 'hot-list-parent-before-move' ? 'single-reference' : undefined) : undefined
+    const listParent = mode === 'hot-list-parent-before-move' || mode === 'hot-list-parent-target-peer-before-move'
+    const placement = mode === 'hot-nested-before-move' || listParent
+      ? seedHotNestedCrossMove(f, 0, listParent ? 'single-reference' : undefined) : undefined
     const sharedWiki = mode === 'hot-shared-wiki-before-move', sharedMarkdown = mode === 'hot-shared-markdown-before-move'
     const sharedMultiple = mode === 'hot-shared-multiple-dependencies-before-move'
     const dependencies = mode === 'hot-wiki-before-move' || mode === 'hot-batch-before-move' || sharedWiki ? [addV3CrossMoveDependency(f)]
@@ -54,7 +55,8 @@ if (['hot-before-move', 'hot-empty-before-move', 'hot-wiki-before-move', 'hot-v7
         addV3CrossMoveDependency(f, 'reference', { title: 'Independent outside definition', stationary: true })]
       : mode === 'hot-v11-before-move' ? [addV3CrossMoveDependency(f, 'reference', { title: 'V11 outside reference', stationary: true })] : []
     const sharedSourceId = mode === 'hot-shared-source-before-move' || sharedWiki || sharedMarkdown || sharedMultiple ? addV3SameGroupReference(f, f.hostId) : undefined
-    const sharedTargetId = sharedSourceId || mode === 'hot-shared-target-before-move' ? addV3SameGroupReference(f, f.targetId) : undefined
+    const sharedTargetId = sharedSourceId || mode === 'hot-shared-target-before-move' || mode === 'hot-list-parent-target-peer-before-move'
+      ? addV3SameGroupReference(f, f.targetId) : undefined
     const stagedSource = mode === 'hot-batch-before-move'
       ? { documentId: f.store.createDocument(null), title: 'Independent move source', blockId: randomUUID() } : undefined
     if (stagedSource) f.store.updateDocument(stagedSource.documentId, { title: stagedSource.title, summary: '', blocks: [
