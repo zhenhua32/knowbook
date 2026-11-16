@@ -104,7 +104,17 @@ export async function prepareBackupV3RestoreCandidate(input: BackupV3RestorePrep
   const currentOriginal = await prepareCurrentOriginal(input)
   const privateSync = await readV3SettledPrivateSyncOriginals(currentOriginal)
   const { root, identity, reference, prior } = await preparePlanFromCurrent(input, currentOriginal)
-  if (!reference.value.candidate.candidateConflictFree) throw new Error('V3 restore requires a resolved reference plan.')
+  const { conflicts } = reference.value.candidate
+  if (conflicts.length) {
+    const paths = conflicts.flatMap(({ code, detail }) => code === 'duplicate-document-path' && detail && typeof detail === 'object'
+      && 'path' in detail && typeof detail.path === 'string' ? [detail.path] : [])
+    if (paths.length) {
+      const shown = paths.slice(0, 5).map(path => path.length > 140 ? path.slice(0, 139) + '…' : path)
+      const remaining = paths.length > shown.length ? `，另有 ${paths.length - shown.length} 条重复路径` : ''
+      throw new Error(`V3 备份与当前工作区存在重复页面路径。${shown.map(path => `「${path}」`).join('、')}${remaining}。`)
+    }
+    throw new Error('V3 restore requires a resolved reference plan.')
+  }
   const disposition = (tableName: 'documents' | 'synced_groups') => {
     const rows = reference.value.candidate.tables.find(table => table.name === tableName)!.rows
     let incoming = 0, retained = 0, replaced = 0
@@ -116,7 +126,7 @@ export async function prepareBackupV3RestoreCandidate(input: BackupV3RestorePrep
     return Object.freeze({ incoming, retained, replaced })
   }
   const preview = Object.freeze({ documents: disposition('documents'), groups: disposition('synced_groups'),
-    conflicts: reference.value.candidate.conflicts.length })
+    conflicts: conflicts.length })
   const combined = await prepareRootRestoreSqlAssetStage5(reference.plan)
   const { coverage, installed, transfer } = await withPreparedRestoreHistoryScope3(async scope => {
     const final = await prepareRootRestoreFinalAssetSql5(reference.plan, combined.stage, scope)

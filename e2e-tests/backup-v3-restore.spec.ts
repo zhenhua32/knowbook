@@ -1,18 +1,106 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type TestInfo } from '@playwright/test'
 import { execFile } from 'node:child_process'
 import { createRequire } from 'node:module'
-import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { closeElectronApp, evaluateInFreshElectronMain, getElectronLaunchTarget, launchElectronApp, relaunchElectronApp, uiText, type ElectronAppContext } from './helpers/electron'
-import { appendCanonicalText, inlineInstance, openInlineHost } from './helpers/canonical-inline'
+import { appendCanonicalText, closeEvents, inlineInstance, observeRealEditorClose, openInlineHost } from './helpers/canonical-inline'
+import { expectSource, sourceValue } from './helpers/markdown-source'
 import { parseSyncedBlockPayload } from '../src/shared/syncedBlockValidation'
 import { createPublicationHttpServer } from '../tests/helpers/synced-publication-http-fixture'
 
 const run = promisify(execFile)
 
-test('confirmed V3 restore restarts into maintenance and opens in a new background renderer @electron', async () => {
+type RestoreDialogProbe = { pid: number; options: { title: string; buttons: string[]; defaultId: number; cancelId: number }[] }
+type RestoreDialogGlobals = typeof globalThis & { __v3RestoreDialogProbe?: RestoreDialogProbe }
+
+async function verifyV3RestoreCloseGate(context: ElectronAppContext, profile: string, id: string, info: TestInfo) {
+  const { app, page } = context
+  const cdp = await page.context().newCDPSession(page)
+  const rootState = async () => {
+    const db = await lstat(join(profile, 'storage', 'knowbook.db'), { bigint: true })
+    if (!db.isFile() || db.isSymbolicLink() || !db.ino) throw new Error('The original live SQLite file is required')
+    const rootFiles = await readdir(profile)
+    const pointers = ['database-restore-fence.json', 'database-restore-pending.json',
+      'database-restore-e2e-preview.json', 'database-restore-result.json'].filter(name => rootFiles.includes(name))
+    const recoveryOperations = await readdir(join(profile, 'backups', 'database-restore')).catch(error => {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      return []
+    })
+    return { database: { dev: String(db.dev), ino: String(db.ino) }, pointers, recoveryOperations: recoveryOperations.sort() }
+  }
+  const readProbe = () => evaluateInFreshElectronMain(app, () => (globalThis as RestoreDialogGlobals).__v3RestoreDialogProbe ?? null)
+  const readDoc = () => page.evaluate(docId => window.knowbook.getDocumentDetail(docId), id)
+  const restore = (version: string) => page.evaluate(versionId => window.knowbook.restoreBackupVersion(versionId), version)
+  try {
+    const current = await readDoc()
+    if (!current) throw new Error('The retained host must be present in its live Store')
+    const version = await page.evaluate(async () => {
+      const candidates = (await window.knowbook.listBackupVersions()).filter(item => item.format === 'synced-v3')
+      if (candidates.length !== 1) throw new Error('The exact seeded V3 backup is required')
+      return candidates[0].id
+    })
+    const before = await rootState()
+    expect(before.pointers).toEqual([])
+    expect(before.recoveryOperations).toEqual([])
+    await observeRealEditorClose(page)
+    const initialEvents = await closeEvents(page)
+    expect(initialEvents).toEqual({ requests: [], cancelled: [] })
+    await openInlineHost(page, current)
+    await page.locator('.document-header-more-button').click()
+    await page.getByRole('button', { name: uiText('Edit Markdown source', '编辑 Markdown 源码'), exact: true }).click()
+    const dialog = page.getByRole('dialog', { name: uiText('Edit host body source', '编辑宿主正文源码'), exact: true })
+    const editor = dialog.getByRole('textbox', { name: uiText('Markdown body source', 'Markdown 正文源码'), exact: true })
+    const initial = await sourceValue(editor), working = initial + ' unapplied V3 close guard 中文🙂'
+    await editor.press('Control+End')
+    await page.keyboard.insertText(' unapplied V3 close guard 中文🙂')
+    await expectSource(editor, working)
+
+    // Use the real preload method while Source owns the active editor. The
+    // native confirmation fixture supplies the default on its first invocation.
+    expect(await restore(version)).toBeNull()
+    expect(await closeEvents(page)).toEqual(initialEvents)
+    expect(await rootState()).toEqual(before)
+    await expectSource(editor, working)
+
+    await cdp.send('Input.imeSetComposition', { text: '候选', selectionStart: 2, selectionEnd: 2 })
+    await expectSource(editor, working + '候选')
+    expect(await restore(version)).toBeNull()
+    await expect.poll(async () => (await closeEvents(page)).cancelled.length).toBe(1)
+    const events = await closeEvents(page)
+    expect(events.requests).toHaveLength(1)
+    const request = events.requests[0]
+    expect(request).toMatchObject({ requestId: expect.any(String), reason: 'quit' })
+    expect(events.cancelled).toEqual([{ ...request,
+      message: expect.stringMatching(/Unsaved editor or source changes keep this window open|编辑草稿或源码尚未保存，窗口保持打开/) }])
+    expect(await readDoc()).toEqual(current)
+    expect(await rootState()).toEqual(before)
+    expect(await readProbe()).toMatchObject({ pid: expect.any(Number), options: Array.from({ length: 2 }, () => ({
+      title: '确认恢复 V3 备份', buttons: ['重启并预览', '取消'], defaultId: 1, cancelId: 1
+    })) })
+    await expectSource(editor, working + '候选')
+    await cdp.send('Input.imeSetComposition', { text: '', selectionStart: 0, selectionEnd: 0 })
+    await expectSource(editor, working)
+    await editor.press('Control+End')
+    await page.keyboard.insertText(' still editable')
+    await expectSource(editor, working + ' still editable')
+    await dialog.getByRole('button', { name: uiText('Cancel', '取消'), exact: true }).click()
+    await expect(dialog).toHaveCount(0)
+    expect(await readDoc()).toEqual(current)
+    expect(await rootState()).toEqual(before)
+  } finally {
+    const [events, nativeDialog, restorePaths] = await Promise.allSettled([closeEvents(page), readProbe(), rootState()])
+    const evidence = { profile, appClosed: page.isClosed(), closeEvents: events.status === 'fulfilled' ? events.value : String(events.reason),
+      nativeDialog: nativeDialog.status === 'fulfilled' ? nativeDialog.value : String(nativeDialog.reason),
+      restorePaths: restorePaths.status === 'fulfilled' ? restorePaths.value : String(restorePaths.reason) }
+    await info.attach('v3-restore-editor-close-gate', { body: Buffer.from(JSON.stringify(evidence, null, 2)), contentType: 'application/json' })
+    await cdp.detach().catch(() => undefined)
+  }
+}
+
+test('confirmed V3 restore restarts into maintenance and opens in a new background renderer @electron', async ({}, info) => {
   test.setTimeout(150_000)
   const directory = await mkdtemp(join(tmpdir(), 'knowbook-e2e-v3-'))
   expect(dirname(resolve(directory))).toBe(resolve(tmpdir()))
@@ -54,14 +142,19 @@ test('confirmed V3 restore restarts into maintenance and opens in a new backgrou
     const data = JSON.parse(seeded.stdout)
     context = await launchElectronApp({ KNOWBOOK_E2E_V3_RESTORE_CONSENT: '1' }, { userDataRoot: profile })
     const original = context
-    await evaluateInFreshElectronMain(original.app, ({ dialog }) => {
-      Object.defineProperty(dialog, 'showMessageBox', { configurable: true, value: async (_owner: unknown, options: { title: string }) => {
+    await evaluateInFreshElectronMain(original.app, ({ app, dialog }) => {
+      const probe: RestoreDialogProbe = { pid: process.pid, options: [] }
+      ;(globalThis as RestoreDialogGlobals).__v3RestoreDialogProbe = probe
+      Object.defineProperty(dialog, 'showMessageBox', { configurable: true, value: async (_owner: unknown, options: RestoreDialogProbe['options'][number]) => {
         if (options.title !== '确认恢复 V3 备份') throw new Error('Unexpected native confirmation')
-        return { response: 0 }
+        probe.options.push({ title: options.title, buttons: [...options.buttons], defaultId: options.defaultId, cancelId: options.cancelId })
+        if (options.defaultId !== 1 || options.cancelId !== 1) throw new Error('V3 restore must require an explicit restart choice')
+        return { response: probe.options.length === 1 ? options.defaultId : 0 }
       } })
-      return true
+      return app.isReady()
     })
     const page = original.page
+    await verifyV3RestoreCloseGate(original, profile, data.retained, info)
     await page.getByTitle(uiText('Settings', '配置中心'), { exact: true }).click()
     await page.getByRole('tab', { name: uiText('Storage & recovery', '存储与恢复'), exact: true }).click()
     await page.getByRole('button', { name: uiText('View backup versions', '查看备份版本'), exact: true }).click()
