@@ -34,7 +34,21 @@ jobs:
       - name: Run unit and integration test shard
         env:
           TEST_SHARD: ${{ matrix.shard }}/4
-        run: npm test -- --test-shard="$TEST_SHARD"
+        run: |
+          set -o pipefail
+          tap="$RUNNER_TEMP/knowbook-tests.tap"
+          if npm test -- --test-shard="$TEST_SHARD" | tee "$tap"; then
+            exit 0
+          else
+            status=$?
+          fi
+          awk '/^[[:space:]]*not ok [0-9]+ - / {
+            sub(/^[[:space:]]*not ok [0-9]+ - /, "")
+            gsub(/%/, "%25")
+            gsub(/\r/, "")
+            print "::error::" $0
+          }' "$tap"
+          exit "$status"
 
   validate:
     name: Typecheck, tests, and build

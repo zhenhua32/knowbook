@@ -393,10 +393,12 @@ function assertSupportedDatabase(db: SqliteDatabase, capability?: typeof canonic
     // Comparing only with CURRENT would silently skip a damaged schema26 as
     // soon as the current version becomes 27.
     if (schemaVersion >= 26) {
-      assertSyncedBlockSchema(db)
-      if (schemaVersion >= 27) assertSyncedLifecycleSchema(db)
       if (capability === canonicalRuntimeStartup) assertCanonicalRuntimeReadableOwned(db)
-      else assertNoUnsupportedSyncedContent(db)
+      else {
+        assertSyncedBlockSchema(db)
+        if (schemaVersion >= 27) assertSyncedLifecycleSchema(db)
+        assertNoUnsupportedSyncedContent(db)
+      }
     }
     return schemaVersion
   })()

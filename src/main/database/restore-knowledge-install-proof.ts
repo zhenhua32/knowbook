@@ -152,6 +152,10 @@ function assertRetirementRecords(records: readonly V3SourceGroupRetirement[], pr
 /** Check the actual SQLite supports. Committing also requires the exact
  * recovery epoch and document CAS allocated by the verified candidate. */
 export function assertRestoreKnowledgeInstalledSql(db: Database.Database, proof: RestoreKnowledgeInstallProof, phase: 'committing' | 'steady') {
+  return verifyInstalledSqlOwned(db, proof, phase).coverage
+}
+
+function verifyInstalledSqlOwned(db: Database.Database, proof: RestoreKnowledgeInstallProof, phase: 'committing' | 'steady') {
   const requirements = readRawPriorKnowledgeCoverageOwned(db)
   const entry = requirements.entries.find(item => item.operationId === proof.operationId)
   if (!entry || restoreJson(entry) !== restoreJson(proof.coverage)) return fail('实际 SQLite 收据、覆盖或历史支持变化')
@@ -171,7 +175,7 @@ export function assertRestoreKnowledgeInstalledSql(db: Database.Database, proof:
   const own = [...retirements.values()].filter(record => record.operationId === proof.operationId)
   if (proof.version === 4) assertRetirementRecords(own, proof)
   else if (own.length) return fail('退场记录没有本次正式安装凭据')
-  return coverage
+  return { coverage, requirements, retirements }
 }
 
 /** The installed path is never opened by receipt verification. A private
@@ -180,9 +184,9 @@ export async function verifyRestoreKnowledgeInstalledDatabase(profileRoot: strin
   phase: 'committing' | 'steady') {
   const proof = await readRestoreKnowledgeInstallProof(profileRoot, operationId, expectedProofHash)
   const paths = restorePaths(profileRoot, operationId)
-  const { coverage, requirements, original } = await readExactInstalledSqlWith(profileRoot, operationId, proof, phase,
-    paths.storage, await restoreInventory(paths.storage), readV3SourceGroupRetirementsOwned)
-  if (phase === 'steady') await assertPriorV3SourceRetirements(profileRoot, operationId, original.values())
+  const { coverage, requirements, retirements } = await readExactInstalledSql(profileRoot, operationId, proof, phase,
+    paths.storage, await restoreInventory(paths.storage))
+  if (phase === 'steady') await assertPriorV3SourceRetirements(profileRoot, operationId, retirements.values())
   return { coverage, requirements }
 }
 
@@ -205,8 +209,8 @@ export async function assertPriorV3SourceRetirements(profileRoot: string, operat
 
 async function readExactInstalledSql(profileRoot: string, operationId: string, proof: RestoreKnowledgeInstallProof,
   phase: 'committing' | 'steady', directory: string, inventory: Awaited<ReturnType<typeof restoreInventory>>) {
-  const { coverage, requirements } = await readExactInstalledSqlWith(profileRoot, operationId, proof, phase, directory, inventory, () => undefined)
-  return { coverage, requirements }
+  const { coverage, requirements, retirements } = await readExactInstalledSqlWith(profileRoot, operationId, proof, phase, directory, inventory, () => undefined)
+  return { coverage, requirements, retirements }
 }
 
 /** Read additional original installed SQL facts from the detached, closed
@@ -235,9 +239,8 @@ async function readExactInstalledSqlWith<T>(profileRoot: string, operationId: st
       result = db.transaction(() => {
         if (db.pragma('integrity_check', { simple: true }) !== 'ok' || (db.pragma('foreign_key_check') as unknown[]).length)
           return fail('已安装 SQLite 的实际完整性检查失败')
-        const coverage = assertRestoreKnowledgeInstalledSql(db, proof, phase)
-        const requirements = readRawPriorKnowledgeCoverageOwned(db)
-        return { coverage, requirements, original: read(db) }
+        const verified = verifyInstalledSqlOwned(db, proof, phase)
+        return { ...verified, original: read(db) }
       })()
     } finally { db.close() }
     await assertRootRestoreStage3DatabaseReadonly3(scratch, profileRoot, inventory)
