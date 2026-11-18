@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3'
-import { capsuleBytesHash, capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
+import { capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
+import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_RAW_MAX_ROWS, CAPSULE2_RAW_MAX_VALUE_BYTES,
   capsule2ApplicationColumns, type Capsule2Encoding } from './restore-knowledge-capsule2-raw-model'
 import { graph3Conflict, graph3Text } from './restore-knowledge-graph3-data'
@@ -27,13 +28,18 @@ const primaryKey = (name: Merge3ContentTable): string[] => name === 'database_en
   : name === 'document_database_values' ? ['document_id', 'column_id'] : [name === 'synced_instances' ? 'instance_id' : 'id']
 const int64 = (value: unknown): value is string => typeof value === 'string' && value.length <= 20 && /^(?:0|-?[1-9][0-9]*)$/.test(value)
   && BigInt(value) >= -(2n ** 63n) && BigInt(value) < 2n ** 63n
-function array(value: unknown, max: number): unknown[] {
+function ownArray(value: unknown, max: number): unknown[] {
   if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype || value.length > max || Reflect.ownKeys(value).length !== value.length + 1)
     return fail('finite-array', null)
-  return Array.from({ length: value.length }, (_, index) => {
-    const descriptor = Object.getOwnPropertyDescriptor(value, String(index))
-    return descriptor?.enumerable && 'value' in descriptor ? descriptor.value : fail('array-accessor', index)
-  })
+  return value
+}
+function arrayItem(value: unknown[], index: number): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(value, String(index))
+  return descriptor?.enumerable && 'value' in descriptor ? descriptor.value : fail('array-accessor', index)
+}
+function array(value: unknown, max: number): unknown[] {
+  const input = ownArray(value, max)
+  return Array.from({ length: input.length }, (_, index) => arrayItem(input, index))
 }
 function encoding(value: unknown): Capsule2Encoding {
   return value === 'UTF-8' || value === 'UTF-16le' || value === 'UTF-16be' ? value : fail('encoding', value)
@@ -45,24 +51,23 @@ function text(value: unknown): string { return typeof value === 'string' ? value
  * indexes use SQLite's private file-backed temp schema with a small page cache. */
 export function checkMerge3NativeStorage3(input: readonly Table[]) {
   assertMerge3JsonBudget(input)
-  const tables = array(input, MERGE3_CONTENT_TABLES.length), names = new Set<string>(), keys = new Set<string>()
+  const tables = array(input, MERGE3_CONTENT_TABLES.length), names = new Set<string>()
   const checks: Check[] = [], conflicts: Merge3NativeConflict[] = []
-  let rows = 0, valueBytes = 0, jsonBytes = 2, comparisonRows = 0, conflictKeyMinimumBytes = 0
+  let rows = 0, valueBytes = 0, comparisonRows = 0, conflictKeyMinimumBytes = 0
   let targetEncoding: Capsule2Encoding
-  const take = (kind: 'value' | 'json', bytes: number) => {
-    const previous = kind === 'value' ? valueBytes : jsonBytes, limit = kind === 'value' ? CAPSULE2_RAW_MAX_VALUE_BYTES : CAPSULE2_RAW_MAX_JSON_BYTES
-    if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > limit - previous) return fail(kind + '-budget', null)
-    if (kind === 'value') valueBytes += bytes; else jsonBytes += bytes
+  const takeValue = (bytes: number) => {
+    if (!Number.isSafeInteger(bytes) || bytes < 0 || bytes > CAPSULE2_RAW_MAX_VALUE_BYTES - valueBytes) return fail('value-budget', null)
+    valueBytes += bytes
   }
   function cell(value: unknown, enc: Capsule2Encoding): RawRestoreSqlCell {
     const tuple = array(value, 2)
-    if (tuple[0] === 'null' && tuple.length === 1) { take('value', 8); return ['null'] }
+    if (tuple[0] === 'null' && tuple.length === 1) { takeValue(8); return ['null'] }
     if (tuple.length !== 2 || typeof tuple[1] !== 'string') return fail('storage-cell', null)
-    if (tuple[0] === 'integer' && int64(tuple[1])) { take('value', 8); return ['integer', tuple[1]] }
-    if (tuple[0] === 'real-ieee754-le' && /^[0-9a-f]{16}$/.test(tuple[1])) { take('value', 8); return ['real-ieee754-le', tuple[1]] }
+    if (tuple[0] === 'integer' && int64(tuple[1])) { takeValue(8); return ['integer', tuple[1]] }
+    if (tuple[0] === 'real-ieee754-le' && /^[0-9a-f]{16}$/.test(tuple[1])) { takeValue(8); return ['real-ieee754-le', tuple[1]] }
     if ((tuple[0] === 'text' || tuple[0] === 'blob') && tuple[1].length % 4 === 0) {
       const padding = tuple[1].endsWith('==') ? 2 : tuple[1].endsWith('=') ? 1 : 0
-      take('value', tuple[1].length / 4 * 3 - padding)
+      takeValue(tuple[1].length / 4 * 3 - padding)
       const bytes = Buffer.from(tuple[1], 'base64')
       if (bytes.toString('base64') === tuple[1]) return rawRestoreSqlCell(tuple[0], bytes, enc)
     }
@@ -85,6 +90,7 @@ export function checkMerge3NativeStorage3(input: readonly Table[]) {
     if (db.pragma('temp_store', { simple: true }) !== 1) return fail('file-backed-comparisons-unavailable', null)
     targetEncoding = db.transaction(() => {
       let commonEncoding: Capsule2Encoding | null = null, insert: InsertComparison | undefined
+      let insertRowKey: Database.Statement<[Buffer]> | undefined
       for (let tableIndex = 0; tableIndex < tables.length; tableIndex++) {
         const source = capsuleRecord(tables[tableIndex], ['name', 'role', 'columns', 'primaryKey', 'encoding', 'rows'])
         if (!MERGE3_CONTENT_TABLES.includes(source.name as Merge3ContentTable) || source.role !== 'content' || names.has(String(source.name))) return fail('table-closure', source.name)
@@ -94,13 +100,15 @@ export function checkMerge3NativeStorage3(input: readonly Table[]) {
         if (!insert) {
           commonEncoding = enc
           db.pragma("encoding = '" + enc + "'")
-          db.exec(`CREATE TEMP TABLE comparisons (ordinal INTEGER PRIMARY KEY, rule TEXT NOT NULL, table_name TEXT NOT NULL,
+          db.exec(`CREATE TEMP TABLE candidate_row_keys (key BLOB PRIMARY KEY) WITHOUT ROWID;
+            CREATE TEMP TABLE comparisons (ordinal INTEGER PRIMARY KEY, rule TEXT NOT NULL, table_name TEXT NOT NULL,
             row_key TEXT NOT NULL, first_key TEXT NOT NULL, second_key TEXT NOT NULL, name_collation TEXT NOT NULL);
             CREATE INDEX temp.comparisons_binary ON comparisons(name_collation,rule,first_key COLLATE BINARY,second_key COLLATE BINARY);
             CREATE INDEX temp.comparisons_nocase ON comparisons(name_collation,rule,first_key COLLATE BINARY,second_key COLLATE NOCASE);`)
           if (db.pragma('temp.encoding', { simple: true }) !== enc) return fail('comparison-encoding-mismatch', enc)
           db.pragma('temp.cache_size=-2048')
           insert = db.prepare('INSERT INTO comparisons(rule,table_name,row_key,first_key,second_key,name_collation) VALUES(?,?,?,?,?,?)')
+          insertRowKey = db.prepare('INSERT INTO candidate_row_keys(key) VALUES(?) ON CONFLICT DO NOTHING')
         }
         names.add(name)
         const tableChecks: Check[] = [{ rule: name + ':primary-key', code: 'native-binary-primary-key-duplicate', table: name,
@@ -113,15 +121,13 @@ export function checkMerge3NativeStorage3(input: readonly Table[]) {
         if (name === 'database_entities') tableChecks.push({ rule: name + ':database-document', code: 'native-binary-database-document-duplicate', table: name,
           constraint: 'non-null-database-entity-document', columns: ['database_id', 'document_id'], collations: ['BINARY', 'BINARY'], rowsChecked: 0, nullKeyRowsSkipped: 0, duplicateGroups: 0 })
         checks.push(...tableChecks)
-        const tableRows = array(source.rows, CAPSULE2_RAW_MAX_ROWS)
-        take('json', Buffer.byteLength(capsuleJson({ ...source, rows: [] })) + (tableIndex ? 1 : 0))
+        const tableRows = ownArray(source.rows, CAPSULE2_RAW_MAX_ROWS)
         for (let index = 0; index < tableRows.length; index++) {
-          const row = capsuleRecord(tableRows[index], ['key', 'targetRowId', 'cells', 'sourceRef', 'replaces']), rowKey = text(row.key)
-          if (++rows > CAPSULE2_RAW_MAX_ROWS || keys.has(rowKey) || !int64(row.targetRowId)) return fail('row-closure-or-budget', { table: name, rowKey })
-          keys.add(rowKey)
+          const row = capsuleRecord(arrayItem(tableRows, index), ['key', 'targetRowId', 'cells', 'sourceRef', 'replaces']), rowKey = text(row.key)
+          if (++rows > CAPSULE2_RAW_MAX_ROWS || !int64(row.targetRowId) || insertRowKey!.run(Buffer.from(rowKey, 'utf16le')).changes !== 1)
+            return fail('row-closure-or-budget', { table: name, rowKey })
           const cells = array(row.cells, 512).map(value => cell(value, enc))
           if (cells.length !== columns.length) return fail('row-width', name)
-          take('json', Buffer.byteLength(capsuleJson(row)) + (index ? 1 : 0))
           for (const check of tableChecks) add(insert, check, rowKey, cells, columns, enc)
         }
       }
@@ -165,7 +171,7 @@ export function checkMerge3NativeStorage3(input: readonly Table[]) {
     checks, conflicts, sourceSqlRead: false as const, stagingDatabase: false as const, foreignKeysValidated: false as const,
     semanticValidationComplete: false as const, acceptedCoverage: false as const, effective: false as const, permit: false as const }
   assertMerge3JsonBudget(body)
-  const encoded = capsuleJson(body)
-  if (Buffer.byteLength(encoded) > CAPSULE2_RAW_MAX_JSON_BYTES) return fail('result-json-budget', null)
-  return freezeCapsuleValue({ ...body, nativeStorageHash: capsuleBytesHash('knowbook.restore.merge3.native.v1\0' + encoded) })
+  const nativeStorageHash = hashBoundedCapsuleJson(body, CAPSULE2_RAW_MAX_JSON_BYTES, 'knowbook.restore.merge3.native.v1\0')
+  if (nativeStorageHash === null) return fail('result-json-budget', null)
+  return freezeCapsuleValue({ ...body, nativeStorageHash })
 }

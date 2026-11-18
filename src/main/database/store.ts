@@ -92,6 +92,8 @@ import { createSyncedTemplateDocument } from './synced-host-final'
 import { DatabaseSavedViewNameError } from './saved-view-form'
 import { parseWorkspaceEventDetails } from '@shared/workspaceEventDetails'
 import { DocumentRecoveryRepository } from './document-recovery'
+import { forgetLocalDocumentDeletion, hasRegisteredLocalDocumentDeletion, recordLocalDocumentDeletion } from './local-document-deletions'
+import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-read'
 import { DocumentBlockTransfers } from './document-block-transfers'
 import type { MoveDocumentBlocksInput, RestoreDocumentBlockMoveInput, DocumentBlockMoveResult, DocumentBlockMoveHistoryEntry } from '../../shared/document-block-moves'
 import { WorkspaceSearchRepository } from './workspace-search'
@@ -425,8 +427,8 @@ function preflightJournaledDatabase(databasePath: string, capability?: typeof ca
 
 export class KnowbookStore {
   /** Explicit complete-reader startup. The legacy constructor remains fail-closed. */
-  static openCanonicalRuntime(databasePath: string): KnowbookStore {
-    return new KnowbookStore(databasePath, canonicalRuntimeStartup)
+  static openCanonicalRuntime(databasePath: string, seedExamples = true): KnowbookStore {
+    return new KnowbookStore(databasePath, canonicalRuntimeStartup, seedExamples)
   }
   static createEmptySyncedReceiver(databasePath: string): KnowbookStore {
     return new KnowbookStore(databasePath, emptyReceiverStartup)
@@ -449,7 +451,8 @@ export class KnowbookStore {
     replaced: Set<string>
   } | null = null
 
-  constructor(private readonly databasePath: string, capability?: typeof canonicalRuntimeStartup | typeof emptyReceiverStartup) {
+  constructor(private readonly databasePath: string, capability?: typeof canonicalRuntimeStartup | typeof emptyReceiverStartup,
+    private readonly seedExamples = true) {
     if (capability !== undefined && capability !== canonicalRuntimeStartup && capability !== emptyReceiverStartup) throw new Error('Invalid Store startup capability.')
     this.emptyReceiver = capability === emptyReceiverStartup
     this.canonicalRuntime = capability !== undefined
@@ -1707,10 +1710,10 @@ export class KnowbookStore {
   deleteDocument(documentId: string): string[] {
     const now = new Date().toISOString()
     const document = this.db.prepare(`
-      SELECT id, path, title, parent_id
+      SELECT id, path, title, parent_id, created_at, updated_at
       FROM documents
       WHERE id = ?
-    `).get(documentId) as DocumentPathRow | undefined
+    `).get(documentId) as (DocumentPathRow & { created_at: string; updated_at: string }) | undefined
 
     if (!document) {
       throw new Error('Document not found')
@@ -1758,6 +1761,8 @@ export class KnowbookStore {
       reparentChildrenStatement.run(document.parent_id, now, document.id)
       for (const entry of affectedDescendants) rewriteDescendantPathStatement.run(entry.nextPath, now, entry.id)
       deleteDocumentStatement.run(document.id)
+      recordLocalDocumentDeletion(this.db, { documentId, createdAt: document.created_at,
+        path: document.path, updatedAt: document.updated_at, deletedAt: now })
       const syncedMarkdownSources = new Set<string>()
       if (this.deferredLinkResyncDepth === 0) {
         rewrittenDocumentIds = this.markdownLinks.maintain(affectedDescendants.map((entry) => ({ id: entry.id, before: entry.path,
@@ -1838,20 +1843,32 @@ export class KnowbookStore {
     return this.db.transaction(() => {
       const snapshot = this.documentRecovery.getTrash(documentId)
       const old = snapshot.document
-      const ids = snapshot.content.blocks.flatMap(block => block.id ? [block.id] : [])
-      if (this.db.prepare('SELECT 1 FROM blocks WHERE document_id <> ? AND id IN (SELECT value FROM json_each(?)) LIMIT 1')
-        .get(documentId, JSON.stringify(ids))) throw new Error('回收站中的块已移到其他文档。请将此版本复制为新文档；不会覆盖其他文档，回收站副本已保留。')
-      if (this.getDocumentSnapshot(documentId)) throw new Error('A document with this ID already exists. The trash copy has been kept.')
+      const restoreAsCopy = assertSyncedLogicalDeletionRecords(this.db).has('doc:' + documentId)
+        || hasRegisteredLocalDocumentDeletion(this.db, documentId)
       const parent = old.parent_id ? this.getDocumentSnapshot(old.parent_id) : null
-      const title = this.generateSiblingTitle(parent?.id ?? null, old.title)
-      const path = parent ? `${parent.path}/${title}` : title
       const now = new Date().toISOString()
-      this.db.prepare(`INSERT INTO documents (id, title, slug, parent_id, path, summary, sort_order, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(old.id, title, `doc-${old.id}`, parent?.id ?? null, path, '', old.sort_order, old.created_at, now)
-      this.restoringTrashedDocument = true
-      try { this.updateDocument(old.id, { ...snapshot.content, title }) }
-      finally { this.restoringTrashedDocument = false }
-      if (old.path !== path) this.preserveBlockRoutes([{ id: old.id, path: old.path }])
+      let restoredId = old.id
+      let title: string, path: string
+      if (restoreAsCopy) {
+        restoredId = this.createDocumentSnapshot(parent?.id ?? null, old.title, snapshot.content.summary, snapshot.content.blocks)
+        const restored = this.getDocumentSnapshot(restoredId)
+        if (!restored) throw new Error('恢复后的文档副本缺失。')
+        title = restored.title
+        path = restored.path
+      } else {
+        const ids = snapshot.content.blocks.flatMap(block => block.id ? [block.id] : [])
+        if (this.db.prepare('SELECT 1 FROM blocks WHERE document_id <> ? AND id IN (SELECT value FROM json_each(?)) LIMIT 1')
+          .get(documentId, JSON.stringify(ids))) throw new Error('回收站中的块已移到其他文档。请将此版本复制为新文档；不会覆盖其他文档，回收站副本已保留。')
+        if (this.getDocumentSnapshot(documentId)) throw new Error('A document with this ID already exists. The trash copy has been kept.')
+        title = this.generateSiblingTitle(parent?.id ?? null, old.title)
+        path = parent ? `${parent.path}/${title}` : title
+        this.db.prepare(`INSERT INTO documents (id, title, slug, parent_id, path, summary, sort_order, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(old.id, title, `doc-${old.id}`, parent?.id ?? null, path, '', old.sort_order, old.created_at, now)
+        this.restoringTrashedDocument = true
+        try { this.updateDocument(old.id, { ...snapshot.content, title }) }
+        finally { this.restoringTrashedDocument = false }
+        if (old.path !== path) this.preserveBlockRoutes([{ id: old.id, path: old.path }])
+      }
       const restoreValue = (columnId: string, valueText: string | null, databaseId?: string): string | null => {
         const row = this.db.prepare('SELECT * FROM document_database_columns WHERE id = ?').get(columnId) as DocumentDatabaseColumnRow | undefined
         if (!row || (databaseId && row.database_id !== databaseId)) return null
@@ -1864,21 +1881,23 @@ export class KnowbookStore {
       for (const value of snapshot.values) {
         const text = restoreValue(value.column_id, value.value_text)
         if (text !== null) this.db.prepare(`INSERT INTO document_database_values (document_id, column_id, value_text, updated_at)
-          VALUES (?, ?, ?, ?)`).run(old.id, value.column_id, text, now)
+          VALUES (?, ?, ?, ?)`).run(restoredId, value.column_id, text, now)
       }
       for (const entity of snapshot.entities) {
         if (!this.db.prepare('SELECT 1 FROM databases WHERE id = ?').get(entity.database_id)) continue
+        const entityId = restoreAsCopy ? randomUUID() : entity.id
         this.db.prepare(`INSERT INTO database_entities (id, database_id, title, document_id, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?)`).run(entity.id, entity.database_id, entity.title, old.id, entity.created_at, now)
+          VALUES (?, ?, ?, ?, ?, ?)`).run(entityId, entity.database_id, entity.title, restoredId, restoreAsCopy ? now : entity.created_at, now)
         for (const value of entity.values) {
           const text = restoreValue(value.column_id, value.value_text, entity.database_id)
           if (text !== null) this.db.prepare(`INSERT INTO database_entity_values (entity_id, column_id, value_text, updated_at)
-            VALUES (?, ?, ?, ?)`).run(entity.id, value.column_id, text, now)
+            VALUES (?, ?, ?, ?)`).run(entityId, value.column_id, text, now)
         }
       }
-      this.resyncLinksForReferenceChanges([old.title, old.path, title, path], [old.id])
+      this.resyncLinksForReferenceChanges([old.title, old.path, title, path], [restoredId])
       this.documentRecovery.forgetTrash(documentId)
-      return documentId
+      if (!restoreAsCopy) forgetLocalDocumentDeletion(this.db, documentId)
+      return restoredId
     })()
   }
 
@@ -4790,9 +4809,9 @@ export class KnowbookStore {
 
   private seed(): void {
     if (this.readSetting('workspace.initialized') === 'true') return
-    if (this.emptyReceiver) {
+    if (this.emptyReceiver || !this.seedExamples) {
       this.getDefaultDocumentDatabaseId()
-      this.saveSetting(SYNC_RECEIVER_PROFILE_KEY, 'true')
+      if (this.emptyReceiver) this.saveSetting(SYNC_RECEIVER_PROFILE_KEY, 'true')
       this.saveSetting('workspace.initialized', 'true')
       return
     }

@@ -3,9 +3,9 @@ import type { IpcMainInvokeEvent } from 'electron'
 import type { ElectronApplication } from 'playwright'
 import type { SaveWebDavSyncConfig, WebDavSyncStatus } from '../src/shared/webdav-sync'
 import { createHash } from 'node:crypto'
-import { canonicalJson, type SyncDocument } from '../src/main/sync/model'
 import { createWebDavServer } from '../tests/helpers/webdav-server'
 import { hasBuiltElectronApp, uiText, withElectronApp } from './helpers/electron'
+import { publishRemoteProtocol5Documents } from './helpers/webdav-protocol5'
 
 type NativeHandler = (event: IpcMainInvokeEvent, input?: unknown) => unknown | Promise<unknown>
 type PendingAction = { event: IpcMainInvokeEvent; input: unknown; resolve: (status: unknown) => void; reject: (error: Error) => void }
@@ -65,7 +65,8 @@ async function finishAction(app: ElectronApplication, failure?: string) {
 
 async function enterAction(page: Page, button: Locator) {
   // Scroll only to the user action before starting it. Never scroll to a status or error to satisfy visibility checks.
-  await button.scrollIntoViewIfNeeded()
+  await expect(button).toBeVisible()
+  await button.evaluate(element => element.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' }))
   await expect(button).toBeInViewport({ ratio: 1 })
   await button.focus()
   await expect(button).toBeFocused()
@@ -193,17 +194,6 @@ async function seedServerSettings(page: Page, url: string, language: 'en-US' | '
   }, { url, language })
 }
 
-function publishRemote(server: Awaited<ReturnType<typeof createWebDavServer>>, id: string, change: (record: SyncDocument) => void) {
-  const manifest = JSON.parse(server.files.get('/KnowBook/manifest.json')!.toString())
-  const record = JSON.parse(server.files.get(`/KnowBook/objects/${manifest.entries[`doc:${id}`]}.json`)!.toString()) as SyncDocument
-  change(record)
-  const bytes = Buffer.from(canonicalJson(record))
-  const hash = createHash('sha256').update(bytes).digest('hex')
-  server.files.set(`/KnowBook/objects/${hash}.json`, bytes)
-  manifest.entries[`doc:${id}`] = hash
-  server.files.set('/KnowBook/manifest.json', Buffer.from(canonicalJson(manifest)))
-}
-
 test('connection, sync and stop feedback stays beside its action through failures and real retries @electron', async ({}, testInfo) => {
   test.skip(!hasBuiltElectronApp(), 'Run npm run build first.')
   const server = await createWebDavServer()
@@ -247,7 +237,8 @@ test('connection, sync and stop feedback stays beside its action through failure
         expect(status.phase).toBe('idle')
         await restoreProbe(app)
       }
-      expect(server.files.has('/KnowBook/manifest.json')).toBe(true)
+      const manifest = JSON.parse(server.files.get('/KnowBook/manifest.json')!.toString())
+      expect(manifest).toMatchObject({ version: 5, history: { previousHash: null } })
       // A GET with a usable ETag needs no PROPFIND fallback. Verify the real read/write connection probe instead.
       for (const method of ['PUT', 'GET', 'DELETE']) {
         expect(server.requests.some(request => request.method === method && request.path.includes('/.probe-'))).toBe(true)
@@ -304,7 +295,7 @@ test('connection, sync and stop feedback stays beside its action through failure
   } finally { releaseUpload?.(); await server.close() }
 })
 
-test('merge feedback belongs to the current conflict and failed custom choices survive a real retry and reload @electron', async ({}, testInfo) => {
+test('merge feedback belongs to the current conflict and a retry applies preserved custom choices @electron', async ({}, testInfo) => {
   test.skip(!hasBuiltElectronApp(), 'Run npm run build first.')
   const server = await createWebDavServer()
   try {
@@ -323,11 +314,11 @@ test('merge feedback belongs to the current conflict and failed custom choices s
         await window.knowbook.syncWebDavNow()
         return ids
       })
-      ids.forEach((id, index) => publishRemote(server, id, record => {
+      await publishRemoteProtocol5Documents(server, ids.map((id, index) => ({ id, edit: record => {
         record.content.title = index === 0 ? 'Remote upper conflict' : 'Remote lower conflict'
         record.content.blocks[0].content = 'Remote overlapping paragraph. '.repeat(12)
         record.content.blocks[1].content = 'Remote independent paragraph'
-      }))
+      } })))
       await page.evaluate(async ids => {
         for (let index = 0; index < ids.length; index++) {
           const document = (await window.knowbook.getDocumentDetail(ids[index]))!
@@ -338,15 +329,14 @@ test('merge feedback belongs to the current conflict and failed custom choices s
         }
         await window.knowbook.syncWebDavNow()
       }, ids)
-      expect((await page.evaluate(() => window.knowbook.getWebDavSyncStatus())).conflicts).toHaveLength(2)
       await page.reload()
       await expect(page.getByTestId('shell')).toBeVisible()
       await page.setViewportSize({ width: 760, height: 850 })
-      let section = await openSettings(page)
-      const upper = section.locator('.webdav-conflict-card').filter({ hasText: 'Local upper conflict' })
-      let lower = section.locator('.webdav-conflict-card').filter({ hasText: 'Local lower conflict' })
-      await upper.locator(':scope > summary').click()
-      await lower.locator(':scope > summary').click()
+      const section = await openSettings(page)
+      await section.getByRole('button', { name: uiText('Read latest conflicts', '读取最新冲突'), exact: true }).click()
+      await expect(section.locator('.webdav-conflict-card')).toHaveCount(2)
+      const upper = section.locator('.webdav-conflict-card').filter({ hasText: 'doc:' + ids[0] })
+      const lower = section.locator('.webdav-conflict-card').filter({ hasText: 'doc:' + ids[1] })
       await lower.getByRole('button', { name: uiText('Merge changes', '逐项合并'), exact: true }).click()
       const title = lower.getByRole('group', { name: uiText('Title', '标题'), exact: true })
       const block = lower.getByRole('group', { name: uiText('Block 1', '正文块 1'), exact: true })
@@ -359,16 +349,16 @@ test('merge feedback belongs to the current conflict and failed custom choices s
       const blockInput = block.locator('textarea.editor-textarea')
       await expect(blockInput).toHaveAccessibleName(uiText('Block 1 merged content', '正文块 1合并内容'))
       await blockInput.fill('Preserved custom merge paragraph')
-      const mergeSave = lower.getByRole('button', { name: uiText('Save merge plan', '保存合并方案'), exact: true })
+      const mergeSave = lower.getByRole('button', { name: uiText('Apply merged changes', '应用逐项合并'), exact: true })
       const mergeFeedback = lower.locator('.webdav-conflict-merge > .webdav-action-feedback')
       const mergeButtons = lower.locator('.webdav-conflict-merge > .settings-actions')
       const reason = 'Controlled lower merge failure'
-      await installProbe(app, 'knowbook:resolve-webdav-sync-conflict')
+      await installProbe(app, 'knowbook:resolve-webdav-protocol5-conflict')
       await enterAction(page, mergeSave)
       await expect.poll(async () => (await readProbe(app)).pending).toBe(1)
       await expect(mergeSave).toHaveAttribute('aria-busy', 'true')
       await expect(mergeFeedback).toHaveAttribute('role', 'status')
-      await expect(mergeFeedback).toHaveText(uiText('Saving resolution…', '正在保存处理方案…'))
+      await expect(mergeFeedback).toContainText(/正在.*(合并|处理|应用)|Applying|Saving/)
       await expect(titleInput).toBeDisabled()
       await expect(blockInput).toBeDisabled()
       await expectFeedbackWithButtons(mergeFeedback, mergeButtons)
@@ -385,16 +375,16 @@ test('merge feedback belongs to the current conflict and failed custom choices s
       await recordFeedback(page, app, testInfo, 'lower-merge-failure')
       await expectFeedbackWithButtons(mergeFeedback, mergeButtons)
 
-      // Starting a different card transfers feedback ownership immediately; A's failure must not remain or attach to B.
-      const useUpper = upper.getByRole('button', { name: uiText('Use local version', '使用本地版本'), exact: true })
+      // Starting another card transfers feedback ownership without discarding the first card's input.
+      const useUpper = upper.getByRole('button', { name: uiText('Apply entire local group', '应用本机整组'), exact: true })
       await enterAction(page, useUpper)
       await expect.poll(async () => (await readProbe(app)).pending).toBe(1)
       await expect(lower.getByRole('alert')).toHaveCount(0)
       await expect(upper.getByRole('alert')).toHaveCount(0)
       await expect(upper.locator('.webdav-conflict-body > .webdav-action-feedback')).toHaveAttribute('role', 'status')
-      await finishAction(app)
+      await finishAction(app, 'Controlled upper conflict failure')
       await expect(useUpper).toBeEnabled()
-      await expect(upper.locator('.webdav-conflict-pending').first()).toBeVisible()
+      await expect(upper.getByRole('alert')).toHaveText('Controlled upper conflict failure')
       await expect(lower.getByRole('alert')).toHaveCount(0)
 
       // Revisit A's preserved draft, fail once, then retry through the original persistence handler using restored keyboard focus.
@@ -406,29 +396,22 @@ test('merge feedback belongs to the current conflict and failed custom choices s
       await page.keyboard.press('Enter')
       await expect.poll(async () => (await readProbe(app)).pending).toBe(1)
       expect((await readProbe(app)).calls).toBe(4)
-      await finishAction(app)
-      await expect(mergeSave).toBeEnabled()
-      await expect(mergeSave).toBeFocused()
-      await expect(lower.getByRole('alert')).toHaveCount(0)
-      await expect(lower.locator('.webdav-conflict-pending').first()).toBeVisible()
       await expect(titleInput).toHaveValue('Preserved custom merge title')
       await expect(blockInput).toHaveValue('Preserved custom merge paragraph')
-      const resolutions = (await page.evaluate(() => window.knowbook.getWebDavSyncStatus())).conflicts
-      expect(resolutions.find(conflict => conflict.key === `doc:${ids[0]}`)?.resolution).toBe('local')
-      expect(resolutions.find(conflict => conflict.key === `doc:${ids[1]}`)?.resolution).toBe('merge')
-      await recordFeedback(page, app, testInfo, 'merge-retry-saved')
+      await finishAction(app)
+      await expect.poll(() => page.evaluate(async id => (await window.knowbook.getDocumentDetail(id))!.title, ids[1])).toBe('Preserved custom merge title')
+      await expect(section.getByRole('alert')).toHaveCount(0)
+      await recordFeedback(page, app, testInfo, 'merge-retry-applied')
       await page.reload()
-      section = await openSettings(page)
-      lower = section.locator('.webdav-conflict-card').filter({ hasText: 'Local lower conflict' })
-      await lower.locator(':scope > summary').click()
-      await lower.getByRole('button', { name: uiText('Merge changes', '逐项合并'), exact: true }).click()
-      await expect(lower.getByRole('group', { name: uiText('Title', '标题'), exact: true })
-        .getByLabel(uiText('Title merged content', '标题合并内容'), { exact: true })).toHaveValue('Preserved custom merge title')
-      const restoredBlock = lower.getByRole('group', { name: uiText('Block 1', '正文块 1'), exact: true })
-      await expect(restoredBlock.locator('label.editor-label')).toContainText('正文块 1合并内容')
-      await expect(restoredBlock.locator('textarea.editor-textarea')).toHaveAccessibleName(uiText('Block 1 merged content', '正文块 1合并内容'))
-      await expect(restoredBlock.locator('textarea.editor-textarea')).toHaveValue('Preserved custom merge paragraph')
-      expect(await page.evaluate(async id => (await window.knowbook.getDocumentDetail(id))!.title, ids[1])).toBe('Local lower conflict')
+      const reopened = await openSettings(page)
+      await reopened.getByRole('button', { name: uiText('Read latest conflicts', '读取最新冲突'), exact: true }).click()
+      await expect(reopened.locator('.webdav-conflict-card')).toHaveCount(1)
+      await expect(reopened.locator('.webdav-conflict-card')).toContainText('doc:' + ids[0])
+      const resolved = await page.evaluate(id => window.knowbook.getDocumentDetail(id), ids[1])
+      expect(resolved?.title).toBe('Preserved custom merge title')
+      expect(resolved?.blocks.map(block => block.content)).toEqual([
+        'Preserved custom merge paragraph', 'Remote independent paragraph', 'Local independent paragraph'
+      ])
     })
   } finally { await server.close() }
 })

@@ -5,7 +5,6 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { KnowbookStore } from '../src/main/database/store'
-import { AttachmentStore } from '../src/main/attachments'
 import { createEphemeralCredentialStorage } from '../src/main/credential-storage'
 import { WebDavSyncService } from '../src/main/sync/service'
 import { DEFAULT_WEBDAV_SYNC_CONFIG } from '../src/shared/webdav-sync'
@@ -13,7 +12,7 @@ import { DEFAULT_WEBDAV_SYNC_CONFIG } from '../src/shared/webdav-sync'
 async function withService(run: (sync: WebDavSyncService) => Promise<void>) {
   const root = mkdtempSync(join(tmpdir(), 'knowbook-webdav-diagnostics-'))
   const store = new KnowbookStore(join(root, 'knowbook.db'))
-  const sync = new WebDavSyncService(store, new AttachmentStore(join(root, 'assets')), createEphemeralCredentialStorage(randomUUID))
+  const sync = new WebDavSyncService(store, root, createEphemeralCredentialStorage(randomUUID))
   try {
     sync.saveConfig({ ...DEFAULT_WEBDAV_SYNC_CONFIG, url: 'http://127.0.0.1:12345/', username: 'test',
       password: 'fixture-password', allowInsecureHttp: true })
@@ -49,9 +48,10 @@ test('WebDAV connection failures preserve the original fetch cause through clien
 test('WebDAV response body failures preserve the original reader error through service diagnostics', async context => {
   const transportError = new Error('fixture response body failure')
   const methods: string[] = []
-  context.mock.method(globalThis, 'fetch', async (_input: unknown, init?: RequestInit) => {
+  context.mock.method(globalThis, 'fetch', async (input: unknown, init?: RequestInit) => {
     const method = init?.method ?? 'GET'
     methods.push(method)
+    if (method === 'GET' && String(input).endsWith('/manifest.json')) return new Response(null, { status: 404 })
     if (method === 'GET') return new Response(new ReadableStream<Uint8Array>({
       start(controller) { controller.error(transportError) }
     }), { status: 200 })
@@ -64,7 +64,7 @@ test('WebDAV response body failures preserve the original reader error through s
       assert.equal(error.cause, transportError)
       return true
     })
-    assert.deepEqual(methods, ['MKCOL', 'MKCOL', 'MKCOL', 'PUT', 'GET', 'DELETE'])
+    assert.deepEqual(methods, ['GET', 'MKCOL', 'MKCOL', 'MKCOL', 'PUT', 'GET', 'DELETE'])
     assert.equal(sync.getStatus().phase, 'error')
     assert.equal(sync.getStatus().message, transportError.message)
     assert.equal(sync.getStatus().progress, null)

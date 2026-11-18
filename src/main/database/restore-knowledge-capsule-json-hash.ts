@@ -4,6 +4,29 @@ import { capsuleJson } from './restore-knowledge-capsule-model'
 const bufferLimit = 64 * 1024
 const stringUnits = Math.floor(bufferLimit / 6) // An escaped code unit can occupy six bytes.
 
+function* capsuleJsonStringChunks(value: string): IterableIterator<string> {
+  if (value.length <= stringUnits) { yield JSON.stringify(value); return }
+  yield '"'
+  for (let start = 0; start < value.length;) {
+    let end = Math.min(value.length, start + stringUnits)
+    const trailing = value.charCodeAt(end - 1), following = value.charCodeAt(end)
+    if (trailing >= 0xd800 && trailing <= 0xdbff && following >= 0xdc00 && following <= 0xdfff) end--
+    yield JSON.stringify(value.slice(start, end)).slice(1, -1)
+    start = end
+  }
+  yield '"'
+}
+
+export function capsuleJsonStringBytes(value: string, limit: number): number {
+  if (value.length <= stringUnits) return Buffer.byteLength(JSON.stringify(value))
+  let bytes = 0
+  for (const chunk of capsuleJsonStringChunks(value)) {
+    bytes += Buffer.byteLength(chunk)
+    if (bytes > limit) break
+  }
+  return bytes
+}
+
 /** Canonical bytes for privately built SQL packets. A complete encoded packet
  * is never needed for its byte budget or digest. JSON still orders array-index
  * object keys numerically after the canonical lexical property sort. */
@@ -27,15 +50,10 @@ export function hashBoundedCapsuleJson(value: object, maxBytes: number, prefix =
   }
   const writeString = (value: string) => {
     if (value.length <= stringUnits) { emit(JSON.stringify(value)); return }
-    emit('"')
-    for (let start = 0; start < value.length && bytes <= maxBytes;) {
-      let end = Math.min(value.length, start + stringUnits)
-      const trailing = value.charCodeAt(end - 1), following = value.charCodeAt(end)
-      if (trailing >= 0xd800 && trailing <= 0xdbff && following >= 0xdc00 && following <= 0xdfff) end--
-      emit(JSON.stringify(value.slice(start, end)).slice(1, -1))
-      start = end
+    for (const chunk of capsuleJsonStringChunks(value)) {
+      if (bytes > maxBytes) break
+      emit(chunk)
     }
-    emit('"')
   }
   const write = (item: unknown) => {
     if (bytes > maxBytes) return

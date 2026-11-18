@@ -1,5 +1,5 @@
 import { capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
-import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
+import { capsuleJsonStringBytes, hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_RAW_MAX_ROWS, CAPSULE2_RAW_MAX_VALUE_BYTES,
   capsule2ApplicationColumns, type Capsule2Encoding, type Capsule2RawSqlTable } from './restore-knowledge-capsule2-raw-model'
 import { validateCoverageCapsuleReference, validateCoverageRootReference } from './restore-knowledge-coverage-model'
@@ -115,42 +115,41 @@ function jsonBudget(value: unknown): void {
   // Count actual JSON bytes before serializing the whole DTO. Descriptors are
   // inspected first, so neither getters nor toJSON can run in this data layer.
   const b = budget(), ancestors = new Set<object>()
-  type Frame = { container: object; values: unknown[]; next: number }
+  type Frame = { container: object; keys: PropertyKey[] | null; length: number; next: number }
   const stack: Frame[] = []
+  const takeString = (text: string) => take(b, 'jsonBytes', capsuleJsonStringBytes(text, CAPSULE2_RAW_MAX_JSON_BYTES - b.jsonBytes))
   const enter = (item: unknown) => {
-    if (typeof item === 'string') { take(b, 'jsonBytes', Buffer.byteLength(JSON.stringify(item))); return }
+    if (typeof item === 'string') { takeString(item); return }
     if (item === null || typeof item === 'boolean' || typeof item === 'number' && Number.isFinite(item)) {
       take(b, 'jsonBytes', String(item).length); return
     }
     if (!item || typeof item !== 'object' || ancestors.has(item)) return fail('JSON含非data值或循环')
     ancestors.add(item)
     if (Array.isArray(item)) {
-      const values = array(item, CAPSULE2_RAW_MAX_ROWS * 2)
-      take(b, 'jsonBytes', 2 + Math.max(0, values.length - 1))
-      stack.push({ container: item, values, next: 0 })
+      if (Object.getPrototypeOf(item) !== Array.prototype || item.length > CAPSULE2_RAW_MAX_ROWS * 2
+        || Reflect.ownKeys(item).length !== item.length + 1) return fail('数组超预算/含hole或额外字段')
+      take(b, 'jsonBytes', 2 + Math.max(0, item.length - 1))
+      stack.push({ container: item, keys: null, length: item.length, next: 0 })
     } else {
       if (![Object.prototype, null].includes(Object.getPrototypeOf(item) as object | null)) return fail('JSON不是plain data对象')
-      const descriptors = Object.getOwnPropertyDescriptors(item), keys = Reflect.ownKeys(descriptors)
-      const values: unknown[] = []
+      const keys = Reflect.ownKeys(item)
       take(b, 'jsonBytes', 2 + Math.max(0, keys.length - 1))
-      for (const key of keys) {
-        const descriptor = typeof key === 'string' ? descriptors[key] : undefined
-        if (typeof key !== 'string' || !descriptor?.enumerable || !('value' in descriptor)) return fail('JSON含访问器/非enumerable字段')
-        take(b, 'jsonBytes', Buffer.byteLength(JSON.stringify(key)) + 1)
-        values.push(descriptor.value)
-      }
-      stack.push({ container: item, values: values.reverse(), next: 0 })
+      stack.push({ container: item, keys, length: keys.length, next: 0 })
     }
   }
   enter(value)
   while (stack.length) {
     const frame = stack[stack.length - 1]
-    if (frame.next === frame.values.length) {
+    if (frame.next === frame.length) {
       ancestors.delete(frame.container)
       stack.pop()
       continue
     }
-    enter(frame.values[frame.next++])
+    const index = frame.next++, key = frame.keys ? frame.keys[index] : String(index)
+    const descriptor = typeof key === 'string' ? Object.getOwnPropertyDescriptor(frame.container, key) : undefined
+    if (typeof key !== 'string' || !descriptor?.enumerable || !('value' in descriptor)) return fail('JSON含访问器/非enumerable字段')
+    if (frame.keys) { takeString(key); take(b, 'jsonBytes', 1) }
+    enter(descriptor.value)
   }
 }
 export { jsonBudget as assertMerge3JsonBudget }
@@ -391,14 +390,14 @@ export function finishMerge3Table(input: PreparedMerge3Table, selectedRows: read
 
 /** Planning convenience only. Decoded BigInts/Buffers are deliberately not
  * stored in the serializable DTO or any hash. No SQL is read by this helper. */
-export function merge3RowValues(prepared: PreparedMerge3Table, row: Merge3InputRow): Record<string, unknown> {
+export function merge3RowValues(prepared: PreparedMerge3Table, row: Merge3InputRow, projection?: readonly string[]): Record<string, unknown> {
   const metadata = capsuleRecord(prepared, ['kind', 'version', 'name', 'columns', 'primaryKey', 'sourceEncoding', 'currentEncoding',
     'targetEncoding', 'originalColumns', 'sourceRows', 'currentRows', 'preparedHash'])
   const columnNames = columns(metadata.columns, tableName(metadata.name)), textEncoding = encoding(metadata.targetEncoding)
   const input = capsuleRecord(row, ['key', 'ref', 'originalCells', 'cells', 'primaryKeyCells'])
   const values = cells(input.cells, columnNames.length, textEncoding, budget())
-  return Object.fromEntries(columnNames.map((column, index) => {
-    const value = values[index]
+  return Object.fromEntries((projection ?? columnNames).map(column => {
+    const value = values[columnNames.indexOf(column)] ?? fail('所需原列缺失：' + column)
     return [column, value[0] === 'null' ? null : value[0] === 'text' ? graph3Text(value, textEncoding)
       : value[0] === 'integer' ? BigInt(value[1]) : value[0] === 'real-ieee754-le' ? Buffer.from(value[1], 'hex').readDoubleLE()
         : Buffer.from(value[1], 'base64')]

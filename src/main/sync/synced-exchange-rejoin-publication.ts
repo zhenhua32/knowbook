@@ -14,7 +14,8 @@ const fail = (): never => publicationInvalid('恢复续接缺准确原发布根�
 /** Match the exact installed SQL publication to the original descriptor and
  * remote immutable root. Local group hashes remain pinned by the descriptor. */
 export async function readRejoinedPublicationSnapshot(client: WebDavClient, target: WebDavSyncConfig,
-  head: SyncedInitialManifest5, state: AnyExchangeState, proof: ReturnType<typeof readRejoinPublicationSeed>, root: string) {
+  head: SyncedInitialManifest5, state: Pick<AnyExchangeState, 'databasePath' | 'workspaceScope' | 'recoveryEpoch' | 'remoteWorkspaceId' | 'source'>,
+  proof: ReturnType<typeof readRejoinPublicationSeed>, root: string) {
   const { source } = state, headHash = publicationHash(publicationJson(head))
   const original = await readFixedConfirmedPublicationSeed(root, proof.exposure.id)
   const { state: spool } = original, expected = spool.descriptor

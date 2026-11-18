@@ -2,13 +2,14 @@ import { createHash, randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import { capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
-import { durableSqlDagHash, durableSqlDagUuid } from './restore-knowledge-dag-model'
+import { durableSqlDagHash, durableSqlDagList, durableSqlDagUuid } from './restore-knowledge-dag-model'
 import { coverageSettingKey, parseSyncedKnowledgeCoverage, rawPriorCoverageRequirementsHash, validateRawPriorCoverageRequirements,
   type CoverageRootReference, type RawCoverageRequirement } from './restore-knowledge-coverage-model'
 import { readRawPriorKnowledgeCoverageOwned } from './restore-knowledge-coverage-raw-read'
+import { validateV3RestoreSourceTombstoneEvidence } from '../backup/v3-restore-source-tombstone-model'
 import { RESTORE_FENCE, assertRestorePath, copyRestoreInventory, readRestoreJson, readRestoreText, restoreInventory, restorePaths, writeRestoreJson }
   from './restore-safety-files'
-import { restoreHash, restoreJson, validateRestoreFence, validateRestoreIntent } from './restore-safety-model'
+import { parseRestoreJson, restoreHash, restoreJson, validateRestoreFence, validateRestoreIntent } from './restore-safety-model'
 import { restoreSqliteFilename } from './restore-safety-sqlite-path'
 import { assertRootRestoreStage3DatabaseReadonly3, discardRootRestoreStage3Probe3 } from './restore-knowledge-stage3-physical'
 import { assertOriginCatalogDirectory } from './restore-knowledge-origin-bundle-files'
@@ -17,6 +18,7 @@ import { assertJointRestoreInstalledResult4, jointRestorePaths4, readJointRestor
 import { captureReopenedRootKnowledgeConservationPlan3 } from './restore-knowledge-root3-read'
 import { readRootRestoreReferenceFromQualified5 } from './restore-knowledge-reference3-read'
 import { validateV3SettledPrivateSyncLocator, type V3SettledPrivateSyncLocator } from './restore-knowledge-settled-private-sync'
+import { readV3SourceGroupRetirementsOwned, v3SourceGroupRetirementHash, type V3SourceGroupRetirement } from './v3-source-group-retirement'
 
 interface RestoreKnowledgeInstallProofV1 {
   readonly kind: 'controlled-restore-knowledge-install-proof'
@@ -40,7 +42,14 @@ type RestoreKnowledgeInstallProofV3 = Omit<RestoreKnowledgeInstallProofV2, 'vers
   readonly version: 3
   readonly privateSync: V3SettledPrivateSyncLocator
 }
-type RestoreKnowledgeInstallProof = RestoreKnowledgeInstallProofV1 | RestoreKnowledgeInstallProofV2 | RestoreKnowledgeInstallProofV3
+type RestoreKnowledgeInstallProofV4 = Omit<RestoreKnowledgeInstallProofV2, 'version'> & {
+  readonly version: 4
+  readonly privateSync?: V3SettledPrivateSyncLocator
+  readonly retirements: readonly { readonly groupId: string; readonly sourceGroupId: string; readonly sourceCreationId: string;
+    readonly recordHash: string; readonly remoteEvidenceHash: string }[]
+}
+type RestoreKnowledgeInstallProof = RestoreKnowledgeInstallProofV1 | RestoreKnowledgeInstallProofV2 | RestoreKnowledgeInstallProofV3 | RestoreKnowledgeInstallProofV4
+const restoreJsonLimit = 1024 * 1024
 
 function fail(reason: string): never {
   throw new Error('恢复安装凭据核验失败：' + reason)
@@ -50,8 +59,10 @@ function validateProof(value: unknown): RestoreKnowledgeInstallProof {
   const version = value && typeof value === 'object' ? Object.getOwnPropertyDescriptor(value, 'version')?.value : undefined
   const keys = ['kind', 'version', 'operationId', 'mountId', 'descriptorHash', 'coverage', 'planHash', 'rootMaterialHash']
   const planKeys = [...keys, 'requirementsHash', 'identity', 'reference', 'sourceArchive']
-  const row = capsuleRecord(value, version === 3 ? [...planKeys, 'privateSync'] : version === 2 ? planKeys : keys)
-  if (row.kind !== 'controlled-restore-knowledge-install-proof' || version !== 1 && version !== 2 && version !== 3) return fail('未知安装凭据格式')
+  if (version !== 1 && version !== 2 && version !== 3 && version !== 4) return fail('未知安装凭据格式')
+  const privateSync = version === 3 || version === 4 && Object.hasOwn(value as object, 'privateSync')
+  const row = capsuleRecord(value, version === 1 ? keys : [...planKeys, ...(privateSync ? ['privateSync'] : []), ...(version === 4 ? ['retirements'] : [])])
+  if (row.kind !== 'controlled-restore-knowledge-install-proof') return fail('未知安装凭据类型')
   const operationId = durableSqlDagUuid(row.operationId)
   const { entries: [coverage] } = validateRawPriorCoverageRequirements({ kind: 'restore-knowledge-unresolved-required-roots',
     version: 1, schemaVersion: 27, entries: [row.coverage] })
@@ -68,6 +79,18 @@ function validateProof(value: unknown): RestoreKnowledgeInstallProof {
   const planned = { ...common, requirementsHash: durableSqlDagHash(row.requirementsHash),
     identity: locator(row.identity), reference: locator(row.reference), sourceArchive: {
       snapshotId: durableSqlDagUuid(archive.snapshotId), inventoryHash: durableSqlDagHash(archive.inventoryHash) } }
+  if (version === 4) {
+    const retirements = durableSqlDagList(row.retirements, restoreJsonLimit).map(value => {
+      const item = capsuleRecord(value, ['groupId', 'sourceGroupId', 'sourceCreationId', 'recordHash', 'remoteEvidenceHash'])
+      return { groupId: durableSqlDagUuid(item.groupId), sourceGroupId: durableSqlDagUuid(item.sourceGroupId),
+        sourceCreationId: durableSqlDagUuid(item.sourceCreationId), recordHash: durableSqlDagHash(item.recordHash),
+        remoteEvidenceHash: durableSqlDagHash(item.remoteEvidenceHash) }
+    })
+    if (!retirements.length || retirements.some(({ groupId }, index) => index > 0 && retirements[index - 1].groupId >= groupId))
+      return fail('退场凭据必须按组标识严格排序且无重复')
+    return freezeCapsuleValue({ ...planned, version: 4 as const, retirements,
+      ...(privateSync ? { privateSync: validateV3SettledPrivateSyncLocator(row.privateSync) } : {}) })
+  }
   return freezeCapsuleValue(version === 3 ? { ...planned, version: 3 as const, privateSync: validateV3SettledPrivateSyncLocator(row.privateSync) }
     : { ...planned, version: 2 as const })
 }
@@ -76,13 +99,30 @@ function proofPath(profileRoot: string, operationId: string): string {
   return join(restorePaths(profileRoot, operationId).recovery, 'knowledge-install-proof.json')
 }
 
+async function assertRetirementEvidence(profileRoot: string, proof: RestoreKnowledgeInstallProofV4) {
+  const recovery = restorePaths(profileRoot, proof.operationId).recovery
+  let head: { headHash: string; etag: string } | undefined
+  for (const { groupId, sourceGroupId, sourceCreationId, remoteEvidenceHash } of proof.retirements) {
+    const path = join(recovery, `v3-source-tombstone-${groupId}.json`)
+    await assertRestorePath(path, profileRoot)
+    const text = await readRestoreText(path, remoteEvidenceHash).catch(cause => {
+      throw new Error('恢复安装凭据核验失败：实际封存的 WebDAV 退场原件变化', { cause })
+    })
+    const observation = validateV3RestoreSourceTombstoneEvidence(parseRestoreJson(text), { sourceGroupId, sourceCreationId })
+    if (head && (head.headHash !== observation.headHash || head.etag !== observation.etag)) return fail('退场集合中的 WebDAV 原件来自不同远端版本')
+    head = observation
+  }
+}
+
 /** Write the exact SQL and qualified-original pins before the outer moving
  * journal. The caller separately owns candidate admission and the commit. */
 export async function writeRestoreKnowledgeInstallProof(profileRoot: string,
   input: Omit<RestoreKnowledgeInstallProofV1, 'kind' | 'version'> | Omit<RestoreKnowledgeInstallProofV2, 'kind' | 'version'>
-    | Omit<RestoreKnowledgeInstallProofV3, 'kind' | 'version'>) {
-  const version = 'privateSync' in input ? 3 : 'requirementsHash' in input ? 2 : 1
+    | Omit<RestoreKnowledgeInstallProofV3, 'kind' | 'version'> | Omit<RestoreKnowledgeInstallProofV4, 'kind' | 'version'>) {
+  const version = 'retirements' in input ? 4 : 'privateSync' in input ? 3 : 'requirementsHash' in input ? 2 : 1
   const proof = validateProof({ kind: 'controlled-restore-knowledge-install-proof', version, ...input })
+  if (Buffer.byteLength(restoreJson(proof)) > restoreJsonLimit) return fail('安装凭据超出原件预算')
+  if (proof.version === 4) await assertRetirementEvidence(profileRoot, proof)
   await writeRestoreJson(proofPath(profileRoot, proof.operationId), proof, profileRoot, true)
   return restoreHash(proof)
 }
@@ -93,7 +133,20 @@ export async function readRestoreKnowledgeInstallProof(profileRoot: string, oper
   const proof = validateProof(await readRestoreJson(path))
   if (proof.operationId !== operationId || restoreHash(proof) !== durableSqlDagHash(expectedHash))
     return fail('实际凭据与恢复意图不符')
+  if (proof.version === 4) await assertRetirementEvidence(profileRoot, proof)
   return proof
+}
+
+function assertRetirementRecords(records: readonly V3SourceGroupRetirement[], proof: RestoreKnowledgeInstallProofV4) {
+  const byGroup = new Map(records.map(record => [record.group.id, record]))
+  if (byGroup.size !== proof.retirements.length || byGroup.size !== records.length) return fail('实际 SQLite 退场集合与正式安装凭据不符')
+  for (const item of proof.retirements) {
+    const record = byGroup.get(item.groupId)
+    if (!record || record.operationId !== proof.operationId || record.successorSnapshotId !== proof.sourceArchive.snapshotId
+      || record.sourceGroupId !== item.sourceGroupId || record.sourceCreationId !== item.sourceCreationId
+      || record.remoteEvidenceHash !== item.remoteEvidenceHash || v3SourceGroupRetirementHash(record) !== item.recordHash)
+      return fail('实际 SQLite 退场记录与正式安装凭据不符')
+  }
 }
 
 /** Check the actual SQLite supports. Committing also requires the exact
@@ -114,6 +167,10 @@ export function assertRestoreKnowledgeInstalledSql(db: Database.Database, proof:
   if (!current || current.workspace_scope !== coverage.target.workspaceScope || current.recovery_epoch !== coverage.target.recoveryEpoch
     || phase === 'committing' && db.prepare('SELECT 1 FROM main.documents WHERE updated_at IS NOT ? LIMIT 1').get(coverage.target.documentBoundary))
     return fail('实际 SQLite 工作区或安装版本不同')
+  const retirements = readV3SourceGroupRetirementsOwned(db)
+  const own = [...retirements.values()].filter(record => record.operationId === proof.operationId)
+  if (proof.version === 4) assertRetirementRecords(own, proof)
+  else if (own.length) return fail('退场记录没有本次正式安装凭据')
   return coverage
 }
 
@@ -123,7 +180,27 @@ export async function verifyRestoreKnowledgeInstalledDatabase(profileRoot: strin
   phase: 'committing' | 'steady') {
   const proof = await readRestoreKnowledgeInstallProof(profileRoot, operationId, expectedProofHash)
   const paths = restorePaths(profileRoot, operationId)
-  return readExactInstalledSql(profileRoot, operationId, proof, phase, paths.storage, await restoreInventory(paths.storage))
+  const { coverage, requirements, original } = await readExactInstalledSqlWith(profileRoot, operationId, proof, phase,
+    paths.storage, await restoreInventory(paths.storage), readV3SourceGroupRetirementsOwned)
+  if (phase === 'steady') await assertPriorV3SourceRetirements(profileRoot, operationId, original.values())
+  return { coverage, requirements }
+}
+
+export async function assertPriorV3SourceRetirements(profileRoot: string, operationId: string,
+  retirements: Iterable<V3SourceGroupRetirement>) {
+  const byOperation = new Map<string, V3SourceGroupRetirement[]>()
+  for (const record of retirements) {
+    if (record.operationId === operationId) continue
+    const records = byOperation.get(record.operationId) ?? []
+    records.push(record)
+    byOperation.set(record.operationId, records)
+  }
+  for (const [priorId, records] of byOperation) {
+    const intent = await readInstalledAncestor(profileRoot, priorId)
+    const prior = await readRestoreKnowledgeInstallProof(profileRoot, priorId, intent.installationProofHash)
+    if (prior.version !== 4) return fail('原祖先退场缺正式安装凭据')
+    assertRetirementRecords(records, prior)
+  }
 }
 
 async function readExactInstalledSql(profileRoot: string, operationId: string, proof: RestoreKnowledgeInstallProof,
@@ -175,7 +252,7 @@ export interface RestoreKnowledgePriorInstall { readonly kind: 'verified-restore
 type Prior = {
   profileRoot: string
   intent: JointRestoreIntent4
-  proof: RestoreKnowledgeInstallProofV2 | RestoreKnowledgeInstallProofV3
+  proof: Exclude<RestoreKnowledgeInstallProof, RestoreKnowledgeInstallProofV1>
   coverage: Awaited<ReturnType<typeof readExactInstalledSql>>['coverage']
   original: Awaited<ReturnType<typeof captureReopenedRootKnowledgeConservationPlan3>>
 }

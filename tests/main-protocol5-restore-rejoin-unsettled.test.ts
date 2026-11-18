@@ -22,7 +22,7 @@ test('an original publication alone cannot authorize WebDAV rejoin after restori
   A.db.close()
   const publisher = KnowbookStore.openCanonicalRuntime(A.file)
   try {
-    await runProtocol5WebDav(publisher, A.root, targetConfig, runtime, false)
+    await runProtocol5WebDav(publisher, A.root, targetConfig, runtime)
     assert.equal(publisher.getSettingPublic(exchangeStateKey(exchangeTargetFingerprint(targetConfig))), null)
   } finally { publisher.destroy() }
   const legacy = { readCurrentIdentities: async () => [], recoverLegacy: async () => { throw new Error('Unexpected legacy recovery') } }
@@ -31,7 +31,7 @@ test('an original publication alone cannot authorize WebDAV rejoin after restori
   const reopened = KnowbookStore.openCanonicalRuntime(A.file)
   try {
     const requests = server.requests.length
-    await assert.rejects(prepareProtocol5RestoreRejoin(reopened.getUnsafeDatabaseHandle(), A.root, targetConfig, runtime), /原交换状态与路由不闭合/)
+    await assert.rejects(prepareProtocol5RestoreRejoin(reopened.getUnsafeDatabaseHandle(), A.root, targetConfig, runtime), /缺原已结算的交换状态/)
     assert.equal(server.requests.length, requests)
   } finally { reopened.destroy() }
 }))

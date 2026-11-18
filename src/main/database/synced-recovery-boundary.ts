@@ -7,6 +7,7 @@ import { assertSyncedBlockSchema } from './synced-schema'
 import { assertSyncedLifecycleSchema } from './synced-lifecycle-schema'
 import { readSyncedGroupLifecycles } from './synced-lifecycle-state'
 import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-read'
+import { readV3SourceGroupRetirementsOwned } from './v3-source-group-retirement'
 import { hasAnySyncedObservationPending } from './synced-remote-observation-pending'
 import { readInitialIncomingWorkspace } from './synced-initial-incoming-read'
 import { readSyncedExchangeCutJournal } from './synced-exchange-host-cut'
@@ -119,6 +120,7 @@ export function advanceSyncedRecoveryEpoch(db: Database.Database, input: SyncedR
       return recoveryBoundaryInvalid('未知SQL namespace不能证明执行历史闭集')
     const initial = readInitialIncomingWorkspace(db)
     const deleted = assertSyncedLogicalDeletionRecords(db), lives = readSyncedGroupLifecycles(db, groups.map(row => row.id))
+    const sourceRetirements = readV3SourceGroupRetirementsOwned(db)
     const allocated = new Set<string>([input.recoveryEpoch, ...states.map(row => row.cursor), ...groups.flatMap(row => [row.revision, row.topology_revision, row.history_cursor])])
     for (const prior of existing.boundaries.values()) {
       allocated.add(prior.beforeEpoch); allocated.add(prior.afterEpoch)
@@ -156,7 +158,8 @@ export function advanceSyncedRecoveryEpoch(db: Database.Database, input: SyncedR
       groups: groups.map(row => {
         const lifecycle = lives.get(row.id)
         if (!lifecycle) return recoveryBoundaryInvalid('原group缺准确lifecycle')
-        const disposition = deleted.has('group:' + row.id) ? 'deleted-evidence' : lifecycle.state === 'retired-create' ? 'retired-evidence' : 'active'
+        const disposition = deleted.has('group:' + row.id) || sourceRetirements.has(row.id) ? 'deleted-evidence'
+          : lifecycle.state === 'retired-create' ? 'retired-evidence' : 'active'
         const before = { revision: row.revision, topologyRevision: row.topology_revision, historyCursor: row.history_cursor, historyPosition: row.history_position }
         return { groupId: row.id, creationId: row.creation_id, createdAt: row.created_at, originJson: row.origin_json, disposition, before,
           after: disposition === 'active' ? { revision: fresh(), topologyRevision: fresh(), historyCursor: fresh(), historyPosition: 0 }

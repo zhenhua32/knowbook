@@ -5,25 +5,17 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import test from 'node:test'
 import { KnowbookStore } from '../src/main/database/store'
-import { AttachmentStore } from '../src/main/attachments'
-import { WebDavSyncService } from '../src/main/sync/service'
-import { createEphemeralCredentialStorage } from '../src/main/credential-storage'
-import { DEFAULT_WEBDAV_SYNC_CONFIG } from '../src/shared/webdav-sync'
 import { assertSyncedBlockSchema } from '../src/main/database/synced-schema'
 import { hasCanonicalRuntimeDataOwned } from '../src/main/database/canonical-runtime-read'
 
 const originals = (file: string) => ['','-wal','-shm','-journal'].map(suffix => ({suffix,bytes:existsSync(file + suffix) ? readFileSync(file + suffix) : null}))
 
-test('actual orphan lifecycle and exposure-member remnants without groups are detected before old WebDAV and rejected on complete startup without original writes', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'knowbook-canonical-orphan-')), originalFetch = globalThis.fetch
-  let networkCalls = 0
-  globalThis.fetch = async () => { networkCalls++; throw new Error('Orphan namespace reached a forbidden network request.') }
+test('actual orphan lifecycle and exposure-member remnants without groups are rejected by snapshot and startup guards without writes', () => {
+  const root = mkdtempSync(join(tmpdir(), 'knowbook-canonical-orphan-'))
   try {
     for (const family of ['lifecycle','exposure-member'] as const) {
       const file = join(root, family, 'storage', 'knowbook.db'), store = KnowbookStore.openCanonicalRuntime(file)
-      const service = new WebDavSyncService(store, new AttachmentStore(join(root, family, 'storage', 'assets')), createEphemeralCredentialStorage(randomUUID))
       try {
-        service.saveConfig({...DEFAULT_WEBDAV_SYNC_CONFIG,url:'https://example.invalid/personal/',username:'owner',password:'retained'})
         const db = store.getUnsafeDatabaseHandle(), groupId = randomUUID(), creationId = randomUUID(), now = new Date().toISOString()
         const schema = db.prepare('SELECT name,type,sql FROM sqlite_master ORDER BY name,type').all()
         db.pragma('foreign_keys=OFF')
@@ -47,17 +39,16 @@ test('actual orphan lifecycle and exposure-member remnants without groups are de
           assert.equal((db.prepare('SELECT COUNT(*) AS n FROM ' + table).get() as {n:number}).n,0,table + ' is genuinely empty')
         assert.equal(db.transaction(() => hasCanonicalRuntimeDataOwned(db))(),true)
         assert.ok((db.pragma('foreign_key_check') as unknown[]).length > 0,'The original contains an actual orphan, not a forged detector return value')
-        const config = service.getStatus().config
-        await assert.rejects(service.sync(),/旧 WebDAV/)
-        assert.equal(networkCalls,0)
-        assert.deepEqual(service.getStatus().config,config)
-      } finally { await service.stop(); store.destroy() }
+        const original = originals(file)
+        assert.throws(() => store.getSyncRecords(), /旧 WebDAV/)
+        assert.throws(() => store.applySyncRecords([]), /旧 WebDAV/)
+        assert.deepEqual(originals(file), original)
+      } finally { store.destroy() }
       const before = originals(file)
       assert.throws(() => KnowbookStore.openCanonicalRuntime(file),/生命周期|foreign|原|Canonical|损坏/)
       assert.deepEqual(originals(file),before,'Admission rejects the actual residual rows before WAL/appSchema/seed writes')
     }
   } finally {
-    globalThis.fetch = originalFetch
     assert.equal(dirname(resolve(root)), resolve(tmpdir()))
     assert.ok(basename(root).startsWith('knowbook-canonical-orphan-'))
     assert.equal(lstatSync(root).isSymbolicLink(), false)

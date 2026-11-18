@@ -162,6 +162,7 @@ export async function launchElectronApp(
   const restoredSafeMode = existsSync(join(tempRoot, 'database-restore-safe-mode.json'))
   const env: Record<string, string> = {
     ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)),
+    KNOWBOOK_E2E_SEED_EXAMPLES: '1',
     ...extraEnv,
     APPDATA: tempRoot,
     LOCALAPPDATA: tempRoot,

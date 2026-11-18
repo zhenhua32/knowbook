@@ -1,9 +1,11 @@
 import type Database from 'better-sqlite3'
 import { assertSyncedPersistentPublicationReadAdmissionOwned, type SyncedPublicationLocalSnapshot } from './synced-publication'
 import { readRawInitialIncomingWorkspaceOwned, type InitialIncomingIdentity } from './synced-initial-incoming-raw-read'
-import { initialIncomingBaselineKey, initialIncomingRequestHash, parseInitialIncomingStored, validateInitialIncomingBaseline,
+import { initialIncomingBaselineKey, initialIncomingBaselinePrefix, initialIncomingRequestHash, initialIncomingTombstoneFacts,
+  parseInitialIncomingStored, validateInitialIncomingBaseline,
   validateInitialIncomingReceipt, type InitialIncomingBaseline, type InitialIncomingReceipt, type InitialIncomingRequest } from '../sync/synced-initial-incoming-model'
 import { publicationHash, publicationInvalid, publicationJson } from '../sync/synced-publication-model'
+import { SYNC_TABLES } from '../sync/model'
 
 export type { InitialIncomingIdentity } from './synced-initial-incoming-raw-read'
 export interface InitialIncomingLocal {
@@ -36,6 +38,22 @@ export function readInitialIncomingBaseline(db: Database.Database, request: Init
   return { value, raw: row.value }
 }
 
+/** Original accepted absence survives restore even where no live row ever existed. */
+export function readInheritedInitialIncomingTombstones(db: Database.Database) {
+  if (!db.open || !db.readonly || !db.inTransaction || db.pragma('query_only', { simple: true }) !== 1)
+    return publicationInvalid('接收的删除记录要求封存 SQLite 只读事务。')
+  const rows = db.prepare('SELECT key,value FROM app_settings WHERE substr(key,1,?)=? ORDER BY key')
+    .all(initialIncomingBaselinePrefix.length, initialIncomingBaselinePrefix) as Array<{ key: string; value: string }>
+  return rows.flatMap(row => {
+    const value = validateInitialIncomingBaseline(json(row.value))
+    if (row.key !== initialIncomingBaselineKey(value.targetFingerprint)) return publicationInvalid('接收的删除记录基线键不匹配。')
+    const original = readInitialIncomingBaseline(db, { method: 'receiveInitialSyncedSnapshot',
+      databasePath: value.databasePath, targetFingerprint: value.targetFingerprint, operationId: value.result.operationId })
+    if (!original) return publicationInvalid('接收的删除记录缺原基线。')
+    return initialIncomingTombstoneFacts(original.value)
+  })
+}
+
 /** Public callers retain the original admission before reading raw facts. */
 function captureInitialIncomingWorkspace(db: Database.Database) {
   assertSyncedPersistentPublicationReadAdmissionOwned(db)
@@ -52,6 +70,19 @@ export function readInitialIncomingWorkspace(db: Database.Database): InitialInco
   const { snapshot, identities, historyDocuments, historyBlocks, groupIds, rawIdentities, historyRows } = captureInitialIncomingWorkspace(db)
   return { snapshot, identities, historyDocuments, historyBlocks, groupIds,
     fingerprint: publicationHash(publicationJson({ snapshot: snapshot.localFingerprint, rawIdentities, historyRows })) }
+}
+
+export function isPristineInitialIncomingWorkspace(local: InitialIncomingWorkspace): boolean {
+  const [catalog] = local.snapshot.records
+  return !local.identities.size && !local.historyDocuments.size && !local.historyBlocks.size && !local.groupIds.size
+    && local.snapshot.records.length === 1 && catalog?.kind === 'databases' && catalog.tables.databases.length === 1
+    && catalog.tables.databases[0].id === local.snapshot.catalogId && catalog.tables.databases[0].name === 'Default'
+    && catalog.tables.databases[0].description === 'Default database'
+    && SYNC_TABLES.every(table => table === 'databases' || catalog.tables[table].length === 0)
+}
+
+export function canJoinSyncedProtocol5Workspace(db: Database.Database): boolean {
+  return db.transaction(() => isPristineInitialIncomingWorkspace(readInitialIncomingWorkspace(db)))()
 }
 
 /** Caller owns a strict read/IMMEDIATE. This leaf reads authority; it never repairs, reserves or adopts. */

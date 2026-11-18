@@ -65,6 +65,9 @@ jobs:
       - name: Typecheck System Plugin v3 starter examples
         run: npm run typecheck:system-plugin-examples
 
+      - name: Verify V3 source retirement across independent profiles
+        run: node scripts/verify-controlled-backup-v3-source-retirement.mjs
+
       - name: Verify Markdown standards and round trips
         run: npm run test:markdown-spec
 
@@ -122,7 +125,7 @@ jobs:
           retention-days: 1
 
   legacy-compatibility:
-    name: Legacy protocol and recovery compatibility
+    name: Protocol 5 recovery records and backup readers
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

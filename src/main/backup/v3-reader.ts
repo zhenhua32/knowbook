@@ -258,10 +258,22 @@ export function readBackupV3RestoreSource(owner: BackupV3RestoreSource) {
   return structuredClone({ root, archive, files, assets, inventoryHash })
 }
 
+export function readBackupV3RestoreIndex(owner: BackupV3RestoreSource) {
+  const { archive, inventoryHash } = restoreSource(owner)
+  return { manifest: structuredClone(archive.manifest), inventoryHash }
+}
+
+export function readBackupV3RestoreAssets(owner: BackupV3RestoreSource) {
+  const { assets, inventoryHash } = restoreSource(owner)
+  return { assets: structuredClone(assets), inventoryHash }
+}
+
 /** Reuse the owner's actual sealed capture for publication identity and path checks. */
 export function readBackupV3RestorePublicationSource(owner: BackupV3RestoreSource) {
-  const original = restoreSource(owner), { snapshotId, catalogId } = original.archive.manifest
-  return Object.freeze({ root: original.root, snapshotId, catalogId, ...publicationFiles(original, original.inventoryHash) })
+  const original = restoreSource(owner), { snapshotId, catalogId, previousPublication } = original.archive.manifest
+  return Object.freeze({ root: original.root, snapshotId, catalogId,
+    previousPublication: previousPublication ? Object.freeze({ ...previousPublication }) : null,
+    ...publicationFiles(original, original.inventoryHash) })
 }
 
 /** Recheck this owner's entire inventory and physical originals before using a

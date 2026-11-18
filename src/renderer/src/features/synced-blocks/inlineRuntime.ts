@@ -735,7 +735,6 @@ class InlineRuntime {
     const survivors: MountedInline[] = []
     for (const instance of instances) {
       if (instance === moving) continue
-      if (rootIds.length !== 1 || rootIds[0] !== instanceId && (instances.length !== 2 || instance.hostDocumentId !== targetId)) return undefined
       if (instance.hostDocumentId === targetId) continue
       if (instance.hostDocumentId !== source.id) return undefined
       const current = this.mounts.get(JSON.stringify([source.id, instance.instanceId]))

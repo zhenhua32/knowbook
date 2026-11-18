@@ -4,7 +4,7 @@ import { link, lstat, open, readdir, unlink } from 'node:fs/promises'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { buildSyncedPortableAssetUri, syncedPortableAssetBackupPath } from '../../shared/syncedBlockPortable'
 import { capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
-import { readCapsule2AssetManifest } from './restore-knowledge-capsule2-assets-files'
+import { readCapsule2AssetManifest, readCapsule2AssetManifestBytes } from './restore-knowledge-capsule2-assets-files'
 import { readRootRestoreAssetAliasStageCopies5, type RootRestoreAssetAliasStage5 } from './restore-knowledge-asset-alias-stage5'
 import type { PreparedRestoreHistoryScope3 } from './restore-knowledge-stage3-physical'
 import { copyOriginCatalogFileWithIdentity3, syncOriginCatalogAncestors } from './restore-knowledge-origin-bundle-files'
@@ -202,9 +202,10 @@ export async function prepareRootRestoreAssetTransfer4(owner: RootRestoreAssetAl
 }
 
 function checkedTransfer(source: string, operationId: string, transferId: string, expectedManifestHash: string, archived = false) {
-  const manifest = readManifest(parseRestoreJson(source), archived), manifestHash = restoreHash(manifest)
+  const manifest = readManifest(parseRestoreJson(source), archived), canonical = restoreJson(manifest)
+  const manifestHash = createHash('sha256').update(canonical).digest('hex')
   if (manifest.operationId !== operationId || manifest.transferId !== transferId || manifestHash !== hash(expectedManifestHash)
-    || archived && source !== restoreJson(manifest))
+    || archived && source !== canonical)
     return fail('原附件转移清单与已记录凭据不同')
   return manifest
 }
@@ -222,11 +223,12 @@ export function readArchivedTransferFacts4(text: string, locator: { operationId:
   return checkedTransfer(text, locator.operationId, locator.transferId, locator.manifestHash, true).entries
 }
 
-export async function readPinnedTransferManifestText4(profileRoot: string, locator: { operationId: string; transferId: string; manifestHash: string }) {
+export async function readPinnedTransferManifestBytes4(profileRoot: string, locator: { operationId: string; transferId: string; manifestHash: string }) {
   const root = await canonicalRestoreRoot(profileRoot), directory = join(collection(root, locator.operationId), restoreUuid(locator.transferId))
-  const text = await readCapsule2AssetManifest(join(directory, 'manifest.json'), root, maxManifestBytes)
+  const bytes = await readCapsule2AssetManifestBytes(join(directory, 'manifest.json'), root, maxManifestBytes)
+  const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes)
   checkedTransfer(text, locator.operationId, locator.transferId, locator.manifestHash, true)
-  return text
+  return bytes
 }
 
 export async function reopenRestoreAssetTransfer4(profileRoot: string, operationId: string, transferId: string, expectedManifestHash: string) {

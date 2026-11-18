@@ -442,7 +442,8 @@ export function validateTombstoneIdentityEffect(value: unknown): TombstoneIdenti
   return { before: checked, after: { kind, ownerKind: value.after.ownerKind, ownerId: value.after.ownerKind === 'group' ? uuid(value.after.ownerId) : opaque(value.after.ownerId), createdAt: time(value.after.createdAt) } }
 }
 export function validateTombstoneDeletionIntent(value: unknown): TombstoneDeletionIntent {
-  root(value, ['kind', 'key', 'baseLiveHash', 'tombstoneHash', 'before', 'identities', 'intentHash'])
+  assertExchangeData(value)
+  assertSyncedShape(value, ['kind', 'key', 'baseLiveHash', 'tombstoneHash', 'before', 'identities', 'intentHash'], ['localDeletionHash'])
   const key = exchangeRecordKey(value.key), before = validateSyncedProtocol5Record(value.before, key)
   if ((before.kind !== 'document' && before.kind !== 'synced-group') || value.kind !== (before.kind === 'document' ? 'document' : 'group')
     || publicationHash(publicationJson(before)) !== value.baseLiveHash) return publicationInvalid('tombstoneintent缺准确live前身。')
@@ -452,7 +453,10 @@ export function validateTombstoneDeletionIntent(value: unknown): TombstoneDeleti
   if (blocks.length !== identities.length || blocks.some(block => { const row = byId.get(block.id)
     return !row || row.before.last_owner_kind !== value.kind || row.before.last_owner_id !== before.id || before.kind === 'synced-group' && row.before.created_at !== births.get(block.id) }))
     return publicationInvalid('tombstoneintent不是全部实际physical原owner/birth闭集。')
-  return { kind: before.kind === 'document' ? 'document' : 'group', key, before, baseLiveHash: hash(value.baseLiveHash), tombstoneHash: hash(value.tombstoneHash), identities, intentHash: hash(value.intentHash) }
+  if ('localDeletionHash' in value && (before.kind !== 'document' || identities.some(effect => effect.after.kind !== 'retained')))
+    return publicationInvalid('本机文档删除不能替代组删除或跨所有者转移。')
+  return { kind: before.kind === 'document' ? 'document' : 'group', key, before, baseLiveHash: hash(value.baseLiveHash), tombstoneHash: hash(value.tombstoneHash),
+    identities, intentHash: hash(value.intentHash), ...('localDeletionHash' in value ? { localDeletionHash: hash(value.localDeletionHash) } : {}) }
 }
 function tombstoneSide(value: unknown): TombstoneAcceptedSide {
   root(value, ['key', 'beforeLocalHash', 'beforeRemoteHash', 'local', 'remoteHash', 'commonHash', 'dependencyKeys', 'dependencySignature'])

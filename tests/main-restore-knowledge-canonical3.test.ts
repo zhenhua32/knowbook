@@ -4,6 +4,7 @@ import Database from 'better-sqlite3'
 import { readFile, writeFile } from 'node:fs/promises'
 import { appendFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { capsuleBytesHash, capsuleJson } from '../src/main/database/restore-knowledge-capsule-model'
 import { graph3Text } from '../src/main/database/restore-knowledge-graph3-data'
 import { prepareRootRestoreIdentityPlan3, readRootRestoreIdentityPlan3 } from '../src/main/database/restore-knowledge-identity3-read'
 import { prepareRootRestoreReferencePlan3, readRootRestoreReferencePlan3 } from '../src/main/database/restore-knowledge-reference3-read'
@@ -38,6 +39,10 @@ test('actual Main reference kernel produces canonical SQL cells reserved target 
     mark('reference-prepared')
     choice.originPolicy = 'preserve-exact-current-tuple'; choice.anonymousValues = 'current'
     const { allocation, candidate } = value
+    const { checkedCanonicalCandidateHash, ...checkedBody } = candidate
+    assert.equal(checkedCanonicalCandidateHash, capsuleBytesHash('knowbook.restore.canonical3.checked-candidate.v1\0' + capsuleJson(checkedBody)))
+    const { nativeStorageHash, ...nativeBody } = candidate.nativeStorageChecks
+    assert.equal(nativeStorageHash, capsuleBytesHash('knowbook.restore.merge3.native.v1\0' + capsuleJson(nativeBody)))
     const slot = (kind: string, id: string) => allocation.assignments.find(item => item.physical && item.kind === kind && item.sourceId === id)!
     await t.test('incoming group creation canonical children and every source instance have new identities while current external references survive', () => {
       mark('case-fork')

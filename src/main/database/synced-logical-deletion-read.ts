@@ -92,9 +92,17 @@ function assertPair(db: Database.Database, row: SyncedLogicalDeletionOperationRo
   const operation = db.prepare('SELECT request_hash FROM synced_operations WHERE client_operation_id=?').get(proof.application.operationId) as { request_hash: string } | undefined
   if (operation?.request_hash !== proof.application.requestHash) return corrupt('首证原请求hash不符')
   const intent = evidence.intents.get(proof.key)
+  const localDeletionHash = proof.localBefore.kind === 'document' ? proof.localBefore.localDeletionHash : undefined
   if (!intent || !same(intent, { kind: proof.before.kind === 'document' ? 'document' : 'group', key: proof.key, baseLiveHash: proof.baseLiveHash,
     tombstoneHash: proof.tombstoneHash, before: proof.before, identities: proof.identities, intentHash: proof.intentHash,
+    ...(localDeletionHash ? {localDeletionHash} : {}),
     ...(proof.version===2?{base:proof.base,localBeforeHash:proof.localBeforeHash,decision:proof.decision}:{}) })) return corrupt('首证不属于准确原版本job的完整intent')
+  if (localDeletionHash) {
+    const accepted = receipt.provenance.accepted.find(side => side.key === proof.key)
+    if (!accepted || accepted.beforeLocalHash !== null || accepted.remoteHash !== proof.tombstoneHash
+      || accepted.beforeRemoteHash !== proof.tombstoneHash && !receipt.result.publishedKeys.includes(proof.key))
+      return corrupt('本机文档删除未在远端同步结算。')
+  }
   if(proof.version===2&&(receipt.version!==7||proof.decision.decisionSourceHash!==receipt.provenance.decisionSourceHash||evidence.closureHash!==proof.source.closureHash)
     ||proof.version===1&&receipt.version!==4)return corrupt('首证版本/历史决定/真实remote closure不闭合')
   for (const effect of proof.identities) if (effect.after.kind === 'transferred') {

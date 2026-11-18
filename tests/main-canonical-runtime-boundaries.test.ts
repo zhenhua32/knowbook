@@ -9,40 +9,35 @@ import { readBackupV3Archive } from '../src/main/backup/v3-reader'
 import { WebDavSyncService } from '../src/main/sync/service'
 import { createEphemeralCredentialStorage } from '../src/main/credential-storage'
 import { DEFAULT_WEBDAV_SYNC_CONFIG } from '../src/shared/webdav-sync'
-import { canonicalJson, emptySyncState, hashBytes, recordHash } from '../src/main/sync/model'
 import { buildDocumentMarkdown } from '../src/renderer/src/utils/documentMarkdown'
 import { withV3Fixture, allTables, randomUUID } from './helpers/synced-backup-v3-fixture'
 
-test('complete runtime rejects legacy WebDAV before the first real transport call and preserves configured credentials and queued state', () => withV3Fixture(async f => {
+test('the current WebDAV service reads and rejects obsolete remote manifests without mutation', t => withV3Fixture(async f => {
   const store = KnowbookStore.openCanonicalRuntime(f.file)
-  const service = new WebDavSyncService(store, f.assets, createEphemeralCredentialStorage(randomUUID))
-  const originalFetch = globalThis.fetch
-  let requests = 0
-  globalThis.fetch = async () => { requests++; throw new Error('A forbidden preflight network request was attempted.') }
+  const service = new WebDavSyncService(store, f.userDataRoot, createEphemeralCredentialStorage(randomUUID))
+  let version = 1
+  const requests: Array<{ path: string; method: string }> = []
+  t.mock.method(globalThis, 'fetch', async (input: string, init?: RequestInit) => {
+    requests.push({ path: new URL(input).pathname, method: init?.method ?? 'GET' })
+    return new Response(JSON.stringify({ version }), { headers: { ETag: '"obsolete"' } })
+  })
   try {
     service.saveConfig({ ...DEFAULT_WEBDAV_SYNC_CONFIG, enabled: true, url: 'https://example.invalid/webdav/', username: 'personal', password: 'kept-password' })
-    // An existing ordinary pending resolution is inert persistence, never
-    // permission to publish a canonical workspace through the old protocol.
     const config = service.getStatus().config
-    const state = emptySyncState(), local = f.store.getSyncRecords().get('doc:' + f.targetId)
-    assert.ok(local?.kind === 'document')
-    const remote = { ...local, content: { ...local.content, summary: 'An older pending remote version' } }
-    const localHash = recordHash(local), remoteHash = recordHash(remote), key = 'doc:' + f.targetId
-    state.conflicts[key] = { local, remote, localHash, remoteHash }
-    state.resolutions[key] = { localHash, remoteHash, choice: 'local' }
-    const stateKey = 'sync.webdav.state.' + hashBytes(canonicalJson([config.url, config.username, config.directory]))
-    store.saveSetting(stateKey, JSON.stringify(state))
     const before = allTables(store.getUnsafeDatabaseHandle())
-    await assert.rejects(service.sync(), /旧 WebDAV|完整个人同步协议/)
-    assert.equal(requests, 0, 'No OPTIONS/PROPFIND/capability/object request precedes the SQL capability guard')
-    assert.deepEqual(service.getStatus().config, config)
-    assert.equal(service.getStatus().config.enabled, true)
-    assert.equal(service.getStatus().hasPassword, true)
-    assert.equal(service.getStatus().conflicts[0].resolution, 'local')
-    assert.deepEqual(allTables(store.getUnsafeDatabaseHandle()), before, 'No pending namespace/queue or configuration is removed')
+    for (version = 1; version <= 4; version++) {
+      requests.length = 0
+      await assert.rejects(service.testConnection(), /同步协议不受支持/)
+      await assert.rejects(service.sync(), /同步协议不受支持/)
+      assert.deepEqual(requests, Array.from({ length: 2 }, () => ({ path: '/webdav/KnowBook/manifest.json', method: 'GET' })))
+      assert.deepEqual(service.getStatus().config, config)
+      assert.equal(service.getStatus().hasPassword, true)
+      assert.equal(service.getStatus().lastSyncAt, null)
+      assert.deepEqual(allTables(store.getUnsafeDatabaseHandle()), before)
+    }
     assert.throws(() => store.getSyncRecords(), /旧 WebDAV/)
     assert.throws(() => store.applySyncRecords([]), /旧 WebDAV/)
-  } finally { globalThis.fetch = originalFetch; await service.stop(); store.destroy() }
+  } finally { await service.stop(); store.destroy() }
 }))
 
 test('legacy restore refuses a real V3 source and a current canonical target before parsing or publishing attachments', () => withV3Fixture(async f => {

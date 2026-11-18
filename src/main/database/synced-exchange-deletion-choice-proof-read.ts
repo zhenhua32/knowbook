@@ -14,8 +14,10 @@ export function assertHistoricalDeletionChoiceProofs(db:Database.Database,job:De
       {client_operation_id:string;request_hash:string;result_json:string;created_at:string}|undefined
     if(!row||publicationHash(row.result_json)!==ref.proofHash)return publicationInvalid('删除选择历史首证原件缺失/原hash改变。')
     const proof=validateSyncedLogicalDeletionChoiceProof(parseExchangeStored(row.result_json)),intent=intents.get(ref.key)
+    const localDeletionHash=proof.localBefore.kind==='document'?proof.localBefore.localDeletionHash:undefined
     const originalIntent={kind:proof.before.kind==='document'?'document':'group',key:proof.key,base:proof.base,baseLiveHash:proof.baseLiveHash,before:proof.before,localBeforeHash:proof.localBeforeHash,
-      tombstoneHash:proof.tombstoneHash,identities:proof.identities,decision:proof.decision,intentHash:proof.intentHash}
+      tombstoneHash:proof.tombstoneHash,identities:proof.identities,decision:proof.decision,intentHash:proof.intentHash,
+      ...(localDeletionHash?{localDeletionHash}:{})}
     if(row.result_json!==publicationJson(proof)||row.client_operation_id!==logicalDeletionChoiceAnchorId(proof.before)||row.client_operation_id!==proof.persistence.anchorId
       ||row.request_hash!==logicalDeletionChoiceRequestHash(proof)||row.created_at!==proof.application.acceptedAt||proof.key!==ref.key||proof.intentHash!==ref.intentHash||!intent||!same(intent,originalIntent))
       return publicationInvalid('删除选择历史首证不属于准确原job7完整intent。')

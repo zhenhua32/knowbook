@@ -6,16 +6,18 @@ import { WebDavHttpError, type WebDavClient } from './webdav-client'
 const predecessorPath = (hash: string) => 'objects/manifest-' + hash + '.json'
 const MAX_NEW_PREDECESSORS = 1024
 
-/** Walk only the new suffix to the device's already accepted, exact head. */
+/** Walk to the device's accepted head, or to genesis for a new receiver. */
 export async function assertProtocol5ManifestLineage(client: WebDavClient, target: WebDavSyncConfig,
-  current: SyncedInitialManifest5, anchorHash: string): Promise<void> {
+  current: SyncedInitialManifest5, anchorHash: string | null,
+  visit?: (manifest: SyncedInitialManifest5, digest: string) => void): Promise<void> {
   const targetFingerprint = protocol5HistoryTarget(target), seen = new Set<string>()
   let manifest = current, digest = publicationHash(publicationJson(current))
   for (;;) {
     if (manifest.workspaceId !== current.workspaceId || manifest.history?.targetFingerprint !== targetFingerprint)
       return publicationInvalid('协议5历史链不属于原目标和远端工作区。')
-    if (digest === anchorHash) return
+    visit?.(manifest, digest)
     const previous = manifest.history.previousHash
+    if (digest === anchorHash || anchorHash === null && previous === null) return
     if (!previous || seen.has(previous) || seen.size >= MAX_NEW_PREDECESSORS)
       return publicationInvalid('远端历史没有到达本机已接受的版本，已暂停同步。')
     seen.add(digest)

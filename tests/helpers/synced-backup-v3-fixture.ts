@@ -8,6 +8,8 @@ import { KnowbookStore } from '../../src/main/database/store'
 import { AttachmentStore } from '../../src/main/attachments'
 import { applySyncedHostCommand, applySyncedHostFinal } from '../../src/main/database/synced-host-final'
 import { createDefaultDatabaseViewConfig } from '../../src/shared/database-workspace'
+import type { SyncedGroupWire } from '../../src/shared/synced-blocks'
+import { protocol5HistoryLink, publicationHash, publicationJson, type SyncedInitialManifest5 } from '../../src/main/sync/synced-publication-model'
 import { ordinary } from './synced-content-fixture'
 import { command as insertCommand, insertAck } from './synced-host-command-insert-fixture'
 import { createRequest, created, born, request, applied, freshBlock, logical, snapshot,
@@ -17,6 +19,26 @@ export { applySyncedHostCommand, applySyncedHostFinal, createRequest, created, r
   logical, snapshot, createRestoreInput, restoreSyncedHostOperation, allTables, randomUUID }
 export const sha256 = (bytes: string | Uint8Array) => createHash('sha256').update(bytes).digest('hex')
 export const oldChildId = ' old:备份 child\0 '
+
+/** A small canonical witness for offline installation-proof tests. */
+export function sourceGroupRetirementEvidence(group: SyncedGroupWire) {
+  const workspaceId = randomUUID(), key = 'group:' + group.id
+  const digest = (value: unknown) => publicationHash(publicationJson(value))
+  const previous = { hash: digest(group), record: group }
+  const tombstoneRecord = { kind: 'synced-group-deleted', id: group.id, creationId: group.creationId,
+    previousHash: previous.hash, deletedAt: '2048-01-02T03:04:05.006Z' }
+  const tombstone = { hash: digest(tombstoneRecord), record: tombstoneRecord }
+  const beforeManifest: SyncedInitialManifest5 = { version: 5, workspaceId, entries: { databases: 'd'.repeat(64), [key]: previous.hash },
+    syncedInstances: [], history: protocol5HistoryLink('a'.repeat(64), randomUUID(), null) }
+  const before = { hash: digest(beforeManifest), manifest: beforeManifest }
+  const deletedManifest = { ...beforeManifest, entries: { ...beforeManifest.entries, [key]: tombstone.hash },
+    history: protocol5HistoryLink('a'.repeat(64), randomUUID(), before.hash) }
+  const deleted = { hash: digest(deletedManifest), manifest: deletedManifest }
+  return { kind: 'v3-restore-source-tombstone', version: 1, key, targetFingerprint: 'b'.repeat(64), remoteWorkspaceId: workspaceId,
+    workspace: { workspaceScope: randomUUID(), recoveryEpoch: randomUUID() }, seedManifestHash: before.hash,
+    acceptedManifestHash: before.hash, closureHash: 'c'.repeat(64), head: { ...deleted, etag: '"test-head"' },
+    transition: { before, deleted }, previous, tombstone, executionAuthorized: false }
+}
 
 /** Import has no effects. This ordinary Store is opened before the first real Main create. */
 export function createV3Fixture(root: string) {

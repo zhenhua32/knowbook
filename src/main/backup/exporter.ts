@@ -24,7 +24,7 @@ import { parseLocalMarkdownUrl, relativeMarkdownPath, resolveMarkdownDocumentPat
 import { KnowbookStore } from '../database/store'
 import { rewriteBackupAssetReferences } from './markdown-asset-references'
 import { listBackupVersions, publishBackupSnapshot, resolveBackupVersion, writeSnapshotMetadata } from './versions'
-import { prepareBackupV3Publication } from './v3-publication-lineage'
+import { backupV3PredecessorForEdition, prepareBackupV3Publication, readBackupV3ExportPredecessor, type BackupV3ExportPredecessor } from './v3-publication-lineage'
 import type { ExportDocument, ExportStandaloneDatabase } from '../database/store'
 import { BACKUP_V2, CATALOG_KIND, CATALOG_PATH, backupJson, backupScope, databaseFile, missingReferences, validateExportSnapshot } from './v2-format'
 
@@ -61,6 +61,7 @@ export interface BackupV3DatabaseExportJob {
   userDataRoot: string
   destination: string
   snapshotId: string
+  predecessor?: BackupV3ExportPredecessor
 }
 
 export type BackupExportJob = BackupDataExportJob | BackupDatabaseExportJob | BackupV3DatabaseExportJob
@@ -68,7 +69,7 @@ export type BackupExportRunner = (job: BackupExportJob) => Promise<number | void
 
 export function writeBackupSnapshot(job: BackupExportJob): number {
   if ('kind' in job) {
-    assertSyncedShape(job, ['kind', 'databasePath', 'userDataRoot', 'destination', 'snapshotId'])
+    assertSyncedShape(job, ['kind', 'databasePath', 'userDataRoot', 'destination', 'snapshotId'], ['predecessor'])
     if (job.kind !== 'synced-v3' || typeof job.databasePath !== 'string' || typeof job.userDataRoot !== 'string'
       || typeof job.destination !== 'string' || !isSyncedUuid(job.snapshotId)) throw new Error('Invalid V3 backup worker job.')
     if (!isAbsolute(job.databasePath) || !isAbsolute(job.userDataRoot) || !isAbsolute(job.destination)) throw new Error('V3 backup worker paths must be absolute.')
@@ -78,7 +79,7 @@ export function writeBackupSnapshot(job: BackupExportJob): number {
     try {
       database.pragma('foreign_keys = ON')
       return writeSyncedBackupV3(database, { userDataRoot: job.userDataRoot,
-        destination: job.destination, snapshotId: job.snapshotId }).documents
+        destination: job.destination, snapshotId: job.snapshotId, ...(job.predecessor ? { predecessor: job.predecessor } : {}) }).documents
     } finally { database.close() }
   }
   if ('databasePath' in job) {
@@ -208,10 +209,13 @@ export class MarkdownBackupService {
     const requested = resolve(this.backupRoot)
     mkdirSync(dirname(requested), { recursive: true })
     const parent = realpathSync(dirname(requested)), backupRoot = join(parent, basename(requested))
+    const profile = source.userDataRoot
+    const previous = await readBackupV3ExportPredecessor(this.store, profile, backupRoot)
     // The producer requires a NONEXISTENT destination. A separate new parent
     // owns this attempt; it never shares the V2 abandoned-staging cleanup prefix.
     const attemptRoot = mkdtempSync(join(parent, '.knowbook-synced-v3-')), destination = join(attemptRoot, 'snapshot'), snapshotId = randomUUID()
-    const job: BackupV3DatabaseExportJob = { kind: 'synced-v3', databasePath: source.databasePath, userDataRoot: source.userDataRoot, destination, snapshotId }
+    const job: BackupV3DatabaseExportJob = { kind: 'synced-v3', databasePath: source.databasePath, userDataRoot: profile, destination, snapshotId,
+      ...(previous ? { predecessor: previous.input } : {}) }
     let published = false
     try {
       await this.runExport(job)
@@ -219,11 +223,14 @@ export class MarkdownBackupService {
       // files afresh and parse their complete graph, including strict extras.
       const archive = verifyBackupV3ArchiveForPublication(destination)
       if (archive.manifest.snapshotId !== snapshotId) throw new Error('The actual V3 archive has another snapshot identity')
-      const profile = source.userDataRoot
       const claim = backupRoot === join(profile, 'backups', 'markdown')
         ? this.store.readConfirmedCanonicalBackupPublication(snapshotId, destination) : null
       const confirmed = claim?.archiveHash ?? this.store.readConfirmedCanonicalBackup(snapshotId, destination)
       if (confirmed !== archive.inventoryHash) throw new Error('The cold V3 bytes differ from the real confirmed Main publication')
+      const expectedPrevious = claim ? backupV3PredecessorForEdition(previous?.input, { ...claim, catalogId: archive.manifest.catalogId }) : undefined
+      const actualPrevious = archive.manifest.previousPublication
+      if (actualPrevious?.snapshotId !== expectedPrevious?.snapshotId || actualPrevious?.catalogId !== expectedPrevious?.catalogId
+        || actualPrevious?.archiveHash !== expectedPrevious?.archiveHash) throw new Error('The V3 archive publication predecessor differs from the confirmed previous version')
       const completePublication = claim ? await prepareBackupV3Publication(this.store, profile, backupRoot,
         archive.manifest, destination, claim, archive).catch((error: unknown) => {
         console.warn('V3 publication evidence could not be prepared.', error)
@@ -236,6 +243,7 @@ export class MarkdownBackupService {
         if (completePublication) archive.assertCurrent()
       }
       verifyConfirmedFiles()
+      if (expectedPrevious) previous?.assertCurrent()
       const archivedId = publishBackupSnapshot(backupRoot, destination, verifyConfirmedFiles)
       published = true
       if (completePublication) await completePublication(archivedId).catch((error: unknown) => {

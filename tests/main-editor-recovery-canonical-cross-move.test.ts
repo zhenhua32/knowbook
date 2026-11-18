@@ -46,7 +46,7 @@ function register(barrier: ReturnType<typeof createEditorCloseBarrier>): EditorC
 const states = ['exact', 'different-frame', 'newer-group', 'transfer', 'renderer', 'hot', 'hot-empty', 'hot-wiki', 'hot-wiki-dirty',
   'hot-markdown', 'hot-multiple', 'hot-v9-empty', 'hot-reference', 'hot-html', 'hot-stationary', 'hot-stationary-dirty',
   'hot-nested', 'hot-nested-redo-too-deep', 'hot-list-parent', 'hot-list-parent-other-ref', 'hot-list-parent-outside',
-  'hot-list-parent-redo-too-deep', 'hot-list-parent-stationary-same-group', 'hot-list-parent-stationary-source',
+  'hot-list-parent-redo-too-deep', 'hot-list-parent-stationary-same-group', 'hot-list-parent-stationary-source', 'hot-list-parent-stationary-both',
   'hot-shared-both-pages', 'hot-shared-foreign-redo', 'hot-shared-unproved-third-page',
   'hot-mixed-roots', 'hot-mixed-roots-stationary', 'hot-mixed-roots-outside', 'hot-mixed-forest', 'hot-mixed-forest-other-ref',
   'hot-shared-wiki', 'hot-shared-markdown', 'hot-shared-wiki-source-only', 'hot-shared-wiki-target-only',
@@ -85,11 +85,13 @@ for (const state of states) {
     const wrongOrigin = state === 'hot-shared-foreign-redo'
     const outsideMember = state === 'hot-shared-third-member' || state === 'hot-shared-later-outside-member'
     const largerForest = state.startsWith('hot-mixed-forest'), mixed = largerForest || state.startsWith('hot-mixed-roots')
-    const mixedPositive = state === 'hot-mixed-roots' || state === 'hot-mixed-forest'
+    const mixedWithTargetPeer = state === 'hot-mixed-roots-stationary'
+    const mixedPositive = state === 'hot-mixed-roots' || state === 'hot-mixed-forest' || mixedWithTargetPeer
     const unprovedThird = state === 'hot-shared-unproved-third-page'
-    const listWithTargetPeer = state === 'hot-list-parent-stationary-same-group'
-    const listWithSourcePeer = state === 'hot-list-parent-stationary-source'
-    const sharesMovedGroup = shared || listWithTargetPeer
+    const listWithTargetPeer = state === 'hot-list-parent-stationary-same-group' || state === 'hot-list-parent-stationary-both'
+    const listWithSourcePeer = state === 'hot-list-parent-stationary-source' || state === 'hot-list-parent-stationary-both'
+    const listWithPeer = listWithTargetPeer || listWithSourcePeer
+    const sharesMovedGroup = shared || listWithPeer || mixedWithTargetPeer
     const receives = state === 'transfer' || emptiesSource || sharesMovedGroup || mixedPositive || Boolean(spec && !spec.reject)
       || state === 'hot-nested' || state === 'hot-list-parent'
     const dependencies = spec?.links.map((syntax, index) =>
@@ -102,12 +104,12 @@ for (const state of states) {
       block: db.prepare('SELECT * FROM blocks WHERE id=?').get(stationary.instanceId)
     })
     const untouched = stationaryFacts(f.db)
-    const blockedForest = state === 'hot-list-parent-other-ref' || state === 'hot-list-parent-outside' || listWithSourcePeer || mixed && !mixedPositive
+    const blockedForest = state === 'hot-list-parent-other-ref' || state === 'hot-list-parent-outside' || mixed && !mixedPositive
     const tooDeep = state === 'hot-nested-redo-too-deep' || state === 'hot-list-parent-redo-too-deep'
     const nested = state.startsWith('hot-list-parent') ? seedHotNestedCrossMove(f, tooDeep ? 4 : 0,
       state === 'hot-list-parent-other-ref' ? 'two-references' : 'single-reference')
       : state === 'hot-nested' || tooDeep ? seedHotNestedCrossMove(f, tooDeep ? 5 : 0) : undefined
-    const targetPeer = shared && state !== 'hot-shared-wiki-source-only' || wrongOrigin || listWithTargetPeer || state === 'hot-mixed-roots-stationary'
+    const targetPeer = shared && state !== 'hot-shared-wiki-source-only' || wrongOrigin || listWithTargetPeer || mixedWithTargetPeer
       ? addV3SameGroupReference(f, f.targetId) : undefined
     const sourcePeer = listWithSourcePeer || shared && !emptiesSource && state !== 'hot-shared-wiki-target-only'
       ? addV3SameGroupReference(f, f.hostId) : undefined
@@ -122,7 +124,7 @@ for (const state of states) {
     if (emptiesSource) keepOnlyV3SourceReference(f)
     const sourceBefore = f.store.getDocumentDetail(f.hostId)!.blocks, sourceBeforeIds = sourceBefore.map(block => block.id)
     const identities = new BlockIdentityRepository(f.db)
-    const movedIds = mixedPositive ? sourceBeforeIds : listWithTargetPeer && nested?.forest
+    const movedIds = mixedPositive ? sourceBeforeIds : listWithPeer && nested?.forest
       ? [nested.sourceParentId, f.instanceId, nested.forest.childId] : []
     const births = new Map(movedIds.map(id => [id, identities.get(id)?.createdAt]))
     const assertMovedBirths = (db: typeof f.db, documentId: string) => {
@@ -280,7 +282,7 @@ for (const state of states) {
         const rollback = new Error('restore the proved ordinary physical birth')
         assert.throws(f.db.transaction(() => {
           const changed = '2099-01-01T00:00:00.000Z'
-          const ordinaryId = branch?.leaf ?? (listWithTargetPeer ? nested?.forest?.childId : f.hostBodyId)
+          const ordinaryId = branch?.leaf ?? (listWithPeer ? nested?.forest?.childId : f.hostBodyId)
           f.db.exec('DROP TRIGGER trg_synced_blocks_identity_update_guard; DROP TRIGGER trg_synced_identity_update_consistency')
           assert.equal(f.db.prepare('UPDATE blocks SET created_at=? WHERE id=?').run(changed, ordinaryId).changes, 1)
           assert.equal(f.db.prepare('UPDATE block_identities SET created_at=? WHERE id=?').run(changed, ordinaryId).changes, 1)
@@ -290,13 +292,14 @@ for (const state of states) {
         }), error => error === rollback)
       }
       if (nested) {
-        assert.equal(movedGroup.instances.length, listWithTargetPeer ? 2 : 1)
+        assert.equal(movedGroup.instances.length, 1 + Number(Boolean(sourcePeer)) + Number(Boolean(targetPeer)))
         assert.deepEqual(movedGroup.instances.filter(item => item.instanceId === f.instanceId)
           .map(item => [item.hostDocumentId, item.parentBlockId, item.depth, item.parentType]),
         [[f.targetId, nested.forest ? nested.sourceParentId : nested.targetParentId, nested.targetDepth + (nested.forest ? 1 : 0), 'bulleted-list']])
       }
       if (nested?.forest) {
-        assert.deepEqual(f.store.getDocumentDetail(f.hostId)?.blocks.map(block => block.id), [nested.forest.outsideId])
+        const expectedStationary = [nested.forest.outsideId, ...(sourcePeer ? [sourcePeer] : [])]
+        assert.deepEqual(f.store.getDocumentDetail(f.hostId)?.blocks.map(block => block.id), expectedStationary)
         const movedIds = new Set([nested.sourceParentId, f.instanceId, nested.forest.childId])
         assert.deepEqual(f.store.getDocumentDetail(f.targetId)?.blocks.filter(block => movedIds.has(block.id))
           .map(({ id, parentBlockId, depth }) => [id, parentBlockId, depth]), [
@@ -319,7 +322,7 @@ for (const state of states) {
           assert.throws(prove, /cannot be proved/)
           throw rollback
         }), error => error === rollback)
-        if (state === 'hot-shared-wiki' || listWithTargetPeer) assert.throws(f.db.transaction(() => {
+        if (state === 'hot-shared-wiki' || listWithPeer) assert.throws(f.db.transaction(() => {
           const changed = '2099-01-01T00:00:00.000Z'
           const stationaryId = sourcePeer ?? targetPeer
           f.db.exec('DROP TRIGGER trg_synced_blocks_identity_update_guard; DROP TRIGGER trg_synced_identity_update_consistency')

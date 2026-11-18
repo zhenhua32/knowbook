@@ -3,7 +3,7 @@ import { parseSyncedBlockPayload, SyncedValidationError } from '../../shared/syn
 import { parseDatabaseViewPayload } from '../../shared/databaseViewBlock'
 import { publicationCompare, publicationHash, publicationInvalid, publicationJson, SyncedPublicationError } from './synced-publication-model'
 import { validateSyncedProtocol5Snapshot, withProtocol5Successor, type SyncedProtocol5Snapshot, type SyncedProtocol5Record } from './synced-protocol5-model'
-import { planSyncedTombstoneExchange } from './synced-exchange-tombstone-plan'
+import { localDocumentDeletionIntent, planSyncedTombstoneExchange } from './synced-exchange-tombstone-plan'
 import { assertConflictData } from './synced-exchange-conflict-model'
 import { deriveSyncedExchangeDependencyFacts } from './synced-exchange-plan'
 import type { ExchangeComponent, ExchangeDeferredReason, ExchangeTransfer } from './synced-exchange-model'
@@ -52,13 +52,13 @@ function pathsValid(rows:Entries):boolean {
   }
   return true
 }
-function ownership(input:DeletionChoicePlanInput,choices:Entries,trial:Entries):{reason:ExchangeDeferredReason|null;transfers:ExchangeTransfer[]} {
+function ownership(input:DeletionChoicePlanInput,choices:Entries,trial:Entries,restoringDocuments:ReadonlySet<string>):{reason:ExchangeDeferredReason|null;transfers:ExchangeTransfer[]} {
   const current=index(input.localPhysical),old=physical(current),ledger=new Map(input.authority.identities.map(row=>[row.id,row])),occupied=new Set(input.authority.occupiedDocumentIds),known=new Set(input.authority.knownGroupIds??[]),transfers:ExchangeTransfer[]=[]
   const seen=new Set<string>()
   for(const {record}of trial.values())if(record.kind==='document'||record.kind==='synced-group')for(const child of record.kind==='document'?record.content.blocks:record.blocks){if(seen.has(child.id))return {reason:'owner-source',transfers};seen.add(child.id)}
   const next=physical(trial)
   for(const [key,{record}]of choices){
-    if(record.kind==='document'&&!current.has(key)&&occupied.has(record.id))return {reason:'owner-source',transfers}
+    if(record.kind==='document'&&!current.has(key)&&occupied.has(record.id)&&!restoringDocuments.has(key))return {reason:'owner-source',transfers}
     if(record.kind==='synced-group'){
       const previous=current.get(key)?.record
       if(previous?.kind==='synced-group'&&!same(tuple(previous),tuple(record))||!previous&&known.has(record.id))return {reason:'incarnation',transfers}
@@ -66,7 +66,12 @@ function ownership(input:DeletionChoicePlanInput,choices:Entries,trial:Entries):
   }
   for(const [id,row]of next)if(choices.has(row.key)){
     const before=old.get(id),identity=ledger.get(id)
-    if(!before){if(identity)return {reason:identity.created_at===null?'unknown-birth':'owner-source',transfers};continue}
+    if(!before){
+      if(identity&&!(restoringDocuments.has(row.key)&&row.kind==='document'&&identity.state==='retained'
+        &&identity.last_owner_kind==='document'&&identity.last_owner_id===row.ownerId&&identity.created_at!==null))
+        return {reason:identity.created_at===null?'unknown-birth':'owner-source',transfers}
+      continue
+    }
     if(!identity||identity.state!=='live'||identity.last_owner_kind!==before.kind||identity.last_owner_id!==before.ownerId||identity.created_at===null)return {reason:'unknown-birth',transfers}
     if(before.kind==='group'&&before.birth!==identity.created_at)return publicationInvalid('删除决定当前canonical实际birth与ledger不符。')
     const birth=row.kind==='group'?row.birth:identity.created_at
@@ -84,12 +89,20 @@ function buildSource(input:DeletionChoicePlanInput,fences:DeletionChoiceComponen
 /** New finite planner only. Old 1-6 planners are evaluated with their actual inputs and never rewritten or spoofed. */
 export function planSyncedDeletionChoices(input:DeletionChoicePlanInput):DeletionChoicePlan {
   assertConflictData(input.selections??[]);assertConflictData(input.resolution);assertConflictData(input.remoteSource)
-  const automatic=planSyncedTombstoneExchange(input),local=index(input.localKnowledge),physicalLocal=index(input.localPhysical),remote=index(input.remote),baseline=new Map(input.state.baseline.map(row=>[row.key,row])),base=new Map(input.baseRecords.map(row=>[row.key,row])),facts=new Map(input.authority.deletedFacts.map(row=>[row.key,row])),references=new Map(input.authority.deletionProofReferences.map(row=>[row.key,row])),identities=new Map(input.authority.identities.map(row=>[row.id,row]))
+  const {localDocumentDeletions=[],...automaticAuthority}=input.authority
+  // A preview can authorize only the selected conflict. Uncontested local deletions settle through automatic exchange.
+  const automatic=planSyncedTombstoneExchange({...input,authority:automaticAuthority}),local=index(input.localKnowledge),physicalLocal=index(input.localPhysical),remote=index(input.remote),baseline=new Map(input.state.baseline.map(row=>[row.key,row])),base=new Map(input.baseRecords.map(row=>[row.key,row])),facts=new Map(input.authority.deletedFacts.map(row=>[row.key,row])),references=new Map(input.authority.deletionProofReferences.map(row=>[row.key,row])),identities=new Map(input.authority.identities.map(row=>[row.id,row]))
+  const localRequests=new Map(localDocumentDeletions.map(row=>['doc:'+row.documentId,row]))
+  const outgoingConflict=(key:string):boolean=>{
+    const previous=baseline.get(key),r=remote.get(key)
+    return localRequests.has(key)&&!local.has(key)&&!facts.has(key)&&previous?.local.kind==='live'
+      &&r?.record.kind==='document'&&r.hash!==previous.remoteHash
+  }
   if(hash(input.remote.manifest)!==input.remoteSource.manifestHash||!input.remoteSource.etag||!/^[a-f0-9]{64}$/.test(input.remoteSource.closureHash))return publicationInvalid('删除决定缺原真实remote closure/ETag。')
   for(const row of input.state.baseline)if(!base.has(row.key)){const found=[local.get(row.key),remote.get(row.key)].find(value=>value?.hash===(row.commonHash??row.remoteHash));if(found)base.set(row.key,found)}
   const components=automatic.components,byKey=new Map(components.flatMap(component=>component.keys.map(key=>[key,component] as const)))
   const fences:DeletionChoiceComponentFence[]=components.map(component=>{
-    const deletionKeys=component.keys.filter(key=>{const r=remote.get(key);return r&&deleted(r.record)&&!facts.has(key)}),fixedDenials=[]
+    const deletionKeys=component.keys.filter(key=>{const r=remote.get(key);return outgoingConflict(key)||r&&deleted(r.record)&&!facts.has(key)}),fixedDenials=[]
     for(const key of component.keys){const row=baseline.get(key),ref=references.get(key),l=local.get(key),r=remote.get(key)
       if(row?.local.kind==='absent'&&ref&&l?.hash===r?.hash&&l?.hash===ref.tombstoneHash&&row.local.tombstoneHash===ref.tombstoneHash&&row.local.deletionOperationId===ref.deletionOperationId&&row.local.intentHash===ref.intentHash)fixedDenials.push({...ref,baselineHash:hash(row)})
     }
@@ -129,11 +142,30 @@ export function planSyncedDeletionChoices(input:DeletionChoicePlanInput):Deletio
   function trial(fence:DeletionChoiceComponentFence,choice:DeletionChoice):Trial {
     let reason:ExchangeDeferredReason|null=fence.keys.some(key=>input.authority.deferredKeys?.includes(key))?'dependency':null
     const choices:Entries=new Map(),intents:DeletionChoiceIntent[]=[],deletingBefore:Array<DeletionChoiceIntent['before']>=[],fixed=new Set(fence.fixedDenials.map(row=>row.key))
+    const outgoing=new Set(fence.deletionKeys.filter(outgoingConflict)),restoringDocuments=new Set<string>()
+    const keepLocal=outgoing.size===0?choice==='keep-live':choice==='keep-delete'
+    if(outgoing.size>0&&outgoing.size!==fence.deletionKeys.length)reason='dependency'
     for(const key of fence.keys){if(reason)break
       const l=local.get(key),r=remote.get(key),b=baseline.get(key),original=base.get(key)
       if(fixed.has(key)){choices.set(key,l!);continue}
       if(facts.has(key)||b?.local.kind==='absent'||l&&deleted(l.record)){reason='tombstone';break}
       if(b&&(!original||missing.has(key))){reason='baseline-missing';break}
+      if(outgoing.has(key)){
+        const request=localRequests.get(key)!
+        if(original?.record.kind!=='document'||r?.record.kind!=='document'||original.record.createdAt!==request.createdAt
+          ||r.record.createdAt!==request.createdAt){reason='incarnation';break}
+        if(choice==='keep-live'){
+          choices.set(key,r);restoringDocuments.add(key);continue
+        }
+        const planned=localDocumentDeletionIntent(key,original,request,identities)
+        if('reason'in planned){reason=planned.reason;break}
+        choices.set(key,planned.choice)
+        if(input.resolution&&selections.get(fence.componentId)?.decision.choice==='keep-delete'){
+          const decision={...input.resolution,decisionSourceHash:sourceHash,componentId:fence.componentId,choice:'keep-delete' as const}
+          intents.push({...planned.intent,base:original.record,localBeforeHash:original.hash,decision,intentHash:''})
+        }
+        continue
+      }
       if(r&&deleted(r.record)){
         const before=physicalLocal.get(key)
         if(!before||!original||deleted(original.record)||!b||b.local.kind!=='live'){reason='baseline-missing';break}
@@ -142,7 +174,7 @@ export function planSyncedDeletionChoices(input:DeletionChoicePlanInput):Deletio
           if(r.record.previousHash!==original.hash){reason='tombstone';break}
         }else if(before.record.kind!=='document'||original.record.kind!=='document'||r.record.kind!=='deleted'||before.record.id!==original.record.id||before.record.createdAt!==original.record.createdAt){reason='incarnation';break}
       }
-      let selected=choice==='keep-live'?l:r
+      let selected=keepLocal?l:r
       // A genuinely new R-only live record may be retained by either choice. Absence is never a deletion instruction.
       if(!selected&&choice==='keep-live'&&!b&&r&&!deleted(r.record))selected=r
       if(!selected){if(l||r||b)reason=choice==='keep-delete'?'tombstone':'local-removal';continue}
@@ -175,7 +207,7 @@ export function planSyncedDeletionChoices(input:DeletionChoicePlanInput):Deletio
       if(blocks.some(row=>row.type==='database-view'&&parseDatabaseViewPayload(row.content).databaseId===input.authority.catalogId)){reason='catalog';break}
     }
     let transition:ReturnType<typeof ownership>={reason:null,transfers:[]}
-    if(!reason)transition=ownership(input,choices,trialL)
+    if(!reason)transition=ownership(input,choices,trialL,restoringDocuments)
     reason??=transition.reason
     if(!reason)try{if(!pathsValid(trialL)||!pathsValid(trialR))reason='path';else{snapshot(trialL,input.state.workspaceScope);snapshot(trialR,input.state.remoteWorkspaceId)}}catch(cause){if(!(cause instanceof SyncedPublicationError)&&!(cause instanceof SyncedValidationError))throw cause;reason=fence.keys.includes('databases')?'catalog':'dependency'}
     if(!reason){const next=physical(trialL),byId=new Map(transition.transfers.map(row=>[row.id,row]))
@@ -205,7 +237,9 @@ export function planSyncedDeletionChoices(input:DeletionChoicePlanInput):Deletio
     for(const intent of chosen.intents){deletions.push(intent);intentByKey.set(intent.key,intent)}
   }
   if([...selections.keys()].some(id=>!consumed.has(id)))return publicationInvalid('删除决定来自未知原组件。')
-  const acceptedKeys=sort(accepted),writes=acceptedKeys.filter(key=>remote.get(key)?.hash!==nextRemote.get(key)?.hash),incoming=acceptedKeys.filter(key=>physicalLocal.get(key)?.hash!==(deleted(finalLocal.get(key)!.record)?undefined:finalLocal.get(key)?.hash))
+  const acceptedKeys=sort(accepted),writes=acceptedKeys.filter(key=>remote.get(key)?.hash!==nextRemote.get(key)?.hash)
+  const physicalChanges=acceptedKeys.filter(key=>physicalLocal.get(key)?.hash!==(deleted(finalLocal.get(key)!.record)?undefined:finalLocal.get(key)?.hash))
+  const incoming=sort([...physicalChanges,...deletions.filter(intent=>intent.localDeletionHash).map(intent=>intent.key)])
   const next=withProtocol5Successor(snapshot(nextRemote,input.state.remoteWorkspaceId),input.remote.manifest,input.operationId,writes.length>0)
   const known=snapshot(finalLocal,input.state.workspaceScope),physicalFinal=snapshot(new Map([...finalLocal].filter(([,row])=>!deleted(row.record))),input.state.workspaceScope)
   const dependencies=new Map(deriveSyncedExchangeDependencyFacts(known).map(row=>[row.key,row.dependencyKeys])),sides:TombstoneAcceptedSide[]=[]
@@ -219,7 +253,7 @@ export function planSyncedDeletionChoices(input:DeletionChoicePlanInput):Deletio
   const updates=new Map(input.state.baseline.map(row=>[row.key,row]))
   for(const side of sides)updates.set(side.key,{key:side.key,local:side.local,remoteHash:side.remoteHash,commonHash:side.commonHash,dependencyKeys:side.dependencyKeys,dependencySignature:side.dependencySignature,acceptedOperationId:input.operationId})
   for(const old of input.state.baseline)if(old.local.kind==='absent'&&!same(updates.get(old.key),old))return publicationInvalid('新删除决定改写了原永久absence接受来源。')
-  const history=new Set(incoming)
+  const history=new Set(physicalChanges)
   for(let changed=true;changed;){changed=false;for(const part of input.authority.historyComponents)if(part.some(key=>history.has(key)))for(const key of part)if(accepted.has(key)&&!history.has(key)){history.add(key);changed=true}}
   const result:DeletionChoicePlan={plannerVersion:'delete-choices-v1',nextRemote:next,localKnowledgeFinal:known,localPhysicalFinal:physicalFinal,writes,incoming,accepted:acceptedKeys,components:components.map(({keys,localSignature,remoteSignature,dependencySignature})=>({keys,localSignature,remoteSignature,dependencySignature})),deferred:deferred.map(({keys,localSignature,remoteSignature,dependencySignature,reason})=>({keys,localSignature,remoteSignature,dependencySignature,reason})),transfers:transfers.sort((a,b)=>publicationCompare(a.id,b.id)),historyBoundaryKeys:sort(history),acceptedSides:sides,nextBaseline:[...updates.values()].sort((a,b)=>publicationCompare(a.key,b.key)),deletions:deletions.sort((a,b)=>publicationCompare(a.key,b.key)),merges,localFingerprint:input.localFingerprint,beforeManifestHash:hash(input.remote.manifest),afterManifestHash:hash(next.manifest),planHash:'',decisionSource:source,decisionSourceHash:sourceHash,componentFences:fences,deletionPreviews:previews.sort((a,b)=>publicationCompare(a.componentId,b.componentId))}
   result.planHash=hash({...result,nextRemote:dto(next),localKnowledgeFinal:dto(known),localPhysicalFinal:dto(physicalFinal)})

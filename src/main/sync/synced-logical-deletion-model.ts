@@ -17,7 +17,7 @@ export interface SyncedLogicalDeletionProof {
   before: SyncedPortableHostRecord | SyncedGroupWire
   identities: TombstoneIdentityEffect[]
   localBefore:
-    | { kind: 'document'; documentId: string; createdAt: string; path: string; updatedAt: string; keyGuard: string }
+    | { kind: 'document'; documentId: string; createdAt: string; path: string; updatedAt: string; keyGuard: string; localDeletionHash?: string }
     | { kind: 'group'; groupId: string; creationId: string; createdAt: string; origin: SyncedGroupWire['origin'];
         revision: string; topologyRevision: string; historyCursor: string; historyPosition: number; semanticHash: string; keyGuard: string }
   localAfter:
@@ -93,13 +93,14 @@ export function validateSyncedLogicalDeletionProof(value: unknown): SyncedLogica
   }
   let localBefore: SyncedLogicalDeletionProof['localBefore'], localAfter: SyncedLogicalDeletionProof['localAfter']
   if (before.kind === 'document') {
-    shape(value.localBefore, ['kind', 'documentId', 'createdAt', 'path', 'updatedAt', 'keyGuard'])
+    assertSyncedShape(value.localBefore, ['kind', 'documentId', 'createdAt', 'path', 'updatedAt', 'keyGuard'], ['localDeletionHash'])
     shape(value.localAfter, ['kind', 'documentId'])
     if (value.localBefore.kind !== 'document' || value.localAfter.kind !== 'document' || value.localBefore.documentId !== before.id
       || value.localAfter.documentId !== before.id || value.localBefore.createdAt !== before.createdAt || typeof value.localBefore.path !== 'string')
       return publicationInvalid('删除证明doc原birth/path或最终身份不符。')
     localBefore = { kind: 'document', documentId: before.id, createdAt: date(value.localBefore.createdAt), path: value.localBefore.path,
-      updatedAt: date(value.localBefore.updatedAt), keyGuard: hash(value.localBefore.keyGuard) }
+      updatedAt: date(value.localBefore.updatedAt), keyGuard: hash(value.localBefore.keyGuard),
+      ...('localDeletionHash' in value.localBefore ? { localDeletionHash: hash(value.localBefore.localDeletionHash) } : {}) }
     localAfter = { kind: 'document', documentId: before.id }
   } else {
     shape(value.localBefore, ['kind', 'groupId', 'creationId', 'createdAt', 'origin', 'revision', 'topologyRevision', 'historyCursor', 'historyPosition', 'semanticHash', 'keyGuard'])
@@ -124,7 +125,8 @@ export function validateSyncedLogicalDeletionProof(value: unknown): SyncedLogica
   const application = { operationId: uuid(value.application.operationId), requestHash: hash(value.application.requestHash), acceptedAt: date(value.application.acceptedAt) }
   const anchorId = logicalDeletionAnchorId(before)
   if (value.persistence.kind !== 'logical-deletion-denial' || value.persistence.anchorId !== anchorId) return publicationInvalid('删除证明anchor不是准确稳定保留域。')
-  const intent = { kind: before.kind === 'document' ? 'document' as const : 'group' as const, key, baseLiveHash, tombstoneHash, before, identities }
+  const intent = { kind: before.kind === 'document' ? 'document' as const : 'group' as const, key, baseLiveHash, tombstoneHash, before, identities,
+    ...(localBefore.kind === 'document' && localBefore.localDeletionHash ? { localDeletionHash: localBefore.localDeletionHash } : {}) }
   if (logicalDeletionIntentHash(intent, { operationId: application.operationId, ...scopeAtApply, targetFingerprint: source.targetFingerprint, remoteWorkspaceId: source.workspaceId }) !== intentHash)
     return publicationInvalid('删除证明intentHash未认证原完整plan intent。')
   return { kind: 'synced-logical-deletion-proof', version: 1, key, intentHash, baseLiveHash, tombstoneHash, deletion, before, identities,

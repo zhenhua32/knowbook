@@ -4,6 +4,17 @@ import type { WebDavSyncConfig } from '../../shared/webdav-sync'
 
 export interface WebDavCapabilities { createMode: 'conditional' | 'move' }
 export interface WebDavRequestActivity { waitingUntil: string | null; completed: boolean }
+type TransferStage = 'uploading' | 'downloading' | 'publishing'
+type TransferActivity = { stage: TransferStage; completed: number; total: number; name: string | null }
+type ProgressObserver = {
+  request: (activity: WebDavRequestActivity) => void; transfer: (activity: TransferActivity) => void
+}
+const progressObservers = new WeakMap<AbortSignal, ProgressObserver & { lastRequestAt: number }>()
+
+export function observeWebDavProgress(signal: AbortSignal, observer: ProgressObserver): () => void {
+  progressObservers.set(signal, { ...observer, lastRequestAt: 0 })
+  return () => { progressObservers.delete(signal) }
+}
 
 function usableEtag(etag: string | null): etag is string {
   if (!etag || /^W\//i.test(etag)) return false
@@ -55,23 +66,30 @@ export class WebDavClient {
     this.authorization = `Basic ${Buffer.from(`${config.username}:${password}`).toString('base64')}`
   }
 
+  transferProgress(stage: TransferStage, completed: number, total: number, name: string | null = null): void {
+    if (this.signal) progressObservers.get(this.signal)?.transfer({ stage, completed, total, name })
+  }
+
   private async request(url: string, method: string, body?: Uint8Array, headers?: Record<string, string>): Promise<Response> {
+    const observer = this.signal ? progressObservers.get(this.signal) : undefined
+    const onActivity = this.onActivity ?? observer?.request
     try {
       // Nutstore's free DAV tier allows 600 requests per 30 minutes.
       if (new URL(this.root).hostname === 'dav.jianguoyun.com') {
-        const remaining = 3100 - (Date.now() - this.lastRequestAt)
+        const remaining = 3100 - (Date.now() - (observer?.lastRequestAt ?? this.lastRequestAt))
         if (remaining > 0) {
-          this.onActivity?.({ waitingUntil: new Date(Date.now() + remaining).toISOString(), completed: false })
+          onActivity?.({ waitingUntil: new Date(Date.now() + remaining).toISOString(), completed: false })
           try { await delay(remaining, undefined, { signal: this.signal }) }
-          finally { this.onActivity?.({ waitingUntil: null, completed: false }) }
+          finally { onActivity?.({ waitingUntil: null, completed: false }) }
         }
       }
       this.lastRequestAt = Date.now()
+      if (observer) observer.lastRequestAt = this.lastRequestAt
       const response = await fetch(url, {
         method, redirect: 'manual', signal: AbortSignal.any([AbortSignal.timeout(45_000), ...(this.signal ? [this.signal] : [])]),
         headers: { Authorization: this.authorization, ...headers }, body: body ? new Uint8Array(body) : undefined
       })
-      this.onActivity?.({ waitingUntil: null, completed: true })
+      onActivity?.({ waitingUntil: null, completed: true })
       const tag = headers?.['If-Match']
       if (response.status === 412 && tag && usableEtag(tag) && !tag.startsWith('"')) {
         await this.discard(response)

@@ -140,7 +140,7 @@ export async function writeRestoreJson(path:string,value:unknown,root:string,exc
   try{await assertRestorePath(path,root);beforePublish?.();await rename(temp,path);await syncRestoreDirectory(dirname(path))}
   catch(error){await rm(temp,{force:true}).catch(()=>undefined);throw error}
 }
-export async function readRestoreText(path:string):Promise<string>{
+export async function readRestoreText(path:string,expectedSha256?:string):Promise<string>{
   await assertRestorePath(path)
   const info=await lstat(path)
   if(!info.isFile()||info.size>1024*1024)return restoreFail('维护JSON原件过大或不是文件。')
@@ -150,7 +150,9 @@ export async function readRestoreText(path:string):Promise<string>{
     while(offset<buffer.length){const got=await fd.read(buffer,offset,buffer.length-offset,offset);if(!got.bytesRead)break;offset+=got.bytesRead}
     const after=await fd.stat(),now=await lstat(path)
     if(offset!==before.size||!sameFd(before,after)||!samePath(now,after)||now.isSymbolicLink())return restoreFail('维护JSON读取变化。')
-    return buffer.subarray(0,offset).toString('utf8')
+    const bytes=buffer.subarray(0,offset)
+    if(expectedSha256!==undefined&&createHash('sha256').update(bytes).digest('hex')!==expectedSha256)return restoreFail('维护JSON原件摘要变化。')
+    return bytes.toString('utf8')
   }finally{await fd.close()}
 }
 export async function readRestoreJson(path:string):Promise<unknown>{return parseRestoreJson(await readRestoreText(path))}

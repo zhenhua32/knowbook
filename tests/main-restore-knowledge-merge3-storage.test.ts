@@ -2,13 +2,27 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import Database from 'better-sqlite3'
 import { capsuleBytesHash, capsuleJson } from '../src/main/database/restore-knowledge-capsule-model'
+import { capsuleJsonStringBytes, hashBoundedCapsuleJson } from '../src/main/database/restore-knowledge-capsule-json-hash'
 import { CAPSULE2_RAW_MAX_ROWS, CAPSULE2_RAW_MAX_VALUE_BYTES, capsule2ApplicationColumns,
   type Capsule2Encoding, type Capsule2RawSqlTable } from '../src/main/database/restore-knowledge-capsule2-raw-model'
 import { graph3Encode, graph3Text } from '../src/main/database/restore-knowledge-graph3-data'
-import { MERGE3_CONTENT_TABLES, assertMerge3StorageTablesBudget, finishMerge3Table, merge3RowValues, prepareMerge3Table,
+import { MERGE3_CONTENT_TABLES, assertMerge3JsonBudget, assertMerge3StorageTablesBudget, finishMerge3Table, merge3RowValues, prepareMerge3Table,
   type FinishedMerge3Table, type Merge3ContentTable, type Merge3Material, type Merge3RowDisposition, type Merge3SelectedRow,
   type PreparedMerge3Table } from '../src/main/database/restore-knowledge-merge3-storage'
 import { rawRestoreSqlCell, type RawRestoreSqlCell } from '../src/main/database/restore-knowledge-sql-cell'
+
+test('bounded candidate encoding counts escaped text and complete surrogate pairs at the chunk boundary', () => {
+  const text = 'a'.repeat(Math.floor((64 * 1024) / 6) - 1) + '😀\ud800\n"\\' + '文'.repeat(20_000)
+  const stringBytes = Buffer.byteLength(JSON.stringify(text)), value = { rows: [{ text }, [text]] }
+  const canonical = capsuleJson(value), bytes = Buffer.byteLength(canonical)
+  assert.equal(capsuleJsonStringBytes(text, stringBytes), stringBytes)
+  assert.ok(capsuleJsonStringBytes(text, stringBytes - 1) > stringBytes - 1)
+  assert.equal(hashBoundedCapsuleJson(value, bytes), capsuleBytesHash(canonical))
+  assert.equal(hashBoundedCapsuleJson(value, bytes - 1), null)
+  assert.doesNotThrow(() => assertMerge3JsonBudget(value))
+  const accessor = Object.defineProperty({}, 'text', { enumerable: true, get() { throw new Error('unexpected invocation') } })
+  assert.throws(() => assertMerge3JsonBudget({ rows: [accessor] }), /访问器/)
+})
 
 const id = (n: number) => '00000000-0000-4000-8000-' + n.toString(16).padStart(12, '0')
 const digest = (n: number) => n.toString(16).padStart(64, '0')

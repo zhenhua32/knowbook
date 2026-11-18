@@ -5,7 +5,7 @@ import { exchangeHostCutKey, exchangeJobHeadKey, exchangeJobKey, exchangeJobPhas
   type AnyExchangeState, type ExchangeJob, type ExchangeReceipt } from '../sync/synced-exchange-model'
 import { conflictPreviewKey, validateConflictPreviewIndex } from '../sync/synced-exchange-conflict-model'
 import { bothPreviewKey, validateBothPreviewIndex } from '../sync/synced-exchange-both-model'
-import { initialIncomingBaselineKey, initialIncomingRequestHash, validateInitialIncomingBaseline,
+import { initialIncomingBaselineKey, initialIncomingRequestHash, initialIncomingTombstoneFacts, validateInitialIncomingBaseline,
   validateInitialIncomingReceipt } from '../sync/synced-initial-incoming-model'
 import { publicationHash, publicationJson } from '../sync/synced-publication-model'
 import { readSyncedExchangeDenialEvidenceById } from './synced-exchange-receipt'
@@ -14,6 +14,7 @@ import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-re
 import { knowledgePreviewKey, validateKnowledgePreviewIndex } from './synced-exchange-knowledge-read'
 import { exchangeRejoinBaseline, exchangeRejoinKey, exchangeRejoinPrefix, readExchangeRejoinSupport, validateExchangeRejoin } from './synced-exchange-rejoin-model'
 import { deletionChoicePreviewKey, validateDeletionChoicePreviewIndex } from './synced-exchange-deletion-choice-read'
+import { decodeOrdinaryPublicationAttempt, ordinaryPublicationAttemptKey, ordinaryPublicationAttemptPrefix } from './synced-ordinary-publication-attempt'
 import { assertHistoricalEvidenceOwned, historicalEvidenceInvalid, historicalFact, historicalHash, historicalMetadataLocator,
   historicalOperationLocator, historicalRowLocator, historicalTime, readHistoricalExactRows, readHistoricalMetadata, readHistoricalOperations, readHistoricalRowLocator,
   type HistoricalMetadataRow } from './synced-history-evidence-support'
@@ -43,6 +44,8 @@ export function assertRawSyncedExchangeHistoricalMetadataOwned(db: Database.Data
   }
   const facts: RawHistoricalEvidenceFact[] = [], recognized = new Set<string>()
   const proofs = new Map([...assertSyncedLogicalDeletionRecords(db).values()].map(proof => [proof.persistence.anchorId, proof]))
+  const inheritedDeletions = new Map<string, { fact: ReturnType<typeof initialIncomingTombstoneFacts>[number];
+    locator: RawHistoricalEvidenceLocator }>()
   const receipts = new Map<string, ExchangeReceipt>()
   const receipt = (id: string): ExchangeReceipt => {
     const old = receipts.get(id); if (old) return old
@@ -72,7 +75,14 @@ export function assertRawSyncedExchangeHistoricalMetadataOwned(db: Database.Data
         || operation.created_at !== original.result.acceptedAt || original.request.databasePath !== value.databasePath
         || original.request.targetFingerprint !== value.targetFingerprint || !same(original.result, value.result) || !same(original.provenance, value.provenance))
         return historicalEvidenceInvalid('initial baseline原key/hash/时点/receipt不闭合。')
+      for (const fact of initialIncomingTombstoneFacts(value))
+        inheritedDeletions.set(fact.anchorId, { fact, locator: historicalOperationLocator(operation) })
       facts.push(historicalFact('initial-baseline', 1, historicalMetadataLocator(row), [historicalOperationLocator(operation)]))
+    } else if (row.key.startsWith(ordinaryPublicationAttemptPrefix)) {
+      const attempt = decodeOrdinaryPublicationAttempt(row)
+      if (db.prepare('SELECT 1 FROM synced_exposure_attempts WHERE id=?').get(attempt.id))
+        return historicalEvidenceInvalid('同一次普通首发存在组曝光记录。')
+      facts.push(historicalFact('ordinary-publication', 1, historicalMetadataLocator(row), [], 'index-attempt-only'))
     } else if (row.key.startsWith(prefix + 'exchange.v1.')) {
       const value = validateAnyExchangeState(raw)
       if (row.key !== exchangeStateKey(value.targetFingerprint) || row.updated_at !== value.lastSyncAt || !isSyncedUuid(value.currentOperationId))
@@ -144,6 +154,13 @@ export function assertRawSyncedExchangeHistoricalMetadataOwned(db: Database.Data
     const references = item.job.version === 5 || item.job.version === 6 ? item.job.knowledgeSource.deleted
       : item.job.version === 7 ? item.job.decisionSource.authority.deletionProofReferences : []
     for (const reference of references) {
+      const inherited = inheritedDeletions.get(reference.anchorId)
+      if (inherited) {
+        const { record: _record, ...expected } = inherited.fact
+        if (!same(reference, expected)) return historicalEvidenceInvalid('原job继承的删除记录不属于接收回执。')
+        supports.push(inherited.locator)
+        continue
+      }
       const proof = proofs.get(reference.anchorId), source = operations.get(reference.anchorId)
       if (!proof || !source || proof.key !== reference.key || proof.tombstoneHash !== reference.tombstoneHash
         || proof.application.operationId !== reference.deletionOperationId || proof.intentHash !== reference.intentHash
@@ -176,9 +193,15 @@ export function assertRawSyncedExchangeHistoricalMetadataOwned(db: Database.Data
     if (inherited.has(key)) return historicalEvidenceInvalid('同目标与恢复世代存在重复续接。')
     inherited.set(key, { locator, old: support.old })
     const coverage = support.requirement.supports
-    const publication = support.publication ? [readHistoricalRowLocator(db, 'synced_exposure_attempts', [support.publication.exposure.id]),
-      ...support.publication.members.map(member => readHistoricalRowLocator(db, 'synced_group_exposure_members', [member.attempt_id, member.group_id]))] : []
-    facts.push(historicalFact('exchange-rejoin', value.version, locator, [...support.receipts.map(item => operationSupport(item.operationId)), ...publication,
+    const publication = support.publication?.ordinarySetting ? [historicalMetadataLocator(support.publication.ordinarySetting)]
+      : support.publication ? [readHistoricalRowLocator(db, 'synced_exposure_attempts', [support.publication.exposure.id]),
+        ...support.publication.members.map(member => readHistoricalRowLocator(db, 'synced_group_exposure_members', [member.attempt_id, member.group_id]))] : []
+    const ancestors = support.ancestors.map(({ value: prior }) => {
+      const original = settings.get(exchangeRejoinKey(prior.targetFingerprint, prior.restoreOperationId))
+      if (!original) return historicalEvidenceInvalid('原祖先续接 metadata 缺失。')
+      return historicalMetadataLocator(original)
+    })
+    facts.push(historicalFact('exchange-rejoin', value.version, locator, [...support.receipts.map(item => operationSupport(item.operationId)), ...publication, ...ancestors,
       coverage.coverage, coverage.link, coverage.receipt, coverage.anchor, ...(coverage.boundary ? [coverage.boundary] : []),
       ...(coverage.epoch ? [coverage.epoch] : [])]))
   }
@@ -219,11 +242,18 @@ export function assertRawSyncedExchangeHistoricalMetadataOwned(db: Database.Data
         || seed.provenance.portableDigest !== value.source.portableDigest) return historicalEvidenceInvalid('state原initial seed损坏。')
       supports.push(historicalOperationLocator(source))
     } else if (value.source.kind === 'confirmed-publication') {
-      const source = readHistoricalExactRows<Record<string, unknown>>(db, 'synced_exposure_attempts', ['id', 'request_hash', 'channel',
-        'target_fingerprint', 'publication_hash', 'state', 'created_at', 'confirmed_at'], 'id=?', [value.source.operationId!])[0]
-      if (!source || source.channel !== 'webdav-manifest5' || source.state !== 'confirmed' || !historicalTime(source.confirmed_at))
-        return historicalEvidenceInvalid('state原confirmed seed缺durable attempt。')
-      supports.push(historicalRowLocator('synced_exposure_attempts', [value.source.operationId!], source))
+      const id = value.source.operationId!, ordinary = settings.get(ordinaryPublicationAttemptKey(id))
+      if (ordinary) {
+        if (decodeOrdinaryPublicationAttempt(ordinary).state !== 'confirmed')
+          return historicalEvidenceInvalid('state原confirmed seed缺普通首发确认。')
+        supports.push(historicalMetadataLocator(ordinary))
+      } else {
+        const source = readHistoricalExactRows<Record<string, unknown>>(db, 'synced_exposure_attempts', ['id', 'request_hash', 'channel',
+          'target_fingerprint', 'publication_hash', 'state', 'created_at', 'confirmed_at'], 'id=?', [id])[0]
+        if (!source || source.channel !== 'webdav-manifest5' || source.state !== 'confirmed' || !historicalTime(source.confirmed_at))
+          return historicalEvidenceInvalid('state原confirmed seed缺durable attempt。')
+        supports.push(historicalRowLocator('synced_exposure_attempts', [id], source))
+      }
     }
     facts.push(historicalFact('exchange-state', value.version, historicalMetadataLocator(row), supports, 'index-attempt-only'))
   }

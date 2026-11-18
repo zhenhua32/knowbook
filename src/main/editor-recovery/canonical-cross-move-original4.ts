@@ -1,8 +1,7 @@
 import type Database from 'better-sqlite3'
-import { isListBlockType } from '../../shared/blockTypes'
 import type { EditorRecoveryRecord, EditorRecoveryWorking } from '../../shared/editor-recovery-drafts'
 import type { SyncedGroupWire, SyncedInstancePosition } from '../../shared/synced-blocks'
-import { readProtectedCrossMoveSubtrees } from '../../shared/synced-cross-move-recovery-forest'
+import { readProtectedCrossMoveReference, readProtectedCrossMoveSubtrees } from '../../shared/synced-cross-move-recovery-forest'
 import { assertSyncedShape, isSyncedUuid, parseSyncedBlockPayload, syncedPlainRecord, validateSyncedHostForest } from '../../shared/syncedBlockValidation'
 import { BlockIdentityRepository } from '../database/block-identities'
 import { getSyncedGroupSnapshots, getSyncedHostHistory } from '../database/synced-blocks-read'
@@ -36,19 +35,10 @@ export function matchesCanonicalV4CrossMoveForest(original: ReturnType<typeof de
   const { selection } = original.input.action, { selectedRootIds } = selection
   if (original.crossMove.outsideIncoming.length) return false
   const source = original.persisted.find(page => page.documentId === selection.documentId)
-  if (selectedRootIds.length > 1) {
-    const selected = source && readProtectedCrossMoveSubtrees(source.content.blocks, selectedRootIds)
-    return selected?.reference.id === instanceId && hostEqual(selected.movedIds, original.crossMove.transfers.map(transfer => transfer.blockId))
-  }
-  const moved = new Set(original.crossMove.transfers.map(transfer => transfer.blockId))
-  if (selectedRootIds.length !== 1) return false
-  const [rootId] = selectedRootIds
-  const root = source?.content.blocks.find(block => block.id === rootId)
-  if (!source || !root || !moved.has(rootId)) return false
-  if (root.type === 'synced-block') return instanceId === rootId && moved.size === 1
-  if (!isListBlockType(root.type)) return false
-  const [reference, other] = source.content.blocks.filter(block => block.type === 'synced-block' && moved.has(block.id))
-  return reference?.id === instanceId && !other
+  if (!source || selectedRootIds.length === 1 && readProtectedCrossMoveReference(source.content.blocks, selectedRootIds)?.id !== instanceId) return false
+  const selected = readProtectedCrossMoveSubtrees(source.content.blocks, selectedRootIds)
+  return selected?.reference.id === instanceId
+    && hostEqual(selected.movedIds, original.crossMove.transfers.map(transfer => transfer.blockId))
 }
 
 /** Data only for a future recovery adapter. The caller must still own the old
@@ -306,13 +296,12 @@ function readCanonicalCrossMoveOriginalOwned(db: Database.Database, input: unkno
     if (!single) return fail()
     const { selectedRootIds } = single.input.action.selection
     const direct = selectedRootIds.length === 1 && selectedRootIds[0] === instanceId && single.crossMove.transfers.length === 1
-    if (!direct && (linked || selectedRootIds.length !== 1 || selectedRootIds[0] === instanceId || newGroup.instances.length !== 2
-      || !matchesCanonicalV4CrossMoveForest(single, instanceId)
+    if (!direct && (linked || !matchesCanonicalV4CrossMoveForest(single, instanceId)
       || single.crossMove.transfers.some(move => currentHosts.get(move.to)?.births.get(move.blockId) !== move.createdAt))) return fail()
     retained = readCanonicalStationaryInstances(single, groupId, instanceId)
     const after = new Map(newGroup.instances.map(instance => [instance.instanceId, instance]))
     if (!retained || retained.length !== after.size - 1 || !retained.every(({ position, createdAt }) =>
-      (position.hostDocumentId === transfer.to || direct && position.hostDocumentId === transfer.from)
+      (position.hostDocumentId === transfer.to || position.hostDocumentId === transfer.from)
       && hostEqual(position, after.get(position.instanceId)) && currentHosts.get(position.hostDocumentId)?.births.get(position.instanceId) === createdAt)) return fail()
     beforeInstances.push(...retained.map(item => item.position))
     // Match the original SQLite BINARY order of the complete group snapshot.

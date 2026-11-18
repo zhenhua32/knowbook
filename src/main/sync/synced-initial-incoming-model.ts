@@ -6,6 +6,7 @@ import { parseStrictJson } from '../../shared/strictJson'
 import { SYNC_TABLE_COLUMNS, SYNC_TABLES, type SyncDatabases } from './model'
 import { publicationCompare, publicationHash, publicationInvalid, publicationJson,
   validateInitialManifest5, type InitialPublicationRecord, type SyncedInitialManifest5 } from './synced-publication-model'
+import { validateSyncedProtocol5Record, type SyncedProtocol5Record } from './synced-protocol5-model'
 
 export interface SyncedInitialIncomingInput { operationId: string; userDataRoot: string; target: WebDavSyncConfig }
 export type SyncedInitialIncomingConflictReason = 'non-initial-target' | 'catalog' | 'occupied-identity' | 'unknown-birth'
@@ -22,9 +23,14 @@ export type SyncedInitialIncomingResult = SyncedInitialIncomingAccepted | { stat
   | { status: 'conflict'; components: SyncedInitialIncomingComponent[] } | { status: 'stale'; side: 'local' | 'remote' }
 export interface InitialIncomingRequest { method: 'receiveInitialSyncedSnapshot'; operationId: string; databasePath: string; targetFingerprint: string }
 export interface InitialIncomingReservationSource { groupId: string; key: SyncedBindingKey; targetId: string }
+export interface InitialIncomingTombstone {
+  key: string
+  record: Extract<SyncedProtocol5Record, { kind: 'deleted' | 'synced-group-deleted' }>
+}
 export interface InitialIncomingProvenance {
   manifestEtag: string; portableDigest: string; reservationSourceKey: string; reservedIds: string[]
   reservationSources: InitialIncomingReservationSource[]; reservationDigest: string
+  tombstones?: InitialIncomingTombstone[]
 }
 export interface InitialIncomingReceipt {
   kind: 'synced-initial-incoming-operation'; version: 1; request: InitialIncomingRequest
@@ -50,7 +56,8 @@ export function initialIncomingTargetFingerprint(target: WebDavSyncConfig): stri
     url: target.url, username: target.username, directory: target.directory }))
 }
 export const initialIncomingRequestHash = (value: InitialIncomingRequest): string => publicationHash(publicationJson(value))
-export const initialIncomingBaselineKey = (targetFingerprint: string): string => 'sync.webdav.protocol5.initial.v1.' + targetFingerprint
+export const initialIncomingBaselinePrefix = 'sync.webdav.protocol5.initial.v1.'
+export const initialIncomingBaselineKey = (targetFingerprint: string): string => initialIncomingBaselinePrefix + targetFingerprint
 export const initialIncomingReservationKey = (targetFingerprint: string, remoteWorkspaceId: string): string =>
   'sync5:initial-missing-block:v1:' + targetFingerprint + ':' + remoteWorkspaceId
 export function initialIncomingPortableDigest(entries: Record<string, string>, syncedInstances: SyncedInitialManifest5['syncedInstances']): string {
@@ -76,7 +83,7 @@ export function validateInitialIncomingAccepted(value: unknown): SyncedInitialIn
       physicalBlocks: integer(value.counts.physicalBlocks), reservations: integer(value.counts.reservations), assets: integer(value.counts.assets) } }
 }
 function provenance(value: unknown, req: InitialIncomingRequest, result: SyncedInitialIncomingAccepted): InitialIncomingProvenance {
-  assertSyncedShape(value, ['manifestEtag', 'portableDigest', 'reservationSourceKey', 'reservedIds', 'reservationSources', 'reservationDigest'])
+  assertSyncedShape(value, ['manifestEtag', 'portableDigest', 'reservationSourceKey', 'reservedIds', 'reservationSources', 'reservationDigest'], ['tombstones'])
   const reservedIds = sortedUnique(list(value.reservedIds, opaque))
   const sources = list<InitialIncomingReservationSource>(value.reservationSources, raw => {
     assertSyncedShape(raw, ['groupId', 'key', 'targetId'])
@@ -93,8 +100,15 @@ function provenance(value: unknown, req: InitialIncomingRequest, result: SyncedI
   if (value.reservationSourceKey !== sourceKey || initialIncomingReservationDigest(sourceKey, reservedIds, sources) !== value.reservationDigest) return publicationInvalid('incoming reservation 来源摘要损坏。')
   const manifestEtag = str(value.manifestEtag)
   if (!manifestEtag || /^W\//i.test(manifestEtag) || !(/^"[\x21\x23-\x7e\x80-\xff]*"$/.test(manifestEtag) || /^[A-Za-z0-9._:+/=-]{1,512}$/.test(manifestEtag))) return publicationInvalid('incoming 原版本证据无效。')
+  const tombstones = value.tombstones === undefined ? [] : list<InitialIncomingTombstone>(value.tombstones, item => {
+    assertSyncedShape(item, ['key', 'record'])
+    const key = str(item.key), record = validateSyncedProtocol5Record(item.record, key)
+    if (record.kind !== 'deleted' && record.kind !== 'synced-group-deleted') return publicationInvalid('接收的删除记录含存活正文。')
+    return { key, record }
+  })
+  sortedUnique(tombstones.map(item => item.key))
   return { manifestEtag, portableDigest: digest(value.portableDigest), reservationSourceKey: sourceKey, reservedIds,
-    reservationSources: sources, reservationDigest: digest(value.reservationDigest) }
+    reservationSources: sources, reservationDigest: digest(value.reservationDigest), ...(tombstones.length ? { tombstones } : {}) }
 }
 export function validateInitialIncomingReceipt(value: unknown): InitialIncomingReceipt {
   assertSyncedShape(value, ['kind', 'version', 'request', 'result', 'provenance'])
@@ -110,12 +124,28 @@ export function validateInitialIncomingBaseline(value: unknown): InitialIncoming
   const manifest = validateInitialManifest5(value.manifest), received = time(value.lastReceivedAt)
   if (result.replayed || manifest.workspaceId !== result.remoteWorkspaceId || publicationHash(publicationJson(manifest)) !== result.manifestHash
     || received !== result.acceptedAt) return publicationInvalid('incoming baseline 原件/接受时点不一致。')
-  const keys = Object.keys(manifest.entries)
+  const source = provenance(value.provenance, { method: 'receiveInitialSyncedSnapshot', operationId: result.operationId, databasePath, targetFingerprint }, result)
+  const deleted = new Set((source.tombstones ?? []).map(item => {
+    if (manifest.entries[item.key] !== publicationHash(publicationJson(item.record))) return publicationInvalid('接收基线的删除记录与远端清单不一致。')
+    return item.key
+  }))
+  const keys = Object.keys(manifest.entries).filter(key => !deleted.has(key))
   if (keys.filter(key => key.startsWith('doc:')).length !== result.counts.documents || keys.filter(key => key.startsWith('group:')).length !== result.counts.groups
     || manifest.syncedInstances.length !== result.counts.instances) return publicationInvalid('incoming baseline 记录/实例计数不闭合。')
-  const source = provenance(value.provenance, { method: 'receiveInitialSyncedSnapshot', operationId: result.operationId, databasePath, targetFingerprint }, result)
   if (initialIncomingPortableDigest(manifest.entries, manifest.syncedInstances) !== source.portableDigest) return publicationInvalid('incoming baseline portable 摘要不一致。')
   return { kind: value.kind, version: 1, databasePath, targetFingerprint, manifest, result, provenance: source, lastReceivedAt: received }
+}
+
+export function initialIncomingTombstoneFacts(source: Pick<InitialIncomingBaseline, 'result' | 'provenance'> | null) {
+  if (!source?.provenance.tombstones) return []
+  const { operationId, manifestHash } = source.result
+  const proofHash = publicationHash(publicationJson({ result: source.result, provenance: source.provenance }))
+  return source.provenance.tombstones.map(({ key, record }) => {
+    const tombstoneHash = publicationHash(publicationJson(record))
+    const intentHash = publicationHash(publicationJson({ domain: 'synced-initial-incoming-tombstone.v1', operationId, manifestHash, key, tombstoneHash }))
+    return { key, record, tombstoneHash, deletionOperationId: operationId, intentHash, proofHash,
+      anchorId: 'incoming-tombstone:' + operationId + ':' + intentHash }
+  })
 }
 /** Stored private metadata is not a protocol record; do not invent a snapshot-total 16MiB limit. */
 export function parseInitialIncomingStored(source: string): unknown {

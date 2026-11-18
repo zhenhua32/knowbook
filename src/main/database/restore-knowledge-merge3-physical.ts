@@ -22,7 +22,7 @@ export interface Merge3PhysicalConflict {
   readonly detail: unknown
 }
 type Values = Record<string, unknown>
-type Row = { row: Merge3InputRow; value: Values; originalIndex: number }
+type Row = { row: Merge3InputRow; table: PreparedMerge3Table; value: Values; originalIndex: number }
 type PhysicalGroup = Graph3Inputs['inputs']['source']['source']['physical']['groups'][number]
 type GroupState = { side: 'source' | 'current'; sourceGroupId: string; targetGroupId: string;
   absence: PhysicalGroup['absence']; active: boolean; originalLifecycle: PhysicalGroup['lifecycle']; sourceRef: Merge3OriginalRowRef }
@@ -32,6 +32,17 @@ const nullableText = (value: unknown): string | null => value === null ? null : 
 const integer = (value: unknown): number => typeof value === 'bigint' && Number.isSafeInteger(Number(value))
   ? Number(value) : graph3Conflict('merge-physical-integer', typeof value)
 const decision = (kind: string, owner: unknown) => kind + ':' + capsuleBytesHash(capsuleJson(owner))
+const physicalColumns: Record<Merge3PhysicalTable, readonly string[]> = {
+  documents: ['id', 'parent_id'], synced_groups: ['id', 'creation_id'],
+  blocks: ['id', 'document_id', 'parent_block_id', 'type', 'depth', 'sort_order'],
+  synced_group_blocks: ['id', 'group_id', 'parent_block_id', 'type', 'depth', 'sort_order'],
+  synced_instances: ['instance_id', 'host_document_id', 'group_id', 'parent_block_id', 'depth', 'binding_version']
+}
+function selectedValue(entry: Row, column: string) {
+  const index = entry.table.columns.indexOf(column)
+  if (index < 0) return graph3Conflict('merge-physical-missing-column', column)
+  return graph3Value(entry.row.cells[index], entry.table.targetEncoding)
+}
 
 function readPhysicalRows(data: Graph3Inputs, prepared: readonly PreparedMerge3Table[]) {
   const source = data.inputs.source.source, current = data.inputs.current.source
@@ -77,7 +88,7 @@ function readPhysicalRows(data: Graph3Inputs, prepared: readonly PreparedMerge3T
               || row.ref.side !== side || row.ref.table !== name || row.ref.payload !== payloads[0].key
               || row.ref.materialHash !== data.inputs[side].materialHash || !same(row.ref.witness, payloads[0].witness))
               return graph3Conflict('merge-physical-original-row', { name, side, sourceRowId: row.ref.sourceRowId })
-            values[side].push({ row, value: merge3RowValues(table, row), originalIndex })
+            values[side].push({ row, table, value: merge3RowValues(table, row, physicalColumns[name]), originalIndex })
           }
           // Same count plus consuming each distinct row proves the index is
           // empty, so the next role/table cannot borrow an earlier ordinal.
@@ -135,8 +146,9 @@ export function selectMerge3PhysicalRows3(data: Graph3Inputs, prepared: readonly
       claimed.add(targetId)
       if (name === 'documents') documentTargets.set(id, targetId)
       else {
-        if (mapped.incarnation !== knowledgeGroups.get(id)?.comparisonKey || entry.value.creation_id !== mapped.targetCreationId || entry.value.origin_json !== original('origin_json')
-          || entry.value.bindings_json !== original('bindings_json')) return graph3Conflict('merge-physical-group-provenance', id)
+        if (mapped.incarnation !== knowledgeGroups.get(id)?.comparisonKey || entry.value.creation_id !== mapped.targetCreationId
+          || selectedValue(entry, 'origin_json') !== original('origin_json') || selectedValue(entry, 'bindings_json') !== original('bindings_json'))
+          return graph3Conflict('merge-physical-group-provenance', id)
         groupTargets.set(id, targetId)
       }
     }
@@ -163,7 +175,7 @@ export function selectMerge3PhysicalRows3(data: Graph3Inputs, prepared: readonly
       || entry.value.depth !== original('depth') || entry.value.sort_order !== original('sort_order'))
       return graph3Conflict('merge-physical-block-owner-map', original('id'))
     if (entry.value.type === 'synced-block') {
-      const before = parseSyncedBlockPayload(text(original('content'))), after = parseSyncedBlockPayload(text(entry.value.content))
+      const before = parseSyncedBlockPayload(text(original('content'))), after = parseSyncedBlockPayload(text(selectedValue(entry, 'content')))
       if (after.groupId !== requiredTarget(groupTargets, before.groupId, 'payload-group')) return graph3Conflict('merge-physical-payload-map', original('id'))
     }
   }
@@ -254,7 +266,7 @@ function validatePhysicalSelection(selected: ReadonlyMap<Merge3PhysicalTable, Ro
     }
     for (const item of chain) complete.add(item)
   }
-  const forests = new Map<string, { rows: Row[]; blocks: SyncedStableBlockDraft[] }>()
+  const forests = new Map<string, Row[]>()
   for (const name of ['blocks', 'synced_group_blocks'] as const) {
     const byOwner = new Map<string, Row[]>()
     for (const entry of selected.get(name)!) {
@@ -269,22 +281,23 @@ function validatePhysicalSelection(selected: ReadonlyMap<Merge3PhysicalTable, Ro
       rows.sort((a, b) => integer(a.value.sort_order) - integer(b.value.sort_order) || (text(a.value.id) < text(b.value.id) ? -1 : 1))
       if (rows.some((entry, index) => integer(entry.value.sort_order) < 0 || index > 0 && entry.value.sort_order === rows[index - 1].value.sort_order))
         conflict('merged-forest-order', name, rows, { owner })
-      const blocks = rows.map(entry => physicalBlock(entry.value))
+      // Decode actual body cells for one forest. The workspace index retains only its rows and structural columns.
+      const blocks = rows.map(physicalBlock)
       try { if (name === 'blocks') validateSyncedHostForest(blocks); else validateSyncedCanonicalEdit(blocks) }
       catch (error) {
         if (!(error instanceof SyncedValidationError)) throw error
         conflict('merged-physical-forest-shape', name, rows, { owner, reason: error.code })
       }
-      forests.set(graph3Key(name, owner), { rows, blocks })
+      forests.set(graph3Key(name, owner), rows)
     }
   }
-  for (const [id, group] of groups) if (states.get(id)?.active && !forests.get(graph3Key('synced_group_blocks', id))?.blocks.length)
+  for (const [id, group] of groups) if (states.get(id)?.active && !forests.get(graph3Key('synced_group_blocks', id))?.length)
     conflict('merged-active-group-has-no-canonical-forest', 'synced_groups', [group], { groupId: id })
   const canonicalStats = new Map<string, { maxDepth: number; rootTypes: string[] }>()
   for (const [id] of groups) {
-    const blocks = forests.get(graph3Key('synced_group_blocks', id))?.blocks ?? []
-    canonicalStats.set(id, { maxDepth: blocks.reduce((depth, block) => Math.max(depth, block.depth), 0),
-      rootTypes: [...new Set(blocks.filter(block => block.depth === 0).map(block => block.type))] })
+    const blocks = forests.get(graph3Key('synced_group_blocks', id)) ?? []
+    canonicalStats.set(id, { maxDepth: blocks.reduce((depth, { value }) => Math.max(depth, integer(value.depth)), 0),
+      rootTypes: [...new Set(blocks.filter(({ value }) => value.depth === 0n).map(({ value }) => text(value.type)))] })
   }
   const parentCompatibility = new Map<string, boolean>()
   const instances = new Map(selected.get('synced_instances')!.map(entry => [text(entry.value.instance_id), entry]))
@@ -292,22 +305,22 @@ function validatePhysicalSelection(selected: ReadonlyMap<Merge3PhysicalTable, Ro
   for (const [hostId] of documents) {
     const forest = forests.get(graph3Key('blocks', hostId))
     if (!forest) continue
-    const parentTypes = new Map(forest.blocks.map(block => [block.id, block.type]))
-    for (let index = 0; index < forest.blocks.length; index++) {
-      const block = forest.blocks[index]
-      if (block.type !== 'synced-block') continue
-      const row = forest.rows[index], groupId = parseSyncedBlockPayload(block.content).groupId, registry = instances.get(block.id)
-      references.add(block.id)
+    const parentTypes = new Map(forest.map(({ value }) => [text(value.id), text(value.type)]))
+    for (const row of forest) {
+      if (row.value.type !== 'synced-block') continue
+      const id = text(row.value.id), parentBlockId = nullableText(row.value.parent_block_id), depth = integer(row.value.depth)
+      const groupId = parseSyncedBlockPayload(text(selectedValue(row, 'content'))).groupId, registry = instances.get(id)
+      references.add(id)
       if (!registry || registry.value.group_id !== groupId || registry.value.host_document_id !== hostId
-        || registry.value.parent_block_id !== block.parentBlockId || integer(registry.value.depth) !== block.depth
-        || !isSyncedUuid(registry.value.binding_version)) conflict('merged-instance-registry-mirror', 'blocks', registry ? [row, registry] : [row], { instanceId: block.id })
+        || registry.value.parent_block_id !== parentBlockId || integer(registry.value.depth) !== depth
+        || !isSyncedUuid(registry.value.binding_version)) conflict('merged-instance-registry-mirror', 'blocks', registry ? [row, registry] : [row], { instanceId: id })
       const group = groups.get(groupId), state = states.get(groupId), canonical = canonicalStats.get(groupId)
       if (!group || !state?.active) {
-        conflict('merged-reference-target-is-missing-or-inactive', 'blocks', group ? [row, group] : [row], { instanceId: block.id, groupId, absence: state?.absence ?? null })
+        conflict('merged-reference-target-is-missing-or-inactive', 'blocks', group ? [row, group] : [row], { instanceId: id, groupId, absence: state?.absence ?? null })
         continue
       }
       if (!canonical) continue
-      const parentType = block.parentBlockId === null ? null : parentTypes.get(block.parentBlockId)
+      const parentType = parentBlockId === null ? null : parentTypes.get(parentBlockId)
       const compatibilityKey = graph3Key(groupId, parentType === undefined ? ['missing-parent'] : parentType)
       let compatible = parentCompatibility.get(compatibilityKey)
       if (compatible === undefined) {
@@ -315,26 +328,30 @@ function validatePhysicalSelection(selected: ReadonlyMap<Merge3PhysicalTable, Ro
         parentCompatibility.set(compatibilityKey, compatible)
       }
       if (!compatible)
-        conflict('merged-canonical-root-parent-role', 'blocks', [row], { instanceId: block.id, groupId })
-      if (block.depth + canonical.maxDepth > SYNCED_MAX_DEPTH)
-        conflict('merged-canonical-expanded-depth', 'blocks', [row], { instanceId: block.id, groupId })
+        conflict('merged-canonical-root-parent-role', 'blocks', [row], { instanceId: id, groupId })
+      if (depth + canonical.maxDepth > SYNCED_MAX_DEPTH)
+        conflict('merged-canonical-expanded-depth', 'blocks', [row], { instanceId: id, groupId })
     }
   }
   for (const [id, entry] of instances) if (!references.has(id)) conflict('merged-registry-without-reference-leaf', 'synced_instances', [entry], { instanceId: id })
 }
 
-function physicalBlock(row: Values): SyncedStableBlockDraft {
+function physicalBlock(entry: Row): SyncedStableBlockDraft {
+  const { value: row } = entry
   const json = (value: unknown) => {
     const source = text(value)
     return parseStrictJson(source, { maxBytes: Math.max(1, Buffer.byteLength(source)), maxDepth: 32 })
   }
-  if (row.checked !== 0n && row.checked !== 1n) return graph3Conflict('merge-physical-checked', text(row.id))
-  if (typeof row.created_at !== 'string' || !Number.isFinite(Date.parse(row.created_at))) return graph3Conflict('merge-physical-birth', text(row.id))
-  return { id: text(row.id), type: text(row.type), content: text(row.content), checked: row.checked === 1n,
+  const checked = selectedValue(entry, 'checked'), birth = selectedValue(entry, 'created_at')
+  if (checked !== 0n && checked !== 1n) return graph3Conflict('merge-physical-checked', text(row.id))
+  if (typeof birth !== 'string' || !Number.isFinite(Date.parse(birth))) return graph3Conflict('merge-physical-birth', text(row.id))
+  const tags = selectedValue(entry, 'tags_json'), language = selectedValue(entry, 'language'), listStart = selectedValue(entry, 'list_start')
+  const format = selectedValue(entry, 'markdown_format_json'), highlight = selectedValue(entry, 'highlight')
+  return { id: text(row.id), type: text(row.type), content: text(selectedValue(entry, 'content')), checked: checked === 1n,
     depth: integer(row.depth), parentBlockId: nullableText(row.parent_block_id),
-    ...(row.tags_json === null ? {} : { tags: json(row.tags_json) as string[] }),
-    ...(row.language === null ? {} : { language: text(row.language) }),
-    ...(row.list_start === null ? {} : { listStart: integer(row.list_start) }),
-    ...(row.markdown_format_json === null ? {} : { markdownFormat: json(row.markdown_format_json) as NonNullable<SyncedStableBlockDraft['markdownFormat']> }),
-    ...(row.highlight === null ? {} : { highlight: text(row.highlight) }) }
+    ...(tags === null ? {} : { tags: json(tags) as string[] }),
+    ...(language === null ? {} : { language: text(language) }),
+    ...(listStart === null ? {} : { listStart: integer(listStart) }),
+    ...(format === null ? {} : { markdownFormat: json(format) as NonNullable<SyncedStableBlockDraft['markdownFormat']> }),
+    ...(highlight === null ? {} : { highlight: text(highlight) }) }
 }

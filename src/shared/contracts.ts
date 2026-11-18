@@ -1095,8 +1095,6 @@ export interface ElectronApi {
   testWebDavConnection: () => Promise<import('./webdav-sync').WebDavSyncStatus>
   syncWebDavNow: () => Promise<import('./webdav-sync').WebDavSyncStatus>
   cancelWebDavSync: () => Promise<import('./webdav-sync').WebDavSyncStatus>
-  resolveWebDavSyncConflict: (input: import('./webdav-sync').ResolveWebDavSyncConflict) => Promise<import('./webdav-sync').WebDavSyncStatus>
-  getWebDavSyncConflictDetails: (input: import('./webdav-sync').WebDavSyncConflictDetailsInput) => Promise<import('./webdav-sync').WebDavSyncConflictDetails>
   previewWebDavProtocol5Conflicts: () => Promise<import('./webdav-sync').WebDavSyncStatus>
   rejoinWebDavAfterRestore: () => Promise<import('./webdav-sync').WebDavSyncStatus>
   resolveWebDavProtocol5Conflict: (input: import('./webdav-sync').ResolveWebDavProtocol5Conflict) => Promise<import('./webdav-sync').WebDavSyncStatus>

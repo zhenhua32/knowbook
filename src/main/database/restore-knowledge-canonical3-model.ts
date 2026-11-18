@@ -24,14 +24,13 @@ import type { SelectedPendingLocalBody5 } from './restore-knowledge-pending-loca
 
 type Allocation = ReturnType<typeof deriveRootRestoreReferenceAllocation3>
 type Side = 'source' | 'current'
-type Entry = { table: Navigation3Table; row: MergedRow3; value: Record<string, unknown> }
+type Entry = { table: Navigation3Table; row: MergedRow3; ordinal: number; value: Record<string, unknown> }
 type FinalScope = Navigation3FinalIndex['scopes'][number]
 export interface Canonical3Conflict { readonly code: string; readonly side: Side | null; readonly rowKeys: readonly string[]; readonly detail: unknown }
 const same = (a: unknown, b: unknown) => capsuleJson(a) === capsuleJson(b)
 const keyOf = (key: SyncedBindingKey) => graph3Key(key.blockId, key.from, key.to, key.raw, key.syntax)
 const onlyKey = ({ blockId, from, to, raw, syntax }: SyncedBindingKey): SyncedBindingKey => ({ blockId, from, to, raw, syntax })
 const string = (value: unknown) => typeof value === 'string' ? value : graph3Conflict('canonical3-text', typeof value)
-const fieldKey = (table: string, rowKey: string, column: string) => graph3Key(table, rowKey, column)
 type EntryProjection = Readonly<Partial<Record<Navigation3Table['name'], readonly string[]>>>
 const selectedGroupColumns = {
   synced_groups: ['id', 'creation_id', 'origin_json', 'bindings_json']
@@ -60,11 +59,41 @@ function indexSelectedBlocks(db: Database.Database, tables: readonly Navigation3
   })()
   const select = db.prepare('SELECT ordinal FROM canonical_selected_members WHERE owner=? ORDER BY ordinal').pluck()
   return {
-    encoding: table.encoding,
+    table, content,
     id: (row: MergedRow3) => string(graph3Value(row.cells[id], table.encoding)),
-    content: (row: MergedRow3) => string(graph3Value(row.cells[content], table.encoding)),
     *rows(group: string) {
-      for (const ordinal of select.iterate(ownerKey(group)) as IterableIterator<number>) yield table.rows[ordinal]
+      for (const ordinal of select.iterate(ownerKey(group)) as IterableIterator<number>) yield { ordinal, row: table.rows[ordinal] }
+    }
+  }
+}
+
+function stageCanonicalCellPatches(db: Database.Database) {
+  db.exec(`CREATE TEMP TABLE canonical_cell_patches (table_name TEXT NOT NULL,
+    ordinal INTEGER NOT NULL, column_index INTEGER NOT NULL, text_units BLOB NOT NULL,
+    PRIMARY KEY(table_name,ordinal,column_index)) WITHOUT ROWID`)
+  const write = db.prepare('INSERT INTO canonical_cell_patches VALUES (?,?,?,?)')
+  const read = db.prepare('SELECT ordinal,column_index,text_units FROM canonical_cell_patches WHERE table_name=? ORDER BY ordinal,column_index')
+  type Patch = { ordinal: number; column_index: number; text_units: Buffer }
+  return {
+    set(table: Navigation3Table, ordinal: number, column: number, value: string) {
+      // Preserve exact JS code units until the target table encoding is applied.
+      write.run(table.name, ordinal, column, Buffer.from(value, 'utf16le'))
+    },
+    apply(table: Navigation3Table): Navigation3Table {
+      let rows: MergedRow3[] | undefined
+      let previousOrdinal = -1
+      let cells: MergedRow3['cells'][number][] = []
+      for (const { ordinal, column_index, text_units } of read.iterate(table.name) as IterableIterator<Patch>) {
+        rows ??= table.rows.slice()
+        if (ordinal !== previousOrdinal) {
+          const row = table.rows[ordinal]
+          cells = row.cells.slice()
+          rows[ordinal] = { ...row, cells }
+          previousOrdinal = ordinal
+        }
+        cells[column_index] = graph3Encode(text_units.toString('utf16le'), table.encoding)
+      }
+      return rows === undefined ? table : { ...table, rows }
     }
   }
 }
@@ -105,9 +134,9 @@ function* projectEntries(tables: readonly Navigation3Table[], projection: EntryP
       if (index < 0) return graph3Conflict('canonical3-projection-column', { table: table.name, column })
       return { column, index }
     })
-    for (const row of table.rows) {
+    for (const [ordinal, row] of table.rows.entries()) {
       const value = Object.fromEntries(columns.map(({ column, index }) => [column, graph3Value(row.cells[index], table.encoding)]))
-      yield { table, row, value }
+      yield { table, row, ordinal, value }
     }
   }
 }
@@ -175,7 +204,7 @@ function deriveWithCanonicalIndexes(db: Database.Database, data: Graph3Inputs, a
     if (targets.has(key)) return graph3Conflict('canonical3-binding-target-duplicate', key)
     targets.set(key, target)
   }
-  const changes = new Map<string, string>(), conflicts: Canonical3Conflict[] = []
+  const changes = stageCanonicalCellPatches(db), conflicts: Canonical3Conflict[] = []
   const conflict = (code: string, side: Side | null, rowKeys: readonly string[], detail: unknown) => conflicts.push({ code, side, rowKeys, detail })
   const edits: Array<{ side: Side; table: 'synced_group_blocks'; rowKey: string; column: 'content'; key: SyncedBindingKey; after: string }> = []
   const bindingProjections: Array<{ side: Side; groupId: string; rowKey: string; original: SyncedLinkBinding; binding: SyncedLinkBinding;
@@ -209,7 +238,7 @@ function deriveWithCanonicalIndexes(db: Database.Database, data: Graph3Inputs, a
         return graph3Conflict('canonical3-retained-current-origin-tuple', groupId)
       nextOrigin = retainedOrigin
     }
-    if (nextOrigin !== entry.value.origin_json) changes.set(fieldKey(entry.table.name, entry.row.key, 'origin_json'), nextOrigin)
+    if (nextOrigin !== entry.value.origin_json) changes.set(entry.table, entry.ordinal, entry.table.columns.indexOf('origin_json'), nextOrigin)
     originProjections.push({ side, groupId, rowKey: entry.row.key, before: string(entry.value.origin_json), after: nextOrigin,
       retainedFromCurrent: origin.originPolicy === 'retained-current' })
     if (fact.snapshot === null) {
@@ -224,19 +253,20 @@ function deriveWithCanonicalIndexes(db: Database.Database, data: Graph3Inputs, a
     const grammar = new Map(collectDocumentMarkdownLinks(snapshot.blocks).map(link => [graph3Key(link.blockId, link.start, link.end), link]))
     const bindingsByBlock = new Map<string, SyncedLinkBinding[]>()
     for (const binding of oldBindings) { const list = bindingsByBlock.get(binding.blockId) ?? []; list.push(binding); bindingsByBlock.set(binding.blockId, list) }
-    const originalToFinal = new Map<string, MergedRow3>()
-    for (const block of groupBlocks.rows(groupId)) {
+    const originalToFinal = new Map<string, { ordinal: number; row: MergedRow3 }>()
+    for (const selected of groupBlocks.rows(groupId)) {
+      const block = selected.row
       if (block.sourceRef.side !== side) return graph3Conflict('canonical3-mixed-group-forest-source', block.sourceRef)
       const originalBlock = findGraph3OriginalRow(blocks, block.sourceRef.sourceRowId)
       if (!originalBlock || originalValue(raw, blocks, originalBlock, 'group_id') !== sourceId)
         return graph3Conflict('canonical3-canonical-row-source', block.sourceRef)
-      originalToFinal.set(string(originalValue(raw, blocks, originalBlock, 'id')), block)
+      originalToFinal.set(string(originalValue(raw, blocks, originalBlock, 'id')), selected)
     }
     if (originalToFinal.size !== snapshot.blocks.length) return graph3Conflict('canonical3-whole-canonical-forest', sourceId)
     const cellEdits = new Map<string, Canonical3TextEdit[]>(), effective = new Map<string, Allocation['bindingTargets'][number]>()
     for (const binding of oldBindings) {
       const parsedLink = parsedKeys.get(keyOf(binding)), target = targets.get(graph3Key(side, sourceId, keyOf(binding)))
-      const block = originalToFinal.get(binding.blockId)
+      const block = originalToFinal.get(binding.blockId)?.row
       if (!parsedLink || !block || !target || !same(target.sourceGroupSource, knowledge.source) || target.comparisonKey !== knowledge.comparisonKey
         || !same(target.originalTarget, binding.target) || target.sourceCapture.provenance !== 'current-stored'
         || !same(target.sourceCapture.source, knowledge.source) || !same(target.sourceCapture.binding, binding))
@@ -271,30 +301,28 @@ function deriveWithCanonicalIndexes(db: Database.Database, data: Graph3Inputs, a
         const list = cellEdits.get(binding.blockId) ?? []; list.push({ key: onlyKey(binding), after: replacement }); cellEdits.set(binding.blockId, list)
       }
     }
-    const transformed = new Map<string, ReturnType<typeof transformCanonical3Cell>>()
+    const projectedByBinding = new Map<SyncedLinkBinding, SyncedBindingKey>()
     for (const block of snapshot.blocks) {
-      const selectedBlock = originalToFinal.get(block.id)!, ownBindings = bindingsByBlock.get(block.id) ?? []
-      const content = groupBlocks.content(selectedBlock)
+      const { row: selectedBlock, ordinal } = originalToFinal.get(block.id)!, ownBindings = bindingsByBlock.get(block.id) ?? []
+      const content = string(graph3Value(selectedBlock.cells[groupBlocks.content], groupBlocks.table.encoding))
       if (ownBindings.length && content !== block.content) return graph3Conflict('canonical3-content-already-rewritten', block.id)
-      const transformedCell = transformCanonical3Cell(content, ownBindings.map(onlyKey), cellEdits.get(block.id) ?? [], groupBlocks.encoding)
-      transformed.set(block.id, transformedCell)
-      if (transformedCell.text !== content) changes.set(fieldKey('synced_group_blocks', selectedBlock.key, 'content'), transformedCell.text)
+      const transformedCell = transformCanonical3Cell(content, ownBindings.map(onlyKey), cellEdits.get(block.id) ?? [], groupBlocks.table.encoding)
+      if (transformedCell.text !== content) changes.set(groupBlocks.table, ordinal, groupBlocks.content, transformedCell.text)
       for (const edit of transformedCell.edits) edits.push({ side, table: 'synced_group_blocks', rowKey: selectedBlock.key, column: 'content', ...edit })
+      for (const binding of ownBindings) projectedByBinding.set(binding, transformedCell.project(onlyKey(binding)))
     }
     const bindings: SyncedLinkBinding[] = oldBindings.map(binding => {
-      const target = effective.get(keyOf(binding))!, block = originalToFinal.get(binding.blockId)!
-      const projected = transformed.get(binding.blockId)!.project(onlyKey(binding))
+      const target = effective.get(keyOf(binding))!, { row: block } = originalToFinal.get(binding.blockId)!
+      const projected = projectedByBinding.get(binding)!
       const next = { ...projected, blockId: groupBlocks.id(block), target: target.target }
       bindingProjections.push({ side, groupId, rowKey: block.key, original: binding, binding: next, proofKind: target.proofKind,
         sourceGroupSource: target.sourceGroupSource, originalHint: target.originalHint })
       return next
     })
-    if (!same(bindings, JSON.parse(string(entry.value.bindings_json)))) changes.set(fieldKey('synced_groups', entry.row.key, 'bindings_json'), capsuleJson(bindings))
+    if (!same(bindings, JSON.parse(string(entry.value.bindings_json))))
+      changes.set(entry.table, entry.ordinal, entry.table.columns.indexOf('bindings_json'), capsuleJson(bindings))
   }
-  const tables = ordinaryTables.map(table => ({ ...table, rows: table.rows.map(row => ({ ...row, cells: row.cells.map((cell, index) => {
-    const changed = changes.get(fieldKey(table.name, row.key, table.columns[index]))
-    return changed === undefined ? cell : graph3Encode(changed, table.encoding)
-  }) })) }))
+  const tables = ordinaryTables.map(changes.apply)
   assertFinalStorageBudget(tables)
   const final = buildMerge3NavigationFinalIndex3(derived, tables), physicalMembers = indexFinalMembers(db, final, tables)
   const afterGroups = new Map<string, Entry>()

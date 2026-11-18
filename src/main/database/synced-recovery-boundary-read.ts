@@ -6,6 +6,9 @@ import { decodeHostJournal, hostJournalKind, validateHostSides } from './synced-
 import { parseStrictJson } from '../../shared/strictJson'
 import type { SyncedHostHistoryBranchRow } from './synced-host-history-branch'
 import { isSyncedUuid } from '../../shared/syncedBlockValidation'
+import { exchangeRequestHash, parseExchangeStored, validateExchangeReceipt } from '../sync/synced-exchange-model'
+import { initialIncomingRequestHash, validateInitialIncomingReceipt } from '../sync/synced-initial-incoming-model'
+import { publicationJson } from '../sync/synced-publication-model'
 import { RECOVERY_BOUNDARY_PREFIX, RECOVERY_EPOCH_PREFIX, RECOVERY_BOUNDARY_CHANNEL,
   recoveryBoundaryInvalid, recoveryBoundaryJson, recoveryBoundaryKey, recoveryEpochMarkerId, recoveryBoundaryHash,
   recoveryEpochRequestHash, recoveryEpochTargetFingerprint, recoveryOperationRowHash, parseRecoveryBoundaryJson,
@@ -49,6 +52,22 @@ function freeze<T>(value: T): T {
     Object.freeze(value)
   }
   return value
+}
+
+/** Ordinary WebDAV workspaces can carry settled protocol-5 history with no groups, instances or host undo rows. */
+export function isRetainedProtocol5Operation(row: SyncedRecoveryOperationRow, workspaceScope: string): boolean {
+  if (!isSyncedUuid(row.client_operation_id)) return false
+  const value = parseExchangeStored(row.result_json)
+  if (!value || typeof value !== 'object' || !('kind' in value)) return false
+  const receipt = value.kind === 'synced-initial-incoming-operation' ? validateInitialIncomingReceipt(value)
+    : value.kind === 'synced-exchange-operation' ? validateExchangeReceipt(value) : null
+  if (!receipt) return false
+  const requestHash = receipt.kind === 'synced-initial-incoming-operation' ? initialIncomingRequestHash(receipt.request)
+    : exchangeRequestHash(receipt.request)
+  if (receipt.request.operationId !== row.client_operation_id || receipt.result.operationId !== row.client_operation_id
+    || receipt.result.replayed || receipt.result.acceptedAt !== row.created_at || requestHash !== row.request_hash
+    || publicationJson(receipt) !== row.result_json) return recoveryBoundaryInvalid('原协议 5 收据与保存的操作行不闭合')
+  return receipt.result.workspaceScope === workspaceScope
 }
 /** No schema assertion, public group read, epoch admission, or recursive receipt
  * reader is called. Each invocation authenticates its own actual SQL snapshot.
@@ -100,6 +119,8 @@ export function assertSyncedRecoveryBoundaryRecords(db: Database.Database): Sync
       || anchor.target_fingerprint !== recoveryEpochTargetFingerprint(boundary.workspaceScope) || anchor.publication_hash !== boundaryHash
       || anchor.state !== 'possible' || anchor.confirmed_at !== null || anchor.created_at !== boundary.acceptedAt
       || db.prepare('SELECT 1 FROM synced_group_exposure_members WHERE attempt_id=? LIMIT 1').get(anchor.id)) return recoveryBoundaryInvalid('原receipt/boundary/零成员不可删anchor不闭合')
+    const operationOnly = !boundary.hosts.length && !boundary.hostCuts.length && !boundary.groups.length && !boundary.instances.length
+    let protocol5History = false
     for (const retained of boundary.retainedOperations) {
       let original = operationRows.get(retained.operationId)
       if (!original) {
@@ -107,7 +128,9 @@ export function assertSyncedRecoveryBoundaryRecords(db: Database.Database): Sync
         operationRows.set(retained.operationId, original)
       }
       if (recoveryOperationRowHash(original) !== retained.rowHash) return recoveryBoundaryInvalid('原operation ACK行被改写')
+      if (operationOnly && !protocol5History) protocol5History = isRetainedProtocol5Operation(original, boundary.workspaceScope)
     }
+    if (operationOnly && !protocol5History) return recoveryBoundaryInvalid('仅有操作回执的边界缺少原协议 5 收据')
     for (const pin of boundary.retainedPins) {
       const columns = ['created_at'] as const
       const original = db.prepare('SELECT ' + originalTextSelection(columns) + ' FROM synced_group_pins WHERE group_id=? AND kind=? AND pin_id=?')

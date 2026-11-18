@@ -17,9 +17,10 @@ import { prepareDurableSqlCapsuleOriginal } from './restore-knowledge-capsule-fi
 import { certifyDurableSqlCapsuleIfSupported, readCertifiedDurableSqlCapsule,
   type CertifiedDurableSqlCapsule } from './restore-knowledge-capsule-read'
 import { captureDurableSqlDag, readCertifiedDurableSqlDag } from './restore-knowledge-dag-read'
-import { openBackupV3RestoreSource, assertBackupV3RestoreSourceCurrent, readBackupV3RestoreSource } from '../backup/v3-reader'
+import { openBackupV3RestoreSource, assertBackupV3RestoreSourceCurrent, readBackupV3RestoreIndex } from '../backup/v3-reader'
 import { prepareBackupV3RestoreCandidate } from '../backup/v3-restore-prepare'
-import { assertRestoreKnowledgeInstalledSql, readRestoreKnowledgeInstallProof, readRestoreKnowledgePriorInstall, verifyRestoreKnowledgeInstalledDatabase }
+import { assertPriorV3SourceRetirements, assertRestoreKnowledgeInstalledSql, readRestoreKnowledgeInstallProof, readRestoreKnowledgePriorInstall,
+  verifyRestoreKnowledgeInstalledDatabase }
   from './restore-knowledge-install-proof'
 import { applyPreparedJointRestore4, assertJointRestoreInstalledResult4, prepareJointRestoreIntent4, readJointRestoreCurrent4, readJointRestoreFence4, readJointRestoreIntent4,
   recoverJointRestore4Owned, validateJointRestoreFence4, type JointRestoreChecks4, type JointRestoreIntent4 } from './restore-joint-journal4'
@@ -29,6 +30,8 @@ import { restoreSqliteFilename } from './restore-safety-sqlite-path'
 import { readRawPriorKnowledgeCoverageOwned } from './restore-knowledge-coverage-raw-read'
 import { captureInstalledV3AssetContinuity } from './restore-knowledge-installed-v3-assets'
 import { assertV3SettledPrivateSyncOriginals } from './restore-knowledge-settled-private-sync'
+import type { SecureStringStorage } from '../credential-storage'
+import { readV3SourceGroupRetirementsOwned } from './v3-source-group-retirement'
 
 export interface ControlledRestoreInput {
   userDataRoot:string; backupPath:string; stopProcesses?:typeof stopDatabaseRestoreProcesses; beforeReplace?:()=>Promise<void>
@@ -345,7 +348,8 @@ function jointRestoreChecks(root: string, beforeMove?: (intent: JointRestoreInte
   return {
     async assertPrepared(intent) {
       const proof = await readBoundJointInstallProof(root, intent)
-      if (proof.version === 3) await assertV3SettledPrivateSyncOriginals(root, intent.operationId, intent.currentInventory, proof.privateSync)
+      if ('privateSync' in proof && proof.privateSync)
+        await assertV3SettledPrivateSyncOriginals(root, intent.operationId, intent.currentInventory, proof.privateSync)
       else await assertNoRestorePrivateSyncFiles(root)
       await assertNoActiveRestoreRollbackJournal(restorePaths(root, intent.operationId).database)
       await beforeMove?.(intent)
@@ -353,7 +357,8 @@ function jointRestoreChecks(root: string, beforeMove?: (intent: JointRestoreInte
     async assertInstalled(intent, phase) {
       if (phase === 'committing') {
         const proof = await readBoundJointInstallProof(root, intent)
-        if (proof.version === 3) await assertV3SettledPrivateSyncOriginals(root, intent.operationId, intent.currentInventory, proof.privateSync)
+        if ('privateSync' in proof && proof.privateSync)
+          await assertV3SettledPrivateSyncOriginals(root, intent.operationId, intent.currentInventory, proof.privateSync)
       }
       await assertNoActiveRestoreRollbackJournal(restorePaths(root, intent.operationId).database)
       const result = await verifyRestoreKnowledgeInstalledDatabase(root, intent.operationId, intent.installationProofHash, phase)
@@ -395,11 +400,12 @@ export async function authorizeInstalledRestoreBackupWorker(userDataRoot: string
   try {
     db.pragma('query_only=ON')
     db.pragma('foreign_keys=ON')
-    const result = db.transaction(() => {
+    const { result, retirements } = db.transaction(() => {
       const coverage = assertRestoreKnowledgeInstalledSql(db, proof, 'steady')
       const requirements = readRawPriorKnowledgeCoverageOwned(db)
-      return { coverage, requirements }
+      return { result: { coverage, requirements }, retirements: readV3SourceGroupRetirementsOwned(db) }
     })()
+    await assertPriorV3SourceRetirements(root, intent.operationId, retirements.values())
     const after = await lstat(expectedPath, { bigint: true })
     if (!before.ino || before.dev !== after.dev || before.ino !== after.ino || await readRestoreText(fence) !== text
       || await restoreExists(join(root, RESTORE_PENDING))) return restoreFail('核验备份授权期间恢复原件变化。')
@@ -413,6 +419,7 @@ interface ControlledV3RestoreInput {
   expectedInventoryHash?: string
   requestId?: string
   stopProcesses?: typeof stopDatabaseRestoreProcesses
+  retirementCredentials?: SecureStringStorage
 }
 export type ControlledV3RestorePreview = Readonly<{
   operationId: string; intentHash: string
@@ -440,7 +447,7 @@ export async function restoreControlledBackupV3(input: ControlledV3RestoreInput,
       || containsPath(join(root, 'backups', 'database-restore'), directory))
       return restoreFail('V3 备份必须与工作区存储及恢复原件目录独立。')
     const source = openBackupV3RestoreSource(directory)
-    const { archive, inventoryHash } = readBackupV3RestoreSource(source)
+    const { manifest, inventoryHash } = readBackupV3RestoreIndex(source)
     if (input.expectedInventoryHash !== undefined && inventoryHash !== input.expectedInventoryHash)
       return restoreFail('V3 备份在预检后发生变化，请重新选择。')
     await dispatchOwnedRecovery(root, legacy.recoverLegacy)
@@ -468,15 +475,17 @@ export async function restoreControlledBackupV3(input: ControlledV3RestoreInput,
       ? () => captureInstalledV3AssetContinuity(root, prior.operationId)
       : undefined
     const candidate = await prepareBackupV3RestoreCandidate({ profileRoot: root, operationId, source, parents, installedAssets,
+      ...(confirm && input.retirementCredentials ? { retirementCredentials: input.retirementCredentials } : {}),
       choices: { originPolicy: 'preserve-exact-current-tuple', anonymousValues: 'current' } })
     const intent = await prepareJointRestoreIntent4({ profileRoot: root, operationId, current,
       parentFenceHash: parentText === null ? null : rawHash(parentText), installationProofHash: candidate.proofHash,
       assetTransferId: candidate.transferId, assetManifestHash: candidate.assetManifestHash,
-      ...(requestId === undefined ? {} : { request: { backupDirectory, sourceArchive: { snapshotId: archive.manifest.snapshotId, inventoryHash }, stoppedPids } }) })
+      ...(requestId === undefined ? {} : { request: { backupDirectory, sourceArchive: { snapshotId: manifest.snapshotId, inventoryHash }, stoppedPids } }) })
     if (confirm && await confirm(Object.freeze({ operationId, intentHash: restoreHash(intent), ...candidate.preview })) !== true)
       return null
     const result = await applyPreparedJointRestore4(root, intent, jointRestoreChecks(root, async () => {
       assertBackupV3RestoreSourceCurrent(source)
+      await candidate.assertRetirementCurrent?.()
     }))
     return Object.freeze({ ...result, stoppedPids, recoveryDirectory: paths.recovery })
   } finally { release() }

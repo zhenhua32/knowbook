@@ -5,14 +5,14 @@ import { buildSyncedPortableAssetUri, syncedPortableAssetBackupPath } from '../.
 import { localAttachmentFileUrl } from '../attachments'
 import { prepareRestoreAssetTransfer4, type RestoreAssetTransferSource4 } from '../database/restore-asset-transfer4'
 import { assertRestorePath, canonicalRestoreRoot, restorePaths } from '../database/restore-safety-files'
-import { assertBackupV3RestoreSourceCurrent, copyBackupV3RestoreAsset, readBackupV3RestoreSource, type BackupV3RestoreSource } from './v3-reader'
+import { assertBackupV3RestoreSourceCurrent, copyBackupV3RestoreAsset, readBackupV3RestoreAssets, type BackupV3RestoreSource } from './v3-reader'
 
 const archiveAssetPrefix = '__knowbook/assets/'
 
 /** Bridge the exact original V3 aliases into the controlled restore transfer.
  * The transfer's independent payloads are its durable inputs after this returns. */
 export async function prepareBackupV3RestoreAssetStage(owner: BackupV3RestoreSource, profileRoot: string, operationId: string) {
-  const { inventoryHash, assets } = readBackupV3RestoreSource(owner)
+  const { inventoryHash, assets } = readBackupV3RestoreAssets(owner)
   const root = await canonicalRestoreRoot(profileRoot), operation = restorePaths(root, operationId).recovery
   await assertRestorePath(operation, root)
   const operationInfo = await lstat(operation, { bigint: true })

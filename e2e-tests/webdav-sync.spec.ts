@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test'
 import { withElectronApp, uiText } from './helpers/electron'
 import { createWebDavServer } from '../tests/helpers/webdav-server'
 import { createHash } from 'node:crypto'
+import { publishRemoteProtocol5Documents } from './helpers/webdav-protocol5'
 
 test('sync shows live attachment progress, survives reopening settings, and clears after cancellation @electron', async ({}, testInfo) => {
   const server = await createWebDavServer()
@@ -21,7 +22,8 @@ test('sync shows live attachment progress, survives reopening settings, and clea
         await window.knowbook.saveWebDavSyncConfig({ enabled: false, url, username: 'test', password: 'app-secret', directory: 'KnowBook', intervalMinutes: 5, allowInsecureHttp: true })
         await window.knowbook.testWebDavConnection()
       }, server.url)
-      const asset = createHash('sha256').update('second-file').digest('hex')
+      // The manifest orders assets by digest. Pause the second transfer.
+      const asset = createHash('sha256').update('first-image').digest('hex')
       server.setHook(async req => { if (req.method === 'PUT' && req.url!.endsWith(`/assets/${asset}`)) { waiting = true; await gate } })
       await page.getByTitle(uiText('Settings', '配置中心'), { exact: true }).click()
       await page.getByRole('tab', { name: uiText('Sync', '同步') }).click()
@@ -30,7 +32,7 @@ test('sync shows live attachment progress, survives reopening settings, and clea
       await expect.poll(() => waiting).toBe(true)
       await expect(section.getByRole('status')).toContainText(/正在上传|Uploading/)
       await expect(section.locator('.webdav-sync-progress-counts')).toContainText('1 / 2')
-      await expect(section.locator('.webdav-sync-progress')).toContainText('second.pdf')
+      await expect(section.locator('.webdav-sync-progress')).toContainText('first.png')
       const bar = section.getByRole('progressbar')
       await expect(bar).toBeVisible()
       expect(Number(await bar.getAttribute('value'))).toBeGreaterThan(0)
@@ -39,15 +41,17 @@ test('sync shows live attachment progress, survives reopening settings, and clea
       await page.getByTitle(uiText('Settings', '配置中心'), { exact: true }).click()
       await page.getByRole('tab', { name: uiText('Sync', '同步') }).click()
       await expect(section.getByRole('status')).toContainText(/正在上传|Uploading/)
-      await expect(section.locator('.webdav-sync-progress')).toContainText('second.pdf')
+      await expect(section.locator('.webdav-sync-progress')).toContainText('first.png')
       await section.getByRole('button', { name: uiText('Stop this sync', '停止本次同步') }).click()
       await expect(section.getByRole('status')).toContainText('已停止')
       await expect(bar).toHaveCount(0)
       await expect(section.getByRole('button', { name: uiText('Sync now', '立即同步') })).toBeEnabled()
       release(); server.setHook(undefined)
       await section.getByRole('button', { name: uiText('Sync now', '立即同步') }).click()
-      await expect(section.getByRole('status')).toContainText('同步完成')
+      await expect(section.getByRole('status')).toContainText(/同步完成|首次发布完成/)
       await expect(bar).toHaveCount(0)
+      const manifest = JSON.parse(server.files.get('/KnowBook/manifest.json')!.toString())
+      expect(manifest).toMatchObject({ version: 5, history: { previousHash: null } })
     })
   } finally { release(); await server.close() }
 })
@@ -72,8 +76,9 @@ test('WebDAV settings validate, sync, preserve passwords, and surface recoverabl
       await section.getByRole('button', { name: uiText('Test connection', '测试连接') }).click()
       await expect(section.getByRole('status')).toContainText('连接成功')
       await section.getByRole('button', { name: uiText('Sync now', '立即同步') }).click()
-      await expect(section.getByRole('status')).toContainText('同步完成')
-      expect(server.files.has('/KnowBook/manifest.json')).toBe(true)
+      await expect(section.getByRole('status')).toContainText(/同步完成|首次发布完成/)
+      const manifest = JSON.parse(server.files.get('/KnowBook/manifest.json')!.toString())
+      expect(manifest).toMatchObject({ version: 5, history: { previousHash: null } })
       expect(server.requests.some(request => request.method === 'PROPFIND')).toBe(true)
       expect(server.requests.some(request => request.method === 'MOVE')).toBe(true)
       await page.screenshot({ path: testInfo.outputPath('webdav-settings.png') })
@@ -103,13 +108,7 @@ test('WebDAV conflicts can be previewed and kept as separate documents through t
         await window.knowbook.syncWebDavNow()
         return doc.id
       }, server.url)
-      const manifest = JSON.parse(server.files.get('/KnowBook/manifest.json')!.toString())
-      const original = JSON.parse(server.files.get(`/KnowBook/objects/${manifest.entries[`doc:${id}`]}.json`)!.toString())
-      original.content.blocks[0].content = 'remote edit'
-      const bytes = Buffer.from(JSON.stringify(original)), hash = createHash('sha256').update(bytes).digest('hex')
-      server.files.set(`/KnowBook/objects/${hash}.json`, bytes)
-      manifest.entries[`doc:${id}`] = hash
-      server.files.set('/KnowBook/manifest.json', Buffer.from(JSON.stringify(manifest)))
+      await publishRemoteProtocol5Documents(server, [{ id, edit: record => { record.content.blocks[0].content = 'remote edit' } }])
       await page.evaluate(async id => {
         const doc = (await window.knowbook.getDocumentDetail(id))!
         await window.knowbook.updateDocument(id, { title: doc.title, summary: '', blocks: doc.blocks.map(block => ({ ...block, content: 'local edit' })) })
@@ -118,16 +117,21 @@ test('WebDAV conflicts can be previewed and kept as separate documents through t
       await page.getByTitle(uiText('Settings', '配置中心'), { exact: true }).click()
       await page.getByRole('tab', { name: uiText('Sync', '同步') }).click()
       const section = page.getByRole('region', { name: uiText('WebDAV sync', 'WebDAV 同步') })
-      await section.locator('summary', { hasText: 'WebDAV Conflict' }).click()
-      const comparison = section.locator('.webdav-conflict-comparison').first()
-      await expect(comparison.locator('pre').first()).toContainText('local edit')
-      await expect(comparison.locator('pre').last()).toContainText('remote edit')
-      await section.getByRole('button', { name: uiText('Keep both', '两份都保留') }).click()
-      await section.getByRole('button', { name: uiText('Sync now', '立即同步') }).click()
-      await expect(section.locator('details')).toHaveCount(0)
-      const docs = await page.evaluate(async () => (await window.knowbook.getHomeData()).documentCatalog)
-      expect(docs.some(doc => doc.title.includes('同步冲突副本'))).toBe(true)
-      expect(await page.evaluate(async id => (await window.knowbook.getDocumentDetail(id))!.blocks[0].content, id)).toBe('remote edit')
+      const readConflicts = section.getByRole('button', { name: uiText('Read latest conflicts', '读取最新冲突'), exact: true })
+      await readConflicts.click()
+      const card = section.locator('.webdav-conflict-card').filter({ hasText: 'doc:' + id })
+      await expect(card.locator('pre').filter({ hasText: 'local edit' })).toBeVisible()
+      await expect(card.locator('pre').filter({ hasText: 'remote edit' })).toBeVisible()
+      await card.getByRole('button', { name: uiText('Keep both versions', '同时保留本机和远端'), exact: true }).click()
+      await expect.poll(() => page.evaluate(async id => (await window.knowbook.getDocumentDetail(id))!.blocks[0].content, id)).toBe('remote edit')
+      const copy = await page.evaluate(async id => {
+        const { documentCatalog } = await window.knowbook.getHomeData()
+        const copies = await Promise.all(documentCatalog.filter(doc => doc.id !== id).map(doc => window.knowbook.getDocumentDetail(doc.id)))
+        return copies.find(doc => doc?.blocks[0]?.content === 'local edit')
+      }, id)
+      expect(copy).toBeTruthy()
+      await readConflicts.click()
+      await expect(card).toHaveCount(0)
     })
   } finally { await server.close() }
 })
@@ -149,19 +153,16 @@ test('a remote update preserves an active unsaved draft and rejects its stale au
       const editor = page.locator('[data-block-index="0"] textarea')
       await expect(editor).toHaveValue('original body')
 
-      const manifest = JSON.parse(server.files.get('/KnowBook/manifest.json')!.toString())
-      const remote = JSON.parse(server.files.get(`/KnowBook/objects/${manifest.entries[`doc:${id}`]}.json`)!.toString())
-      remote.content.blocks[0].content = 'remote update while editing'
-      const bytes = Buffer.from(JSON.stringify(remote)), hash = createHash('sha256').update(bytes).digest('hex')
-      server.files.set(`/KnowBook/objects/${hash}.json`, bytes)
-      manifest.entries[`doc:${id}`] = hash
-      server.files.set('/KnowBook/manifest.json', Buffer.from(JSON.stringify(manifest)))
+      const hashes = await publishRemoteProtocol5Documents(server, [{ id, edit: record => {
+        record.content.blocks[0].content = 'remote update while editing'
+      } }])
+      const hash = hashes.get(id)!
       const downloadGate = new Promise<void>(resolve => { releaseDownload = resolve })
       let waiting = false
       server.setHook(async req => {
         if (req.method === 'GET' && req.url!.endsWith(`${hash}.json`)) { waiting = true; await downloadGate }
       })
-      await page.evaluate(() => { void window.knowbook.syncWebDavNow() })
+      await page.evaluate(() => { void window.knowbook.syncWebDavNow().catch(() => {}) })
       await expect.poll(() => waiting).toBe(true)
       await editor.fill('unsaved local draft stays here')
       releaseDownload!()
@@ -169,6 +170,6 @@ test('a remote update preserves an active unsaved draft and rejects its stale au
       await expect(page.locator('.document-save-status')).toHaveClass(/status-error/)
       await expect(editor).toHaveValue('unsaved local draft stays here')
       expect(await page.evaluate(async id => (await window.knowbook.getDocumentDetail(id))!.blocks[0].content, id)).toBe('remote update while editing')
-    })
+    }, {}, { editorMode: 'markdown' })
   } finally { releaseDownload?.(); await server.close() }
 })

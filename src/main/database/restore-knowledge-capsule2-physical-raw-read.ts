@@ -7,6 +7,7 @@ import { assertSyncedLifecycleSchemaMetadata } from './synced-lifecycle-schema-m
 import { assertSyncedLifecycleCoverage, readSyncedGroupLifecycles, type SyncedGroupLifecycle } from './synced-lifecycle-state'
 import { readRawSyncedGroupSnapshotsOwned } from './synced-blocks-raw-read'
 import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-read'
+import { readV3SourceGroupRetirementsOwned } from './v3-source-group-retirement'
 import { readRawCapsule2HostDocumentOwned } from './synced-host-document-read'
 import { assertSyncedStoredBindings } from './synced-stored-binding-read'
 import { assertRawCapsule2CatalogOwned } from './restore-knowledge-capsule2-catalog-read'
@@ -18,7 +19,8 @@ type InstanceRow = { instance_id: string; group_id: string; host_document_id: st
 type DocumentFact = { documentId: string; title: string; path: string; summary: string; createdAt: string; updatedAt: string;
   parentId: string | null; sortOrder: number; blocks: SyncedStableBlockDraft[]; births: Array<[string, string]> }
 type GroupFact = { groupId: string; lifecycle: SyncedGroupLifecycle | null; snapshot: SyncedGroupSnapshot | null;
-  absence: 'retired-create' | 'logical-deleted' | null }
+  absence: 'retired-create' | 'logical-deleted' | 'source-retired' | null;
+  retirementOrigin?: { groupId: string; creationId: string; createdAt: string } }
 
 /** Main-internal semantic observation. Original typed cells and bytes belong to
  * the separate content raw reader/original owner. This is not a capsule2 seal,
@@ -92,6 +94,7 @@ export function readRawCapsule2PhysicalGraphOwned(db: Database.Database): RawCap
   // This is the old finite denial reader, not the old schema observer. It must
   // keep every original proof/receipt relation; C/Receipt2 is a separate owner.
   const deleted = version === 27 ? assertSyncedLogicalDeletionRecords(db) : new Map()
+  const retired = readV3SourceGroupRetirementsOwned(db)
   const ids = (db.prepare('SELECT id FROM synced_groups ORDER BY id').all() as Array<{ id: unknown }>).map(row => {
     if (!isSyncedUuid(row.id)) return invalid('真实组身份无效'); return row.id
   })
@@ -104,16 +107,18 @@ export function readRawCapsule2PhysicalGraphOwned(db: Database.Database): RawCap
       const lifecycle = life.get(groupId) ?? null, snapshot = raw.get(groupId) ?? null
       if (version === 27 && lifecycle === null) return invalid('真实组缺准确lifecycle')
       if (snapshot) {
-        if (deleted.has('group:' + groupId) || lifecycle && lifecycle.state !== 'active') return invalid('ready组与原删除/lifecycle矛盾')
+        if (deleted.has('group:' + groupId) || retired.has(groupId) || lifecycle && lifecycle.state !== 'active') return invalid('ready组与原退场或lifecycle矛盾')
         // The same full Key parser and retained physical target rules are used
         // by the raw publication reader, without rewriting targets from paths.
         assertSyncedStoredBindings(db, snapshot.origin, snapshot.blocks, snapshot.bindings)
         snapshots.push(snapshot); groups.push({ groupId, lifecycle, snapshot, absence: null })
       } else {
-        const absence = deleted.has('group:' + groupId) ? 'logical-deleted' as const
+        const retirement = retired.get(groupId)
+        const absence = retirement ? 'source-retired' as const : deleted.has('group:' + groupId) ? 'logical-deleted' as const
           : lifecycle?.state === 'retired-create' ? 'retired-create' as const : null
         if (absence === null) return invalid('真实活动组不能丢成missing')
-        groups.push({ groupId, lifecycle, snapshot: null, absence })
+        groups.push({ groupId, lifecycle, snapshot: null, absence, ...(retirement ? { retirementOrigin: { groupId: retirement.sourceGroupId,
+          creationId: retirement.sourceCreationId, createdAt: retirement.group.createdAt } } : {}) })
       }
     }
   }

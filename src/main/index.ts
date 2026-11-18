@@ -695,8 +695,9 @@ function getPluginUiDocumentRegistration(url: string): PluginUiDocumentRegistrat
 }
 
 function initializeServices(emptyReceiver: boolean): void {
-  store = emptyReceiver ? KnowbookStore.createEmptySyncedReceiver(databasePath) : KnowbookStore.openCanonicalRuntime(databasePath)
-  webdavSync = new WebDavSyncService(store, attachmentStore, aiCredentialStorage, notifyWorkspaceMutation, () => restoreWorkflowInProgress, userDataRoot)
+  const seedExamples = backgroundElectronTest && process.env.KNOWBOOK_E2E_SEED_EXAMPLES === '1'
+  store = emptyReceiver ? KnowbookStore.createEmptySyncedReceiver(databasePath) : KnowbookStore.openCanonicalRuntime(databasePath, seedExamples)
+  webdavSync = new WebDavSyncService(store, userDataRoot, aiCredentialStorage, notifyWorkspaceMutation, () => restoreWorkflowInProgress)
   try {
     getDecryptedAiApiKey()
   } catch (error) {
@@ -1668,8 +1669,6 @@ function registerIpcHandlers(): void {
     return result.response === 0
   }))
   ipcMain.handle('knowbook:cancel-webdav-sync', () => webdavSync.cancel())
-  ipcMain.handle('knowbook:resolve-webdav-sync-conflict', (_event, input: import('../shared/webdav-sync').ResolveWebDavSyncConflict) => webdavSync.resolveConflict(input))
-  ipcMain.handle('knowbook:get-webdav-sync-conflict-details', (_event, input: import('../shared/webdav-sync').WebDavSyncConflictDetailsInput) => webdavSync.getConflictDetails(input))
   ipcMain.handle('knowbook:preview-webdav-protocol5-conflicts', () => webdavSync.previewProtocol5Conflicts())
   ipcMain.handle('knowbook:resolve-webdav-protocol5-conflict', (_event, input: unknown) => webdavSync.resolveProtocol5Conflict(input))
   ipcMain.handle('knowbook:preview-webdav-protocol5-deletions', () => webdavSync.previewProtocol5Deletions())
@@ -3265,11 +3264,17 @@ async function confirmV3RestorePlan(preview: ControlledV3RestorePreview): Promis
   }
   const counts = (label: string, value: ControlledV3RestorePreview['documents']) =>
     `${label}：新增 ${value.incoming}，更新 ${value.replaced}，保留 ${value.retained}。`
+  const absentSourceGroups = preview.sourceOwnedMissingGroups?.length ?? 0
+  const retiring = preview.sourceGroupRetirements ?? []
   const { response } = await dialog.showMessageBox({
     title: '确认 V3 恢复计划', type: 'warning',
     message: '安装此恢复计划并重新打开 KnowBook？',
-    detail: [counts('文档', preview.documents), counts('同步组', preview.groups), `未解决的冲突：${preview.conflicts}。`].join('\n'),
-    buttons: ['安装此计划', '取消'], defaultId: 1, cancelId: 1, noLink: true
+    detail: [counts('文档', preview.documents), counts('同步组', preview.groups),
+      ...(absentSourceGroups ? [`当前备份缺少 ${absentSourceGroups} 个由直接前驱备份安装的同步组。本次恢复保留这些同步组。`] : []),
+      ...(retiring.length ? [`本次恢复将移除 ${retiring.length} 个已在 WebDAV 删除且没有引用的同步组。`,
+        ...retiring.map(group => `同步组 ${group.groupId}，创建于 ${group.createdAt}，来源备份 ${group.sourceSnapshotId}。`)] : []),
+      `未解决的冲突：${preview.conflicts}。`].join('\n'),
+    buttons: [retiring.length ? '确认移除并安装' : '安装此计划', '取消'], defaultId: 1, cancelId: 1, noLink: true
   })
   return response === 0
 }
@@ -3281,7 +3286,7 @@ if (hasSingleInstanceLock && (databaseRestoreRequested || maintenanceArgumentErr
     if (maintenanceArgumentError) throw maintenanceArgumentError
     if (!v3RestoreDirectory && !databaseRestorePath) throw new Error('数据库恢复备份路径缺失。')
     const result = v3RestoreDirectory ? await restoreKnowbookBackupV3(userDataRoot, v3RestoreDirectory, v3RestoreInventoryHash,
-      v3RestoreInteractive ? confirmV3RestorePlan : undefined, v3RestoreRequestId)
+      v3RestoreInteractive ? confirmV3RestorePlan : undefined, v3RestoreRequestId, aiCredentialStorage)
       : await restoreKnowbookDatabase({ userDataRoot, backupPath: databaseRestorePath! })
     if (result === null) {
       await report({ status: 'cancelled', ...(v3RestoreRequestId ? { operationId: v3RestoreRequestId } : {}) })

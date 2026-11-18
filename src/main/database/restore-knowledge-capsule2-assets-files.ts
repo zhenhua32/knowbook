@@ -84,11 +84,14 @@ async function readExact(path: string, root: string, bytes: number, expectedHash
 /** Untrusted manifest bytes only. Its owner must parse and check the pinned
  * domain hash before using any field, and separately validate actual SQL. */
 export async function readCapsule2AssetManifest(path: string, root: string, maximumBytes = CAPSULE2_RAW_MAX_JSON_BYTES): Promise<string> {
+  const bytes = await readCapsule2AssetManifestBytes(path, root, maximumBytes)
+  return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes)
+}
+export async function readCapsule2AssetManifestBytes(path: string, root: string, maximumBytes: number): Promise<Buffer> {
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > CAPSULE2_RAW_MAX_JSON_BYTES) return bad('清单读取预算无效')
   await assertRestorePath(path, root)
   const info = await lstat(path)
-  const bytes = await readBounded(path, root, info.size, maximumBytes)
-  return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes)
+  return readBounded(path, root, info.size, maximumBytes)
 }
 async function verify(value: Saved): Promise<PreparedCapsule2KnownAssetInfo> {
   await assertOwnedRawCapsuleOriginal(value.original)

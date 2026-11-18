@@ -23,6 +23,7 @@ import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_RAW_MAX_ROWS, CAPSULE2_RAW_MAX_VA
 import { DURABLE_SQL_DAG_MAX_ORIGINAL_BYTES, durableSqlDagHash, durableSqlDagUuid } from './restore-knowledge-dag-model'
 import { assertRestoreInventory, restorePaths } from './restore-safety-files'
 import { restoreSqliteFilename } from './restore-safety-sqlite-path'
+import { readOrdinaryPublicationAttempts } from './synced-ordinary-publication-attempt'
 
 const exchangeRoot = 'synced-exchanges-v1', publicationRoot = 'synced-publications-v1', incomingRoot = 'synced-incoming-v1'
 const headPrefix = 'sync.webdav.protocol5.exchange-job-head.v1.'
@@ -158,10 +159,15 @@ function readClosedSql(db: Database.Database, liveDatabase: string) {
     }
   }
   const publications = new Map([...exposures].filter(([, row]) => row.channel === publicationChannel))
+  const ordinaryPublications = readOrdinaryPublicationAttempts(db)
+  for (const { attempt } of ordinaryPublications) {
+    if (version !== 27 || attempt.state !== 'confirmed' || findExposure?.get(attempt.id))
+      return fail('存在未确认或存在重复组曝光的普通工作区首发')
+  }
   const claimed = new Set(exchanges.map(({ job }) => job.attemptId))
   if (claimed.size !== exchanges.length || [...exposures].some(([id, row]) => row.channel === exchangeChannel && !claimed.has(id)))
     return fail('原交换曝光不属于唯一已结算 job')
-  return { exchanges, exposures, publications, previews }
+  return { exchanges, exposures, publications, ordinaryPublications, previews }
 }
 
 async function originalSql(original: OwnedRawCapsuleOriginal) {
@@ -280,7 +286,9 @@ export async function readV3SettledPrivateSyncOriginals(original: OwnedRawCapsul
   // Historical SQL proves terminal state even when an entire original spool
   // namespace has already been retired. A retained namespace must be exact.
   const hasExchanges = await hasOriginals(exchangeRoot, sql.exchanges.map(item => item.job.request.operationId))
-  const hasPublications = await hasOriginals(publicationRoot, [...sql.publications.keys()])
+  const ordinaryPublications = new Map(sql.ordinaryPublications.map(item => [item.attempt.id, item.attempt]))
+  const publicationIds = [...sql.publications.keys(), ...ordinaryPublications.keys()]
+  const hasPublications = await hasOriginals(publicationRoot, publicationIds)
   for (const { job, jobHash, receipt, ancestors } of sql.exchanges) {
     const exposure = sql.exposures.get(job.attemptId)
     if (receipt.result.publishedKeys.length && job.descriptor.members.length) {
@@ -294,7 +302,7 @@ export async function readV3SettledPrivateSyncOriginals(original: OwnedRawCapsul
     await readExchangeSpool(fs, operation, job, jobHash, receipt)
     for (const ancestor of ancestors) await readExchangeSpool(fs, operation, ancestor.job, ancestor.jobHash)
   }
-  for (const [id, exposure] of sql.publications) {
+  for (const id of publicationIds) {
     if (!hasPublications) continue
     const prefix = publicationRoot + '/' + id
     await fs.exact(prefix, ['assets', 'manifest.json', 'objects', 'ready.json', 'state.json'])
@@ -312,7 +320,14 @@ export async function readV3SettledPrivateSyncOriginals(original: OwnedRawCapsul
     const { objects, assets, targetFingerprint, members } = loaded.descriptor
     await fs.exact(prefix + '/objects', objects.map(item => basename(item.path)))
     await fs.exact(prefix + '/assets', assets.map(item => basename(item.path)))
-    assertExposure(exposure, loaded.requestHash, loaded.publicationHash, targetFingerprint, members)
+    const exposure = sql.publications.get(id)
+    if (exposure) {
+      assertExposure(exposure, loaded.requestHash, loaded.publicationHash, targetFingerprint, members)
+    } else {
+      const ordinary = ordinaryPublications.get(id)!
+      if (members.length || ordinary.request_hash !== loaded.requestHash || ordinary.publication_hash !== loaded.publicationHash
+        || ordinary.target_fingerprint !== targetFingerprint) return fail('普通工作区首发记录与原私有文件不符')
+    }
   }
   const observedPreviews: { root: string; previewId: string; sqlHash: string }[] = []
   for (const { root, entries } of sql.previews) {
@@ -326,13 +341,15 @@ export async function readV3SettledPrivateSyncOriginals(original: OwnedRawCapsul
       observedPreviews.push({ root, previewId, sqlHash })
     }
   }
-  const version = observedPreviews.length ? 3 : sql.exchanges.some(item => item.ancestors.length) ? 2 : 1
+  const version = ordinaryPublications.size ? 4 : observedPreviews.length ? 3 : sql.exchanges.some(item => item.ancestors.length) ? 2 : 1
   const manifest = { kind: 'observed-v3-settled-private-sync-originals', version, operationId,
     sqlOriginalInventory: owned.originalInventory, ...await fs.tail(),
     exchanges: sql.exchanges.map(({ job, sqlHash, ancestors }) => ({ operationId: job.request.operationId, attemptId: job.attemptId,
       merges: job.version === 1 ? 0 : job.merges?.length ?? 0, sqlHash,
       ...(ancestors.length ? { preparedAncestors: ancestors.map(item => ({ attemptId: item.job.attemptId, sqlHash: item.sqlHash })) } : {}) })),
     ...(observedPreviews.length ? { previews: observedPreviews } : {}),
+    ...(ordinaryPublications.size ? { ordinaryPublications: sql.ordinaryPublications.map(({ row, attempt }) => ({ id: attempt.id,
+      sqlHash: capsuleBytesHash(capsuleJson(row)) })) } : {}),
     exposures: [...sql.exposures].map(([id, value]) => ({ id, sqlHash: capsuleBytesHash(capsuleJson(value)) })), installPermit: false as const }
   // This is a readback of exact inputs. The joint journal independently
   // pins and rechecks the observation before granting installation.

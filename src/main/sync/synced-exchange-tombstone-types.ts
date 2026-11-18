@@ -4,6 +4,7 @@ import type { ExchangeComponent, ExchangeDeferredReason, ExchangeSeedProof, Exch
 import type { ExchangePlanAuthority, ExchangePlanIdentity } from './synced-exchange-plan'
 import type { ExchangeMergeProvenance } from './synced-exchange-conflict-model'
 import type { SyncedProtocol5Snapshot } from './synced-protocol5-model'
+import type { LocalDocumentDeletion } from '../database/local-document-deletions'
 
 /** Private immutable planning data. None of these types grants a caller SQL or remote authority. */
 export type TombstoneLocalOutcome =
@@ -53,6 +54,7 @@ export interface TombstonePinFact {
 export interface TombstonePlanAuthority extends ExchangePlanAuthority {
   deletedFacts: readonly TombstoneDeletedFact[]
   pins: readonly TombstonePinFact[]
+  localDocumentDeletions?: readonly LocalDocumentDeletion[]
 }
 export interface TombstonePlanInput {
   operationId: string
@@ -89,6 +91,7 @@ export interface TombstoneDeletionIntent {
   tombstoneHash: string
   before: SyncedPortableHostRecord | SyncedGroupWire
   identities: TombstoneIdentityEffect[]
+  localDeletionHash?: string
   intentHash: string
 }
 export interface TombstoneExchangePlan {

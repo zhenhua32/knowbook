@@ -31,10 +31,12 @@ export interface BackupV3SyncedGroup { id: string; creationId: string; sourceRev
 export interface BackupV3SyncedInstance { id: string; ownerDocumentId: string; groupId: string; sourceGroupRevision: string; sourceGroupHash: string }
 export interface BackupV3MissingReferences { documentIds: string[]; blockIds: string[]; instanceIds: string[] }
 export interface BackupV3DeletionPolicy extends DeletionPolicy { syncedGroups: { mode: 'source-owned-unreferenced' } }
+export interface BackupV3PublicationIdentity { snapshotId: string; catalogId: string; archiveHash: string }
 export interface BackupV3Manifest {
   snapshotId: string; catalogId: string; databaseIds: string[]; documentIds: string[]; missing: MissingReferences
   deletion: BackupV3DeletionPolicy; syncedGroups: BackupV3SyncedGroup[]; syncedInstances: BackupV3SyncedInstance[]
   syncedMissingReferences: BackupV3MissingReferences
+  previousPublication?: BackupV3PublicationIdentity
 }
 export interface ArchiveV3 extends ArchiveV3Snapshot { manifest: BackupV3Manifest }
 
@@ -87,6 +89,13 @@ function data(value: unknown, depth = 0, ancestors = new Set<object>()): void {
   ancestors.delete(value)
 }
 function parse(value: string): unknown { return parseStrictJson(value, { maxBytes: maxContent, maxDepth: 32 }) }
+function previousPublication(value: unknown, current: Pick<BackupV3Manifest, 'snapshotId' | 'catalogId'>): BackupV3PublicationIdentity {
+  data(value)
+  const identity = object(value, ['snapshotId', 'catalogId', 'archiveHash'])
+  const snapshotId = uuid(identity.snapshotId), catalogId = rawId(identity.catalogId), archiveHash = digest(identity.archiveHash)
+  if (snapshotId === current.snapshotId || catalogId !== current.catalogId) return invalid('invalid publication predecessor')
+  return { snapshotId, catalogId, archiveHash }
+}
 function same(actual: unknown, expected: unknown, why: string): void { if (json(actual) !== json(expected)) invalid(why) }
 function uniqueIds(values: unknown, read = rawId): string[] {
   const ids = list(values).map(read)
@@ -370,7 +379,7 @@ function manifest(snapshot: ArchiveV3Content, graph: SyncedValidatedGraph, snaps
   return { snapshotId: uuid(snapshotId), catalogId: snapshot.catalog.id, databaseIds: snapshot.standaloneDatabases.map(source => source.id).sort(compare), documentIds: snapshot.documents.map(doc => doc.id).sort(compare),
     missing: missingCatalog(snapshot), deletion: policy(snapshot.documents, files), syncedGroups: groups, syncedInstances: instances(snapshot, groups), syncedMissingReferences: missingSynced(snapshot, graph) }
 }
-export function buildBackupV3Files(value: ArchiveV3Snapshot, snapshotId: string): BackupV3File[] {
+export function buildBackupV3Files(value: ArchiveV3Snapshot, snapshotId: string, predecessor?: BackupV3PublicationIdentity): BackupV3File[] {
   data(value); object(value, ['documents', 'catalog', 'standaloneDatabases', 'groups', 'assets'])
   const assets = list(value.assets).map(value => {
     const asset = object(value, ['relativePath', 'bytes', 'hash', 'name'])
@@ -386,7 +395,8 @@ export function buildBackupV3Files(value: ArchiveV3Snapshot, snapshotId: string)
   const add = (relativePath: string, content: string) => output.push({ relativePath, bytes: encoder.encode(content) })
   add(indexPath, envelope({ kind: indexKind, backupFormatVersion: '3', backupSnapshotId: declaration.snapshotId, catalogDatabaseId: declaration.catalogId,
     databaseIds: json(declaration.databaseIds), documentIds: json(declaration.documentIds), databaseMissingReferences: json(declaration.missing), restoreDeletionPolicy: json(declaration.deletion),
-    syncedGroups: json(declaration.syncedGroups), syncedInstances: json(declaration.syncedInstances), syncedMissingReferences: json(declaration.syncedMissingReferences) }))
+    syncedGroups: json(declaration.syncedGroups), syncedInstances: json(declaration.syncedInstances), syncedMissingReferences: json(declaration.syncedMissingReferences),
+    ...(predecessor ? { previousPublication: json(previousPublication(predecessor, declaration)) } : {}) }))
   add(catalogPath, envelope(definitionHeader(snapshot.catalog, snapshotId, catalogKind)))
   snapshot.standaloneDatabases.forEach(source => add(databasePath(source.id), envelope(definitionHeader(source, snapshotId, databaseKind))))
   for (const doc of snapshot.documents) {
@@ -445,7 +455,7 @@ export function parseCapturedBackupV3Inventory(contents: readonly BackupV3File[]
     || contents.reduce((n, file) => n + file.bytes.byteLength, 0) > maxContentTotal) invalid('content file budget')
   const read = (relativePath: string): string => { const file = byPath.get(relativePath); if (!file) return invalid('required file missing: ' + relativePath); return decoder.decode(file.bytes) }
   const index = header(read(indexPath))
-  object(index.fields, ['kind', 'backupFormatVersion', 'backupSnapshotId', 'catalogDatabaseId', 'databaseIds', 'documentIds', 'databaseMissingReferences', 'restoreDeletionPolicy', 'syncedGroups', 'syncedInstances', 'syncedMissingReferences'])
+  object(index.fields, ['kind', 'backupFormatVersion', 'backupSnapshotId', 'catalogDatabaseId', 'databaseIds', 'documentIds', 'databaseMissingReferences', 'restoreDeletionPolicy', 'syncedGroups', 'syncedInstances', 'syncedMissingReferences'], ['previousPublication'])
   if (index.fields.kind !== indexKind || index.body.trim()) invalid('index kind/body')
   const snapshotId = uuid(index.fields.backupSnapshotId), catalogHeader = header(read(catalogPath))
   if (catalogHeader.fields.kind !== catalogKind || catalogHeader.fields.backupSnapshotId !== snapshotId || catalogHeader.body.trim()) invalid('catalog kind/body/snapshot')
@@ -500,6 +510,7 @@ export function parseCapturedBackupV3Inventory(contents: readonly BackupV3File[]
   same(rawGroups, declaration.syncedGroups, 'group exact set/order')
   same(parse(index.fields.syncedInstances), declaration.syncedInstances, 'instance identity/hash/revision closure')
   same(parse(index.fields.syncedMissingReferences), declaration.syncedMissingReferences, 'typed missing identity closure')
+  if (index.fields.previousPublication !== undefined) declaration.previousPublication = previousPublication(parse(index.fields.previousPublication), declaration)
   archiveProjectionBudget(snapshot, documentBytes)
   return { ...snapshot, groups: sorted(snapshot.groups), manifest: declaration }
 }

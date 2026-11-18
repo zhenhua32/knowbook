@@ -1,695 +1,141 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { randomUUID } from 'node:crypto'
-import { KnowbookStore } from '../src/main/database/store'
-import { AttachmentStore } from '../src/main/attachments'
-import { WebDavSyncService } from '../src/main/sync/service'
-import { createEphemeralCredentialStorage } from '../src/main/credential-storage'
 import { DEFAULT_WEBDAV_SYNC_CONFIG } from '../src/shared/webdav-sync'
-import { attachmentMarkdown } from '../src/shared/attachments'
-import { collectMarkdownDestinations } from '../src/shared/markdownLinks'
-import { canonicalJson, hashBytes, parseManifest, recordHash, validateRecord, type SyncDocument, type SyncRecord } from '../src/main/sync/model'
-import { normalizeWebDavConfig, WebDavClient, type WebDavRequestActivity } from '../src/main/sync/webdav-client'
-import { createWebDavServer } from './helpers/webdav-server'
+import { normalizeWebDavConfig, WebDavClient, WebDavHttpError, type WebDavRequestActivity } from '../src/main/sync/webdav-client'
 import { readWebDavEtag } from '../src/main/sync/webdav-properties'
-import type { DocumentBlockDraft } from '../src/shared/contracts'
-import { serializeBlocksToMarkdown } from '../src/shared/markdown'
+import { createWebDavServer } from './helpers/webdav-server'
 
-let previousFixturePort: string | undefined
-function fetchFailureCodes(error: unknown): Array<{ name?: string; code?: string }> {
-  const chain: Array<{ name?: string; code?: string }> = [], seen = new Set<object>()
-  while (error && typeof error === 'object' && !seen.has(error) && chain.length < 4) {
-    seen.add(error)
-    const value = error as { name?: unknown; code?: unknown; cause?: unknown }
-    chain.push({ ...(typeof value.name === 'string' ? { name: value.name } : {}),
-      ...(typeof value.code === 'string' ? { code: value.code } : {}) })
-    error = value.cause
-  }
-  return chain
+type Server = Awaited<ReturnType<typeof createWebDavServer>>
+const manifest = 'manifest.json', manifestPath = '/KnowBook/' + manifest
+
+function clientFor(server: Server) {
+  return new WebDavClient(normalizeWebDavConfig({ ...DEFAULT_WEBDAV_SYNC_CONFIG, url: server.url, username: 'test', allowInsecureHttp: true }), 'app-secret')
 }
 
-async function fixture(run: (a: ReturnType<typeof device>, b: ReturnType<typeof device>, server: Awaited<ReturnType<typeof createWebDavServer>>) => Promise<void>) {
-  const root = mkdtempSync(join(tmpdir(), 'knowbook-webdav-'))
+async function withServer(run: (client: WebDavClient, server: Server) => Promise<void>) {
   const server = await createWebDavServer()
-  const a = device(root, 'a', server.url), b = device(root, 'b', server.url)
-  const originalFetch = globalThis.fetch, port = new URL(server.url).port
-  globalThis.fetch = async (input, init) => {
-    try { return await originalFetch(input, init) }
-    catch (error) {
-      // Keep transport failures observable before the user-facing service
-      // translates them. Never print credentials, URLs, headers or bodies.
-      process.stderr.write(`[WebDAV fixture transport] ${JSON.stringify({ port, previousPort: previousFixturePort,
-        method: init?.method ?? 'GET', causes: fetchFailureCodes(error) })}\n`)
-      throw error
-    }
-  }
-  try { await run(a, b, server) }
-  finally {
-    globalThis.fetch = originalFetch; previousFixturePort = port
-    await a.sync.stop(); await b.sync.stop(); a.store.destroy(); b.store.destroy(); await server.close(); rmSync(root, { recursive: true, force: true })
-  }
-}
-function device(root: string, name: string, url: string) {
-  const store = new KnowbookStore(join(root, name, 'knowbook.db'))
-  for (const doc of store.getAllDocumentSnapshots().reverse()) store.deleteDocument(doc.id)
-  const assets = new AttachmentStore(join(root, name, 'assets'))
-  const credentials = createEphemeralCredentialStorage(randomUUID)
-  const sync = new WebDavSyncService(store, assets, credentials)
-  sync.saveConfig({ ...DEFAULT_WEBDAV_SYNC_CONFIG, url, username: 'test', password: 'app-secret', allowInsecureHttp: true })
-  return { store, assets, sync, credentials }
-}
-function edit(store: KnowbookStore, id: string, text: string, title?: string) {
-  const old = store.documentRecovery.readContent(id)
-  store.updateDocument(id, { ...old, title: title ?? old.title, blocks: [{ ...old.blocks[0], content: text }] })
-}
-function content(store: KnowbookStore, id: string) { return store.getDocumentDetail(id)!.blocks[0].content }
-function resolveConflict(sync: WebDavSyncService, input: { key: string; choice: 'local' | 'remote' | 'both' }) {
-  const version = sync.getStatus().conflicts.find(conflict => conflict.key === input.key)!
-  return sync.resolveConflict({ ...input, localHash: version.localHash, remoteHash: version.remoteHash })
+  try { await run(clientFor(server), server) } finally { await server.close() }
 }
 
-function columnSyncBlocks(): DocumentBlockDraft[] {
-  return [
-    { id: 'sync-columns', type: 'columns', content: '', checked: false, depth: 0, parentBlockId: null, tags: ['layout'] },
-    { id: 'sync-left', type: 'column', content: '', checked: false, depth: 1, parentBlockId: 'sync-columns', tags: [], markdownFormat: { columnWeight: 4000 } },
-    { id: 'sync-left-body', type: 'paragraph', content: 'Left original', checked: false, depth: 2, parentBlockId: 'sync-left', tags: ['left'], highlight: 'yellow' },
-    { id: 'sync-toggle', type: 'toggle', content: 'Nested details', checked: false, depth: 2, parentBlockId: 'sync-left', tags: [], markdownFormat: { toggleDefaultOpen: false } },
-    { id: 'sync-leaf', type: 'paragraph', content: 'Nested body', checked: false, depth: 3, parentBlockId: 'sync-toggle', tags: [] },
-    { id: 'sync-right', type: 'column', content: '', checked: false, depth: 1, parentBlockId: 'sync-columns', tags: [], markdownFormat: { columnWeight: 6000 } },
-    { id: 'sync-right-body', type: 'paragraph', content: 'Right original', checked: false, depth: 2, parentBlockId: 'sync-right', tags: [] }
-  ]
-}
-function columnWeights(store: KnowbookStore, id: string) {
-  return store.documentRecovery.readContent(id).blocks.filter(block => block.type === 'column').map(block => block.markdownFormat!.columnWeight!)
-}
-function setColumnWeights(store: KnowbookStore, id: string, left: number, right: number) {
-  const old = store.documentRecovery.readContent(id)
-  store.updateDocument(id, { ...old, blocks: old.blocks.map(block => block.id === 'sync-left' || block.id === 'sync-right'
-    ? { ...block, markdownFormat: { columnWeight: block.id === 'sync-left' ? left : right } } : block) })
-}
-const syncStateRows = (store: KnowbookStore) => store.getUnsafeDatabaseHandle()
-  .prepare("SELECT * FROM app_settings WHERE key LIKE 'sync.webdav.state.%' ORDER BY key").all()
-
-test('columns protocol3 upgrades v1 then v2 in the same retried CAS as its first layout and stays v3 after restart and removal', () => fixture(async (a, b, server) => {
-  const id = a.store.createDocument(null); edit(a.store, id, 'Original', 'Columns CAS')
-  await a.sync.sync(); await b.sync.sync()
-  assert.equal(parseManifest(server.files.get('/KnowBook/manifest.json')!).version, 1)
-  a.store.updateDocument(id, { title: 'Columns CAS', summary: '', blocks: [
-    { id: 'before-columns-toggle', type: 'toggle', content: 'Before layout', checked: false, depth: 0 }
-  ] })
-  await a.sync.sync(); await b.sync.sync()
-  assert.equal(parseManifest(server.files.get('/KnowBook/manifest.json')!).version, 2)
-  a.store.updateDocument(id, { title: 'Columns CAS', summary: '', blocks: columnSyncBlocks() })
-  const other = b.store.createDocument(null); edit(b.store, other, 'Independent document', 'Columns concurrent publication')
-  let raced = false, version3Puts = 0
-  server.setHook(async (req, bytes) => {
-    if (req.method === 'PUT' && req.url!.endsWith('manifest.json') && JSON.parse(bytes.toString()).version === 3) {
-      version3Puts++
-      if (!raced) { raced = true; await b.sync.sync() }
-    }
-  })
-  await a.sync.sync(); await b.sync.sync()
-  assert.equal(raced, true); assert.ok(version3Puts >= 2, 'a stale v2 ETag must force a new conditional v3 manifest write')
-  const manifest = parseManifest(server.files.get('/KnowBook/manifest.json')!)
-  assert.equal(manifest.version, 3)
-  assert.ok(manifest.entries[`doc:${id}`]); assert.ok(manifest.entries[`doc:${other}`])
-  const published = validateRecord(JSON.parse(server.files.get(`/KnowBook/objects/${manifest.entries[`doc:${id}`]}.json`)!.toString()), `doc:${id}`, 3) as SyncDocument
-  assert.deepEqual(published.content.blocks, a.store.documentRecovery.readContent(id).blocks)
-  assert.deepEqual(b.store.documentRecovery.readContent(id), a.store.documentRecovery.readContent(id))
-  assert.equal(content(a.store, other), 'Independent document')
-  const version2Gate = (bytes: Buffer) => { if (![1, 2].includes(JSON.parse(bytes.toString()).version)) throw new Error('unsupported v2 manifest') }
-  assert.throws(() => version2Gate(server.files.get('/KnowBook/manifest.json')!), /unsupported/)
-  const databasePath = b.store.getDatabasePath()
-  await b.sync.stop(); b.store.destroy()
-  b.store = new KnowbookStore(databasePath); b.sync = new WebDavSyncService(b.store, b.assets, b.credentials)
-  assert.deepEqual(b.store.documentRecovery.readContent(id), a.store.documentRecovery.readContent(id))
-  assert.deepEqual(columnWeights(b.store, id), [4000, 6000])
-  a.store.updateDocument(id, { title: 'Columns CAS', summary: '', blocks: [{ id: 'plain-after-columns', type: 'paragraph', content: 'Plain again', checked: false, depth: 0 }] })
-  await a.sync.sync(); await b.sync.sync()
-  assert.equal(parseManifest(server.files.get('/KnowBook/manifest.json')!).version, 3)
-  assert.equal(content(b.store, id), 'Plain again')
-}))
-
-test('columns protocol3 automatically merges edits in different columns on two independent devices with stable identities', () => fixture(async (a, b, server) => {
-  const id = a.store.createDocument(null)
-  a.store.updateDocument(id, { title: 'Columns independent edits', summary: '', blocks: columnSyncBlocks() })
-  await a.sync.sync(); await b.sync.sync()
-  const base = a.store.documentRecovery.readContent(id), other = b.store.documentRecovery.readContent(id)
-  a.store.updateDocument(id, { ...base, blocks: base.blocks.map(block => block.id === 'sync-left-body' ? { ...block, content: 'Left from A' } : block) })
-  b.store.updateDocument(id, { ...other, blocks: other.blocks.map(block => block.id === 'sync-right-body' ? { ...block, content: 'Right from B' } : block) })
-  await a.sync.sync(); await b.sync.sync()
-  assert.equal(b.sync.getStatus().merged, 1)
-  assert.equal(b.sync.getStatus().conflicts.length, 0)
-  await a.sync.sync()
-  const merged = a.store.documentRecovery.readContent(id)
-  assert.deepEqual(b.store.documentRecovery.readContent(id), merged)
-  assert.equal(merged.blocks.find(block => block.id === 'sync-left-body')!.content, 'Left from A')
-  assert.equal(merged.blocks.find(block => block.id === 'sync-right-body')!.content, 'Right from B')
-  assert.deepEqual(merged.blocks.map(block => [block.id, block.type, block.depth, block.parentBlockId, block.markdownFormat, block.tags, block.highlight]),
-    base.blocks.map(block => [block.id, block.type, block.depth, block.parentBlockId, block.markdownFormat, block.tags, block.highlight]))
-  assert.equal(parseManifest(server.files.get('/KnowBook/manifest.json')!).version, 3)
-}))
-
-test('columns protocol3 keeps each coupled width vector atomic until a verified group choice resolves the conflict', () => fixture(async (a, b, server) => {
-  const id = a.store.createDocument(null)
-  a.store.updateDocument(id, { title: 'Columns ratio conflict', summary: '', blocks: columnSyncBlocks() })
-  await a.sync.sync(); await b.sync.sync()
-  setColumnWeights(a.store, id, 5500, 4500); setColumnWeights(b.store, id, 4100, 5900)
-  const local = b.store.documentRecovery.readContent(id)
-  b.store.updateDocument(id, { ...local, blocks: local.blocks.map(block => block.id === 'sync-right-body' ? { ...block, content: 'Keep B body' } : block) })
-  await a.sync.sync()
-  const published = Buffer.from(server.files.get('/KnowBook/manifest.json')!)
-  await b.sync.sync()
-  assert.deepEqual(columnWeights(b.store, id), [4100, 5900])
-  assert.deepEqual(server.files.get('/KnowBook/manifest.json'), published)
-  const conflict = b.sync.getStatus().conflicts[0]
-  assert.equal(conflict.key, `doc:${id}`); assert.equal(conflict.canMerge, true)
-  const field = 'block:sync-columns:column-layout'
-  assert.deepEqual(conflict.mergeFields.map(part => part.id), [field])
-  const version = { key: conflict.key, localHash: conflict.localHash, remoteHash: conflict.remoteHash }
-  const details = b.sync.getConflictDetails(version)
-  assert.deepEqual(details.merge?.unresolvedIds, [field])
-  assert.equal(details.merge!.conflicts[0].property, 'columnWeights')
-  assert.equal(details.merge!.conflicts[0].canEditText, false)
-  const state = syncStateRows(b.store)
-  assert.throws(() => b.sync.resolveConflict({ ...version, choice: 'merge', mergeChoices: { [field]: { choice: 'custom', text: '[5600,4400]' } } }), /全部冲突字段/)
-  assert.deepEqual(syncStateRows(b.store), state)
-  b.sync.resolveConflict({ ...version, choice: 'merge', mergeChoices: { [field]: { choice: 'remote' } } })
-  await b.sync.sync(); await a.sync.sync()
-  assert.deepEqual(columnWeights(a.store, id), [5500, 4500])
-  assert.deepEqual(columnWeights(b.store, id), [5500, 4500])
-  assert.equal(b.store.documentRecovery.readContent(id).blocks.find(block => block.id === 'sync-right-body')!.content, 'Keep B body')
-  assert.deepEqual(a.store.documentRecovery.readContent(id), b.store.documentRecovery.readContent(id))
-  assert.equal(b.sync.getStatus().conflicts.length, 0)
-}))
-
-test('columns protocol3 rejects cached v1 and v2 downgrades even for database-only writes without changing knowledge or cursors', async context => {
-  for (const oldVersion of [1, 2] as const) await context.test(`manifest v${oldVersion}`, () => fixture(async (a, b, server) => {
-    const id = a.store.createDocument(null)
-    a.store.updateDocument(id, { title: 'Columns old protocol', summary: '', blocks: columnSyncBlocks() })
-    await a.sync.sync(); await b.sync.sync()
-    const manifest = parseManifest(server.files.get('/KnowBook/manifest.json')!)
-    assert.equal(manifest.version, 3)
-    manifest.version = oldVersion
-    const downgraded = Buffer.from(canonicalJson(manifest)); server.files.set('/KnowBook/manifest.json', downgraded)
-    for (const databaseOnly of [false, true]) {
-      if (databaseOnly) b.store.createDatabase({ name: 'Independent columns schema', description: '' })
-      const before = receivedMoveState(b.store), records = canonicalJson([...b.store.getSyncRecords()]), state = syncStateRows(b.store)
-      const lastSync = b.sync.getStatus().lastSyncAt, requestStart = server.requests.length
-      await assert.rejects(b.sync.sync(), /清单版本.*分栏/)
-      assert.deepEqual(receivedMoveState(b.store), before)
-      assert.equal(canonicalJson([...b.store.getSyncRecords()]), records)
-      assert.deepEqual(syncStateRows(b.store), state)
-      assert.equal(b.sync.getStatus().lastSyncAt, lastSync)
-      assert.deepEqual(server.files.get('/KnowBook/manifest.json'), downgraded)
-      assert.equal(server.requests.slice(requestStart).some(request => request.method === 'PUT' && request.path.endsWith('manifest.json')), false)
-    }
-  }))
-})
-
-test('columns protocol3 rejects invalid ownership, weights, hidden source and future manifests before any local mutation or publication', () => fixture(async (a, b, server) => {
-  const id = a.store.createDocument(null)
-  a.store.updateDocument(id, { title: 'Columns malformed protocol', summary: '', blocks: columnSyncBlocks() })
-  await a.sync.sync(); await b.sync.sync()
-  const manifest = parseManifest(server.files.get('/KnowBook/manifest.json')!)
-  const record = JSON.parse(server.files.get(`/KnowBook/objects/${manifest.entries[`doc:${id}`]}.json`)!.toString()) as SyncDocument
-  const invalidSum = structuredClone(record), foreignParent = structuredClone(record), invalidRole = structuredClone(record), hiddenSource = structuredClone(record)
-  const mixedHiddenSource = structuredClone(record)
-  invalidSum.content.blocks[1].markdownFormat = { columnWeight: 4001 }
-  foreignParent.content.blocks[1].parentBlockId = 'foreign-owner'
-  invalidRole.content.blocks[1] = { ...invalidRole.content.blocks[1], type: 'paragraph', content: 'Not a column', markdownFormat: undefined }
-  hiddenSource.content.blocks = [{ id: 'hidden-columns', type: 'paragraph', checked: false, depth: 0, parentBlockId: null,
-    content: serializeBlocksToMarkdown(record.content.blocks).replace('data-knowbook-weight="4000"', 'data-knowbook-weight="4001"') }]
-  mixedHiddenSource.content.blocks.push({ ...hiddenSource.content.blocks[0], id: 'hidden-next-to-valid-columns' })
-  for (const invalid of [invalidSum, foreignParent, invalidRole, hiddenSource, mixedHiddenSource]) {
-    const bytes = Buffer.from(canonicalJson(invalid)), hash = hashBytes(bytes)
-    server.files.set(`/KnowBook/objects/${hash}.json`, bytes)
-    const malformed = Buffer.from(canonicalJson({ ...manifest, entries: { ...manifest.entries, [`doc:${id}`]: hash } }))
-    server.files.set('/KnowBook/manifest.json', malformed)
-    const before = receivedMoveState(b.store), state = syncStateRows(b.store), lastSync = b.sync.getStatus().lastSyncAt, requestStart = server.requests.length
-    await assert.rejects(b.sync.sync(), /格式无效|Invalid native Markdown container/)
-    assert.deepEqual(receivedMoveState(b.store), before); assert.deepEqual(syncStateRows(b.store), state)
-    assert.equal(b.sync.getStatus().lastSyncAt, lastSync)
-    assert.deepEqual(server.files.get('/KnowBook/manifest.json'), malformed)
-    assert.equal(server.requests.slice(requestStart).some(request => request.method === 'PUT' && request.path.endsWith('manifest.json')), false)
-  }
-  const unsupported = Buffer.from(canonicalJson({ ...manifest, version: 5 }))
-  server.files.set('/KnowBook/manifest.json', unsupported)
-  const before = receivedMoveState(b.store), state = syncStateRows(b.store), requestStart = server.requests.length
-  await assert.rejects(b.sync.sync(), /清单无效|版本不受支持/)
-  assert.deepEqual(receivedMoveState(b.store), before); assert.deepEqual(syncStateRows(b.store), state)
-  assert.deepEqual(server.files.get('/KnowBook/manifest.json'), unsupported)
-  assert.equal(server.requests.slice(requestStart).some(request => request.path.startsWith('/KnowBook/objects/')), false)
-}))
-
-test('columns protocol3 leaves fenced, inline and unmarked legacy HTML examples on v1 through real device sync', () => fixture(async (a, b, server) => {
-  const id = a.store.createDocument(null), source = serializeBlocksToMarkdown(columnSyncBlocks())
-  a.store.updateDocument(id, { title: 'Columns literal examples', summary: '', blocks: [
-    { id: 'columns-literal-code', type: 'code', content: source, checked: false, depth: 0, language: 'html', markdownFormat: { codeInfo: 'html' } },
-    { id: 'columns-literal-legacy', type: 'html', content: '<details>\n<summary>Literal example</summary>\n\n' + source + '\n\n</details>', checked: false, depth: 0 },
-    { id: 'columns-literal-inline', type: 'paragraph', content: 'Inline `<section data-knowbook-container="columns-v1">` example', checked: false, depth: 0 }
-  ] })
-  const original = a.store.documentRecovery.readContent(id)
-  await a.sync.sync(); await b.sync.sync()
-  assert.equal(parseManifest(server.files.get('/KnowBook/manifest.json')!).version, 1)
-  assert.deepEqual(b.store.documentRecovery.readContent(id), original)
-  assert.equal(b.sync.getStatus().conflicts.length, 0)
-}))
-
-test('native containers upgrade the manifest atomically and two independent devices retain mixed children across restart and merge', () => fixture(async (a, b, server) => {
-  const id = a.store.createDocument(null)
-  edit(a.store, id, 'legacy body', 'Native sync')
-  await a.sync.sync(); await b.sync.sync()
-  assert.equal(parseManifest(server.files.get('/KnowBook/manifest.json')!).version, 1)
-  const blocks = [
-    { id: 'native-owner', type: 'callout', content: 'Warning', checked: false, depth: 0, parentBlockId: null, tags: ['native'],
-      markdownFormat: { calloutKind: 'warning' as const, calloutIcon: 'book' as const, calloutTone: 'orange' as const } },
-    { id: 'native-toggle', type: 'toggle', content: 'Details', checked: false, depth: 1, parentBlockId: 'native-owner', tags: [], markdownFormat: { toggleDefaultOpen: false } },
-    { id: 'native-text', type: 'paragraph', content: 'Body', checked: false, depth: 2, parentBlockId: 'native-toggle', tags: [] },
-    { id: 'native-code', type: 'code', content: 'const a = 1', checked: false, depth: 2, parentBlockId: 'native-toggle', tags: [], language: 'ts', markdownFormat: { codeInfo: 'ts' } }
-  ]
-  a.store.updateDocument(id, { title: 'Native sync', summary: '', blocks })
-  await a.sync.sync()
-  const manifestBytes = server.files.get('/KnowBook/manifest.json')!
-  assert.equal(parseManifest(manifestBytes).version, 2)
-  // The shipped v1 reader's exact compatibility check precedes object reads.
-  const oldManifestGate = (bytes: Buffer) => { if (JSON.parse(bytes.toString()).version !== 1) throw new Error('unsupported v1 manifest') }
-  assert.throws(() => oldManifestGate(manifestBytes), /unsupported/)
-  await b.sync.sync()
-  assert.deepEqual(b.store.documentRecovery.readContent(id).blocks, blocks)
-  const originalPath = b.store.getDatabasePath()
-  await b.sync.stop(); b.store.destroy()
-  b.store = new KnowbookStore(originalPath)
-  b.sync = new WebDavSyncService(b.store, b.assets, b.credentials)
-  assert.deepEqual(b.store.documentRecovery.readContent(id).blocks, blocks)
-  const left = a.store.documentRecovery.readContent(id), right = b.store.documentRecovery.readContent(id)
-  a.store.updateDocument(id, { ...left, blocks: left.blocks.map(block => block.id === 'native-owner'
-    ? { ...block, markdownFormat: { ...block.markdownFormat, calloutTone: 'blue' } } : block) })
-  b.store.updateDocument(id, { ...right, blocks: right.blocks.map(block => block.id === 'native-text' ? { ...block, content: 'Remote body' } : block) })
-  await b.sync.sync(); await a.sync.sync(); await b.sync.sync()
-  const merged = a.store.documentRecovery.readContent(id)
-  assert.deepEqual(b.store.documentRecovery.readContent(id), merged)
-  assert.equal(merged.blocks[0].markdownFormat?.calloutTone, 'blue')
-  assert.equal(merged.blocks[1].markdownFormat?.toggleDefaultOpen, false)
-  assert.equal(merged.blocks[2].content, 'Remote body')
-  assert.deepEqual(merged.blocks.map(block => [block.id, block.depth, block.parentBlockId]), blocks.map(block => [block.id, block.depth, block.parentBlockId]))
-  assert.equal(a.sync.getStatus().conflicts.length, 0)
-  a.store.updateDocument(id, { ...merged, blocks: [{ id: 'plain-again', type: 'paragraph', content: 'Plain', checked: false, depth: 0 }] })
-  await a.sync.sync(); await b.sync.sync()
-  assert.equal(parseManifest(server.files.get('/KnowBook/manifest.json')!).version, 2, 'an upgraded workspace never downgrades its old-reader gate')
-}))
-
-test('the v1 to v2 compatibility gate shares CAS retry with concurrent independent document publication', () => fixture(async (a, b, server) => {
-  const id = a.store.createDocument(null); edit(a.store, id, 'Initial', 'Native race')
-  await a.sync.sync(); await b.sync.sync()
-  const other = b.store.createDocument(null); edit(b.store, other, 'Independent', 'Independent native race')
-  a.store.updateDocument(id, { title: 'Native race', summary: '', blocks: [
-    { id: 'race-toggle', type: 'toggle', content: 'Owner', checked: false, depth: 0 },
-    { id: 'race-child', type: 'paragraph', content: 'Child', checked: false, depth: 1, parentBlockId: 'race-toggle' }
-  ] })
-  let raced = false
-  server.setHook(async (req, bytes) => {
-    if (!raced && req.method === 'PUT' && req.url!.endsWith('manifest.json') && JSON.parse(bytes.toString()).version === 2) {
-      raced = true
-      await b.sync.sync()
-    }
-  })
-  await a.sync.sync(); await b.sync.sync()
-  assert.equal(raced, true)
-  const manifest = parseManifest(server.files.get('/KnowBook/manifest.json')!)
-  assert.equal(manifest.version, 2)
-  assert.ok(manifest.entries[`doc:${id}`]); assert.ok(manifest.entries[`doc:${other}`])
-  assert.equal(content(a.store, other), 'Independent')
-  assert.deepEqual(b.store.documentRecovery.readContent(id), a.store.documentRecovery.readContent(id))
-  assert.equal(b.store.documentRecovery.readContent(id).blocks[1].parentBlockId, 'race-toggle')
-}))
-
-test('a v1 manifest containing a native tree is rejected without publication, local changes or advancing sync state', () => fixture(async (a, b, server) => {
-  const id = a.store.createDocument(null); edit(a.store, id, 'Original', 'Malformed native protocol')
-  await a.sync.sync(); await b.sync.sync()
-  const manifest = parseManifest(server.files.get('/KnowBook/manifest.json')!)
-  const record = JSON.parse(server.files.get(`/KnowBook/objects/${manifest.entries[`doc:${id}`]}.json`)!.toString()) as SyncDocument
-  record.content.blocks = [{ id: 'bad-native', type: 'toggle', content: 'Native owner', checked: false, depth: 0 }]
-  const bytes = Buffer.from(canonicalJson(record)), hash = hashBytes(bytes)
-  server.files.set(`/KnowBook/objects/${hash}.json`, bytes)
-  manifest.entries[`doc:${id}`] = hash
-  const beforeManifest = Buffer.from(canonicalJson(manifest))
-  server.files.set('/KnowBook/manifest.json', beforeManifest)
-  const before = canonicalJson([...b.store.getSyncRecords()]), status = b.sync.getStatus(), requestStart = server.requests.length
-  const stateRows = b.store.getUnsafeDatabaseHandle().prepare("SELECT * FROM app_settings WHERE key LIKE 'sync.webdav.state.%'").all()
-  await assert.rejects(b.sync.sync(), /清单版本/)
-  assert.equal(canonicalJson([...b.store.getSyncRecords()]), before)
-  assert.deepEqual(b.store.getUnsafeDatabaseHandle().prepare("SELECT * FROM app_settings WHERE key LIKE 'sync.webdav.state.%'").all(), stateRows)
-  assert.equal(b.sync.getStatus().lastSyncAt, status.lastSyncAt)
-  assert.deepEqual(server.files.get('/KnowBook/manifest.json'), beforeManifest)
-  assert.equal(server.requests.slice(requestStart).some(request => request.method === 'PUT' && request.path.endsWith('manifest.json')), false)
-}))
-
-test('a standalone layout table also gates old readers and preserves concurrent width and cell edits on two devices', () => fixture(async (a, b, server) => {
-  const id = a.store.createDocument(null)
-  const source = '<!-- knowbook:table-widths:v1 [160,null] -->\n| Name | Value |\n| --- | ---: |\n| StableName | OriginalValue |'
-  a.store.updateDocument(id, { title: 'Layout sync', summary: '', blocks: [{ id: 'layout-table', type: 'table', content: source, checked: false, depth: 0 }] })
-  await a.sync.sync(); await b.sync.sync()
-  assert.equal(parseManifest(server.files.get('/KnowBook/manifest.json')!).version, 2)
-  assert.equal(content(b.store, id), source)
-  const left = a.store.documentRecovery.readContent(id), right = b.store.documentRecovery.readContent(id)
-  a.store.updateDocument(id, { ...left, blocks: left.blocks.map(block => ({ ...block, content: block.content.replace('[160,null]', '[220,null]') })) })
-  b.store.updateDocument(id, { ...right, blocks: right.blocks.map(block => ({ ...block, content: block.content.replace('OriginalValue', 'RemoteValue') })) })
-  await b.sync.sync(); await a.sync.sync(); await b.sync.sync()
-  const expected = source.replace('[160,null]', '[220,null]').replace('OriginalValue', 'RemoteValue')
-  assert.equal(content(a.store, id), expected); assert.equal(content(b.store, id), expected)
-  assert.deepEqual(a.store.documentRecovery.readContent(id).blocks.map(block => [block.id, block.type, block.depth, block.parentBlockId]),
-    b.store.documentRecovery.readContent(id).blocks.map(block => [block.id, block.type, block.depth, block.parentBlockId]))
-  assert.equal(a.sync.getStatus().conflicts.length, 0)
-}))
-
-test('an unchanged normalized native baseline cannot accept or publish a downgraded v1 manifest, even for database-only writes', () => fixture(async (a, b, server) => {
-  const id = a.store.createDocument(null)
-  a.store.updateDocument(id, { title: 'Normalized native gate', summary: '', blocks: [
-    { id: 'normal-owner', type: 'toggle', content: 'Owner', checked: false, depth: 0 },
-    { id: 'normal-child', type: 'paragraph', content: 'Body', checked: false, depth: 1, parentBlockId: 'normal-owner', tags: ['same'] }
-  ] })
-  await a.sync.sync()
-  const manifest = parseManifest(server.files.get('/KnowBook/manifest.json')!)
-  const record = JSON.parse(server.files.get(`/KnowBook/objects/${manifest.entries[`doc:${id}`]}.json`)!.toString()) as SyncDocument
-  record.content.blocks[1].tags = ['same', 'same']
-  const bytes = Buffer.from(canonicalJson(record)), hash = hashBytes(bytes)
-  server.files.set(`/KnowBook/objects/${hash}.json`, bytes)
-  manifest.entries[`doc:${id}`] = hash
-  server.files.set('/KnowBook/manifest.json', Buffer.from(canonicalJson(manifest)))
-  await b.sync.sync()
-  assert.deepEqual(b.store.documentRecovery.readContent(id).blocks[1].tags, ['same'])
-  const stateQuery = "SELECT * FROM app_settings WHERE key LIKE 'sync.webdav.state.%'"
-  const acceptedRows = b.store.getUnsafeDatabaseHandle().prepare(stateQuery).all() as Array<{ value: string }>
-  const state = JSON.parse(acceptedRows[0].value)
-  assert.notEqual(state.baseline[`doc:${id}`].localHash, state.baseline[`doc:${id}`].remoteHash)
-  manifest.version = 1
-  const downgraded = Buffer.from(canonicalJson(manifest))
-  server.files.set('/KnowBook/manifest.json', downgraded)
-  for (const databaseOnly of [false, true]) {
-    if (databaseOnly) b.store.createDatabase({ name: 'Independent schema', description: '' })
-    const before = canonicalJson([...b.store.getSyncRecords()]), states = b.store.getUnsafeDatabaseHandle().prepare(stateQuery).all()
-    const lastSync = b.sync.getStatus().lastSyncAt, requestStart = server.requests.length
-    await assert.rejects(b.sync.sync(), /清单版本/)
-    assert.equal(canonicalJson([...b.store.getSyncRecords()]), before)
-    assert.deepEqual(b.store.getUnsafeDatabaseHandle().prepare(stateQuery).all(), states)
-    assert.equal(b.sync.getStatus().lastSyncAt, lastSync)
-    assert.deepEqual(server.files.get('/KnowBook/manifest.json'), downgraded)
-    assert.equal(server.requests.slice(requestStart).some(request => request.method === 'PUT' && request.path.endsWith('manifest.json')), false)
-  }
-}))
-
-test('concurrent edits to one width remain an explicit conflict on real devices until a verified version is selected', () => fixture(async (a, b, server) => {
-  const id = a.store.createDocument(null)
-  const source = '<!-- knowbook:table-widths:v1 [160,null] -->\n| A | B |\n| --- | --- |\n| One | Two |'
-  a.store.updateDocument(id, { title: 'Width conflict', summary: '', blocks: [{ id: 'width-conflict', type: 'table', content: source, checked: false, depth: 0 }] })
-  await a.sync.sync(); await b.sync.sync()
-  const left = a.store.documentRecovery.readContent(id), right = b.store.documentRecovery.readContent(id)
-  a.store.updateDocument(id, { ...left, blocks: [{ ...left.blocks[0], content: source.replace('[160,null]', '[260,null]') }] })
-  b.store.updateDocument(id, { ...right, blocks: [{ ...right.blocks[0], content: source.replace('[160,null]', '[161,null]') }] })
-  await a.sync.sync()
-  const published = Buffer.from(server.files.get('/KnowBook/manifest.json')!)
-  await b.sync.sync()
-  assert.equal(content(b.store, id), source.replace('[160,null]', '[161,null]'))
-  assert.deepEqual(server.files.get('/KnowBook/manifest.json'), published)
-  const conflict = b.sync.getStatus().conflicts[0]
-  assert.equal(conflict.key, `doc:${id}`)
-  assert.equal(conflict.canMerge, true)
-  assert.deepEqual(conflict.mergeFields?.map(part => part.id), ['block:width-conflict:content'])
-  resolveConflict(b.sync, { key: `doc:${id}`, choice: 'remote' })
-  await b.sync.sync(); await a.sync.sync()
-  assert.equal(content(b.store, id), source.replace('[160,null]', '[260,null]'))
-  assert.equal(content(a.store, id), content(b.store, id))
-}))
-
-test('live progress includes current attachments, deduplicated counts and publication before completion', () => fixture(async (a, b, server) => {
-  const first = a.store.createDocument(null), second = a.store.createDocument(null)
-  const [image, pdf] = await a.assets.import([{ name: 'shared.png', bytes: Buffer.from('shared-image') }, { name: 'second.pdf', bytes: Buffer.from('second-file') }])
-  edit(a.store, first, `${attachmentMarkdown(image)}\n${attachmentMarkdown(pdf)}`, 'Attachments')
-  edit(a.store, second, attachmentMarkdown(image), 'Shared attachment')
-  await a.sync.testConnection()
-  assert.equal(a.sync.getStatus().progress, null)
-  const target = `/assets/${hashBytes('second-file')}`
-  let enter!: () => void, release!: () => void
-  let entered = new Promise<void>(resolve => { enter = resolve })
-  let gate = new Promise<void>(resolve => { release = resolve })
-  let publishing = false
-  server.setHook(async req => {
-    if (req.method === 'PUT' && req.url!.endsWith(target)) { enter(); await gate }
-    if (req.method === 'PUT' && req.url!.endsWith('manifest.json')) publishing = a.sync.getStatus().progress?.stage === 'publishing'
-  })
-  const upload = a.sync.sync()
-  try {
-    await entered
-    const status = a.sync.getStatus(), progress = status.progress!
-    assert.equal(status.phase, 'syncing')
-    assert.equal(progress.stage, 'uploading')
-    assert.equal(progress.total, 3)
-    assert.equal(progress.attachmentsTotal, 2)
-    assert.equal(progress.attachmentsCompleted, 1)
-    assert.equal(progress.currentItem, 'Attachments')
-    assert.equal(progress.currentAttachment, 'second.pdf')
-    assert.ok(progress.requestsCompleted > 0)
-    release(); await upload
-    assert.equal(progress.attachmentsCompleted, 1, 'previous status snapshots must not mutate')
-    assert.equal(a.sync.getStatus().progress, null)
-    assert.ok(publishing)
-  } finally { release(); await upload.catch(() => {}) }
-
-  entered = new Promise<void>(resolve => { enter = resolve })
-  gate = new Promise<void>(resolve => { release = resolve })
-  server.setHook(async req => { if (req.method === 'GET' && req.url!.endsWith(target)) { enter(); await gate } })
-  const download = b.sync.sync()
-  try {
-    await entered
-    const progress = b.sync.getStatus().progress!
-    assert.equal(progress.stage, 'downloading')
-    assert.equal(progress.total, 2, 'the unchanged default database needs no download')
-    assert.equal(progress.attachmentsTotal, 2)
-    assert.equal(progress.attachmentsCompleted, 1)
-    assert.equal(progress.currentAttachment, 'second.pdf')
-    release(); await download
-    assert.equal(b.sync.getStatus().progress, null)
-  } finally { release(); await download.catch(() => {}) }
-}))
-
-test('Nutstore rate-limit waits are observable and clear immediately when cancelled', async context => {
+test('Nutstore rate-limit waits are observable and clear immediately when cancelled', async t => {
   let requests = 0
-  context.mock.method(globalThis, 'fetch', async () => { requests++; return new Response(null, { status: 200 }) })
+  t.mock.method(globalThis, 'fetch', async () => { requests++; return new Response(null, { status: 200 }) })
   const controller = new AbortController(), activity: WebDavRequestActivity[] = []
   const client = new WebDavClient({ ...DEFAULT_WEBDAV_SYNC_CONFIG, url: 'https://dav.jianguoyun.com/dav/', username: 'test' },
     'fixture-password', controller.signal, undefined, value => activity.push(value))
-  await client.exists('manifest.json')
-  const next = client.exists('manifest.json')
+  await client.exists(manifest)
+  const next = client.exists(manifest)
   const waiting = activity.at(-1)!
   assert.ok(waiting.waitingUntil && Date.parse(waiting.waitingUntil) > Date.now())
   assert.equal(waiting.completed, false)
   controller.abort()
   await assert.rejects(next, /停止/)
-  assert.equal(requests, 1, 'cancelled throttle wait must not send another request')
+  assert.equal(requests, 1)
   assert.equal(activity.at(-1)!.waitingUntil, null)
 })
 
-test('two independent devices sync trees, stable IDs, attachments, and database fields with no-op incremental runs', () => fixture(async (a, b, server) => {
-  const parent = a.store.createDocument(null), child = a.store.createDocument(parent)
-  edit(a.store, parent, 'Parent body', '项目')
-  const [image, pdf] = await a.assets.import([{ name: '截图 [1] #100%.png', bytes: Buffer.from('image-bytes') }, { name: '合同.pdf', bytes: Buffer.from('pdf-bytes') }])
-  edit(a.store, child, `${attachmentMarkdown(image)}\n${attachmentMarkdown(pdf)}`, '资料')
-  const column = a.store.createDocumentDatabaseColumn({ name: '状态', type: 'select', options: ['完成'] })
-  a.store.updateDocumentDatabaseValue({ documentId: child, columnId: column.id, value: '完成' })
-  a.store.saveSetting('ai.apiKey', 'should-never-upload')
-  await a.sync.sync(); await b.sync.sync()
-  assert.equal(b.store.getDocumentSnapshot(child)?.parentId, parent)
-  assert.equal(b.store.getDocumentSnapshot(child)?.path, '项目/资料')
-  assert.equal(b.store.getDocumentDetail(child)!.blocks[0].id, a.store.getDocumentDetail(child)!.blocks[0].id)
-  const urls = collectMarkdownDestinations(content(b.store, child)).map(item => item.url)
-  assert.equal(readFileSync(b.assets.resolve(urls[0]), 'utf8'), 'image-bytes')
-  assert.equal(readFileSync(b.assets.resolve(urls[1]), 'utf8'), 'pdf-bytes')
-  assert.notEqual(urls[0], image.url)
-  assert.equal(b.store.getExportDocuments().find(doc => doc.id === child)!.documentDatabaseFieldValues[column.id], '完成')
-  assert.ok(!Buffer.concat([...server.files.values()]).toString().includes('should-never-upload'))
-  assert.ok(!Buffer.concat([...server.files.values()]).toString().includes('app-secret'))
-  assert.match(a.store.getSettingPublic('sync.webdav.password')!, /^safe-storage:v1:/)
-  const before = server.requests.length
-  await a.sync.sync(); await b.sync.sync()
-  assert.deepEqual(server.requests.slice(before).map(req => req.method), ['GET', 'GET'])
-  const childUpdatedAt = a.store.getDocumentDetail(child)!.updatedAt
-  edit(b.store, parent, 'Changed on B', '重命名')
-  await b.sync.sync(); await a.sync.sync()
-  assert.equal(content(a.store, parent), 'Changed on B')
-  assert.equal(a.store.getDocumentSnapshot(child)?.path, '重命名/资料')
-  assert.ok(a.store.getDocumentDetail(child)!.updatedAt > childUpdatedAt, 'renamed parent must refresh open descendant editors')
-  const assetWrites = server.requests.filter(req => req.method === 'PUT' && req.path.includes('/assets/'))
-  assert.equal(assetWrites.length, 2)
+test('a WebDAV 429 exposes the HTTP status and leaves the requested file absent', () => withServer(async (client, server) => {
+  server.setHook(request => request.method === 'PUT' ? 429 : undefined)
+  await assert.rejects(client.create(manifest, Buffer.from('blocked')), error => error instanceof WebDavHttpError
+    && error.status === 429 && /频繁/.test(error.message))
+  assert.equal(server.files.has(manifestPath), false)
+  assert.deepEqual(server.requests.map(request => request.method), ['PUT'])
 }))
 
-test('concurrent edits keep both versions until resolved, and keep-both copies use distinct block IDs', () => fixture(async (a, b) => {
-  const id = a.store.createDocument(null); edit(a.store, id, 'base', '冲突测试')
-  await a.sync.sync(); await b.sync.sync()
-  edit(a.store, id, 'A offline'); edit(b.store, id, 'B offline')
-  await a.sync.sync(); await b.sync.sync()
-  assert.equal(content(b.store, id), 'B offline')
-  const conflicts = b.sync.getStatus().conflicts
-  assert.equal(conflicts.length, 1); assert.match(conflicts[0].remotePreview, /A offline/)
-  resolveConflict(b.sync, { key: `doc:${id}`, choice: 'both' })
-  await b.sync.sync(); await a.sync.sync()
-  assert.equal(b.sync.getStatus().conflicts.length, 0)
-  assert.equal(content(b.store, id), 'A offline')
-  const copy = b.store.getExportDocuments().find(doc => doc.id !== id)!
-  assert.match(copy.title, /同步冲突副本/); assert.equal(copy.blocks[0].content, 'B offline')
-  assert.notEqual(copy.blocks[0].id, b.store.getDocumentDetail(id)!.blocks[0].id)
-  assert.equal(content(a.store, copy.id), 'B offline')
-}))
-
-test('deletions use tombstones, enter local Trash, and restoration syncs without resurrecting stale copies', () => fixture(async (a, b) => {
-  const id = a.store.createDocument(null); edit(a.store, id, 'delete then restore')
-  await a.sync.sync(); await b.sync.sync()
-  a.store.deleteDocument(id); await a.sync.sync(); await b.sync.sync()
-  assert.equal(b.store.getDocumentSnapshot(id), null)
-  assert.ok(b.store.documentRecovery.listTrash().some(doc => doc.id === id))
-  b.store.restoreTrashedDocument(id); await b.sync.sync(); await a.sync.sync()
-  assert.equal(content(a.store, id), 'delete then restore')
-}))
-
-test('failed uploads do not publish manifest or advance cursor; retry converges', () => fixture(async (a, b, server) => {
-  const id = a.store.createDocument(null); edit(a.store, id, 'retry content')
-  server.setHook(req => req.method === 'PUT' && req.url!.endsWith('manifest.json') ? 503 : undefined)
-  await assert.rejects(a.sync.sync(), /503/)
-  assert.equal(a.sync.getStatus().progress, null)
-  assert.equal(a.sync.getStatus().lastSyncAt, null)
-  assert.ok(!server.files.has('/KnowBook/manifest.json'))
-  server.setHook(undefined)
-  await a.sync.sync(); await b.sync.sync()
-  assert.equal(content(b.store, id), 'retry content')
-}))
-
-test('manifest compare-and-swap retries after another device commits, preserving both independent edits', () => fixture(async (a, b, server) => {
-  const first = a.store.createDocument(null); edit(a.store, first, 'base')
-  await a.sync.sync(); await b.sync.sync()
-  edit(a.store, first, 'edit A')
-  const second = b.store.createDocument(null); edit(b.store, second, 'edit B')
-  let raced = false
-  server.setHook(async req => {
-    if (!raced && req.method === 'PUT' && req.url!.endsWith('manifest.json')) {
-      raced = true; await b.sync.sync()
-    }
-  })
-  await a.sync.sync(); await b.sync.sync()
-  assert.equal(content(a.store, second), 'edit B'); assert.equal(content(b.store, first), 'edit A')
-}))
-
-test('an edit during download is never overwritten and is surfaced as a conflict on the next run', () => fixture(async (a, b, server) => {
-  const id = a.store.createDocument(null); edit(a.store, id, 'base')
-  await a.sync.sync(); await b.sync.sync(); edit(a.store, id, 'remote'); await a.sync.sync()
-  let edited = false
-  server.setHook(req => {
-    if (!edited && req.method === 'GET' && req.url!.includes('/objects/')) { edited = true; edit(b.store, id, 'edit during sync') }
-  })
-  await b.sync.sync()
-  assert.equal(content(b.store, id), 'edit during sync')
-  await b.sync.sync(); assert.equal(b.sync.getStatus().conflicts.length, 1)
-}))
-
-test('corrupt objects and missing manifests stop safely without deleting local data', () => fixture(async (a, b, server) => {
-  const id = a.store.createDocument(null); edit(a.store, id, 'good'); await a.sync.sync(); await b.sync.sync()
-  edit(a.store, id, 'new'); await a.sync.sync()
-  const manifest = parseManifest(server.files.get('/KnowBook/manifest.json')!)
-  const path = `/KnowBook/objects/${manifest.entries[`doc:${id}`]}.json`
-  server.files.set(path, Buffer.from('{}'))
-  await assert.rejects(b.sync.sync(), /校验失败/); assert.equal(content(b.store, id), 'good')
-  server.files.delete('/KnowBook/manifest.json')
-  await assert.rejects(b.sync.sync(), /清单丢失/); assert.equal(content(b.store, id), 'good')
-}))
-
-test('unsafe WebDAV conditional-write implementations and weak ETags are rejected', async () => {
-  await fixture(async (a, _b, server) => { server.ignoreConditions(); await assert.rejects(a.sync.testConnection(), /条件写入/); assert.ok(!server.files.has('/KnowBook/manifest.json')) })
-  await fixture(async (a, _b, server) => { server.weakEtags(); await assert.rejects(a.sync.testConnection(), /ETag/); assert.ok(!server.files.has('/KnowBook/manifest.json')) })
+test('connection probes reject unsafe conditional writes and weak ETags, and clean up probe objects', async t => {
+  await t.test('conditional write enforcement is checked again on retest', () => withServer(async (client, server) => {
+    assert.deepEqual(await client.test(), { createMode: 'conditional' })
+    server.ignoreConditions()
+    await assert.rejects(client.test(), /条件写入/)
+    assert.equal(server.files.size, 0)
+  }))
+  await t.test('weak tags cannot authorize writes', () => withServer(async (client, server) => {
+    server.weakEtags()
+    await assert.rejects(client.test(), /ETag/)
+    assert.equal(server.files.size, 0)
+  }))
 })
 
-test('opaque unquoted, HEAD-only and PROPFIND-only ETags support two-device sync', async context => {
+test('opaque, HEAD-only and PROPFIND-only ETags authorize exact versioned writes', async t => {
   for (const profile of [
     { etagStyle: 'bare' as const },
     { etagStyle: 'bare' as const, etagHeaders: 'none' as const, requireQuotedIfMatch: true },
     { etagHeaders: 'head' as const },
     { etagHeaders: 'none' as const }
-  ]) await context.test(JSON.stringify(profile), () => fixture(async (a, b, server) => {
+  ]) await t.test(JSON.stringify(profile), () => withServer(async (client, server) => {
     server.setOptions(profile)
-    const id = a.store.createDocument(null); edit(a.store, id, 'first version')
-    await a.sync.testConnection(); await a.sync.sync(); await b.sync.sync()
-    assert.equal(content(b.store, id), 'first version')
-    edit(b.store, id, 'second version'); await b.sync.sync(); await a.sync.sync()
-    assert.equal(content(a.store, id), 'second version')
-    if ('etagHeaders' in profile) assert.ok(server.requests.some(request => request.method === 'HEAD'))
-    if (profile.etagHeaders === 'none') assert.ok(server.requests.some(request => request.method === 'PROPFIND'))
+    await client.test()
+    await client.create(manifest, Buffer.from('first version'))
+    const first = await client.getVersioned(manifest)
+    assert.ok(first)
+    assert.equal(Buffer.from(first.bytes).toString(), 'first version')
+    if (profile.etagStyle === 'bare') assert.match(first.etag, /^[0-9a-f]{64}$/)
+    await client.put(manifest, Buffer.from('second version'), { etag: first.etag })
+    await assert.rejects(client.put(manifest, Buffer.from('stale version'), { etag: first.etag }), { status: 412 })
+    const second = await client.getVersioned(manifest)
+    assert.ok(second)
+    assert.equal(Buffer.from(second.bytes).toString(), 'second version')
+    assert.notEqual(second.etag, first.etag)
+    if ('etagHeaders' in profile) assert.ok(server.requests.some(request => request.method === 'HEAD' && request.path === manifestPath))
+    if (profile.etagHeaders === 'none') assert.ok(server.requests.some(request => request.method === 'PROPFIND' && request.path === manifestPath))
   }))
 })
 
-test('metadata fallback never combines an old body with a newer version during a concurrent write', () => fixture(async (a, b, server) => {
+test('metadata fallback does not combine an old body with a newer ETag', () => withServer(async (client, server) => {
   server.setOptions({ etagHeaders: 'none' })
-  const id = a.store.createDocument(null); edit(a.store, id, 'base')
-  await a.sync.sync(); await b.sync.sync()
-  edit(a.store, id, 'remote edit after first GET')
+  server.files.set(manifestPath, Buffer.from('old body'))
   let raced = false
-  server.setHook(async req => {
-    if (!raced && req.method === 'HEAD' && req.url!.endsWith('manifest.json')) { raced = true; await a.sync.sync() }
+  server.setHook(request => {
+    if (request.method === 'HEAD' && request.url === manifestPath) {
+      raced = true
+      server.files.set(manifestPath, Buffer.from('new body'))
+    }
   })
-  await b.sync.sync()
-  assert.ok(raced)
-  assert.equal(content(b.store, id), 'remote edit after first GET')
+  const result = await client.getVersioned(manifest)
+  assert.ok(raced && result)
+  assert.equal(Buffer.from(result.bytes).toString(), 'new body')
+  await client.put(manifest, Buffer.from('conditional write after race'), { etag: result.etag })
+  assert.equal(server.files.get(manifestPath)?.toString(), 'conditional write after race')
 }))
 
-test('metadata fallback rejects servers that ignore conditional GET', () => fixture(async (a, _b, server) => {
+test('metadata fallback rejects servers that ignore conditional GET', () => withServer(async (client, server) => {
   server.setOptions({ etagHeaders: 'none', ignoreConditionalGet: true })
-  await assert.rejects(a.sync.testConnection(), /按版本读取/)
-  assert.ok(!server.files.has('/KnowBook/manifest.json'))
+  await assert.rejects(client.test(), /按版本读取/)
+  assert.equal(server.files.size, 0)
 }))
 
-test('MOVE without overwrite safely creates a manifest when If-None-Match is ignored, including a first-sync race', async context => {
-  for (const moveConflictStatus of [412, 409] as const) await context.test(`MOVE conflict ${moveConflictStatus}`, () => fixture(async (a, b, server) => {
+test('MOVE without overwrite protects the winner of a first publication race', async t => {
+  for (const moveConflictStatus of [412, 409] as const) await t.test(`MOVE conflict ${moveConflictStatus}`, () => withServer(async (first, server) => {
     server.setOptions({ ignoreIfNoneMatch: true, etagStyle: 'bare', etagHeaders: moveConflictStatus === 409 ? 'all' : 'none', moveConflictStatus })
-    const first = a.store.createDocument(null), second = b.store.createDocument(null)
-    edit(a.store, first, 'device A'); edit(b.store, second, 'device B')
-    await a.sync.testConnection(); await b.sync.testConnection()
+    const second = clientFor(server)
+    assert.deepEqual(await first.test(), { createMode: 'move' })
+    assert.deepEqual(await second.test(), { createMode: 'move' })
     let raced = false
-    server.setHook(async req => {
-      if (!raced && req.method === 'MOVE' && String(req.headers.destination).endsWith('/manifest.json')) { raced = true; await b.sync.sync() }
+    server.setHook(async request => {
+      if (!raced && request.method === 'MOVE' && new URL(String(request.headers.destination)).pathname === manifestPath) {
+        raced = true
+        await second.create(manifest, Buffer.from('winning body'))
+      }
     })
-    await a.sync.sync(); await b.sync.sync()
+    await assert.rejects(first.create(manifest, Buffer.from('losing body')), { status: 412 })
     assert.ok(raced)
-    assert.equal(content(a.store, second), 'device B')
-    assert.equal(content(b.store, first), 'device A')
-    assert.ok(![...server.files.keys()].some(path => path.includes('.probe-') || path.includes('.pending-')))
+    assert.deepEqual([...server.files], [[manifestPath, Buffer.from('winning body')]])
   }))
 })
 
-test('MOVE 409 without an existing target remains an error and does not publish or advance sync state', () => fixture(async (a, _b, server) => {
+test('MOVE 409 without an existing target remains an error and removes the pending object', () => withServer(async (client, server) => {
   server.setOptions({ ignoreIfNoneMatch: true, moveConflictStatus: 409 })
-  const id = a.store.createDocument(null); edit(a.store, id, 'must remain local')
-  await a.sync.testConnection()
-  server.setHook(req => req.method === 'MOVE' && String(req.headers.destination).endsWith('/manifest.json') ? 409 : undefined)
-  await assert.rejects(a.sync.sync(), /HTTP 409/)
-  assert.equal(a.sync.getStatus().lastSyncAt, null)
-  assert.equal(content(a.store, id), 'must remain local')
-  assert.ok(!server.files.has('/KnowBook/manifest.json'))
-  assert.equal(server.requests.filter(req => req.method === 'MOVE' && req.path.includes('.pending-')).length, 1)
-  assert.ok(![...server.files.keys()].some(path => path.includes('.probe-') || path.includes('.pending-')))
+  assert.deepEqual(await client.test(), { createMode: 'move' })
+  server.setHook(request => request.method === 'MOVE' && new URL(String(request.headers.destination)).pathname === manifestPath ? 409 : undefined)
+  await assert.rejects(client.create(manifest, Buffer.from('must not publish')), { status: 409 })
+  assert.equal(server.requests.filter(request => request.method === 'MOVE' && request.path.includes('.pending-')).length, 1)
+  assert.equal(server.files.size, 0)
 }))
 
-test('an unsafe MOVE implementation is rejected when conditional create is unavailable', () => fixture(async (a, _b, server) => {
+test('an unsafe MOVE implementation is rejected when conditional create is unavailable', () => withServer(async (client, server) => {
   server.setOptions({ ignoreIfNoneMatch: true, ignoreMoveOverwrite: true })
-  await assert.rejects(a.sync.testConnection(), /安全的新建文件/)
-  assert.ok(!server.files.has('/KnowBook/manifest.json'))
-}))
-
-test('a failed connection retest invalidates the previously accepted capabilities', () => fixture(async (a, _b, server) => {
-  await a.sync.testConnection()
-  server.ignoreConditions()
-  await assert.rejects(a.sync.testConnection(), /条件写入/)
-  await assert.rejects(a.sync.sync(), /条件写入/)
-  assert.ok(!server.files.has('/KnowBook/manifest.json'))
+  await assert.rejects(client.test(), /安全的新建文件/)
+  assert.equal(server.files.size, 0)
 }))
 
 test('WebDAV properties respect namespaces, resource identity and per-property status', () => {
@@ -704,485 +150,12 @@ test('WebDAV properties respect namespaces, resource identity and per-property s
   assert.throws(() => readWebDavEtag(document(response(target, '200 OK', 'one') + response(target, '200 OK', 'two')), target), /唯一/)
 })
 
-test('unsafe config and malformed remote records are rejected', () => {
+test('WebDAV config rejects unsafe URLs, credentials and directory paths', () => {
   const base = { ...DEFAULT_WEBDAV_SYNC_CONFIG, url: 'https://example.com/dav/', username: 'user' }
   assert.throws(() => normalizeWebDavConfig({ ...base, url: 'http://example.com/dav/' }), /HTTPS/)
   assert.throws(() => normalizeWebDavConfig({ ...base, directory: '../private' }), /目录/)
   assert.throws(() => normalizeWebDavConfig({ ...base, url: 'https://user:secret@example.com/' }), /地址/)
-  assert.throws(() => parseManifest(Buffer.from('{"version":9}')), /清单/)
-  assert.throws(() => validateRecord({ kind: 'document', id: 'one' } as never, 'doc:one'), /格式/)
-  const deleted = { kind: 'deleted' as const, id: 'one' }
-  assert.equal(recordHash(deleted), hashBytes(canonicalJson(deleted)))
+  assert.throws(() => normalizeWebDavConfig({ ...base, url: 'https://example.com/?token=secret' }), /地址/)
+  assert.throws(() => normalizeWebDavConfig({ ...base, username: 'user:password' }), /用户名/)
+  assert.throws(() => normalizeWebDavConfig({ ...base, intervalMinutes: 0 }), /间隔/)
 })
-
-test('sync state survives service restart, including offline deletion and unresolved conflicts', () => fixture(async (a, b) => {
-  const id = a.store.createDocument(null); edit(a.store, id, 'base')
-  await a.sync.sync(); await b.sync.sync()
-  edit(a.store, id, 'remote'); await a.sync.sync(); edit(b.store, id, 'local offline')
-  await b.sync.stop(); b.sync = new WebDavSyncService(b.store, b.assets, b.credentials)
-  await b.sync.sync(); assert.equal(b.sync.getStatus().conflicts.length, 1)
-  await b.sync.stop(); b.sync = new WebDavSyncService(b.store, b.assets, b.credentials)
-  assert.match(b.sync.getStatus().conflicts[0].localPreview, /local offline/)
-  resolveConflict(b.sync, { key: `doc:${id}`, choice: 'local' }); await b.sync.sync(); await a.sync.sync()
-  assert.equal(content(a.store, id), 'local offline')
-  b.store.deleteDocument(id)
-  await b.sync.stop(); b.sync = new WebDavSyncService(b.store, b.assets, b.credentials)
-  await b.sync.sync(); await a.sync.sync(); assert.equal(a.store.getDocumentSnapshot(id), null)
-}))
-
-test('delete versus edit conflicts preserve the edit and stale resolutions are rejected', () => fixture(async (a, b) => {
-  const id = a.store.createDocument(null); edit(a.store, id, 'base')
-  await a.sync.sync(); await b.sync.sync()
-  a.store.deleteDocument(id); edit(b.store, id, 'unsynced change')
-  await a.sync.sync(); await b.sync.sync()
-  assert.match(b.sync.getStatus().conflicts[0].remotePreview, /已删除/)
-  resolveConflict(b.sync, { key: `doc:${id}`, choice: 'remote' })
-  edit(b.store, id, 'changed after choosing')
-  await b.sync.sync(); assert.equal(content(b.store, id), 'changed after choosing'); assert.equal(b.sync.getStatus().conflicts.length, 1)
-  resolveConflict(b.sync, { key: `doc:${id}`, choice: 'both' }); await b.sync.sync(); await a.sync.sync()
-  assert.equal(b.store.getDocumentSnapshot(id), null)
-  assert.ok(a.store.getExportDocuments().some(doc => doc.blocks[0].content === 'changed after choosing'))
-}))
-
-test('database schema conflicts are explicit and custom records and views round-trip', () => fixture(async (a, b) => {
-  const database = a.store.createDatabase({ name: 'Customers', description: 'Contacts' })
-  const column = a.store.createDocumentDatabaseColumn({ databaseId: database.id, name: 'Status', type: 'text' })
-  a.store.createDatabaseEntity({ databaseId: database.id, title: 'Alice' })
-  a.store.createDatabaseSavedView({ databaseId: database.id, name: 'Board', viewMode: 'board' })
-  await a.sync.sync(); await b.sync.sync()
-  assert.equal(b.store.getDatabaseEntities(database.id)[0].title, 'Alice')
-  assert.equal(b.store.getDatabaseSavedViews(database.id)[0].name, 'Board')
-  const aData = a.store.getSyncRecords().get('databases')!
-  const bData = b.store.getSyncRecords().get('databases')!
-  assert.deepEqual(bData, aData, 'database metadata, including creation times, must be preserved')
-  a.store.renameDocumentDatabaseColumn({ columnId: column.id, name: 'A field' })
-  b.store.renameDocumentDatabaseColumn({ columnId: column.id, name: 'B field' })
-  await a.sync.sync(); await b.sync.sync()
-  assert.equal(b.sync.getStatus().conflicts[0].key, 'databases')
-  resolveConflict(b.sync, { key: 'databases', choice: 'remote' }); await b.sync.sync()
-  assert.equal(b.store.getDocumentDatabaseColumns(database.id)[0].name, 'A field')
-}))
-
-test('stale editor saves cannot overwrite a version received through sync', () => fixture(async (a, b) => {
-  const id = a.store.createDocument(null); edit(a.store, id, 'base')
-  await a.sync.sync(); await b.sync.sync()
-  const original = b.store.getDocumentDetail(id)!
-  edit(a.store, id, 'new remote'); await a.sync.sync(); await b.sync.sync()
-  assert.throws(() => b.store.updateDocument(id, { ...b.store.documentRecovery.readContent(id), summary: 'old draft', expectedUpdatedAt: original.updatedAt }), /草稿仍保留/)
-  assert.equal(content(b.store, id), 'new remote')
-}))
-
-test('repeated incoming changes invalidate stale editor timestamps even within one millisecond', async context => {
-  context.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-09-28T00:00:00.000Z') })
-  await fixture(async (a, b) => {
-    const id = a.store.createDocument(null); edit(a.store, id, 'first')
-    await a.sync.sync(); await b.sync.sync()
-    const original = b.store.getDocumentDetail(id)!
-    edit(a.store, id, 'second'); await a.sync.sync(); await b.sync.sync()
-    assert.ok(b.store.getDocumentDetail(id)!.updatedAt > original.updatedAt)
-    assert.throws(() => b.store.updateDocument(id, { ...b.store.documentRecovery.readContent(id), expectedUpdatedAt: original.updatedAt }), /草稿仍保留/)
-  })
-})
-
-test('automatic sync runs on startup and interval, and disabling it stops later uploads', async context => {
-  context.mock.timers.enable({ apis: ['setInterval'] })
-  await fixture(async (a, b) => {
-    const id = a.store.createDocument(null); edit(a.store, id, 'startup')
-    a.sync.saveConfig({ ...a.sync.getStatus().config, enabled: true, intervalMinutes: 1 })
-    a.sync.start(); await a.sync.waitForIdle(); await b.sync.sync()
-    assert.equal(content(b.store, id), 'startup')
-    edit(a.store, id, 'interval')
-    context.mock.timers.tick(60_000)
-    await a.sync.waitForIdle(); await b.sync.sync()
-    assert.equal(content(b.store, id), 'interval')
-    a.sync.saveConfig({ ...a.sync.getStatus().config, enabled: false })
-    edit(a.store, id, 'local only')
-    context.mock.timers.tick(60_000)
-    await a.sync.waitForIdle(); await b.sync.sync()
-    assert.equal(content(b.store, id), 'interval')
-  })
-})
-
-test('cancelling an in-flight upload preserves the cursor and permits a clean retry', () => fixture(async (a, b, server) => {
-  const id = a.store.createDocument(null); edit(a.store, id, 'before cancel')
-  await a.sync.sync(); await b.sync.sync()
-  const previousSync = a.sync.getStatus().lastSyncAt
-  edit(a.store, id, 'after cancel')
-  let enter!: () => void, release!: () => void
-  const entered = new Promise<void>(resolve => { enter = resolve })
-  const gate = new Promise<void>(resolve => { release = resolve })
-  server.setHook(async req => { if (req.method === 'PUT' && req.url!.includes('/objects/')) { enter(); await gate } })
-  const pending = a.sync.sync()
-  const rejected = assert.rejects(pending, /停止/)
-  try {
-    await entered
-    await assert.rejects(a.sync.sync(), /正在进行/)
-    await a.sync.cancel(); await rejected
-    assert.equal(a.sync.getStatus().phase, 'idle')
-    assert.equal(a.sync.getStatus().progress, null)
-    assert.equal(a.sync.getStatus().lastSyncAt, previousSync)
-    assert.equal(content(b.store, id), 'before cancel')
-  } finally { release(); server.setHook(undefined) }
-  await a.sync.sync(); await b.sync.sync()
-  assert.equal(content(b.store, id), 'after cancel')
-}))
-
-function moveFixtureDocument(store: KnowbookStore, title: string, blocks: Array<{ id: string; content: string }>) {
-  const id = store.createDocument(null)
-  store.updateDocument(id, { title, summary: title + ' summary',
-    blocks: blocks.map(block => ({ ...block, type: 'paragraph', checked: false, depth: 0, parentBlockId: null })) })
-  return id
-}
-function moveFixture(store: KnowbookStore, source: string, target: string, blockId: string) {
-  return store.moveDocumentBlocks({ fromDocumentId: source, toDocumentId: target, blockIds: [blockId],
-    expectedFromUpdatedAt: store.getDocumentDetail(source)!.updatedAt,
-    expectedToUpdatedAt: store.getDocumentDetail(target)!.updatedAt })
-}
-function receivedMoveState(store: KnowbookStore) {
-  const db = store.getUnsafeDatabaseHandle()
-  return Object.fromEntries(['documents', 'blocks', 'markdown_link_sources', 'links', 'document_history', 'document_trash',
-    'document_block_routes', 'document_block_moves', 'app_settings'].map(table => [table,
-      (db.prepare('SELECT * FROM ' + table + ' ORDER BY rowid').all() as Array<Record<string, unknown>>).map(row => {
-        if (table !== 'app_settings' || typeof row.key !== 'string' || !row.key.startsWith('sync.webdav.state.')) return row
-        const value = JSON.parse(String(row.value)) as { baseline: unknown; lastSyncAt: unknown; workspaceId?: unknown }
-        return { key: row.key, baseline: value.baseline, lastSyncAt: value.lastSyncAt, workspaceId: value.workspaceId }
-      })]))
-}
-
-test('real WebDAV receivers reclaim retained IDs using an already matching source version without rewriting that source', async context => {
-  for (const deleted of [false, true]) await context.test(deleted ? 'matching source tombstone' : 'matching source document', () => fixture(async (a, b, server) => {
-    const source = moveFixtureDocument(a.store, 'Accepted Source', [
-      { id: 'accepted-retained', content: 'Moved body' }, { id: 'accepted-keep', content: 'Keep body' }
-    ])
-    const target = moveFixtureDocument(a.store, 'Accepted Target', [{ id: 'accepted-target', content: 'Target body' }])
-    await a.sync.sync(); await b.sync.sync()
-    // This receiver actually observed both paths. Retained ownership cannot be
-    // used to invent a path after the physical block has already disappeared.
-    const original = b.store.documentRecovery.readContent(source)
-    b.store.updateDocument(source, { ...original, title: 'Observed Source' })
-    b.store.updateDocument(source, original)
-    const db = b.store.getUnsafeDatabaseHandle()
-    const born = db.prepare('SELECT created_at FROM blocks WHERE id=?').get('accepted-retained')
-    moveFixture(a.store, source, target, 'accepted-retained')
-    if (deleted) { a.store.deleteDocument(source); b.store.deleteDocument(source) }
-    else b.store.updateDocument(source, { ...original, blocks: original.blocks.filter(block => block.id !== 'accepted-retained') })
-    await a.sync.sync()
-    const manifest = Buffer.from(server.files.get('/KnowBook/manifest.json')!)
-    const selected = parseManifest(manifest)
-    const localSource = b.store.getSyncRecords().get('doc:' + source) ?? { kind: 'deleted' as const, id: source }
-    assert.equal(recordHash(localSource), selected.entries['doc:' + source], 'The releasing version is already equal and must take the accepted path')
-    assert.deepEqual(db.prepare('SELECT last_owner_id,state FROM block_identities WHERE id=?').get('accepted-retained'), { last_owner_id: source, state: 'retained' })
-    const sourceBefore = b.store.getDocumentDetail(source), historyBefore = b.store.documentRecovery.listHistory(source)
-    const apply = b.store.applySyncRecords.bind(b.store), batches: Array<{ records: SyncRecord[]; proofs: SyncRecord[] }> = []
-    b.store.applySyncRecords = ((records: SyncRecord[], proofs: SyncRecord[] = []) => {
-      batches.push({ records, proofs }); return apply(records, proofs)
-    }) as KnowbookStore['applySyncRecords']
-    await b.sync.sync()
-    assert.equal(batches.length, 1)
-    assert.deepEqual(batches[0].records.filter(record => record.kind === 'document').map(record => record.id), [target])
-    assert.ok(!batches[0].records.some(record => record.id === source), 'No source upsert/delete is manufactured to justify the transfer')
-    const proof = batches[0].proofs.find(record => record.id === source)!
-    assert.equal(recordHash(proof), selected.entries['doc:' + source])
-    assert.equal(proof.kind === 'document' && proof.content.blocks.some(block => block.id === 'accepted-retained'), false)
-    assert.deepEqual(b.store.getDocumentDetail(source), sourceBefore)
-    assert.deepEqual(b.store.documentRecovery.listHistory(source), historyBefore)
-    assert.equal(b.store.getDocumentDetail(target)!.blocks.find(block => block.id === 'accepted-retained')!.content, 'Moved body')
-    assert.deepEqual(db.prepare('SELECT created_at FROM blocks WHERE id=?').get('accepted-retained'), born)
-    assert.equal(b.store.getBlockReference('Observed Source', 'accepted-retained')!.documentId, target)
-    assert.equal(b.store.getBlockReference('Unobserved Source', 'accepted-retained'), null)
-    assert.deepEqual(server.files.get('/KnowBook/manifest.json'), manifest)
-    assert.equal(b.sync.getStatus().conflicts.length, 0)
-    await b.sync.sync()
-    assert.equal(batches.length, 1, 'An already converged retry creates no additional local mutation batch')
-  }))
-})
-
-test('two real WebDAV devices sync block ownership moves and reverse moves with stable IDs, timestamps and old routes', () => fixture(async (a, b) => {
-  const source = moveFixtureDocument(a.store, 'Move Source', [{ id: 'sync-move', content: '[self](#^sync-move) [keep](#^sync-keep)' }, { id: 'sync-keep', content: 'Source keeper' }])
-  const target = moveFixtureDocument(a.store, 'Move Target', [{ id: 'sync-target', content: 'Target body' }])
-  const incoming = moveFixtureDocument(a.store, 'Move Reader', [{ id: 'sync-reader', content: '[read](Move%20Source.md#%5Esync-move) [[Move Source#^sync-move]]' }])
-  await a.sync.sync(); await b.sync.sync()
-  const late = moveFixtureDocument(b.store, 'Late reader', [{ id: 'sync-late', content: '[old](Move%20Source.md#^sync-move) [[Move Source#^sync-move]]' }])
-  const createdAt = (b.store.getUnsafeDatabaseHandle().prepare('SELECT created_at FROM blocks WHERE id = ?').get('sync-move') as { created_at: string }).created_at
-  moveFixture(a.store, source, target, 'sync-move')
-  await a.sync.sync(); await b.sync.sync()
-  assert.equal(b.store.getBlockReference('Move Source', '^sync-move')!.documentId, target)
-  assert.deepEqual(b.store.getDocumentDetail(target)!.blocks.map(block => block.id), a.store.getDocumentDetail(target)!.blocks.map(block => block.id))
-  assert.equal((b.store.getUnsafeDatabaseHandle().prepare('SELECT created_at FROM blocks WHERE id = ?').get('sync-move') as { created_at: string }).created_at, createdAt)
-  for (const id of [late, incoming, target]) assert.deepEqual(b.store.checkDocumentLinks(id, () => null).issues, [])
-  assert.ok(b.store.getDocumentDetail(late)!.outgoingLinks.some(link => link.id === target))
-  moveFixture(b.store, target, source, 'sync-move')
-  await b.sync.sync(); await a.sync.sync()
-  assert.equal(a.store.getBlockReference('Move Target', '^sync-move')!.documentId, source)
-  assert.equal(a.store.getBlockReference('Move Source', '^sync-move')!.documentId, source)
-  assert.equal(a.store.getBlockReference('WrongPath', '^sync-move'), null)
-  assert.deepEqual(a.store.checkDocumentLinks(late, () => null).issues, [])
-  assert.ok(a.store.getDocumentDetail(late)!.outgoingLinks.some(link => link.id === source))
-  assert.equal(a.sync.getStatus().conflicts.length, 0)
-  assert.equal(b.sync.getStatus().conflicts.length, 0)
-}))
-
-test('two real WebDAV devices reject a conflicted partial transfer batch without advancing cursors, retain the UI report across restart and receive source deletion after resolution', () => fixture(async (a, b, server) => {
-  const source = moveFixtureDocument(a.store, 'Delete Source', [{ id: 'delete-move', content: 'Original moved body' }, { id: 'delete-keep', content: 'Keep original' }])
-  const target = moveFixtureDocument(a.store, 'Delete Target', [{ id: 'delete-target', content: 'Target body' }])
-  await a.sync.sync(); await b.sync.sync()
-  const original = b.store.documentRecovery.readContent(source)
-  const createdAt = (b.store.getUnsafeDatabaseHandle().prepare('SELECT created_at FROM blocks WHERE id = ?').get('delete-move') as { created_at: string }).created_at
-  const late = moveFixtureDocument(b.store, 'Delete late reader', [{ id: 'delete-late', content: '[old](Delete%20Source.md#^delete-move) [[Delete Source#^delete-move]]' }])
-  await b.sync.sync(); await a.sync.sync()
-  moveFixture(a.store, source, target, 'delete-move'); a.store.deleteDocument(source); await a.sync.sync()
-  b.store.updateDocument(source, { ...original, blocks: original.blocks.map((block, index) => index === 0 ? { ...block, content: 'Unsaved conflict version' } : block) })
-  const localOriginal = b.store.documentRecovery.readContent(source)
-  const before = receivedMoveState(b.store), manifest = Buffer.from(server.files.get('/KnowBook/manifest.json')!)
-  await assert.rejects(b.sync.sync(), /同步批次缺少原文档释放块 ID/)
-  assert.deepEqual(receivedMoveState(b.store), before)
-  assert.deepEqual(server.files.get('/KnowBook/manifest.json'), manifest)
-  assert.equal(b.sync.getStatus().phase, 'error')
-  assert.equal(b.sync.getStatus().conflicts.length, 1)
-  assert.equal(b.sync.getStatus().conflicts[0].key, 'doc:' + source)
-  assert.equal(b.store.getBlockReference('Delete Source', '^delete-move')!.documentId, source)
-  const restarted = new WebDavSyncService(b.store, b.assets, b.credentials)
-  try {
-    assert.deepEqual(restarted.getStatus().conflicts, b.sync.getStatus().conflicts)
-    resolveConflict(restarted, { key: 'doc:' + source, choice: 'local' })
-    const resolvedLocal = receivedMoveState(b.store)
-    await assert.rejects(restarted.sync(), /同步批次缺少原文档释放块 ID/)
-    assert.deepEqual(receivedMoveState(b.store), resolvedLocal)
-    assert.deepEqual(server.files.get('/KnowBook/manifest.json'), manifest)
-    resolveConflict(restarted, { key: 'doc:' + source, choice: 'remote' })
-    await restarted.sync()
-    assert.equal(b.store.getDocumentSnapshot(source), null)
-    assert.equal(b.store.getBlockReference('Delete Source', '^delete-move')!.documentId, target)
-    assert.equal((b.store.getUnsafeDatabaseHandle().prepare('SELECT created_at FROM blocks WHERE id = ?').get('delete-move') as { created_at: string }).created_at, createdAt)
-    assert.deepEqual(b.store.checkDocumentLinks(late, () => null).issues, [])
-    assert.deepEqual(b.store.documentRecovery.getTrash(source).content, localOriginal)
-    assert.equal(restarted.getStatus().conflicts.length, 0)
-    const transferred = receivedMoveState(b.store)
-    assert.throws(() => b.store.restoreTrashedDocument(source), /块已移到其他文档/)
-    assert.deepEqual(receivedMoveState(b.store), transferred)
-  } finally { await restarted.stop() }
-}))
-
-test('two real WebDAV devices hold a source release when the target conflicts, reject local loss and resolve remote or fresh-ID copies', async context => {
-  for (const choice of ['remote', 'both'] as const) await context.test(choice, () => fixture(async (a, b, server) => {
-    const source = moveFixtureDocument(a.store, 'Conflict Source', [{ id: 'target-conflict-move', content: 'Moved body' }, { id: 'target-conflict-keep', content: 'Keep' }])
-    const target = moveFixtureDocument(a.store, 'Conflict Target', [{ id: 'target-conflict-root', content: 'base' }])
-    await a.sync.sync(); await b.sync.sync()
-    moveFixture(a.store, source, target, 'target-conflict-move')
-    const remote = a.store.documentRecovery.readContent(target)
-    a.store.updateDocument(target, { ...remote, blocks: remote.blocks.map((block, index) => index === 0 ? { ...block, content: 'AAA' } : block) })
-    const local = b.store.documentRecovery.readContent(target)
-    b.store.updateDocument(target, { ...local, blocks: local.blocks.map(block => ({ ...block, content: 'BBB' })) })
-    await a.sync.sync()
-    const before = receivedMoveState(b.store), manifest = Buffer.from(server.files.get('/KnowBook/manifest.json')!)
-    await assert.rejects(b.sync.sync(), /同步批次缺少目标文档接收块 ID/)
-    assert.deepEqual(receivedMoveState(b.store), before)
-    assert.deepEqual(server.files.get('/KnowBook/manifest.json'), manifest)
-    assert.equal(b.sync.getStatus().conflicts[0].key, 'doc:' + target)
-    assert.equal(b.store.getBlockReference('Conflict Source', '^target-conflict-move')!.documentId, source)
-    resolveConflict(b.sync, { key: 'doc:' + target, choice: 'local' })
-    await assert.rejects(b.sync.sync(), /同步批次缺少目标文档接收块 ID/)
-    assert.deepEqual(receivedMoveState(b.store), before)
-    assert.deepEqual(server.files.get('/KnowBook/manifest.json'), manifest)
-    resolveConflict(b.sync, { key: 'doc:' + target, choice })
-    await b.sync.sync(); await a.sync.sync()
-    assert.equal(b.store.getBlockReference('Conflict Source', '^target-conflict-move')!.documentId, target)
-    assert.equal(a.store.getBlockReference('Conflict Source', '^target-conflict-move')!.documentId, target)
-    assert.equal(content(b.store, target), 'AAA')
-    assert.ok(!b.store.getDocumentDetail(source)!.blocks.some(block => block.id === 'target-conflict-move'))
-    if (choice === 'both') {
-      const copy = b.store.getExportDocuments().find(document => /同步冲突副本/.test(document.title))!
-      assert.ok(copy); assert.equal(copy.blocks[0].content, 'BBB')
-      assert.notEqual(copy.blocks[0].id, 'target-conflict-root')
-      assert.notEqual(copy.blocks[0].id, 'target-conflict-move')
-      assert.equal(content(a.store, copy.id), 'BBB')
-    }
-    assert.equal(a.sync.getStatus().conflicts.length, 0)
-    assert.equal(b.sync.getStatus().conflicts.length, 0)
-  }))
-})
-
-for (const selected of ['source', 'target'] as const) test(
-  'two real WebDAV devices reject a partial local ownership resolution with both owners conflicted: ' + selected,
-  () => fixture(async (a, b, server) => {
-    const movedId = 'partial-local-move'
-    const source = moveFixtureDocument(a.store, 'Partial Source', [
-      { id: movedId, content: 'Original moved body' }, { id: 'partial-local-keep', content: 'Original source keeper' }
-    ])
-    const target = moveFixtureDocument(a.store, 'Partial Target', [{ id: 'partial-local-target', content: 'Original target body' }])
-    await a.sync.sync(); await b.sync.sync()
-    const createdAtByStore = new Map([a.store, b.store].map(store => [store,
-      (store.getUnsafeDatabaseHandle().prepare('SELECT created_at FROM blocks WHERE id = ?').get(movedId) as { created_at: string }).created_at
-    ] as const))
-    const originalSource = b.store.documentRecovery.readContent(source)
-    const originalTarget = b.store.documentRecovery.readContent(target)
-    moveFixture(a.store, source, target, movedId)
-    const remoteSource = a.store.documentRecovery.readContent(source)
-    a.store.updateDocument(source, { ...remoteSource,
-      blocks: remoteSource.blocks.map(block => ({ ...block, content: 'Remote source keeper' })) })
-    const remoteTarget = a.store.documentRecovery.readContent(target)
-    a.store.updateDocument(target, { ...remoteTarget, blocks: remoteTarget.blocks.map(block =>
-      block.id === 'partial-local-target' ? { ...block, content: 'Remote target body' } : block) })
-    b.store.updateDocument(source, { ...originalSource, blocks: originalSource.blocks.map(block => ({ ...block,
-      content: block.id === movedId ? 'Local moved body' : 'Local source keeper' })) })
-    b.store.updateDocument(target, { ...originalTarget,
-      blocks: originalTarget.blocks.map(block => ({ ...block, content: 'Local target body' })) })
-    await a.sync.sync(); await b.sync.sync()
-    assert.deepEqual(new Set(b.sync.getStatus().conflicts.map(conflict => conflict.key)), new Set(['doc:' + source, 'doc:' + target]))
-    assert.equal(b.store.getBlockReference('Partial Source', '^' + movedId)!.documentId, source)
-    assert.equal(b.store.getBlockReference('Partial Target', '^' + movedId), null)
-    assert.equal(a.store.getBlockReference('Partial Source', '^' + movedId)!.documentId, target)
-    const before = receivedMoveState(b.store), lastSyncAt = b.sync.getStatus().lastSyncAt
-    const manifest = Buffer.from(server.files.get('/KnowBook/manifest.json')!)
-    resolveConflict(b.sync, { key: 'doc:' + (selected === 'source' ? source : target), choice: 'local' })
-    assert.deepEqual(receivedMoveState(b.store), before)
-    const requestStart = server.requests.length
-    await assert.rejects(b.sync.sync(), /同步.*块 ID/,
-      selected === 'source' ? 'publishing only the local source would duplicate the moved ID in the retained remote target'
-        : 'publishing only the local target would lose the moved ID after the remote source already released it')
-    assert.deepEqual(receivedMoveState(b.store), before, 'failed ownership preflight must not change knowledge, routes, histories or sync cursors')
-    assert.deepEqual(server.files.get('/KnowBook/manifest.json'), manifest)
-    assert.equal(server.requests.slice(requestStart).filter(request => request.method === 'PUT' && request.path.endsWith('/manifest.json')).length, 0)
-    assert.equal(b.sync.getStatus().phase, 'error')
-    assert.equal(b.sync.getStatus().lastSyncAt, lastSyncAt)
-    const failedConflicts = b.sync.getStatus().conflicts
-    assert.deepEqual(new Set(failedConflicts.map(conflict => conflict.key)), new Set(['doc:' + source, 'doc:' + target]))
-    assert.equal(failedConflicts.find(conflict => conflict.key === 'doc:' + (selected === 'source' ? source : target))!.resolution, 'local')
-    await b.sync.stop(); b.sync = new WebDavSyncService(b.store, b.assets, b.credentials)
-    assert.deepEqual(b.sync.getStatus().conflicts, failedConflicts, 'both verified versions and the partial choice remain available after service restart')
-    assert.equal(b.sync.getStatus().lastSyncAt, lastSyncAt)
-    assert.deepEqual(receivedMoveState(b.store), before)
-    resolveConflict(b.sync, { key: 'doc:' + source, choice: 'remote' })
-    resolveConflict(b.sync, { key: 'doc:' + target, choice: 'remote' })
-    await b.sync.sync(); await a.sync.sync()
-    for (const current of [a, b]) {
-      const owner = current.store.getUnsafeDatabaseHandle().prepare('SELECT document_id, created_at FROM blocks WHERE id = ?')
-        .get(movedId) as { document_id: string; created_at: string }
-      assert.equal(owner.document_id, target)
-      assert.equal(owner.created_at, createdAtByStore.get(current.store))
-      assert.equal(current.store.getBlockReference('Partial Source', '^' + movedId)!.documentId, target)
-      assert.equal(current.store.getBlockReference('Partial Target', '^' + movedId)!.documentId, target)
-      assert.equal(current.store.getBlockReference('Unrelated path', '^' + movedId), null)
-      assert.ok(!current.store.getDocumentDetail(source)!.blocks.some(block => block.id === movedId))
-      assert.equal(current.store.getDocumentDetail(target)!.blocks.filter(block => block.id === movedId).length, 1)
-      assert.equal(current.store.getDocumentDetail(target)!.blocks.find(block => block.id === movedId)!.content, 'Original moved body')
-      assert.equal(content(current.store, source), 'Remote source keeper')
-      assert.equal(content(current.store, target), 'Remote target body')
-      assert.equal(current.sync.getStatus().conflicts.length, 0)
-    }
-    const published = parseManifest(server.files.get('/KnowBook/manifest.json')!)
-    const publishedOwners = new Map<string, string>()
-    for (const [key, hash] of Object.entries(published.entries)) {
-      const record = validateRecord(JSON.parse(server.files.get('/KnowBook/objects/' + hash + '.json')!.toString('utf8')), key)
-      if (record.kind !== 'document') continue
-      for (const block of record.content.blocks) {
-        assert.ok(!publishedOwners.has(block.id!), 'the accepted manifest must have globally unique block IDs')
-        publishedOwners.set(block.id!, record.id)
-      }
-    }
-    assert.equal(publishedOwners.get(movedId), target)
-    if (selected === 'target') {
-      const acceptedTarget = b.store.documentRecovery.readContent(target)
-      b.store.updateDocument(target, { ...acceptedTarget,
-        blocks: acceptedTarget.blocks.filter(block => block.id !== movedId) })
-      await b.sync.sync(); await a.sync.sync()
-      for (const current of [a, b]) {
-        assert.equal(current.store.getUnsafeDatabaseHandle().prepare('SELECT id FROM blocks WHERE id = ?').get(movedId), undefined,
-          'a later deliberate deletion is valid after both devices accepted complete ownership')
-        assert.equal(current.store.getBlockReference('Partial Source', '^' + movedId), null)
-        assert.equal(current.store.getBlockReference('Partial Target', '^' + movedId), null)
-        assert.deepEqual(current.store.getDocumentDetail(target)!.blocks.map(block => block.id), ['partial-local-target'])
-        assert.equal(current.sync.getStatus().phase, 'idle')
-        assert.equal(current.sync.getStatus().conflicts.length, 0)
-      }
-      const deletedManifest = parseManifest(server.files.get('/KnowBook/manifest.json')!)
-      for (const [key, hash] of Object.entries(deletedManifest.entries)) {
-        const record = validateRecord(JSON.parse(server.files.get('/KnowBook/objects/' + hash + '.json')!.toString('utf8')), key)
-        if (record.kind === 'document') assert.ok(record.content.blocks.every(block => block.id !== movedId),
-          'the final manifest may remove an identity only through a legitimate accepted owner edit')
-      }
-    }
-  })
-)
-
-
-test('two real WebDAV devices retain receiver-observed copied block paths after remote document path changes', async context => {
-  for (const change of ['document rename', 'ancestor rename', 'document move', 'ancestor move', 'parent deletion'] as const) await context.test(change,
-    () => fixture(async (a, b) => {
-      const parent = moveFixtureDocument(a.store, 'Observed Parent', [{ id: 'observed-parent', content: 'Parent body' }])
-      const leaf = a.store.createDocument(parent)
-      a.store.updateDocument(leaf, { title: 'Observed Leaf', summary: 'Leaf summary', blocks: [
-        { id: 'observed-stable', type: 'paragraph', content: 'Copied stable block', checked: false, depth: 0, parentBlockId: null }
-      ] })
-      const destination = moveFixtureDocument(a.store, 'Observed Destination', [{ id: 'observed-destination', content: 'Destination body' }])
-      await a.sync.sync(); await b.sync.sync()
-      const copiedPath = b.store.getDocumentDetail(leaf)!.path
-      assert.equal(copiedPath, 'Observed Parent/Observed Leaf')
-      assert.equal(b.store.getBlockReference(copiedPath, '^observed-stable')?.documentId, leaf)
-      const createdAt = (b.store.getUnsafeDatabaseHandle().prepare('SELECT created_at FROM blocks WHERE id = ?')
-        .get('observed-stable') as { created_at: string }).created_at
-      if (change === 'document rename' || change === 'ancestor rename') {
-        const id = change === 'document rename' ? leaf : parent, original = a.store.documentRecovery.readContent(id)
-        a.store.updateDocument(id, { ...original, title: change === 'document rename' ? 'Renamed Leaf' : 'Renamed Parent' })
-      } else if (change === 'document move') a.store.moveDocument(leaf, destination)
-      else if (change === 'ancestor move') a.store.moveDocument(parent, destination)
-      else a.store.deleteDocument(parent)
-      await a.sync.sync(); await b.sync.sync()
-      const current = b.store.getDocumentDetail(leaf)!, expected = a.store.getDocumentDetail(leaf)!
-      assert.notEqual(current.path, copiedPath)
-      assert.equal(current.path, expected.path)
-      assert.deepEqual(current.blocks, expected.blocks)
-      assert.equal(current.blocks[0].id, 'observed-stable')
-      assert.equal((b.store.getUnsafeDatabaseHandle().prepare('SELECT created_at FROM blocks WHERE id = ?')
-        .get('observed-stable') as { created_at: string }).created_at, createdAt)
-      assert.equal(a.store.getBlockReference(copiedPath, '^observed-stable')?.documentId, leaf, 'the sending device preserves its locally observed old route')
-      assert.equal(b.store.getBlockReference(current.path, '^observed-stable')?.documentId, leaf)
-      assert.equal(b.store.getBlockReference('Unobserved/WrongPath', '^observed-stable'), null)
-      assert.equal(b.store.getBlockReference(copiedPath, '^observed-destination'), null, 'a historical path must be bound to the exact copied block ID')
-      const copied = b.store.getBlockReference(copiedPath, '^observed-stable')
-      assert.ok(copied, 'the receiver copied this path before synchronization; receiving ' + change + ' must preserve that exact observed route')
-      assert.equal(copied.documentId, leaf)
-      assert.equal(copied.documentPath, current.path)
-      assert.equal(copied.block.id, 'observed-stable')
-      const databasePath = b.store.getUnsafeDatabaseHandle().name
-      await b.sync.stop(); b.store.destroy()
-      b.store = new KnowbookStore(databasePath)
-      b.sync = new WebDavSyncService(b.store, b.assets, b.credentials)
-      assert.equal(b.store.getBlockReference(copiedPath, '^observed-stable')?.documentId, leaf)
-      assert.equal(b.store.getBlockReference(copiedPath, '^observed-stable')?.documentPath, current.path)
-      assert.equal(b.store.getBlockReference('Unobserved/WrongPath', '^observed-stable'), null)
-    }))
-})
-
-test('a remote block move with target rename preserves observed routes without inventing an unseen old-target incoming-ID pair', () => fixture(async (a, b) => {
-  const source = moveFixtureDocument(a.store, 'Observed Transfer Source', [{ id: 'observed-incoming', content: 'Moved identity' }, { id: 'observed-source-keep', content: 'Keep source' }])
-  const target = moveFixtureDocument(a.store, 'Observed Transfer Target', [{ id: 'observed-target-existing', content: 'Keep target' }])
-  await a.sync.sync(); await b.sync.sync()
-  const oldSourcePath = b.store.getDocumentDetail(source)!.path, oldTargetPath = b.store.getDocumentDetail(target)!.path
-  assert.equal(b.store.getBlockReference(oldSourcePath, '^observed-incoming')?.documentId, source)
-  assert.equal(b.store.getBlockReference(oldTargetPath, '^observed-target-existing')?.documentId, target)
-  assert.equal(b.store.getBlockReference(oldTargetPath, '^observed-incoming'), null)
-  moveFixture(a.store, source, target, 'observed-incoming')
-  const moved = a.store.documentRecovery.readContent(target)
-  a.store.updateDocument(target, { ...moved, title: 'Observed Renamed Target' })
-  assert.equal(a.store.getBlockReference(oldTargetPath, '^observed-incoming')?.documentId, target,
-    'the sender actually observed the incoming ID at the old target path before renaming it')
-  await a.sync.sync(); await b.sync.sync()
-  const currentPath = b.store.getDocumentDetail(target)!.path
-  assert.equal(currentPath, 'Observed Renamed Target')
-  const verify = () => {
-    assert.equal(b.store.getBlockReference(oldSourcePath, '^observed-incoming')?.documentId, target)
-    assert.equal(b.store.getBlockReference(currentPath, '^observed-incoming')?.documentId, target)
-    assert.equal(b.store.getBlockReference(oldTargetPath, '^observed-incoming'), null,
-      'the receiver never observed this old-target path plus incoming ID; protocol v1 cannot invent the sender\'s historical pair')
-    assert.equal(b.store.getBlockReference(oldTargetPath, '^observed-target-existing')?.documentId, target,
-      'the receiver did observe the preexisting target block at that old path')
-    assert.equal(b.store.getBlockReference('Unobserved/WrongPath', '^observed-incoming'), null)
-  }
-  verify()
-  const databasePath = b.store.getUnsafeDatabaseHandle().name
-  await b.sync.stop(); b.store.destroy()
-  b.store = new KnowbookStore(databasePath)
-  b.sync = new WebDavSyncService(b.store, b.assets, b.credentials)
-  verify()
-}))

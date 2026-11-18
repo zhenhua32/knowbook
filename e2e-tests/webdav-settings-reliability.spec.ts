@@ -170,6 +170,7 @@ for (const language of ['en-US', 'zh-CN'] as const) {
       await page.clock.install({ time: now })
       await page.clock.pauseAt(new Date(now.getTime() + 1_000))
       const { section, fields } = await openSettings(page)
+      await expect(section.getByRole('checkbox', { name: uiText('Enable synced-block protocol for this folder', '在此目录启用同步块协议'), exact: true })).toHaveCount(0)
       const reload = section.getByRole('button', { name: uiText('Reload', '重新加载'), exact: true })
       const loading = section.getByRole('status').filter({ hasText: uiText('Loading sync settings…', '正在加载同步设置…') })
       await expect.poll(async () => (await readProbe(app)).pendingReads).toBe(1)

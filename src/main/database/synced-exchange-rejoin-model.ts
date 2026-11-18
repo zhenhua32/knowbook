@@ -6,7 +6,8 @@ import { exchangeStateKey, liftTombstoneExchangeState, parseExchangeStored, vali
 import { publicationHash, publicationInvalid, publicationJson } from '../sync/synced-publication-model'
 import { readRawPriorKnowledgeCoverageOwned } from './restore-knowledge-coverage-raw-read'
 import { restorePaths } from './restore-safety-files'
-import { assertInstalledRestoreRuntimeCoverage, readLiveInstalledRestoreRuntime } from './restore-knowledge-runtime-authority'
+import { assertInstalledRestoreRuntimeCoverage, attachInstalledRestoreRuntime, readInstalledRestoreRuntime,
+  readLiveInstalledRestoreRuntime } from './restore-knowledge-runtime-authority'
 import { readRejoinPublicationSeed } from './synced-exchange-rejoin-publication'
 
 export const exchangeRejoinPrefix = 'sync.webdav.protocol5.exchange-rejoin.v1.'
@@ -61,20 +62,25 @@ function head(value: unknown) {
 
 export function validateExchangeRejoin(value: unknown) {
   const version = value && typeof value === 'object' ? Object.getOwnPropertyDescriptor(value, 'version')?.value : undefined
+  if (version !== 1 && version !== 2 && version !== 3) return invalid()
+  const publication = version === 2 || version === 3 && Object.hasOwn(value as object, 'publicationSeed')
   assertSyncedShape(value, ['kind', 'version', 'restoreOperationId', 'targetFingerprint', 'intentHash', 'proofHash',
     'oldRouteRaw', 'oldRouteUpdatedAt', 'oldStateRaw', 'oldRowsHash', 'receiptPins', 'acceptedHead', 'observedHead', 'newEpoch', 'confirmedAt',
-    ...(version === 2 ? ['publicationSeed'] : [])])
-  if (value.kind !== 'synced-exchange-restore-rejoin' || version !== 1 && version !== 2 || !Array.isArray(value.receiptPins)
+    ...(publication ? ['publicationSeed'] : []), ...(version === 3 ? ['predecessor'] : [])])
+  if (value.kind !== 'synced-exchange-restore-rejoin' || !Array.isArray(value.receiptPins)
     || !Number.isFinite(Date.parse(text(value.confirmedAt))) || !Number.isFinite(Date.parse(text(value.oldRouteUpdatedAt)))) return invalid()
   const state = validateAnyExchangeState(parseExchangeStored(text(value.oldStateRaw)))
   const oldRoute = parseExchangeStored(text(value.oldRouteRaw))
   assertSyncedShape(oldRoute, ['workspace', 'lastSyncAt', 'pending'])
-  if (!same(oldRoute.workspace, { workspaceScope: state.workspaceScope, recoveryEpoch: state.recoveryEpoch })
-    || oldRoute.lastSyncAt !== state.lastSyncAt || oldRoute.pending !== null || state.recoveryEpoch === value.newEpoch
+  assertSyncedShape(oldRoute.workspace, ['workspaceScope', 'recoveryEpoch'])
+  if (oldRoute.workspace.workspaceScope !== state.workspaceScope || !isSyncedUuid(oldRoute.workspace.recoveryEpoch)
+    || (version !== 3) !== (oldRoute.workspace.recoveryEpoch === state.recoveryEpoch)
+    || oldRoute.workspace.recoveryEpoch === value.newEpoch || oldRoute.lastSyncAt !== state.lastSyncAt || oldRoute.pending !== null
+    || state.recoveryEpoch === value.newEpoch
     || state.targetFingerprint !== value.targetFingerprint || value.oldStateRaw !== publicationJson(state)
-    || !state.currentOperationId || state.source.kind !== (version === 1 ? 'initial-receipt' : 'confirmed-publication')) return invalid()
+    || !state.currentOperationId || state.source.kind !== (publication ? 'confirmed-publication' : 'initial-receipt')) return invalid()
   const seedId = state.source.operationId!, allIds = [seedId, state.currentOperationId, ...state.baseline.map(row => row.acceptedOperationId)]
-  const receiptIds = [...new Set(version === 2 ? allIds.filter(id => id !== seedId) : allIds)].sort()
+  const receiptIds = [...new Set(publication ? allIds.filter(id => id !== seedId) : allIds)].sort()
   const receiptPins = value.receiptPins.map(pin => {
     assertSyncedShape(pin, ['operationId', 'hash'])
     return { operationId: uuid(pin.operationId), hash: digest(pin.hash) }
@@ -85,11 +91,20 @@ export function validateExchangeRejoin(value: unknown) {
     oldStateRaw: text(value.oldStateRaw), oldRowsHash: digest(value.oldRowsHash), receiptPins,
     acceptedHead: head(value.acceptedHead), observedHead: head(value.observedHead), newEpoch: uuid(value.newEpoch), confirmedAt: text(value.confirmedAt) }
   if (version === 1) return { ...common, version: 1 as const }
-  assertSyncedShape(value.publicationSeed, ['targetFingerprint', 'rowHash'])
-  return { ...common, version: 2 as const, publicationSeed: { targetFingerprint: digest(value.publicationSeed.targetFingerprint), rowHash: digest(value.publicationSeed.rowHash) } }
+  const publicationFields = () => {
+    assertSyncedShape(value.publicationSeed, ['targetFingerprint', 'rowHash'])
+    return { publicationSeed: { targetFingerprint: digest(value.publicationSeed.targetFingerprint), rowHash: digest(value.publicationSeed.rowHash) } }
+  }
+  if (version === 2) return { ...common, version: 2 as const, ...publicationFields() }
+  assertSyncedShape(value.predecessor, ['operationId', 'hash'])
+  return { ...common, version: 3 as const, ...(publication ? publicationFields() : {}),
+    predecessor: { operationId: uuid(value.predecessor.operationId), hash: digest(value.predecessor.hash) } }
 }
 export type ExchangeRejoin = ReturnType<typeof validateExchangeRejoin>
 export const exchangeRejoinState = (value: ExchangeRejoin) => validateAnyExchangeState(parseExchangeStored(value.oldStateRaw))
+function originalRouteEpoch(value: ExchangeRejoin) {
+  return (parseExchangeStored(value.oldRouteRaw) as { workspace: { recoveryEpoch: string } }).workspace.recoveryEpoch
+}
 
 export function exchangeRejoinBaseline(state: ReturnType<typeof exchangeRejoinState>, version: 1 | 2) {
   const selected = version === 2 && state.version === 1 ? liftTombstoneExchangeState(state) : state
@@ -101,17 +116,36 @@ export function exchangeRejoinBaseline(state: ReturnType<typeof exchangeRejoinSt
 export function readExchangeRejoinSupport(db: Database.Database, value: ExchangeRejoin) {
   if (!db.open || !db.inTransaction) return invalid()
   const old = exchangeRejoinState(value), requirements = readRawPriorKnowledgeCoverageOwned(db)
-  const requirement = requirements.entries.find(item => item.operationId === value.restoreOperationId)
-  if (!requirement || requirement.cut.kind !== 'synced-recovery-epoch-cut' || requirement.cut.beforeEpoch !== old.recoveryEpoch
-    || requirement.cut.afterEpoch !== value.newEpoch || requirement.cut.workspaceScope !== old.workspaceScope) return invalid()
+  const entries = new Map(requirements.entries.map(entry => [entry.operationId, entry]))
+  function matchingCut(bridge: ExchangeRejoin) {
+    const entry = entries.get(bridge.restoreOperationId)
+    if (!entry || entry.cut.kind !== 'synced-recovery-epoch-cut' || entry.cut.beforeEpoch !== originalRouteEpoch(bridge)
+      || entry.cut.afterEpoch !== bridge.newEpoch || entry.cut.workspaceScope !== old.workspaceScope) return invalid()
+    return entry
+  }
+  const requirement = matchingCut(value)
+  const ancestors: Array<{ value: ExchangeRejoin; hash: string }> = []
+  const seen = new Set([value.restoreOperationId])
+  let current = value
+  while (current.version === 3) {
+    const { operationId, hash } = current.predecessor
+    if (seen.has(operationId)) return invalid()
+    const prior = readStoredExchangeRejoin(db, value.targetFingerprint, operationId)
+    if (!prior || prior.hash !== hash || prior.value.newEpoch !== originalRouteEpoch(current)
+      || prior.value.oldStateRaw !== value.oldStateRaw || !same(prior.value.acceptedHead, value.acceptedHead)) return invalid()
+    matchingCut(prior.value)
+    ancestors.push(prior); seen.add(operationId)
+    current = prior.value
+  }
   const op = db.prepare('SELECT request_hash,result_json,created_at FROM synced_operations WHERE client_operation_id=?')
   const receipts = value.receiptPins.map(pin => {
     const row = op.get(pin.operationId)
     if (!row || publicationHash(publicationJson(row)) !== pin.hash) return invalid()
     return { operationId: pin.operationId, row }
   })
-  const publication = value.version === 2 ? readRejoinPublicationSeed(db, old.source, value.publicationSeed.targetFingerprint) : undefined
-  if (value.version === 2 && publication?.hash !== value.publicationSeed.rowHash) return invalid()
+  const seed = 'publicationSeed' in value ? value.publicationSeed : undefined
+  const publication = seed ? readRejoinPublicationSeed(db, old.source, seed.targetFingerprint) : undefined
+  if (seed && publication?.hash !== seed.rowHash) return invalid()
   const raw = receipts.find(receipt => receipt.operationId === old.currentOperationId)?.row as { result_json: string } | undefined
   const accepted = raw && parseExchangeStored(raw.result_json)
   if (!accepted || typeof accepted !== 'object' || !('provenance' in accepted) || !accepted.provenance
@@ -119,21 +153,44 @@ export function readExchangeRejoinSupport(db: Database.Database, value: Exchange
     || !('afterManifestHash' in accepted.provenance) || !('afterManifestEtag' in accepted.provenance)
     || accepted.provenance.afterStateHash !== publicationHash(value.oldStateRaw) || accepted.provenance.afterManifestHash !== value.acceptedHead.hash
     || accepted.provenance.afterManifestEtag !== value.acceptedHead.etag) return invalid()
-  return { old, requirement, requirements, receipts, publication }
+  return { old, requirement, requirements, receipts, publication, ancestors }
 }
 
-export function readExchangeRejoinSql(db: Database.Database, targetFingerprint: string, restoreOperationId: string) {
+function readStoredExchangeRejoin(db: Database.Database, targetFingerprint: string, restoreOperationId: string) {
   const key = exchangeRejoinKey(targetFingerprint, restoreOperationId)
   const row = db.prepare('SELECT value,updated_at FROM app_settings WHERE key=?').get(key) as { value: string; updated_at: string } | undefined
   if (!row) return null
   const value = validateExchangeRejoin(parseExchangeStored(row.value))
   if (row.value !== publicationJson(value) || row.updated_at !== value.confirmedAt || key !== exchangeRejoinKey(value.targetFingerprint, value.restoreOperationId)) return invalid()
-  return { value, ...readExchangeRejoinSupport(db, value), hash: publicationHash(row.value) }
+  return { value, hash: publicationHash(row.value) }
+}
+
+export function readExchangeRejoinSql(db: Database.Database, targetFingerprint: string, restoreOperationId: string) {
+  const row = readStoredExchangeRejoin(db, targetFingerprint, restoreOperationId)
+  return row && { ...row, ...readExchangeRejoinSupport(db, row.value) }
+}
+
+export function assertExchangeRejoinPins(root: string, records: Iterable<{ value: ExchangeRejoin; hash: string }>) {
+  for (const { value, hash } of records) {
+    if (readSmallPin(exchangeRejoinFile(root, value.restoreOperationId, hash)) !== publicationJson(exchangeRejoinPin(value))) return invalid()
+  }
 }
 
 export function readActiveExchangeRejoin(db: Database.Database, database: string, targetFingerprint: string) {
   if (!db.inTransaction) return invalid()
-  const installed = readLiveInstalledRestoreRuntime(db, database)
+  return readRuntimeExchangeRejoin(db, targetFingerprint, readLiveInstalledRestoreRuntime(db, database))
+}
+
+/** The controlled restore owner opens its original as an isolated readonly
+ * SQLite copy. Reuse the exact verified installed fence and bridge proof. */
+export function readSealedExchangeRejoin(db: Database.Database, database: string, targetFingerprint: string) {
+  if (!db.open || !db.readonly || !db.inTransaction) return invalid()
+  attachInstalledRestoreRuntime(db, database)
+  return readRuntimeExchangeRejoin(db, targetFingerprint, readInstalledRestoreRuntime(db))
+}
+
+function readRuntimeExchangeRejoin(db: Database.Database, targetFingerprint: string,
+  installed: ReturnType<typeof readInstalledRestoreRuntime>) {
   if (!installed?.operationId) return null
   const selected = readExchangeRejoinSql(db, targetFingerprint, installed.operationId)
   if (!selected) return null
@@ -146,8 +203,8 @@ export function readActiveExchangeRejoin(db: Database.Database, database: string
   const fenceValue = parseExchangeStored(fence)
   assertSyncedShape(fenceValue, ['kind', 'version', 'operationId', 'intentHash', 'parentFenceHash', 'phase'])
   if (fence !== publicationJson(fenceValue) || fenceValue.kind !== 'controlled-joint-restore-fence' || fenceValue.version !== 2
-    || fenceValue.phase !== 'installed' || fenceValue.operationId !== installed.operationId || fenceValue.intentHash !== installed.intentHash
-    || readSmallPin(exchangeRejoinFile(root, installed.operationId, selected.hash)) !== publicationJson(exchangeRejoinPin(value))) return invalid()
+    || fenceValue.phase !== 'installed' || fenceValue.operationId !== installed.operationId || fenceValue.intentHash !== installed.intentHash) return invalid()
+  assertExchangeRejoinPins(root, [selected, ...selected.ancestors])
   return selected
 }
 

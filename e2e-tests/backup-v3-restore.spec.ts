@@ -250,7 +250,6 @@ test('restored WebDAV receiver cancels then confirms reconnection in Settings an
     import assert from 'node:assert/strict'
     import { createV3Fixture, randomUUID } from './tests/helpers/synced-backup-v3-fixture.ts'
     import { KnowbookStore } from './src/main/database/store.ts'
-    import { AttachmentStore } from './src/main/attachments.ts'
     import { createEphemeralCredentialStorage } from './src/main/credential-storage.ts'
     import { runProtocol5WebDav } from './src/main/sync/protocol5-service.ts'
     import { WebDavSyncService } from './src/main/sync/service.ts'
@@ -265,14 +264,13 @@ test('restored WebDAV receiver cancels then confirms reconnection in Settings an
     source.close()
     const A = KnowbookStore.openCanonicalRuntime(source.file)
     try {
-      const initial = await runProtocol5WebDav(A, source.userDataRoot, route, credentials, false)
+      const initial = await runProtocol5WebDav(A, source.userDataRoot, route, credentials)
       assert.ok(initial.uploaded > 0)
       const B = KnowbookStore.createEmptySyncedReceiver(join(profile, 'storage', 'knowbook.db'))
       try {
-        const service = new WebDavSyncService(B, new AttachmentStore(join(profile, 'storage', 'assets')),
-          createEphemeralCredentialStorage(randomUUID), undefined, undefined, profile)
-        service.saveConfig({ ...route, ...credentials, protocol5: true })
-        assert.ok((await runProtocol5WebDav(B, profile, route, credentials, false)).downloaded > 0)
+        const service = new WebDavSyncService(B, profile, createEphemeralCredentialStorage(randomUUID))
+        service.saveConfig({ ...route, ...credentials })
+        assert.ok((await runProtocol5WebDav(B, profile, route, credentials)).downloaded > 0)
         const detail = B.getDocumentDetail(documentId)
         assert.ok(detail)
         // Acquire the actual settled baseline by publishing an independent receiver edit.
@@ -280,14 +278,14 @@ test('restored WebDAV receiver cancels then confirms reconnection in Settings an
         assert.ok(host)
         const localId = B.createDocument(null)
         B.updateDocument(localId, { title: 'Restored rejoin local original', summary: '', blocks: [] })
-        assert.ok((await runProtocol5WebDav(B, profile, route, credentials, false)).uploaded > 0)
+        assert.ok((await runProtocol5WebDav(B, profile, route, credentials)).uploaded > 0)
       } finally { B.destroy() }
-      await runProtocol5WebDav(A, source.userDataRoot, route, credentials, false)
+      await runProtocol5WebDav(A, source.userDataRoot, route, credentials)
       const other = A.createDocument(null), remote = 'Independent remote edit after the common version'
       A.updateDocument(other, { title: 'WebDAV rejoin remote addition', summary: '', blocks: [
         { id: randomUUID(), type: 'paragraph', content: remote, checked: false, depth: 0, parentBlockId: null }
       ] })
-      assert.ok((await runProtocol5WebDav(A, source.userDataRoot, route, credentials, false)).uploaded > 0)
+      assert.ok((await runProtocol5WebDav(A, source.userDataRoot, route, credentials)).uploaded > 0)
       const donorRoot = join(directory, 'donor'), archive = join(directory, 'restore-donor')
       await mkdir(donorRoot)
       const donor = KnowbookStore.createEmptySyncedReceiver(join(donorRoot, 'storage', 'knowbook.db'))

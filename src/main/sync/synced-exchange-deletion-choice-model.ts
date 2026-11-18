@@ -8,6 +8,7 @@ import type { ExchangeComponent, ExchangeDeferredReason, SyncedExchangeResult } 
 import type { ExchangePlanIdentity } from './synced-exchange-plan'
 import type { TombstoneExchangePlan, TombstoneExchangeState, TombstonePlanInput, TombstoneBaselineEntry } from './synced-exchange-tombstone-types'
 import type { DeletionChoiceIntent } from './synced-logical-deletion-choice-model'
+import { validateLocalDocumentDeletion } from '../database/local-document-deletions'
 
 /** Closed data only. Runtime must mint these from its actual reader/capture; no DTO is a write grant. */
 export type DeletionChoice = 'keep-live' | 'keep-delete'
@@ -160,7 +161,7 @@ function snapshot(value: unknown): DeletionChoiceSnapshot {
   return {manifest:result.manifest,records:result.records}
 }
 function authority(value: unknown): KnowledgeAuthority {
-  shape(value,['catalogId','identities','occupiedDocumentIds','historyComponents','pinnedGroupIds','deletedFacts','pins','deletionProofReferences'],['knownGroupIds','missingBaseKeys','deferredKeys','keyGuards'])
+  shape(value,['catalogId','identities','occupiedDocumentIds','historyComponents','pinnedGroupIds','deletedFacts','pins','deletionProofReferences'],['knownGroupIds','missingBaseKeys','deferredKeys','keyGuards','localDocumentDeletions'])
   const identities=list<ExchangePlanIdentity>(value.identities,raw=>{shape(raw,['id','last_owner_kind','last_owner_id','state','created_at']);if(raw.last_owner_kind!=='document'&&raw.last_owner_kind!=='group'&&raw.last_owner_kind!=='reserved'||raw.state!=='live'&&raw.state!=='retained')return publicationInvalid('删除决定identity种类无效。');return {id:opaque(raw.id),last_owner_kind:raw.last_owner_kind,last_owner_id:opaque(raw.last_owner_id),state:raw.state,created_at:raw.created_at===null?null:date(raw.created_at)}})
   if(new Set(identities.map(row=>row.id)).size!==identities.length)return publicationInvalid('删除决定identity重复。')
   const deletedFacts=list(value.deletedFacts,raw=>{shape(raw,['key','tombstoneHash','deletionOperationId','intentHash']);return {key:key(raw.key),tombstoneHash:hash(raw.tombstoneHash),deletionOperationId:uuid(raw.deletionOperationId),intentHash:hash(raw.intentHash)}})
@@ -168,6 +169,7 @@ function authority(value: unknown): KnowledgeAuthority {
   if(refs.size!==deletedFacts.length||deletedFacts.some(row=>{const ref=refs.get(row.key);return !ref||ref.tombstoneHash!==row.tombstoneHash||ref.deletionOperationId!==row.deletionOperationId||ref.intentHash!==row.intentHash}))return publicationInvalid('删除决定原proof/facts不闭合。')
   const pins=list(value.pins,raw=>{shape(raw,['groupId','kind','pinId','sourceHash']);if(typeof raw.kind!=='string'||!raw.kind.length)return publicationInvalid('删除决定pin kind无效。');return {groupId:uuid(raw.groupId),kind:raw.kind,pinId:opaque(raw.pinId),sourceHash:hash(raw.sourceHash)}})
   return {catalogId:opaque(value.catalogId),identities,occupiedDocumentIds:list(value.occupiedDocumentIds,opaque),historyComponents:list(value.historyComponents,row=>list(row,key)),pinnedGroupIds:list(value.pinnedGroupIds,uuid),deletedFacts,pins,deletionProofReferences,
+    ...(value.localDocumentDeletions===undefined?{}:{localDocumentDeletions:ordered(list(value.localDocumentDeletions,validateLocalDocumentDeletion),row=>row.documentId)}),
     ...(value.knownGroupIds===undefined?{}:{knownGroupIds:list(value.knownGroupIds,uuid)}),...(value.missingBaseKeys===undefined?{}:{missingBaseKeys:list(value.missingBaseKeys,key)}),...(value.deferredKeys===undefined?{}:{deferredKeys:list(value.deferredKeys,key)}),...(value.keyGuards===undefined?{}:{keyGuards:list(value.keyGuards,raw=>{shape(raw,['key','fingerprint']);return {key:key(raw.key),fingerprint:hash(raw.fingerprint)}})})}
 }
 export function validateDeletionDecisionSource(value: unknown): DeletionDecisionSource {

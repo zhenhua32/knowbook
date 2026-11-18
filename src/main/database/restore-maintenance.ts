@@ -10,6 +10,7 @@ import { stopDatabaseRestoreProcesses, type RestoreProcessIdentity } from './res
 import { isSystemPluginManagedPath, resolveSystemPluginPhysicalPath } from '../system-plugin/managed-paths'
 import { recoverControlledDatabaseRestore, restoreControlledBackupV3, restoreControlledDatabase, type ControlledRestoreInput,
   type ControlledRestoreResult, type ControlledV3RestorePreview } from './restore-safety'
+import type { SecureStringStorage } from '../credential-storage'
 import { restoreSqliteFilename } from './restore-safety-sqlite-path'
 
 const require = createRequire(import.meta.url)
@@ -326,8 +327,8 @@ export async function restoreKnowbookDatabase(input: ControlledRestoreInput): Pr
 }
 
 export async function restoreKnowbookBackupV3(userDataRoot: string, backupDirectory: string, expectedInventoryHash?: string,
-  confirm?: (preview: ControlledV3RestorePreview) => Promise<boolean>, requestId?: string) {
-  const input = { userDataRoot, backupDirectory, expectedInventoryHash, requestId }
+  confirm?: (preview: ControlledV3RestorePreview) => Promise<boolean>, requestId?: string, retirementCredentials?: SecureStringStorage) {
+  const input = { userDataRoot, backupDirectory, expectedInventoryHash, requestId, retirementCredentials }
   const legacy = { readCurrentIdentities, recoverLegacy: recoverInterruptedDatabaseRestoreV1 }
   return confirm ? restoreControlledBackupV3(input, legacy, confirm) : restoreControlledBackupV3(input, legacy)
 }

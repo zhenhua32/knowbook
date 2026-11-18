@@ -8,26 +8,8 @@ export interface WebDavSyncConfig {
 }
 
 export interface SaveWebDavSyncConfig extends WebDavSyncConfig {
-  /** An explicit, local per-target choice. It never enters a wire manifest. */
-  protocol5?: boolean
   /** Omit to retain the saved password; empty string clears it. */
   password?: string
-}
-
-export interface WebDavSyncConflict {
-  key: string
-  title: string
-  localPreview: string
-  remotePreview: string
-  canKeepBoth: boolean
-  localHash: string
-  remoteHash: string
-  localDeleted: boolean
-  remoteDeleted: boolean
-  reason: 'overlap' | 'no-base' | 'delete-edit' | 'database'
-  canMerge: boolean
-  mergeFields: Array<Pick<WebDavSyncMergePart, 'id' | 'field' | 'blockId'>>
-  resolution: WebDavSyncResolutionChoice | null
 }
 
 export type WebDavSyncResolutionChoice = 'local' | 'remote' | 'both' | 'merge'
@@ -45,28 +27,6 @@ export interface WebDavSyncMergePart {
 
 export type WebDavSyncMergeChoice = { choice: 'local' | 'remote' } | { choice: 'custom'; text: string }
 
-export interface WebDavSyncConflictVersion {
-  key: string
-  localHash: string
-  remoteHash: string
-}
-
-export interface WebDavSyncConflictDetails extends WebDavSyncConflictVersion {
-  localPreview: string
-  remotePreview: string
-  basePreview: string | null
-  savedChoices?: Record<string, WebDavSyncMergeChoice>
-  merge: {
-    document: import('./contracts').UpdateDocumentInput
-    conflicts: WebDavSyncMergePart[]
-    unresolvedIds: string[]
-  } | null
-}
-
-export interface WebDavSyncConflictDetailsInput extends WebDavSyncConflictVersion {
-  mergeChoices?: Record<string, WebDavSyncMergeChoice>
-}
-
 export interface WebDavSyncProgress {
   stage: 'checking' | 'preparing' | 'comparing' | 'uploading' | 'downloading' | 'publishing' | 'applying'
   /** Counts describe the current stage, not a predicted percentage of the whole sync. */
@@ -82,7 +42,6 @@ export interface WebDavSyncProgress {
 }
 
 export interface WebDavSyncStatus {
-  protocol5?: true
   protocol5RestoreRejoin?: true
   protocol5Preview?: WebDavProtocol5ConflictPreview
   protocol5DeletionPreview?: WebDavProtocol5DeletionPreview
@@ -95,7 +54,6 @@ export interface WebDavSyncStatus {
   downloaded: number
   merged: number
   progress: WebDavSyncProgress | null
-  conflicts: WebDavSyncConflict[]
 }
 
 export interface WebDavProtocol5ConflictPreview {
@@ -103,17 +61,23 @@ export interface WebDavProtocol5ConflictPreview {
   previewHash: string
   components: Array<{
     componentId: string
-    choices: Array<'local' | 'remote'>
-    records: Array<{ key: string; baseHash: string | null; localHash: string | null; remoteHash: string | null; parts: WebDavSyncMergePart[] }>
+    choices: ResolveWebDavProtocol5Conflict['choice'][]
+    records: Array<{ key: string; baseHash: string | null; localHash: string | null; remoteHash: string | null;
+      parts: WebDavSyncMergePart[]; unresolvedPartIds: string[] }>
+    copies?: { documentPaths: string[]; groupCount: number }
   }>
 }
 
-export interface ResolveWebDavProtocol5Conflict {
+interface WebDavProtocol5PreviewSelection {
   previewId: string
   previewHash: string
   componentId: string
-  choice: 'local' | 'remote'
 }
+
+export type ResolveWebDavProtocol5Conflict = WebDavProtocol5PreviewSelection & (
+  | { choice: 'local' | 'remote' | 'both' }
+  | { choice: 'merge'; records: Array<{ key: string; parts: Array<{ id: string; value: WebDavSyncMergeChoice }> }> }
+)
 
 export type WebDavProtocol5DeletionChoice = 'keep-live' | 'keep-delete'
 export type WebDavProtocol5DeletionSide =
@@ -135,13 +99,7 @@ export interface WebDavProtocol5DeletionPreview {
   }>
 }
 
-export type ResolveWebDavProtocol5Deletion = Omit<ResolveWebDavProtocol5Conflict, 'choice'>
-  & { choice: WebDavProtocol5DeletionChoice }
-
-export interface ResolveWebDavSyncConflict extends WebDavSyncConflictVersion {
-  choice: WebDavSyncResolutionChoice | 'clear'
-  mergeChoices?: Record<string, WebDavSyncMergeChoice>
-}
+export type ResolveWebDavProtocol5Deletion = WebDavProtocol5PreviewSelection & { choice: WebDavProtocol5DeletionChoice }
 
 export const DEFAULT_WEBDAV_SYNC_CONFIG: WebDavSyncConfig = {
   enabled: false, url: '', username: '', directory: 'KnowBook', intervalMinutes: 5, allowInsecureHttp: false

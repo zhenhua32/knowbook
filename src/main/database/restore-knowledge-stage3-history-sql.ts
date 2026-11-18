@@ -37,6 +37,9 @@ import { restoreSqliteFilename } from './restore-safety-sqlite-path'
 import { hasAnySyncedObservationPending } from './synced-remote-observation-pending'
 import { RECOVERY_BOUNDARY_CHANNEL, recoveryBoundaryHash, recoveryBoundaryJson, recoveryBoundaryKey, recoveryEpochMarkerId,
   recoveryEpochRequestHash, recoveryEpochTargetFingerprint } from './synced-recovery-boundary-model'
+import { validateV3SourceGroupRetirement, type V3SourceGroupRetirement } from './v3-source-group-retirement'
+import { applyV3RetirementSql, assertV3RetirementBeforeSql, assertV3SourceGroupRetirementPhysicalOwned,
+  normalizeV3RetirementSqlTable, v3SourceGroupRetirementKey } from './v3-source-group-retirement-sql'
 
 type Evidence = Awaited<ReturnType<typeof prepareRootRestoreHistoryBoundaryCandidate3>>
 type Source = ReturnType<typeof readRootRestoreStage3HistorySqlSource3>
@@ -80,7 +83,7 @@ function shadowHash(db: Database.Database, encoding: Capsule2Encoding) {
 type HistoryEntry = { table: string; key: string; data: Record<string, string | null>; unavailable: readonly string[] }
 type HistoryRow = { table: string; data: HistoryEntry['data']; rowid: bigint; row: Capsule2RawSqlRow }
 type Records = HistoryRow[]
-type CoverageProbe = { operationId: string; marker: Source['marker']; write?: CoverageWrite }
+type CoverageProbe = { operationId: string; marker: Source['marker']; write?: CoverageWrite; retirements?: readonly V3SourceGroupRetirement[] }
 type ProbeOptions = { marker?: Source['marker']; historyPlan?: ReturnType<typeof planRecords>; historyRows?: Records; coverage?: CoverageProbe }
 type RowCheck = { keep(row: Capsule2RawSqlRow): boolean; finish(): void }
 type TableDigest = { name: string; hash: string; coverageHash: string }
@@ -104,6 +107,11 @@ async function readProbe(source: SqlSource, checks: string, options: ProbeOption
 
 function observeProbe(db: Database.Database, options: ProbeOptions) {
   if (options.marker) readRootRestoreStage3MarkerOwned(db, options.marker)
+  const retirements = options.coverage?.retirements
+  for (const retirement of retirements ?? []) {
+    if (options.coverage?.write) assertV3SourceGroupRetirementPhysicalOwned(db, retirement)
+    else assertV3RetirementBeforeSql(db, retirement)
+  }
   const tables: TableDigest[] = [], allocated = new Map<string, HistoryRow>()
   const header = observeRawCapsule2TablesOwned(db, (table, encoding) => {
     const proposed = options.historyPlan?.entries.find(entry => entry.table === table.name)
@@ -111,11 +119,12 @@ function observeProbe(db: Database.Database, options: ProbeOptions) {
     const history = proposed ? observeHistoryPredecessor(table, encoding, proposed, allocated)
       : expected ? observeHistoryAdded(expected) : undefined
     const coverage = options.coverage && observeCoverageRows(table, encoding, options.coverage)
+    const retire = retirements?.length && normalizeV3RetirementSqlTable(table, encoding, retirements, Boolean(options.coverage?.write))
     let hash: string, coverageHash: string
-    if (history && coverage) {
+    if (history && coverage || retire) {
       // The actual B/R successor is also the C predecessor. Both comparisons
       // consume this exact native cursor and keep separate normalization rules.
-      const pair = hashValidatedCapsule2RawSqlTablePair(tableDomain, table, row => [history.keep(row), coverage.keep(row)])
+      const pair = hashValidatedCapsule2RawSqlTablePair(tableDomain, table, row => [history?.keep(row) ?? true, coverage?.keep(row) ?? true], retire || undefined)
       hash = pair[0]
       coverageHash = pair[1]
     } else {
@@ -266,7 +275,7 @@ async function successor(stage: RootRestorePhysicalStage3, stageId: string, loca
       : locator ? await reopenRootRestoreHistoryBoundaryCandidate3(stage, locator.evidence) : await prepareRootRestoreHistoryBoundaryCandidate3(stage)
     if (coverageInput && final && evidence.value.ordinaryCut) {
       const before = await readProbe(source, join(source.databaseDirectory, '..', 'checks'), {
-        marker, coverage: { marker, operationId: evidence.value.operationId }
+        marker, coverage: { marker, operationId: evidence.value.operationId, retirements: coverageInput.retirements }
       })
       const coverage = await composeCoverage(final, coverageInput, evidence, marker, before,
         { input: source, cut: evidence.value.ordinaryCut, history: null, async verifyInputs() {
@@ -297,7 +306,7 @@ async function successor(stage: RootRestorePhysicalStage3, stageId: string, loca
       // production reader. The independent native row delta checks B, R and
       // their anchor without suppressing or removing that guard.
       const observed = await readProbe({ ...source, databaseDirectory, inventory }, checks, { historyRows: rows,
-        ...(coverageInput && final ? { coverage: { marker, operationId: evidence.value.operationId } } : {}) })
+        ...(coverageInput && final ? { coverage: { marker, operationId: evidence.value.operationId, retirements: coverageInput.retirements } } : {}) })
       assertDelta(original, observed)
       const finalSql = final ? { finalSql: { stageId: final.stageId, manifestHash: final.manifestHash } } : {}
       const kind = final ? 'root-restore-private-final-history-sql-v1' : 'root-restore-private-current-history-sql-v1'
@@ -373,9 +382,10 @@ export function reopenRootRestoreFinalHistorySql5(stage: RootRestoreDerivedAfter
   return historySuccessor(source.physical, locator.stageId, locator, source)
 }
 
-type CoverageLocator = { stageId: string; expectedManifestHash: string; history: Locator | null; evidence: HistoryLocator }
+type CoverageLocator = { stageId: string; expectedManifestHash: string; history: Locator | null; evidence: HistoryLocator;
+  retirements?: readonly V3SourceGroupRetirement[] }
 type CoverageInput = { original: CompleteOriginalRootData; policyHash: string; stageId: string; locator?: CoverageLocator;
-  prior: ReturnType<typeof authenticatedPrior> }
+  prior: ReturnType<typeof authenticatedPrior>; retirements?: readonly V3SourceGroupRetirement[] }
 
 function historyCut(evidence: Evidence, value: { stageManifestHash: string; retainedCutHash: string; boundaryHash: string }): CoverageCutReference {
   const { proposedBoundary: boundary, proposedReceipt: receipt } = evidence.value
@@ -394,14 +404,17 @@ function historyCut(evidence: Evidence, value: { stageManifestHash: string; reta
 async function composeCoverage(source: FinalSource, input: CoverageInput, evidence: Evidence, marker: Source['marker'],
   before: Probe, predecessor: { input: SqlSource; cut: CoverageCutReference;
     history: Locator | null; verifyInputs: () => Promise<void> }) {
-  const { root } = source, { original, stageId, locator } = input
+  const { root } = source, { original, stageId, locator, retirements } = input
   const { value } = evidence, { input: prior, cut, history, verifyInputs } = predecessor
   if (locator && !same(locator.history, history)) return fail('覆盖冷 locator 与实际切点不同')
+  if (retirements?.some((record, index) => record.operationId !== value.operationId
+    || index > 0 && retirements[index - 1].group.id >= record.group.id)) return fail('裁剪集合未准确绑定本次覆盖')
   const tuple = coverageRecords(original, cut, marker, { derivedManifestHash: source.manifestHash,
     aliasManifestHash: source.aliasManifestHash, assetClosureObservationHash: source.closure.observationHash,
     policyHash: input.policyHash, evidenceManifestHash: evidence.manifestHash, historyManifestHash: history?.expectedManifestHash ?? null,
-    retainedCutHash: value.retainedCutHash, ...(input.prior.entries.length ? { priorCoverage: input.prior.entries } : {}) })
-  const operation = { tuple, prior: input.prior.entries }
+    retainedCutHash: value.retainedCutHash, ...(input.prior.entries.length ? { priorCoverage: input.prior.entries } : {}),
+    ...(retirements?.length ? { retirementHash: capsuleBytesHash(capsuleJson(retirements)) } : {}) })
+  const operation = { tuple, prior: input.prior.entries, retirements }
   const base = join(root, 'backups', 'database-restore', value.operationId, 'restore-coverage-sql-v1')
   const directory = join(base, stageId), databaseDirectory = join(directory, 'database'), checks = join(directory, 'checks')
   const file = join(directory, 'manifest.json'), persisted = locator ? await readCapsule2AssetManifest(file, root, CAPSULE2_RAW_MAX_JSON_BYTES) : null
@@ -416,13 +429,14 @@ async function composeCoverage(source: FinalSource, input: CoverageInput, eviden
   const output = await holdRootRestoreStage3DatabaseFiles3({ profileRoot: root, databaseDirectory, inventory })
   try {
     const after = await readProbe({ root, databaseDirectory, inventory }, checks,
-      { coverage: { marker, operationId: tuple.coverage.operationId, write: operation } })
+      { coverage: { marker, operationId: tuple.coverage.operationId, write: operation, retirements } })
     assertCoverageDelta(before, after)
     if (!after.coverage) return fail('最终 SQL 缺真实覆盖读回')
     const manifest = freezeCapsuleValue({ kind: 'root-restore-private-coverage-sql-v1' as const, version: 1 as const, stageId,
       operationId: value.operationId, evidence: { evidenceId: evidence.evidenceId, expectedManifestHash: evidence.manifestHash }, history,
       originalInventory: prior.inventory, inventory, coverage: after.coverage.entry, planHash: tuple.coverage.planHash,
-      ...(input.prior.entries.length ? { requirementsHash: after.coverage.requirementsHash } : {}), installPermit: false as const })
+      ...(input.prior.entries.length ? { requirementsHash: after.coverage.requirementsHash } : {}),
+      ...(retirements?.length ? { retirements } : {}), installPermit: false as const })
     const text = capsuleJson(manifest) + '\n', manifestHash = capsuleBytesHash(text)
     if (Buffer.byteLength(text) > CAPSULE2_RAW_MAX_JSON_BYTES) return fail('覆盖 SQL 清单超原预算')
     if (persisted === null) {
@@ -470,7 +484,8 @@ function authenticatedPrior(original: CompleteOriginalRootData, profileRoot: str
 }
 
 async function runCoverage(reference: RootRestoreReferencePlan3, stage: RootRestoreDerivedAfterAliasStage4,
-  locator?: CoverageLocator, installed: readonly RestoreKnowledgePriorInstall[] = [], historyScope?: PreparedRestoreHistoryScope3) {
+  locator?: CoverageLocator, installed: readonly RestoreKnowledgePriorInstall[] = [], historyScope?: PreparedRestoreHistoryScope3,
+  retirements?: readonly V3SourceGroupRetirement[]) {
   const source = readRootRestoreFinalHistorySqlSource5(stage)
   const policy = source.readPolicy()
   if (policy.assetAuditHash !== source.closure.observationHash || policy.blockedOccurrences !== source.closure.blockedOccurrences)
@@ -480,24 +495,27 @@ async function runCoverage(reference: RootRestoreReferencePlan3, stage: RootRest
   if (original.root.namespace.kind !== 'native') return fail('覆盖候选须本次 native 根')
   const prior = authenticatedPrior(original, source.root, installed)
   const result = await successor(source.physical, locator?.history?.stageId ?? randomUUID(), locator?.history ?? undefined, source,
-    { original, policyHash: policy.observationHash, stageId: locator?.stageId ?? randomUUID(), locator, prior }, historyScope)
+    { original, policyHash: policy.observationHash, stageId: locator?.stageId ?? randomUUID(), locator, prior, retirements }, historyScope)
   if (!('coverage' in result) || !result.coverage) return fail('同次历史处理没有生成覆盖 SQL')
   return result.coverage
 }
 
 export function prepareRootRestoreCoverageSql(reference: RootRestoreReferencePlan3, stage: RootRestoreDerivedAfterAliasStage4,
-  installed?: readonly RestoreKnowledgePriorInstall[], historyScope?: PreparedRestoreHistoryScope3) {
-  return runCoverage(reference, stage, undefined, installed, historyScope)
+  installed?: readonly RestoreKnowledgePriorInstall[], historyScope?: PreparedRestoreHistoryScope3, retirements?: readonly V3SourceGroupRetirement[]) {
+  return runCoverage(reference, stage, undefined, installed, historyScope, retirements)
 }
 
 export function reopenRootRestoreCoverageSql(reference: RootRestoreReferencePlan3, stage: RootRestoreDerivedAfterAliasStage4, input: CoverageLocator,
   installed?: readonly RestoreKnowledgePriorInstall[]) {
-  const locator = capsuleRecord(input, ['stageId', 'expectedManifestHash', 'history', 'evidence'])
+  const hasRetirements = Object.hasOwn(input, 'retirements')
+  const locator = capsuleRecord(input, ['stageId', 'expectedManifestHash', 'history', 'evidence', ...(hasRetirements ? ['retirements'] : [])])
   const stageId = durableSqlDagUuid(locator.stageId), expectedManifestHash = durableSqlDagHash(locator.expectedManifestHash)
   const evidence = capsuleRecord(locator.evidence, ['evidenceId', 'expectedManifestHash'])
+  const retirements = hasRetirements ? Array.isArray(locator.retirements) && locator.retirements.length
+    ? locator.retirements.map(validateV3SourceGroupRetirement) : fail('缺精确裁剪集合') : undefined
   return runCoverage(reference, stage, { stageId, expectedManifestHash,
     evidence: { evidenceId: durableSqlDagUuid(evidence.evidenceId), expectedManifestHash: durableSqlDagHash(evidence.expectedManifestHash) },
-    history: locator.history === null ? null : historyLocator(locator.history as Locator) }, installed)
+    history: locator.history === null ? null : historyLocator(locator.history as Locator) }, installed, undefined, retirements)
 }
 
 /** Called with values obtained from the genuine history and reference owners
@@ -505,7 +523,7 @@ export function reopenRootRestoreCoverageSql(reference: RootRestoreReferencePlan
 function coverageRecords(original: CompleteOriginalRootData, cut: CoverageCutReference,
   marker: RootRestoreStage3Marker, final: { derivedManifestHash: string; aliasManifestHash: string; assetClosureObservationHash: string;
     policyHash: string; evidenceManifestHash: string; historyManifestHash: string | null; retainedCutHash: string;
-    priorCoverage?: readonly RawCoverageRequirement[] }) {
+    priorCoverage?: readonly RawCoverageRequirement[]; retirementHash?: string }) {
   if (original.root.namespace.kind !== 'native' || original.root.operationId !== cut.operationId)
     return fail('本次 C 需要同操作的真实 native 根')
   const target = { workspaceScope: cut.kind === 'ordinary-empty-epoch-cut' ? cut.afterWorkspaceScope : cut.workspaceScope,
@@ -536,7 +554,7 @@ function assertFinalAssetClosure(closure: { blockedOccurrences: number; scopes: 
 }
 
 type Coverage = ReturnType<typeof coverageRecords>
-type CoverageWrite = { tuple: Coverage; prior: readonly RawCoverageRequirement[] }
+type CoverageWrite = { tuple: Coverage; prior: readonly RawCoverageRequirement[]; retirements?: readonly V3SourceGroupRetirement[] }
 
 function assertSqlCoverage(db: Database.Database, { tuple, prior }: CoverageWrite) {
   const { coverage, receipt } = tuple, { target, operationId, cut, acceptedAt } = coverage
@@ -575,15 +593,17 @@ function appendCoverage(db: Database.Database, marker: RootRestoreStage3Marker, 
     .run(coverageOperationId(operationId), anchor.request_hash, serializeSyncedKnowledgeCoverageLink(link), acceptedAt)
   db.prepare('INSERT INTO main.synced_exposure_attempts(id,request_hash,channel,target_fingerprint,publication_hash,state,created_at,confirmed_at) VALUES (?,?,?,?,?,?,?,?)')
     .run(anchor.id, anchor.request_hash, anchor.channel, anchor.target_fingerprint, anchor.publication_hash, anchor.state, anchor.created_at, anchor.confirmed_at)
+  if (write.retirements?.length) applyV3RetirementSql(db, write.retirements)
   return assertSqlCoverage(db, write)
 }
 
 /** Only an exact old marker and the fixed four new support keys leave the
  * protected comparison. The complete C/B/R reader runs in that same probe. */
 function observeCoverageRows(table: Capsule2RawStreamTable, encoding: Capsule2Encoding,
-  { operationId, marker, write }: CoverageProbe): RowCheck | undefined {
+  { operationId, marker, write, retirements }: CoverageProbe): RowCheck | undefined {
   const name = table.name, operationKey = coverageOperationId(operationId)
-  const change = name === 'app_settings' ? { primary: 'key', keys: [coverageSettingKey(operationId), coverageReceiptKey(operationId)] }
+  const change = name === 'app_settings' ? { primary: 'key', keys: [coverageSettingKey(operationId), coverageReceiptKey(operationId),
+    ...(retirements ?? []).map(record => v3SourceGroupRetirementKey(record.group.id))] }
     : name === 'synced_operations' ? { primary: 'client_operation_id', keys: [operationKey] }
       : name === 'synced_exposure_attempts' ? { primary: 'id', keys: [operationKey] } : null
   if (!change) return undefined

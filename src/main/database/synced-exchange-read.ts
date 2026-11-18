@@ -11,12 +11,14 @@ import type { TombstonePinFact } from '../sync/synced-exchange-tombstone-types'
 import { publicationHash, publicationInvalid, publicationJson, SyncedPublicationError } from '../sync/synced-publication-model'
 import { readExactSyncedExchangeReceipt, readSyncedExchangeReceiptById } from './synced-exchange-receipt'
 import { exchangeRejoinBaseline, readActiveExchangeRejoin } from './synced-exchange-rejoin-model'
+import { readLocalDocumentDeletions, type LocalDocumentDeletion } from './local-document-deletions'
 
 export interface SyncedExchangeLocal {
   snapshot: SyncedPublicationLocalSnapshot; fingerprint: string
   identities: InitialIncomingIdentity[]; occupiedDocumentIds: string[]; historyComponents: string[][]; pinnedGroupIds: string[]
   state: AnyExchangeState | null; stateRaw: string | null; initialBaseline: InitialIncomingBaseline | null
   keyGuards: Record<string, string>; knownGroupIds: string[]
+  localDocumentDeletions: LocalDocumentDeletion[]
   deletionPins: TombstonePinFact[]; rejoin?: NonNullable<ReturnType<typeof readActiveExchangeRejoin>>
 }
 function owned(db: Database.Database): void {
@@ -215,16 +217,22 @@ export function readSyncedExchangeLocal(db: Database.Database,
     if (typeof row.group_id === 'string') add('group:' + row.group_id, digest)
     if (typeof row.host_document_id === 'string') add('doc:' + row.host_document_id, digest) }
   const groups = new Map(legacy.snapshot.groups.map(group => [group.wire.id, group]))
+  const activeDocuments = new Set(physicalRows.map(row => row.id))
+  const localDocumentDeletions = readLocalDocumentDeletions(db).filter(row => !activeDocuments.has(row.documentId))
   const keyGuards: Record<string, string> = Object.create(null) as Record<string, string>
   for (const record of legacy.snapshot.records) {
     const key = record.kind === 'databases' ? 'databases' : record.kind === 'document' ? 'doc:' + record.id : 'group:' + record.id
     keyGuards[key] = publicationHash(publicationJson({ record, owners: owners.get(key) ?? [], guards: (parts.get(key) ?? []).sort(), group: groups.get(record.id) ?? null }))
   }
   for (const proof of logicalDeletions) keyGuards[proof.key] = publicationHash(publicationJson(proof))
+  for (const deletion of localDocumentDeletions) {
+    const key = 'doc:' + deletion.documentId
+    keyGuards[key] ??= publicationHash(publicationJson(deletion))
+  }
   return { snapshot: legacy.snapshot, identities: [...legacy.identities.values()], occupiedDocumentIds: [...legacy.historyDocuments].sort(),
     historyComponents, pinnedGroupIds: [...pinned].sort(), initialBaseline: legacy.baseline,
     state: state?.value ?? null, stateRaw: state?.raw ?? null,
-    knownGroupIds: [...legacy.groupIds].sort(), keyGuards, deletionPins, ...(rejoin ? { rejoin } : {}),
+    knownGroupIds: [...legacy.groupIds].sort(), keyGuards, deletionPins, localDocumentDeletions, ...(rejoin ? { rejoin } : {}),
     fingerprint: publicationHash(publicationJson({ snapshot: legacy.snapshot.localFingerprint, keyGuards, identities: [...legacy.identities.values()], history, state: state?.raw ?? null, archives,
       hostCuts: [...hostCuts.values()].sort((a, b) => a.historyToken < b.historyToken ? -1 : a.historyToken > b.historyToken ? 1 : 0),
       ...(rejoin ? { rejoinHash: rejoin.hash } : {}) })) }

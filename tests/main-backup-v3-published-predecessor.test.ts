@@ -6,7 +6,7 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { MarkdownBackupService, writeBackupSnapshot, type BackupV3DatabaseExportJob } from '../src/main/backup/exporter'
-import { readBackupV3PublishedPredecessor } from '../src/main/backup/v3-publication-lineage'
+import { readBackupV3PublishedPredecessor, readPortableBackupV3PublicationEdge } from '../src/main/backup/v3-publication-lineage'
 import { openBackupV3RestoreSource, readBackupV3RestoreSource } from '../src/main/backup/v3-reader'
 import { KnowbookStore } from '../src/main/database/store'
 import { editCreatedGroup } from './helpers/synced-host-command-create-fixture'
@@ -22,14 +22,22 @@ function physicalIdentity(path: string) {
 
 async function readCold(database: string, backupRoot: string): Promise<Edge> {
   const script = `
-    import { readBackupV3PublishedPredecessor } from './src/main/backup/v3-publication-lineage.ts'
+    import Database from 'better-sqlite3'
+    import { dirname } from 'node:path'
+    import { readBackupV3PublicationEdgeFromSealedSql, readBackupV3PublishedPredecessor } from './src/main/backup/v3-publication-lineage.ts'
     import { openBackupV3RestoreSource } from './src/main/backup/v3-reader.ts'
     import { KnowbookStore } from './src/main/database/store.ts'
     const [database, backupRoot] = process.argv.slice(1)
     const store = KnowbookStore.openCanonicalRuntime(database)
     try {
       const edge = await readBackupV3PublishedPredecessor(store, openBackupV3RestoreSource(backupRoot))
-      process.stdout.write(JSON.stringify({ pid: process.pid, edge }))
+      const sealed = new Database(database, { readonly: true, fileMustExist: true })
+      try {
+        sealed.pragma('query_only=ON')
+        sealed.pragma('foreign_keys=ON')
+        const sealEdge = await readBackupV3PublicationEdgeFromSealedSql(dirname(dirname(database)), openBackupV3RestoreSource(backupRoot), sealed)
+        process.stdout.write(JSON.stringify({ pid: process.pid, edge, sealEdge }))
+      } finally { sealed.close() }
     } finally { store.destroy() }
   `
   const { stdout } = await promisify(execFile)(process.execPath,
@@ -37,9 +45,10 @@ async function readCold(database: string, backupRoot: string): Promise<Edge> {
       cwd: fileURLToPath(new URL('..', import.meta.url)), env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
       windowsHide: true, timeout: 30_000
     })
-  const report = JSON.parse(stdout) as { pid: number; edge: Edge }
+  const report = JSON.parse(stdout) as { pid: number; edge: Edge; sealEdge: Edge }
   assert.ok(Number.isSafeInteger(report.pid) && report.pid > 0)
   assert.notEqual(report.pid, process.pid)
+  assert.deepEqual(report.sealEdge, report.edge)
   return report.edge
 }
 
@@ -47,10 +56,10 @@ test('a cold Main only trusts the direct predecessor of the original current V3 
   const profile = realpathSync(f.userDataRoot), backupRoot = join(profile, 'backups', 'markdown')
   const jobs: BackupV3DatabaseExportJob[] = []
   const store = KnowbookStore.openCanonicalRuntime(f.file)
-  const publish = (abort = false, beforeWorker?: Promise<void>) => new MarkdownBackupService(store, backupRoot, undefined, async job => {
+  const publish = (abort = false, beforeWorker?: () => Promise<void>) => new MarkdownBackupService(store, backupRoot, undefined, async job => {
     if (!('kind' in job) || job.kind !== 'synced-v3') throw new Error('Expected the production V3 raw-DB worker job')
     jobs.push(job)
-    if (beforeWorker) await beforeWorker
+    if (beforeWorker) await beforeWorker()
     const exported = writeBackupSnapshot(job)
     if (abort) throw new Error('Abort after the real worker confirmation, before Main promotion')
     return exported
@@ -74,13 +83,17 @@ test('a cold Main only trusts the direct predecessor of the original current V3 
     firstFiles = fileInventory(backupRoot)
     assert.equal(service.listVersions().find(version => version.current)?.id, first.snapshotId)
     assert.equal(await read(), null, 'The first actual publication has no predecessor')
+    assert.equal(readPortableBackupV3PublicationEdge(openBackupV3RestoreSource(backupRoot)), null)
 
     const occupiedSlot = join(`${backupRoot}-history`, first.snapshotId)
     mkdirSync(occupiedSlot)
     editCreatedGroup(f.db, f.groupId)
     let release!: () => void
     const gate = new Promise<void>(resolve => { release = resolve })
-    const secondWork = publish(false, gate).exportAll(true)
+    let workerEntered!: () => void
+    const entered = new Promise<void>(resolve => { workerEntered = resolve })
+    const secondWork = publish(false, () => { workerEntered(); return gate }).exportAll(true)
+    await Promise.race([entered, secondWork])
     const abortedWork = assert.rejects(publish(true).exportAll(true), /previous version and attempt evidence are retained/)
     const countWhileBlocked = jobs.length
     release()
@@ -113,6 +126,15 @@ test('a cold Main only trusts the direct predecessor of the original current V3 
     assert.equal(current.recoveryEpoch, predecessor.recoveryEpoch)
     assert.notEqual(current.archiveHash, predecessor.archiveHash)
     assert.equal(await read(archived), null, 'A history version cannot be used as the official current archive')
+
+    const transferred = join(profile, 'transferred-v3')
+    cpSync(backupRoot, transferred, { recursive: true, errorOnExist: true, force: false })
+    const portable = readPortableBackupV3PublicationEdge(openBackupV3RestoreSource(transferred))
+    assert.ok(portable)
+    assert.deepEqual(portable.current, { snapshotId: current.snapshotId, catalogId: current.catalogId, archiveHash: current.archiveHash })
+    assert.deepEqual(portable.parent, { snapshotId: predecessor.snapshotId, catalogId: predecessor.catalogId, archiveHash: predecessor.archiveHash })
+    assert.match(portable.publicationHeadHash, /^[a-f0-9]{64}$/)
+    assert.deepEqual(portable, readPortableBackupV3PublicationEdge(openBackupV3RestoreSource(backupRoot)))
 
     const unpromoted = jobs[2]
     const attempt = edition(unpromoted, unpromoted.destination)

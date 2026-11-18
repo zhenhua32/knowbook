@@ -5,6 +5,7 @@ import { isSyncedUuid, parseSyncedBlockPayload, SyncedValidationError, validateS
 import { parseStrictJson } from '../../shared/strictJson'
 import { readSyncedGroupLifecycles } from './synced-lifecycle-state'
 import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-read'
+import { readV3SourceGroupRetirementsOwned } from './v3-source-group-retirement'
 
 /** Raw original-snapshot facts, not public effective capabilities or an install
  * permit. Public wrappers own boundary admission. This module never calls a
@@ -64,7 +65,7 @@ export function readRawSyncedWorkspaceScopeOwned(db: Database.Database): string 
 export function readRawSyncedGroupSnapshotsOwned(db: Database.Database, ids: readonly string[]): Map<string, SyncedGroupSnapshot> {
   owned(db)
   const deleted = (db.pragma('user_version', { simple: true }) as number) >= 27 ? assertSyncedLogicalDeletionRecords(db) : undefined
-  return readRawSyncedGroupSnapshots(db, ids, deleted)
+  return readRawSyncedGroupSnapshots(db, ids, deleted, readV3SourceGroupRetirementsOwned(db))
 }
 
 /** Use one logical-deletion check for the entire owned read transaction. */
@@ -72,18 +73,19 @@ export function* iterateRawActiveSyncedGroupSnapshotsOwned(db: Database.Database
   owned(db)
   if (db.pragma('main.user_version', { simple: true }) !== 27) throw new Error('需要 schema27 的实际同步组快照。')
   const deleted = assertSyncedLogicalDeletionRecords(db)
+  const retired = readV3SourceGroupRetirementsOwned(db)
   const first = db.prepare(`SELECT group_id FROM synced_group_lifecycle WHERE state='active' ORDER BY group_id LIMIT 16`)
   const next = db.prepare(`SELECT group_id FROM synced_group_lifecycle WHERE state='active' AND group_id>? ORDER BY group_id LIMIT 16`)
   let page = first.all() as Array<{ group_id: string }>
   while (page.length) {
     owned(db)
-    yield* readRawSyncedGroupSnapshots(db, page.map(row => row.group_id), deleted).values()
+    yield* readRawSyncedGroupSnapshots(db, page.map(row => row.group_id), deleted, retired).values()
     page = next.all(page[page.length - 1].group_id) as typeof page
   }
 }
 
 function readRawSyncedGroupSnapshots(db: Database.Database, ids: readonly string[],
-  deleted: ReturnType<typeof assertSyncedLogicalDeletionRecords> | undefined): Map<string, SyncedGroupSnapshot> {
+  deleted: ReturnType<typeof assertSyncedLogicalDeletionRecords> | undefined, retired: ReadonlyMap<string, unknown>): Map<string, SyncedGroupSnapshot> {
   if (!ids.length) return new Map()
   const encoded = JSON.stringify(ids)
   const lifecycle = deleted ? readSyncedGroupLifecycles(db, ids) : null
@@ -93,7 +95,7 @@ function readRawSyncedGroupSnapshots(db: Database.Database, ids: readonly string
     LEFT JOIN synced_group_history redo ON redo.group_id=g.id AND redo.position=(
       SELECT min(next.position) FROM synced_group_history next WHERE next.group_id=g.id AND next.position>g.history_position)
     WHERE g.id IN (SELECT value FROM json_each(?))`).all(encoded) as GroupRow[])
-    .filter(group => !deleted?.has('group:' + group.id) && (lifecycle === null || lifecycle.get(group.id)?.state === 'active'))
+    .filter(group => !retired.has(group.id) && !deleted?.has('group:' + group.id) && (lifecycle === null || lifecycle.get(group.id)?.state === 'active'))
   const existing = new Set(groups.map(group => group.id)), groupIds = JSON.stringify([...existing])
   // Forward joins alone cannot expose an extra live identity whose physical
   // canonical row disappeared or belongs to another group. Retained identities

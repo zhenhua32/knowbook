@@ -196,7 +196,8 @@ export function validateSyncedRecoveryHistoryBoundary(value: unknown): SyncedRec
   }), row => recoveryBoundaryJson([row.groupId, row.kind, row.pinId]))
   const base = { kind: value.kind, operationId, workspaceScope, beforeEpoch, afterEpoch, acceptedAt, documentBoundary,
     documents, hosts, hostCuts, groups, instances, retainedOperations, retainedPins } satisfies SyncedRecoveryHistoryBoundaryBase
-  if (!hosts.length && !hostCuts.length && !groups.length && !instances.length) return recoveryBoundaryInvalid('普通空历史不能伪造同步边界anchor')
+  if (!hosts.length && !hostCuts.length && !groups.length && !instances.length && !retainedOperations.length)
+    return recoveryBoundaryInvalid('普通空历史不能伪造同步边界anchor')
   if (version === 1) return { ...base, version }
   const retainedInstanceIds = new Set(instances.map(instance => instance.instanceId))
   const retainedDocumentIds = new Set(documents.map(document => document.documentId))

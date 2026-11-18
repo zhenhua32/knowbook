@@ -29,13 +29,13 @@ test('the original WebDAV publisher can rejoin after a real settled exchange and
   const publisher = realStore(A.file)
   let knownHead: Buffer, initial: string
   try {
-    await runProtocol5WebDav(publisher, A.root, targetConfig, runtime, false)
+    await runProtocol5WebDav(publisher, A.root, targetConfig, runtime)
     assert.equal(publisher.getSettingPublic(exchangeStateKey(exchangeTargetFingerprint(targetConfig))), null)
     initial = hash(server.files.get(manifestPath)!)
-    await runProtocol5WebDav(publisher, A.root, targetConfig, runtime, false)
+    await runProtocol5WebDav(publisher, A.root, targetConfig, runtime)
     const db = publisher.getUnsafeDatabaseHandle()
     hostEdit(db, fixture.target, 'New actual publisher content before restore')
-    await runProtocol5WebDav(publisher, A.root, targetConfig, runtime, false)
+    await runProtocol5WebDav(publisher, A.root, targetConfig, runtime)
     knownHead = Buffer.from(server.files.get(manifestPath)!)
     assert.notEqual(hash(knownHead), initial)
     assert.equal(JSON.parse(publisher.getSettingPublic(exchangeStateKey(exchangeTargetFingerprint(targetConfig)))!).source.kind, 'confirmed-publication')
@@ -49,7 +49,7 @@ test('the original WebDAV publisher can rejoin after a real settled exchange and
   try {
     const db = reopened.getUnsafeDatabaseHandle(), rootPath = '/Incoming/objects/manifest-' + initial + '.json', originalSeed = server.files.get(rootPath)!
     assert.ok(originalSeed, 'The genuine first publication is anchored as a predecessor')
-    await assert.rejects(runProtocol5WebDav(reopened, A.root, targetConfig, runtime, false), /旧的同步块任务已暂停/)
+    await assert.rejects(runProtocol5WebDav(reopened, A.root, targetConfig, runtime), /旧的同步块任务已暂停/)
     const retired = join(fixture.folder, 'retired-confirmed-spool')
     await rename(privateRoot, retired)
     try { await assert.rejects(prepareProtocol5RestoreRejoin(db, A.root, targetConfig, runtime), /私有完整原bytes/) }
@@ -62,7 +62,7 @@ test('the original WebDAV publisher can rejoin after a real settled exchange and
     assert.equal(preview.operationId, installed.operationId)
     await confirmProtocol5RestoreRejoin(db, A.root, targetConfig, runtime, preview.owner)
     assert.deepEqual(server.files.get(manifestPath), knownHead)
-    const outcome = await runProtocol5WebDav(reopened, A.root, targetConfig, runtime, false)
+    const outcome = await runProtocol5WebDav(reopened, A.root, targetConfig, runtime)
     assert.ok(outcome.uploaded > 0, 'The original WebDAV writer publishes the restored local document with a protected CAS')
     const state = JSON.parse(reopened.getSettingPublic(exchangeStateKey(exchangeTargetFingerprint(targetConfig)))!)
     assert.equal(state.recoveryEpoch, preview.installedRecoveryEpoch)

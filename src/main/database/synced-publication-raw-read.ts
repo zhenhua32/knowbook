@@ -5,6 +5,7 @@ import { validateSyncedWorkspaceGraph } from '../../shared/syncedBlockGraph'
 import { readSyncedGroupLifecycles, syncedLifecycleSemanticHash } from './synced-lifecycle-state'
 import { readRawSyncedGroupSnapshotsOwned, readRawSyncedWorkspaceScopeOwned } from './synced-blocks-raw-read'
 import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-read'
+import { readV3SourceGroupRetirementsOwned, v3SourceGroupRetirementHash } from './v3-source-group-retirement'
 import type { SyncedLogicalDeletionProof } from '../sync/synced-logical-deletion-model'
 import type { SyncedLogicalDeletionChoiceProof } from '../sync/synced-logical-deletion-choice-model'
 import { readStrictHostDocument } from './synced-host-document-read'
@@ -42,6 +43,7 @@ export function readRawSyncedPersistentPublicationSnapshotOwned(db: Database.Dat
   const lifecycle = version === 27
   const context = identity(db)
   const deleted = lifecycle ? assertSyncedLogicalDeletionRecords(db) : new Map()
+  const retired = readV3SourceGroupRetirementsOwned(db)
   const ids = (db.prepare('SELECT id FROM synced_groups ORDER BY id').all() as Array<{ id: unknown }>).map(row => {
     if (!isSyncedUuid(row.id)) return publicationInvalid('真实同步组身份无效。'); return row.id
   })
@@ -63,7 +65,8 @@ export function readRawSyncedPersistentPublicationSnapshotOwned(db: Database.Dat
         const body = wire(item.snapshot)
         groups.push({ wire: body, revision: item.snapshot.revision, topologyRevision: item.snapshot.topologyRevision, semanticHash: syncedLifecycleSemanticHash(body) })
         snapshots.push(item.snapshot)
-      } else if (life.get(item.groupId)?.state !== 'retired-create' && !deleted.has('group:' + item.groupId)) return publicationInvalid('真实活动组不能被丢成 missing。')
+      } else if (life.get(item.groupId)?.state !== 'retired-create' && !deleted.has('group:' + item.groupId) && !retired.has(item.groupId))
+        return publicationInvalid('真实活动组不能被丢成 missing。')
     }
   }
   const rows = db.prepare('SELECT id FROM documents ORDER BY id').all() as Array<{ id: unknown }>
@@ -113,6 +116,8 @@ export function readRawSyncedPersistentPublicationSnapshotOwned(db: Database.Dat
   // Schema27 keeps its exact original fingerprint preimage and array order.
   const lifecycleContent = lifecycle ? ids.map(id => { const item = life.get(id)!; return { groupId: id, creationId: item.creationId, state: item.state } }) : []
   const localFingerprint = publicationHash(publicationJson({ ...context, catalogId: setting.value, records: orderedRecords, groups,
-    documentFacts, actualOwners, actualInstances, lifecycleContent, ...(deleted.size ? { deleted: [...deleted].map(([key, proof]) => [key, publicationHash(publicationJson(proof))]) } : {}) }))
+    documentFacts, actualOwners, actualInstances, lifecycleContent,
+    ...(deleted.size ? { deleted: [...deleted].map(([key, proof]) => [key, publicationHash(publicationJson(proof))]) } : {}),
+    ...(retired.size ? { retired: [...retired.values()].map(v3SourceGroupRetirementHash) } : {}) }))
   return { ...context, localFingerprint, catalogId: setting.value, records: orderedRecords, groups, ...(deleted.size ? { deletions: [...deleted.values()] } : {}) }
 }

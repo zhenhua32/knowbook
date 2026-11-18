@@ -14,7 +14,7 @@ export interface SyncedExchangeBothDecision {
 }
 export interface SyncedExchangeBothResolveInput {
   operationId: string; userDataRoot: string; target: WebDavSyncConfig
-  previewId: string; decisions: SyncedExchangeBothDecision[]
+  previewId: string; expectedPreviewHash?: string; decisions: SyncedExchangeBothDecision[]
 }
 export type SyncedExchangeBothBlockedReason = ExchangeDeferredReason | 'semantic-binding' | 'budget'
 export interface SyncedExchangeBothRecordSource { key: string; baseHash: string | null; localHash: string | null; remoteHash: string | null }

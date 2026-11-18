@@ -1,43 +1,23 @@
-import { randomUUID } from 'node:crypto'
 import type { KnowbookStore } from '../database/store'
-import type { AttachmentStore } from '../attachments'
 import { protectCredential, revealCredential, type SecureStringStorage } from '../credential-storage'
-import { DEFAULT_WEBDAV_SYNC_CONFIG, type ResolveWebDavSyncConflict, type SaveWebDavSyncConfig, type WebDavSyncConfig, type WebDavSyncStatus, type WebDavSyncProgress, type WebDavSyncConflictDetails, type WebDavSyncConflictVersion, type WebDavSyncConflictDetailsInput, type WebDavSyncMergeChoice, type WebDavProtocol5ConflictPreview } from '../../shared/webdav-sync'
-import { SyncAssets, syncAssetReferences, type SyncAssetProgress } from './assets'
-import { canonicalJson, conflictPreview, emptySyncState, hashBytes, parseManifest, recordHash, recordKey, requiresStructureEditingProtocol, requiresPageCompositionProtocol, requiresDatabaseViewProtocol, validateRecord, validHash, type SyncManifest, type SyncRecord, type SyncState, type SyncDocument, type StoredConflict } from './model'
-import { mergeSyncDocument } from './merge'
-import { preflightSyncBlockTransfers, preflightSyncPublishedBlockOwnership, preflightSyncCatalogReferences, SyncBlockOwnershipError } from './repository'
-import { normalizeWebDavConfig, WebDavClient, WebDavHttpError, type WebDavCapabilities } from './webdav-client'
-import { peekProtocol5Remote, previewProtocol5WebDavConflicts, protocol5LastSyncAt, protocol5ModeKey, protocol5NeedsRestoreRejoin, readProtocol5Selection, resolveProtocol5WebDavConflict, runProtocol5WebDav } from './protocol5-service'
-import { previewProtocol5WebDavDeletions, readProtocol5DeletionSelection, resolveProtocol5WebDavDeletion } from './protocol5-service'
-import type { WebDavProtocol5DeletionPreview } from '../../shared/webdav-sync'
-import { SYNC_RECEIVER_PROFILE_KEY } from './receiver-bootstrap'
+import {
+  DEFAULT_WEBDAV_SYNC_CONFIG, type SaveWebDavSyncConfig, type WebDavProtocol5ConflictPreview,
+  type WebDavProtocol5DeletionPreview, type WebDavSyncConfig, type WebDavSyncProgress, type WebDavSyncStatus
+} from '../../shared/webdav-sync'
+import { exchangeTargetFingerprint } from './synced-exchange-model'
+import {
+  peekProtocol5Remote, previewProtocol5WebDavConflicts, previewProtocol5WebDavDeletions, protocol5LastSyncAt,
+  protocol5NeedsRestoreRejoin, readProtocol5DeletionSelection, readProtocol5Selection,
+  resolveProtocol5WebDavConflict, resolveProtocol5WebDavDeletion, runProtocol5WebDav
+} from './protocol5-service'
 import { confirmProtocol5RestoreRejoin, prepareProtocol5RestoreRejoin } from './protocol5-restore-rejoin-read'
+import { normalizeWebDavConfig, observeWebDavProgress, WebDavClient } from './webdav-client'
 
 const CONFIG_KEY = 'sync.webdav.config'
 const PASSWORD_KEY = 'sync.webdav.password'
-const MAX_RECORD_BYTES = 16 * 1024 * 1024
-
-function targetKey(config: WebDavSyncConfig): string {
-  return 'sync.webdav.state.' + hashBytes(canonicalJson([config.url, config.username, config.directory]))
-}
-
-function emptyDatabases(record: SyncRecord | undefined): boolean {
-  return record?.kind === 'databases' && record.tables.databases.length === 1
-    && record.tables.databases[0].name === 'Default' && record.tables.databases[0].description === 'Default database'
-    && Object.entries(record.tables).every(([table, rows]) => table === 'databases' || rows.length === 0)
-}
-
-function documentCopy(record: SyncDocument, salt: string): SyncDocument {
-  const id = hashBytes(`conflict:${record.id}:${salt}`).slice(0, 32)
-  const ids = new Map(record.content.blocks.map(block => [block.id!, hashBytes(`${id}:${block.id}`).slice(0, 32)]))
-  return { ...record, id, parentId: null, content: { ...record.content, title: `${record.content.title.slice(0, 450)}（同步冲突副本）`,
-    blocks: record.content.blocks.map(block => ({ ...block, id: ids.get(block.id!)!,
-      parentBlockId: block.parentBlockId ? ids.get(block.parentBlockId) ?? null : null })) } }
-}
 
 export class WebDavSyncService {
-  private config: WebDavSyncConfig
+  private config = { ...DEFAULT_WEBDAV_SYNC_CONFIG }
   private phase: WebDavSyncStatus['phase'] = 'idle'
   private message = ''
   private uploaded = 0
@@ -48,131 +28,64 @@ export class WebDavSyncService {
   private abort: AbortController | null = null
   private timer: ReturnType<typeof setInterval> | null = null
   private stopped = false
-  private verifiedTarget: string | null = null
-  private capabilities: WebDavCapabilities | undefined
-  private protocol5Preview: WebDavProtocol5ConflictPreview | null = null
-  private protocol5DeletionPreview: WebDavProtocol5DeletionPreview | null = null
-  private readonly assets: SyncAssets
-  private readonly uploadedObjects = new Set<string>()
-  private readonly uploadedAssets = new Set<string>()
-  private readonly remoteObjects = new Map<string, SyncRecord>()
-  private remoteObjectBytes = 0
+  private conflictPreview?: WebDavProtocol5ConflictPreview
+  private deletionPreview?: WebDavProtocol5DeletionPreview
 
-  constructor(private readonly store: KnowbookStore, attachments: AttachmentStore,
+  constructor(private readonly store: KnowbookStore, private readonly profile: string,
     private readonly credentials: SecureStringStorage, private readonly onChanged: () => void = () => {},
-    private readonly workspaceBusy: () => boolean = () => false, private readonly profile?: string) {
-    this.config = { ...DEFAULT_WEBDAV_SYNC_CONFIG }
+    private readonly workspaceBusy: () => boolean = () => false) {
     const stored = store.getSettingPublic(CONFIG_KEY)
-    if (stored) { try { this.config = normalizeWebDavConfig(JSON.parse(stored)) } catch { this.message = '保存的同步设置无效，请重新配置。' } }
-    this.assets = new SyncAssets(attachments)
-  }
-
-  private state(): SyncState {
-    const value = this.store.getSettingPublic(targetKey(this.config))
-    return value ? JSON.parse(value) as SyncState : emptySyncState()
-  }
-  private saveState(state: SyncState): void { this.store.saveSetting(targetKey(this.config), JSON.stringify(state)) }
-
-  private preserveOwnershipConflict(error: unknown, conflicts: Record<string, StoredConflict>, expected: Map<string, SyncRecord>): void {
-    if (!(error instanceof SyncBlockOwnershipError)) return
-    const latest = this.store.getSyncRecords()
-    if (canonicalJson([...latest]) !== canonicalJson([...expected])) return
-    // Save only verified reports for the actual ownership pair; no knowledge,
-    // accepted baseline, timestamp or unrelated resolution is advanced.
-    const preserved = this.state()
-    let changed = false
-    for (const id of new Set([error.dependencyDocumentId, ...error.relatedDocumentIds])) {
-      const key = 'doc:' + id, conflict = conflicts[key]
-      const current = latest.get(key) ?? { kind: 'deleted', id } as SyncRecord
-      if (!conflict || recordHash(this.assets.portableKnown(current)) !== conflict.localHash) continue
-      preserved.conflicts[key] = conflict
-      const resolution = preserved.resolutions[key]
-      if (resolution && (resolution.localHash !== conflict.localHash || resolution.remoteHash !== conflict.remoteHash)) delete preserved.resolutions[key]
-      changed = true
+    if (stored) {
+      try { this.config = normalizeWebDavConfig(JSON.parse(stored)) }
+      catch { this.message = '保存的同步设置无效，请重新配置。' }
     }
-    if (changed) this.saveState(preserved)
-  }
-
-  private protocol5Enabled(): boolean {
-    if (!this.profile) return false
-    const mode = this.store.getSettingPublic(protocol5ModeKey(this.config))
-    return mode === 'true' || mode === null && this.store.getSettingPublic(SYNC_RECEIVER_PROFILE_KEY) === 'true'
   }
 
   getStatus(): WebDavSyncStatus {
-    const protocol5 = this.protocol5Enabled(), state = protocol5 ? emptySyncState() : this.state()
-    return { config: { ...this.config }, hasPassword: Boolean(this.store.getSettingPublic(PASSWORD_KEY)), phase: this.phase,
-      ...(protocol5 ? { protocol5: true as const, ...(this.protocol5Preview ? { protocol5Preview: this.protocol5Preview } : {}),
-        ...(this.protocol5DeletionPreview ? { protocol5DeletionPreview: this.protocol5DeletionPreview } : {}),
-        ...(protocol5NeedsRestoreRejoin(this.store, this.config) ? { protocol5RestoreRejoin: true as const } : {}) } : {}),
-      lastSyncAt: protocol5 ? protocol5LastSyncAt(this.store, this.config) : state.lastSyncAt, message: this.message, uploaded: this.uploaded, downloaded: this.downloaded, merged: this.merged,
-      progress: this.progress ? { ...this.progress } : null,
-      conflicts: Object.entries(state.conflicts).map(([key, conflict]) => ({ key,
-        title: conflict.local.kind === 'document' ? conflict.local.content.title : conflict.remote.kind === 'document' ? conflict.remote.content.title : '数据库、属性和视图',
-        localPreview: conflictPreview(conflict.local), remotePreview: conflictPreview(conflict.remote), canKeepBoth: conflict.local.kind === 'document' || conflict.remote.kind === 'document',
-        localHash: conflict.localHash, remoteHash: conflict.remoteHash,
-        localDeleted: conflict.local.kind === 'deleted', remoteDeleted: conflict.remote.kind === 'deleted',
-        reason: conflict.local.kind === 'databases' ? 'database' : conflict.local.kind === 'deleted' || conflict.remote.kind === 'deleted' ? 'delete-edit' : conflict.base ? 'overlap' : 'no-base',
-        canMerge: Boolean(conflict.base && conflict.local.kind === 'document' && conflict.remote.kind === 'document'),
-        mergeFields: conflict.mergeFields ?? [],
-        resolution: state.resolutions[key]?.localHash === conflict.localHash && state.resolutions[key]?.remoteHash === conflict.remoteHash
-          ? state.resolutions[key].choice : null })) }
-  }
-
-  private stage(stage: WebDavSyncProgress['stage'], total: number | null = null, attachmentsTotal = 0): void {
-    if (!this.progress) return
-    this.progress = { ...this.progress, stage, total, completed: 0, attachmentsTotal, attachmentsCompleted: 0,
-      currentItem: null, currentAttachment: null }
-  }
-
-  private itemName(record: SyncRecord | undefined): string | null {
-    return record?.kind === 'document' ? record.content.title.slice(0, 160) : null
-  }
-
-  private assetProgress(): SyncAssetProgress {
-    const completed = new Set<string>()
-    return asset => {
-      if (!this.progress) return
-      this.progress.currentAttachment = asset.completed ? null : asset.name
-      if (asset.completed) completed.add(asset.key)
-      this.progress.attachmentsCompleted = completed.size
+    return {
+      config: { ...this.config }, hasPassword: Boolean(this.store.getSettingPublic(PASSWORD_KEY)),
+      phase: this.phase, message: this.message, uploaded: this.uploaded, downloaded: this.downloaded,
+      merged: this.merged, progress: this.progress ? { ...this.progress } : null,
+      lastSyncAt: protocol5LastSyncAt(this.store, this.config),
+      ...(this.conflictPreview ? { protocol5Preview: this.conflictPreview } : {}),
+      ...(this.deletionPreview ? { protocol5DeletionPreview: this.deletionPreview } : {}),
+      ...(protocol5NeedsRestoreRejoin(this.store, this.config) ? { protocol5RestoreRejoin: true as const } : {})
     }
   }
 
   saveConfig(input: SaveWebDavSyncConfig): WebDavSyncStatus {
     if (this.busy) throw new Error('请等待当前同步或连接测试结束后修改设置。')
     const next = normalizeWebDavConfig(input)
-    if (input.protocol5 !== undefined && (typeof input.protocol5 !== 'boolean' || input.protocol5 && !this.profile)) throw new Error('同步块协议设置无效。')
-    if (input.password !== undefined && (typeof input.password !== 'string' || input.password.length > 4096)) throw new Error('应用密码无效。')
-    const targetChanged = targetKey(next) !== targetKey(this.config)
-    if (targetChanged && !input.password) throw new Error('更换同步地址、目录或账号时，请重新填写应用密码。')
+    if (input.password !== undefined && (typeof input.password !== 'string' || input.password.length > 4096)) {
+      throw new Error('应用密码无效。')
+    }
+    if (exchangeTargetFingerprint(next) !== exchangeTargetFingerprint(this.config) && !input.password) {
+      throw new Error('更换同步地址、目录或账号时，请重新填写应用密码。')
+    }
     let encrypted: string | null = null
     try { if (input.password) encrypted = protectCredential(input.password, this.credentials) }
     catch { throw new Error('无法安全保存 WebDAV 应用密码，请检查系统凭据存储是否可用。') }
-    if (next.enabled && input.password === '') throw new Error('启用同步前请填写应用密码。')
-    if (next.enabled && !encrypted && !this.store.getSettingPublic(PASSWORD_KEY)) throw new Error('启用同步前请填写应用密码。')
+    if (next.enabled && (input.password === '' || (!encrypted && !this.store.getSettingPublic(PASSWORD_KEY)))) {
+      throw new Error('启用同步前请填写应用密码。')
+    }
     this.store.runInTransaction(() => {
       this.store.saveSetting(CONFIG_KEY, JSON.stringify(next))
-      if (input.protocol5 === true || input.protocol5 === false && this.store.getSettingPublic(SYNC_RECEIVER_PROFILE_KEY) === 'true') {
-        this.store.saveSetting(protocol5ModeKey(next), String(input.protocol5))
-      } else if (input.protocol5 === false && this.store.getSettingPublic(protocol5ModeKey(next)) !== null) {
-        this.store.deleteSetting(protocol5ModeKey(next))
-      }
       if (encrypted) this.store.saveSetting(PASSWORD_KEY, encrypted)
       else if (input.password === '') this.store.deleteSetting(PASSWORD_KEY)
     })
     this.config = next
-    this.clearProtocol5Previews()
-    if (targetChanged) { this.uploadedObjects.clear(); this.uploadedAssets.clear(); this.remoteObjects.clear(); this.remoteObjectBytes = 0 }
-    this.verifiedTarget = null
-    this.capabilities = undefined
-    this.message = this.protocol5Enabled() ? '设置已保存。同步块首次发布使用独立空目录。' : '设置已保存。首次同步会合并两端已有内容。'
+    this.clearPreviews()
     this.phase = 'idle'
+    this.message = '同步设置已保存。'
     this.schedule()
     return this.getStatus()
   }
 
-  start(): void { this.schedule(); if (this.config.enabled) void this.sync().catch(() => {}) }
+  start(): void {
+    this.schedule()
+    if (this.config.enabled) void this.sync().catch(() => {})
+  }
+
   private schedule(): void {
     if (this.timer) clearInterval(this.timer)
     this.timer = null
@@ -182,19 +95,16 @@ export class WebDavSyncService {
     }
   }
 
-  private password(): string {
+  private runtime() {
     const stored = this.store.getSettingPublic(PASSWORD_KEY)
     if (!stored) throw new Error('请先保存 WebDAV 地址、用户名和应用密码。')
-    try { return revealCredential(stored, this.credentials).value }
+    try { return { password: revealCredential(stored, this.credentials).value, signal: this.abort?.signal } }
     catch { throw new Error('无法解密 WebDAV 应用密码，请重新填写并保存。') }
   }
 
-  private client(): WebDavClient {
-    return new WebDavClient(normalizeWebDavConfig(this.config), this.password(), this.abort?.signal, this.capabilities, activity => {
-      if (!this.progress) return
-      this.progress.waitingUntil = activity.waitingUntil
-      if (activity.completed) this.progress.requestsCompleted++
-    })
+  private clearPreviews(): void {
+    this.conflictPreview = undefined
+    this.deletionPreview = undefined
   }
 
   private async operation(phase: 'testing' | 'syncing', run: () => Promise<void>): Promise<WebDavSyncStatus> {
@@ -203,10 +113,25 @@ export class WebDavSyncService {
     if (this.busy) throw new Error('已有同步或连接测试正在进行。')
     this.abort = new AbortController()
     this.phase = phase
-    this.uploaded = 0; this.downloaded = 0; this.merged = 0
-    this.progress = { stage: 'checking', total: null, completed: 0, attachmentsTotal: 0, attachmentsCompleted: 0,
-      currentItem: null, currentAttachment: null, startedAt: new Date().toISOString(), requestsCompleted: 0, waitingUntil: null }
+    this.uploaded = 0
+    this.downloaded = 0
+    this.merged = 0
+    this.progress = { stage: phase === 'testing' ? 'checking' : 'comparing', total: null, completed: 0,
+      attachmentsTotal: 0, attachmentsCompleted: 0, currentItem: null, currentAttachment: null,
+      startedAt: new Date().toISOString(), requestsCompleted: 0, waitingUntil: null }
     this.message = phase === 'testing' ? '正在验证连接和条件写入能力…' : '正在同步…'
+    const stopObserving = observeWebDavProgress(this.abort.signal, {
+      request: activity => {
+        if (!this.progress) return
+        this.progress.waitingUntil = activity.waitingUntil
+        if (activity.completed) this.progress.requestsCompleted++
+      },
+      transfer: activity => {
+        if (!this.progress) return
+        this.progress = { ...this.progress, stage: activity.stage, currentAttachment: activity.name,
+          attachmentsCompleted: activity.completed, attachmentsTotal: activity.total }
+      }
+    })
     const work = Promise.resolve().then(run)
     this.busy = work
     try { await work; this.phase = 'idle' }
@@ -214,500 +139,100 @@ export class WebDavSyncService {
       this.phase = 'error'
       this.message = error instanceof Error ? error.message : '同步失败，下次将自动重试。'
       throw new Error(this.message, { cause: error })
-    } finally { this.busy = null; this.abort = null; this.progress = null }
+    } finally { stopObserving(); this.busy = null; this.abort = null; this.progress = null }
     return this.getStatus()
   }
 
   testConnection(): Promise<WebDavSyncStatus> {
     return this.operation('testing', async () => {
-      this.verifiedTarget = null
-      this.capabilities = undefined
-      const client = this.client()
-      if (this.protocol5Enabled()) await peekProtocol5Remote(client)
-      this.capabilities = await client.test()
-      this.verifiedTarget = targetKey(this.config)
+      const { password, signal } = this.runtime()
+      const client = new WebDavClient(this.config, password, signal)
+      await peekProtocol5Remote(client)
+      await client.test()
       this.message = '连接成功，读写与并发保护检查通过。'
     })
   }
 
   sync(): Promise<WebDavSyncStatus> {
     return this.operation('syncing', async () => {
-      if (this.profile && this.protocol5Enabled()) {
-        this.clearProtocol5Previews()
-        this.stage('comparing')
-        this.applyProtocol5Outcome(await runProtocol5WebDav(this.store, this.profile, normalizeWebDavConfig(this.config),
-          { password: this.password(), signal: this.abort?.signal }, Boolean(this.state().workspaceId)))
-        return
-      }
-      this.store.assertOrdinarySyncAllowed()
-      const client = this.client()
-      if (this.verifiedTarget !== targetKey(this.config)) {
-        this.capabilities = await client.test()
-        this.verifiedTarget = targetKey(this.config)
-      }
-      this.uploaded = 0; this.downloaded = 0; this.merged = 0
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try { await this.exchange(client); return }
-        catch (error) { if (!(error instanceof WebDavHttpError && error.status === 412) || attempt === 2) throw error }
-      }
+      this.clearPreviews()
+      this.applyOutcome(await runProtocol5WebDav(this.store, this.profile, this.config, this.runtime()))
     })
   }
 
-  private applyProtocol5Outcome(result: Awaited<ReturnType<typeof runProtocol5WebDav>>): void {
+  private applyOutcome(result: Awaited<ReturnType<typeof runProtocol5WebDav>>): void {
     this.uploaded = result.uploaded
     this.downloaded = result.downloaded
+    this.merged = result.merged ?? 0
     this.message = result.message
     if (this.downloaded) this.onChanged()
-  }
-  private clearProtocol5Previews(): void {
-    this.protocol5Preview = null
-    this.protocol5DeletionPreview = null
+    if (result.selectionDeferred) throw new Error(result.message)
   }
 
   rejoinProtocol5AfterRestore(confirm: (baselineCount: number, remoteAdvanced: boolean) => Promise<boolean>): Promise<WebDavSyncStatus> {
-    const profile = this.profile, target = normalizeWebDavConfig(this.config)
-    if (!profile || !this.protocol5Enabled() || !protocol5NeedsRestoreRejoin(this.store, target))
-      throw new Error('当前目录没有等待续接的同步块工作区。')
+    if (!protocol5NeedsRestoreRejoin(this.store, this.config)) throw new Error('当前目录没有等待续接的工作区。')
     return this.operation('syncing', async () => {
-      this.clearProtocol5Previews()
-      this.stage('comparing')
-      const db = this.store.getUnsafeDatabaseHandle(), runtime = { password: this.password(), signal: this.abort?.signal }
-      const preview = await prepareProtocol5RestoreRejoin(db, profile, target, runtime)
+      this.clearPreviews()
+      const db = this.store.getUnsafeDatabaseHandle(), runtime = this.runtime()
+      const preview = await prepareProtocol5RestoreRejoin(db, this.profile, this.config, runtime)
       if (!await confirm(preview.baseline.length, preview.manifestHash !== preview.originalManifestHash)) {
         this.message = '已取消续接，工作区保持暂停。'
         return
       }
-      await confirmProtocol5RestoreRejoin(db, profile, target, runtime, preview.owner)
+      await confirmProtocol5RestoreRejoin(db, this.profile, this.config, runtime, preview.owner)
       this.message = '已续接原同步目录，可以开始同步。'
     })
   }
 
   previewProtocol5Conflicts(): Promise<WebDavSyncStatus> {
-    const profile = this.profile
-    if (!profile || !this.protocol5Enabled()) throw new Error('当前目录未启用同步块协议。')
     return this.operation('syncing', async () => {
-      this.clearProtocol5Previews()
-      this.stage('comparing')
-      this.protocol5Preview = await previewProtocol5WebDavConflicts(this.store, profile, normalizeWebDavConfig(this.config),
-        { password: this.password(), signal: this.abort?.signal })
-      const count = this.protocol5Preview.components.length
-      this.message = count ? `已读取 ${count} 组同步块冲突。` : '当前没有待处理的同步块冲突。'
+      const preview = await previewProtocol5WebDavConflicts(this.store, this.profile, this.config, this.runtime())
+      this.clearPreviews()
+      this.conflictPreview = preview
+      const count = preview.components.length
+      this.message = count ? `已读取 ${count} 组同步冲突。` : '当前没有待处理的同步冲突。'
     })
   }
 
   resolveProtocol5Conflict(value: unknown): Promise<WebDavSyncStatus> {
-    const profile = this.profile
-    if (!profile || !this.protocol5Enabled()) throw new Error('当前目录未启用同步块协议。')
-    const input = readProtocol5Selection(value), preview = this.protocol5Preview
+    const input = readProtocol5Selection(value), preview = this.conflictPreview
     if (!preview || preview.previewId !== input.previewId || preview.previewHash !== input.previewHash
       || !preview.components.some(component => component.componentId === input.componentId && component.choices.includes(input.choice))) {
       throw new Error('冲突预览已失效，请重新读取后再选择。')
     }
     return this.operation('syncing', async () => {
-      this.clearProtocol5Previews()
-      this.stage('comparing')
-      this.applyProtocol5Outcome(await resolveProtocol5WebDavConflict(this.store, profile, normalizeWebDavConfig(this.config), input,
-        { password: this.password(), signal: this.abort?.signal }))
+      const result = await resolveProtocol5WebDavConflict(this.store, this.profile, this.config, input, this.runtime(), preview)
+      this.applyOutcome(result)
+      this.clearPreviews()
     })
   }
 
   previewProtocol5Deletions(): Promise<WebDavSyncStatus> {
-    const profile = this.profile
-    if (!profile || !this.protocol5Enabled()) throw new Error('当前目录未启用同步块协议。')
     return this.operation('syncing', async () => {
-      this.clearProtocol5Previews()
-      this.stage('comparing')
-      this.protocol5DeletionPreview = await previewProtocol5WebDavDeletions(this.store, profile, normalizeWebDavConfig(this.config),
-        { password: this.password(), signal: this.abort?.signal })
-      const count = this.protocol5DeletionPreview.components.length
-      this.message = count ? `已读取 ${count} 组删除冲突。` : '当前没有待处理的同步块删除冲突。'
+      this.clearPreviews()
+      this.deletionPreview = await previewProtocol5WebDavDeletions(this.store, this.profile, this.config, this.runtime())
+      const count = this.deletionPreview.components.length
+      this.message = count ? `已读取 ${count} 组删除冲突。` : '当前没有待处理的删除冲突。'
     })
   }
 
   resolveProtocol5Deletion(value: unknown): Promise<WebDavSyncStatus> {
-    const profile = this.profile
-    if (!profile || !this.protocol5Enabled()) throw new Error('当前目录未启用同步块协议。')
-    const input = readProtocol5DeletionSelection(value), preview = this.protocol5DeletionPreview
+    const input = readProtocol5DeletionSelection(value), preview = this.deletionPreview
     if (!preview || preview.previewId !== input.previewId || preview.previewHash !== input.previewHash
       || !preview.components.some(component => component.componentId === input.componentId && component.choices.includes(input.choice))) {
       throw new Error('删除冲突预览已失效，请重新读取后再选择。')
     }
     return this.operation('syncing', async () => {
-      this.clearProtocol5Previews()
-      this.stage('comparing')
-      this.applyProtocol5Outcome(await resolveProtocol5WebDavDeletion(this.store, profile, normalizeWebDavConfig(this.config), input,
-        { password: this.password(), signal: this.abort?.signal }))
+      this.clearPreviews()
+      this.applyOutcome(await resolveProtocol5WebDavDeletion(this.store, this.profile, this.config, input, this.runtime()))
     })
-  }
-
-  private async exchange(client: WebDavClient): Promise<void> {
-    const state = this.state()
-    const raw = this.store.getSyncRecords()
-    const catalogId = this.store.getDatabases().find(database => database.kind === 'document-catalog')?.id
-    if (!catalogId) throw new Error('默认数据库配置缺失，未发布或修改数据。')
-    const local = new Map<string, SyncRecord>()
-    this.stage('preparing', raw.size)
-    for (const [key, record] of raw) {
-      this.progress!.currentItem = this.itemName(record)
-      local.set(key, await this.assets.portable(record))
-      this.progress!.completed++
-    }
-    this.stage('comparing')
-    const response = await client.getVersioned('manifest.json')
-    if (!response && state.workspaceId) throw new Error('远端同步清单丢失，已停止同步以保护本地数据。请恢复远端目录或改用新的同步目录。')
-    const manifest: SyncManifest = response ? parseManifest(response.bytes) : { version: 1, workspaceId: randomUUID(), entries: {} }
-    if (state.workspaceId && state.workspaceId !== manifest.workspaceId) throw new Error('远端工作区已被替换，请使用新的同步目录以免合并错误的数据。')
-    const next: SyncManifest = { ...manifest, entries: { ...manifest.entries } }
-    const incoming = new Map<string, SyncRecord>()
-    const writes = new Map<string, SyncRecord>()
-    const accepted = new Map<string, { localHash: string | null; remoteHash: string }>()
-    // Exact selected versions can prove an old retained owner released an ID
-    // even when that already-matching document needs no local upsert.
-    const releaseProofs = new Map<string, SyncRecord>()
-    const conflicts: SyncState['conflicts'] = {}
-    const ownershipConflicts: SyncState['conflicts'] = {}
-    const mergingKeys = new Set<string>()
-    let mergedCount = 0
-    const conflictCopy = (record: SyncDocument, salt: string): SyncDocument => {
-      const occupied = new Set([...local.keys(), ...Object.keys(manifest.entries), ...Object.keys(state.baseline), ...writes.keys(), ...incoming.keys()])
-      for (let nonce = 0; nonce <= occupied.size; nonce++) {
-        const copy = documentCopy(record, nonce ? `${salt}:copy:${nonce}` : salt)
-        const key = recordKey(copy), hash = recordHash(copy)
-        // Stable IDs make retries idempotent, but a previously edited or deleted
-        // conflict copy must never be replaced when the same pair recurs.
-        if (state.baseline[key] && !local.has(key)) continue
-        if (manifest.entries[key] && manifest.entries[key] !== hash) continue
-        if ([local.get(key), writes.get(key), incoming.get(key)].some(existing => existing && recordHash(existing) !== hash)) continue
-        return copy
-      }
-      throw new Error('无法分配冲突副本，请重新同步后重试。')
-    }
-    const remoteRecord = async (key: string, hash: string): Promise<SyncRecord> => {
-      const checked = (value: SyncRecord): SyncRecord => {
-        const record = validateRecord(value, key, manifest.version)
-        preflightSyncCatalogReferences([record], catalogId)
-        return record
-      }
-      if (this.remoteObjects.has(hash)) return checked(this.remoteObjects.get(hash)!)
-      const object = await client.get(`objects/${hash}.json`, MAX_RECORD_BYTES)
-      if (!object || hashBytes(object.bytes) !== hash) throw new Error('远端文档版本缺失或校验失败，未更新本地数据。')
-      const record = checked(JSON.parse(Buffer.from(object.bytes).toString('utf8')) as SyncRecord)
-      this.remoteObjects.set(hash, record)
-      this.remoteObjectBytes += Buffer.byteLength(canonicalJson(record))
-      while (this.remoteObjects.size > 256 || this.remoteObjectBytes > 32 * 1024 * 1024) {
-        const oldest = this.remoteObjects.keys().next().value!
-        this.remoteObjectBytes -= Buffer.byteLength(canonicalJson(this.remoteObjects.get(oldest)))
-        this.remoteObjects.delete(oldest)
-      }
-      return record
-    }
-    const keys = [...new Set([...local.keys(), ...Object.keys(manifest.entries), ...Object.keys(state.baseline)])]
-    this.stage('comparing', keys.length)
-    for (const [index, key] of keys.entries()) {
-      const current = local.get(key)
-      this.progress!.completed = index
-      this.progress!.currentItem = this.itemName(current)
-      const localHash = current ? recordHash(current) : null
-      const deletion: SyncRecord = { kind: 'deleted', id: key.slice(4) }
-      const proposed = current ?? deletion
-      const proposedHash = recordHash(proposed)
-      const remoteHash = manifest.entries[key]
-      const baseline = state.baseline[key]
-      if (!remoteHash && baseline) throw new Error('远端清单缺少已同步的版本，请恢复远端清单后重试。')
-      if (remoteHash === proposedHash) {
-        validateRecord(proposed, key, manifest.version)
-        releaseProofs.set(key, proposed)
-        accepted.set(key, { localHash, remoteHash }); continue
-      }
-      const localChanged = baseline ? localHash !== baseline.localHash : current !== undefined && !(key === 'databases' && emptyDatabases(current) && remoteHash)
-      const remoteChanged = baseline ? remoteHash !== baseline.remoteHash : Boolean(remoteHash)
-      if (localChanged && remoteChanged) {
-        const remote = await remoteRecord(key, remoteHash)
-        const oldConflict = state.conflicts[key]
-        ownershipConflicts[key] = { ...(oldConflict?.localHash === proposedHash && oldConflict.remoteHash === remoteHash ? oldConflict : {}),
-          local: proposed, remote, localHash: proposedHash, remoteHash, localRawHash: recordHash(raw.get(key) ?? deletion) }
-
-        const resolution = state.resolutions[key]
-        if (resolution?.localHash === proposedHash && resolution.remoteHash === remoteHash) {
-          if (resolution.choice === 'local') writes.set(key, proposed)
-          else if (resolution.choice === 'merge' && resolution.merged) {
-            const merged = validateRecord(resolution.merged, key)
-            writes.set(key, merged)
-            incoming.set(key, merged)
-            mergingKeys.add(key)
-            mergedCount++
-          } else if (resolution.choice === 'both' && proposed.kind === 'deleted' && remote.kind === 'document') {
-            const copy = conflictCopy(remote, `${proposedHash}:${remoteHash}`)
-            writes.set(key, proposed)
-            writes.set(recordKey(copy), copy)
-            incoming.set(recordKey(copy), copy)
-          }
-          else {
-            incoming.set(key, remote)
-            if (resolution.choice === 'both' && proposed.kind === 'document') {
-              const copy = conflictCopy(proposed, `${proposedHash}:${remoteHash}`)
-              writes.set(recordKey(copy), copy)
-              incoming.set(recordKey(copy), copy)
-            }
-          }
-        } else {
-          let base: SyncDocument | undefined
-          let plan: ReturnType<typeof mergeSyncDocument> | undefined
-          // Only equal local/remote baselines are a shared ancestor. Local
-          // normalization may otherwise have produced a different document.
-          if (proposed.kind === 'document' && remote.kind === 'document' && baseline
-            && baseline.localHash === baseline.remoteHash && validHash(baseline.remoteHash)) {
-            try {
-              const ancestor = await remoteRecord(key, baseline.remoteHash)
-              if (ancestor.kind === 'document') {
-                plan = mergeSyncDocument(ancestor, proposed, remote)
-                base = ancestor
-              }
-            } catch (error) {
-              if (this.abort?.signal.aborted) throw error
-              // Missing, incompatible or damaged ancestors cannot justify
-              // overwriting either current version; keep an explicit conflict.
-            }
-          }
-          if (plan && !plan.unresolved.length) {
-            validateRecord(plan.document, key)
-            syncAssetReferences(plan.document)
-            writes.set(key, plan.document)
-            incoming.set(key, plan.document)
-            mergingKeys.add(key)
-            mergedCount++
-          } else conflicts[key] = { local: proposed, remote, localHash: proposedHash, remoteHash,
-            localRawHash: recordHash(raw.get(key) ?? deletion), base,
-            mergeFields: plan?.conflicts.map(({ id, field, blockId }) => ({ id, field, blockId })) }
-        }
-      } else if (localChanged || !remoteHash && current) writes.set(key, proposed)
-      else if (remoteChanged && remoteHash) incoming.set(key, await remoteRecord(key, remoteHash))
-      else if (remoteHash) {
-        // Normalization can make localHash differ from the accepted wire hash.
-        // Even unchanged versions must pass the current manifest's gate.
-        releaseProofs.set(key, await remoteRecord(key, remoteHash))
-        accepted.set(key, { localHash, remoteHash })
-      }
-    }
-    const ownershipReports = { ...ownershipConflicts, ...conflicts }
-    this.stage('uploading', writes.size, new Set([...writes.values()].flatMap(record => syncAssetReferences(record).map(asset => asset.hash))).size)
-    const uploadProgress = this.assetProgress()
-    for (const [key, record] of writes) {
-      validateRecord(record, key)
-      this.progress!.currentItem = this.itemName(record)
-      const bytes = Buffer.from(canonicalJson(record))
-      if (bytes.length > MAX_RECORD_BYTES) throw new Error('单篇文档或数据库同步数据超过 16 MB。')
-      const hash = hashBytes(bytes)
-      await this.assets.upload(record, client, this.uploadedAssets, uploadProgress)
-      if (!this.uploadedObjects.has(hash)) {
-        await client.put(`objects/${hash}.json`, bytes)
-        this.uploadedObjects.add(hash)
-      }
-      next.entries[key] = hash
-      releaseProofs.set(key, record)
-      accepted.set(key, { localHash: record.kind === 'deleted' ? null : hash, remoteHash: hash })
-      this.progress!.completed++
-    }
-    // Assets must be verified and durable before any local document can reference them.
-    const localized = new Map<string, SyncRecord>()
-    this.stage('downloading', incoming.size, new Set([...incoming.values()].flatMap(record => syncAssetReferences(record).map(asset => asset.url))).size)
-    const downloadProgress = this.assetProgress()
-    for (const [key, record] of incoming) {
-      this.progress!.currentItem = this.itemName(record)
-      localized.set(key, await this.assets.local(record, client, downloadProgress))
-      this.progress!.completed++
-    }
-    if (this.abort?.signal.aborted) throw new Error('同步已停止。')
-    // A merge contains the local snapshot we just read. Publishing that snapshot
-    // after newer editing would make our own intermediate result a competing
-    // remote edit on the next run. Leave those keys at their original versions.
-    const mergeDeferred = mergingKeys.size > 0 && canonicalJson([...this.store.getSyncRecords()]) !== canonicalJson([...raw])
-    if (mergeDeferred) {
-      for (const key of mergingKeys) {
-        next.entries[key] = manifest.entries[key]
-        writes.delete(key)
-        incoming.delete(key)
-        localized.delete(key)
-        accepted.delete(key)
-        releaseProofs.delete(key)
-      }
-      mergedCount = 0
-    }
-    // Applied records already carry the selected authority. Omit their wire
-    // duplicates: asset localization changes URLs without changing ownership.
-    const retainedReleaseProofs = [...releaseProofs].filter(([key]) => !localized.has(key)).map(([, record]) => record)
-    // Reject incomplete ownership dependencies before publishing any manifest.
-    // The apply transaction repeats this check after all asynchronous waits.
-    try {
-      if (canonicalJson([...this.store.getSyncRecords()]) === canonicalJson([...raw])) {
-        preflightSyncBlockTransfers(this.store.getUnsafeDatabaseHandle(), [...localized.values()],
-          Object.entries(ownershipReports).flatMap(([key, conflict]) => !incoming.has(key) && conflict.remote.kind === 'document' ? [conflict.remote] : []),
-          retainedReleaseProofs)
-      }
-    } catch (error) {
-      this.preserveOwnershipConflict(error, ownershipReports, raw)
-      throw error
-    }
-    // Publish the compatibility gate in the same conditional manifest write as
-    // its first new tree. A competing older writer must reread the new gate.
-    if ([...writes.values()].some(requiresDatabaseViewProtocol)) next.version = 4
-    else if (next.version < 3 && [...writes.values()].some(requiresPageCompositionProtocol)) next.version = 3
-    else if (next.version === 1 && [...writes.values()].some(requiresStructureEditingProtocol)) next.version = 2
-    const changed = !response || canonicalJson(next) !== canonicalJson(manifest)
-    const writtenDocumentIds = new Set([...writes.values()].flatMap(record => record.kind === 'databases' ? [] : [record.id]))
-    if (changed && writtenDocumentIds.size) {
-      try {
-        const remoteDocuments: SyncRecord[] = [], publishedDocuments: SyncRecord[] = []
-        for (const [key, hash] of Object.entries(next.entries)) {
-          if (!key.startsWith('doc:')) continue
-          const remoteHash = manifest.entries[key]
-          let remote: SyncRecord | undefined
-          if (remoteHash) {
-            const candidates = [local.get(key) ?? { kind: 'deleted', id: key.slice(4) } as const,
-              incoming.get(key), ownershipReports[key]?.remote]
-            remote = candidates.find(record => record && recordHash(record) === remoteHash)
-              ?? await remoteRecord(key, remoteHash)
-            remoteDocuments.push(remote)
-          }
-          const written = writes.get(key)
-          if (written) publishedDocuments.push(written)
-          else if (remote && hash === remoteHash) publishedDocuments.push(remote)
-          else throw new Error('同步发布版本未完整核验，未发布清单。')
-        }
-        preflightSyncPublishedBlockOwnership(local.values(), remoteDocuments, publishedDocuments, writtenDocumentIds)
-      } catch (error) {
-        this.preserveOwnershipConflict(error, ownershipReports, raw)
-        throw error
-      }
-    }
-    if (this.abort?.signal.aborted) throw new Error('同步已停止。')
-    if (changed) {
-      this.stage('publishing')
-      const manifestBytes = Buffer.from(canonicalJson(next))
-      if (manifestBytes.length > MAX_RECORD_BYTES) throw new Error('同步清单超过 16 MB。')
-      if (response) await client.put('manifest.json', manifestBytes, { etag: response.etag })
-      else await client.create('manifest.json', manifestBytes)
-    }
-    // Network waits can overlap local editing. Defer all incoming mutations in that case.
-    const latest = this.store.getSyncRecords()
-    const localUnchanged = canonicalJson([...latest]) === canonicalJson([...raw])
-    this.stage('applying')
-    try {
-      this.store.runInTransaction(() => {
-        if (localUnchanged && localized.size) this.store.applySyncRecords([...localized.values()], retainedReleaseProofs)
-        const after = this.store.getSyncRecords()
-        for (const [key, baseline] of accepted) {
-          if (localUnchanged || !incoming.has(key)) state.baseline[key] = baseline
-        }
-        if (localUnchanged) {
-          for (const key of localized.keys()) {
-            const record = after.get(key)
-            state.baseline[key] = { localHash: record ? recordHash(this.assets.portableKnown(record)) : null, remoteHash: next.entries[key] }
-          }
-        }
-        state.workspaceId = manifest.workspaceId
-        state.conflicts = conflicts
-        // Keep resolutions until incoming changes were actually applied.
-        if (localUnchanged) state.resolutions = {}
-        else {
-          // A deferred apply must never resurrect a decision for a newer pair.
-          for (const [key, resolution] of Object.entries(state.resolutions)) {
-            const conflict = conflicts[key]
-            if (conflict && (resolution.localHash !== conflict.localHash || resolution.remoteHash !== conflict.remoteHash)) delete state.resolutions[key]
-          }
-        }
-        state.lastSyncAt = new Date().toISOString()
-        this.saveState(state)
-      })
-    } catch (error) {
-      if (localUnchanged) this.preserveOwnershipConflict(error, ownershipReports, raw)
-      throw error
-    }
-
-    this.uploaded = writes.size
-    this.downloaded = localUnchanged ? localized.size : 0
-    this.merged = localUnchanged ? mergedCount : 0
-    const count = Object.keys(conflicts).length
-    this.message = count ? `已同步其他内容；${count} 项冲突已保留双方版本，请选择处理方式。`
-      : mergeDeferred || !localUnchanged && localized.size ? '本地正在编辑，远端更新将在下次同步时应用。'
-      : `同步完成：上传 ${this.uploaded} 项，下载 ${this.downloaded} 项${this.merged ? `，合并 ${this.merged} 篇文档` : ''}。`
-    if (this.downloaded) this.onChanged()
-  }
-
-  private boundConflict(input: WebDavSyncConflictVersion, checkLocal = true): { state: SyncState; conflict: StoredConflict } {
-    if (!input || typeof input.key !== 'string' || !validHash(input.localHash) || !validHash(input.remoteHash)) throw new Error('冲突版本参数无效，请重新同步后查看。')
-    const state = this.state(), conflict = state.conflicts[input.key]
-    if (!conflict) throw new Error('该冲突已不存在，请刷新。')
-    if (conflict.localHash !== input.localHash || conflict.remoteHash !== input.remoteHash) throw new Error('冲突版本已变化，请重新查看双方内容后选择。')
-    if (checkLocal) {
-      let currentHash: string
-      try {
-        const current = this.store.getSyncRecords().get(input.key) ?? { kind: 'deleted', id: input.key.slice(4) } as const
-        currentHash = recordHash(conflict.localRawHash ? current : this.assets.portableKnown(current))
-      } catch { throw new Error('本地内容已变化，请重新同步后处理冲突。') }
-      if (currentHash !== (conflict.localRawHash ?? conflict.localHash)) throw new Error('本地内容已变化，请重新同步后处理冲突。')
-    }
-    return { state, conflict }
-  }
-
-  private documentMerge(conflict: StoredConflict, choices?: Record<string, WebDavSyncMergeChoice>): ReturnType<typeof mergeSyncDocument> {
-    if (!conflict.base || conflict.local.kind !== 'document' || conflict.remote.kind !== 'document') throw new Error('该冲突没有可用的共同版本，请选择保留本地、远端或双方版本。')
-    if (choices !== undefined && (!choices || typeof choices !== 'object' || Array.isArray(choices))) throw new Error('合并选项无效。')
-    const plan = mergeSyncDocument(conflict.base, conflict.local, conflict.remote, choices)
-    const known = new Set(plan.conflicts.map(part => part.id))
-    if (Object.keys(choices ?? {}).some(id => !known.has(id))) throw new Error('合并字段已变化，请重新查看冲突。')
-    return plan
-  }
-
-  getConflictDetails(input: WebDavSyncConflictDetailsInput): WebDavSyncConflictDetails {
-    if (this.protocol5Enabled()) throw new Error('此工作区使用同步块冲突处理，旧版文档冲突保持原样。')
-    if (this.busy) throw new Error('请等待同步结束后查看冲突。')
-    const { state, conflict } = this.boundConflict(input)
-    const canMerge = conflict.base && conflict.local.kind === 'document' && conflict.remote.kind === 'document'
-    const resolution = state.resolutions[input.key]
-    const savedChoices = resolution?.choice === 'merge' && resolution.localHash === input.localHash && resolution.remoteHash === input.remoteHash
-      ? resolution.mergeChoices : undefined
-    const plan = canMerge ? this.documentMerge(conflict, input.mergeChoices ?? savedChoices) : null
-    if (!canMerge && input.mergeChoices) throw new Error('该冲突不支持逐项合并。')
-    return { key: input.key, localHash: conflict.localHash, remoteHash: conflict.remoteHash,
-      localPreview: conflictPreview(conflict.local, Infinity), remotePreview: conflictPreview(conflict.remote, Infinity),
-      basePreview: conflict.base ? conflictPreview(conflict.base, Infinity) : null, savedChoices,
-      merge: plan ? { document: plan.document.content, conflicts: plan.conflicts, unresolvedIds: plan.unresolved.map(part => part.id) } : null }
-  }
-
-  resolveConflict(input: ResolveWebDavSyncConflict): WebDavSyncStatus {
-    if (this.protocol5Enabled()) throw new Error('此工作区使用同步块冲突处理，旧版文档冲突保持原样。')
-    if (this.busy) throw new Error('请等待同步结束后处理冲突。')
-    if (!input || !['local', 'remote', 'both', 'merge', 'clear'].includes(input.choice)) throw new Error('冲突处理参数无效。')
-    const { state, conflict } = this.boundConflict(input, input.choice !== 'clear')
-    if (input.choice === 'clear') {
-      delete state.resolutions[input.key]
-      this.saveState(state)
-      this.message = '已取消处理方式，双方版本仍保留。'
-      return this.getStatus()
-    }
-    if (input.choice === 'both' && conflict.local.kind !== 'document' && conflict.remote.kind !== 'document') throw new Error('该冲突不支持创建文档副本。')
-    let merged: SyncDocument | undefined
-    if (input.choice === 'merge') {
-      const plan = this.documentMerge(conflict, input.mergeChoices)
-      if (plan.unresolved.length) throw new Error('请处理全部冲突字段，并检查自定义内容后再保存合并。')
-      validateRecord(plan.document, input.key)
-      syncAssetReferences(plan.document)
-      if (Buffer.byteLength(canonicalJson(plan.document)) > MAX_RECORD_BYTES) throw new Error('合并后的文档超过 16 MB，请缩小内容后重试。')
-      merged = plan.document
-    } else if (input.mergeChoices !== undefined) throw new Error('当前处理方式不接受合并选项。')
-    state.resolutions[input.key] = { localHash: conflict.localHash, remoteHash: conflict.remoteHash, choice: input.choice, merged,
-      mergeChoices: input.choice === 'merge' ? input.mergeChoices : undefined }
-    this.saveState(state)
-    this.message = '处理方式已保存，点击立即同步以应用；若任一版本变化，将重新提示冲突。'
-    return this.getStatus()
   }
 
   async stop(): Promise<void> {
     this.stopped = true
     if (this.timer) clearInterval(this.timer)
     this.abort?.abort()
-    await this.busy?.catch(() => {})
+    await this.waitForIdle()
   }
 
   async waitForIdle(): Promise<void> { await this.busy?.catch(() => {}) }
@@ -716,7 +241,7 @@ export class WebDavSyncService {
     this.abort?.abort()
     await this.waitForIdle()
     this.phase = 'idle'
-    this.message = '本次同步已停止。已保存的本地数据仍在；自动同步将按设置的间隔重试。'
+    this.message = '本次同步已停止。自动同步将按设置的间隔重试。'
     return this.getStatus()
   }
 }

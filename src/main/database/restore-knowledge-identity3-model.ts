@@ -85,6 +85,18 @@ function demands(input: Identity3Inputs): Demand[] {
  * Ancestor UUIDs are never interpreted as target-profile live occupants. */
 export function deriveRootRestoreIdentityPlan3(input: Identity3Inputs, kernel: Identity3Kernel, repeat?: ExactV3RepeatProof) {
   if (!/^[0-9a-f]{64}$/.test(kernel.seed) || !Number.isFinite(Date.parse(kernel.preparedAt)) || new Date(kernel.preparedAt).toISOString() !== kernel.preparedAt) return identity3Invalid('Main规划kernel无效')
+  const currentByGroup = new Map(input.current.knowledge.groups.map(group => [group.tuple.groupId, group.tuple]))
+  const retired = new Set<string>()
+  for (const group of input.current.source.physical.groups) {
+    if (group.absence !== 'source-retired') continue
+    const original = group.retirementOrigin, installed = currentByGroup.get(group.groupId)
+    if (!original || !installed) return identity3Invalid('缺已退场共享组的原身份。')
+    for (const tuple of [original, installed]) retired.add(key(tuple.groupId, tuple.creationId, tuple.createdAt))
+  }
+  for (const { snapshot } of input.source.source.physical.groups) {
+    if (snapshot && retired.has(key(snapshot.groupId, snapshot.creationId, snapshot.createdAt)))
+      return identity3Invalid('所选备份含已退场的共享组。')
+  }
   const selected = selectRootRestoreContent3(input), sourcePayload = input.knowledge.constraints.payloads.find(payload => !payload.witness.domain.length && payload.witness.side === 'source')!
   const current = input.current.knowledge, source = input.source.knowledge
   const sourceCatalogId = catalog(input.source), targetCatalogId = catalog(input.current)

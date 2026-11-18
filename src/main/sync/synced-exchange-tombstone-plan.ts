@@ -9,6 +9,7 @@ import { publicationCompare, publicationHash, publicationJson, publicationInvali
 import { validateSyncedProtocol5Record, validateSyncedProtocol5Snapshot, withProtocol5Successor, type SyncedProtocol5Record, type SyncedProtocol5Snapshot } from './synced-protocol5-model'
 import type { TombstoneAcceptedSide, TombstoneDeletionIntent, TombstoneDeferredComponent,
   TombstoneExchangePlan, TombstoneIdentityEffect, TombstoneLocalOutcome, TombstonePlanInput } from './synced-exchange-tombstone-types'
+import { validateLocalDocumentDeletion, type LocalDocumentDeletion } from '../database/local-document-deletions'
 
 type Entry = SyncedProtocol5Snapshot['records'][number]
 type Entries = Map<string, Entry>
@@ -20,6 +21,26 @@ const isHash = (value: unknown): value is string => typeof value === 'string' &&
 const deleted = (record: SyncedProtocol5Record): boolean => record.kind === 'deleted' || record.kind === 'synced-group-deleted'
 const localHash = (outcome: TombstoneLocalOutcome): string => outcome.kind === 'live' ? outcome.hash : outcome.tombstoneHash
 const tuple = (record: SyncedGroupWire): unknown => [record.id, record.creationId, record.createdAt, record.origin]
+
+/** Only the app's committed removal record can turn a missing row into an outbound deletion. */
+export function localDocumentDeletionIntent(key: string, original: Entry | undefined, deletion: LocalDocumentDeletion,
+  identities: ReadonlyMap<string, TombstonePlanInput['authority']['identities'][number]>):
+  { reason: 'baseline-missing' | 'incarnation' | 'owner-source' } | { choice: Entry; intent: Omit<TombstoneDeletionIntent, 'intentHash'> } {
+  if (!original) return { reason: 'baseline-missing' }
+  const before = original.record
+  if (before.kind !== 'document' || before.id !== deletion.documentId || before.createdAt !== deletion.createdAt) return { reason: 'incarnation' }
+  const effects: TombstoneIdentityEffect[] = []
+  for (const block of before.content.blocks) {
+    const identity = identities.get(block.id)
+    if (!identity || identity.state !== 'retained' || identity.last_owner_kind !== 'document'
+      || identity.last_owner_id !== before.id || identity.created_at === null) return { reason: 'owner-source' }
+    effects.push({ before: { ...identity, state: 'live' }, after: { kind: 'retained' } })
+  }
+  effects.sort((a, b) => publicationCompare(a.before.id, b.before.id))
+  const record = { kind: 'deleted' as const, id: before.id }, tombstoneHash = hash(record)
+  return { choice: { key, hash: tombstoneHash, record }, intent: { kind: 'document', key, baseLiveHash: original.hash,
+    tombstoneHash, before, identities: effects, localDeletionHash: hash(deletion) } }
+}
 function unique<T>(values: readonly T[], key: (value: T) => string, message: string): Map<string, T> {
   const result = new Map<string, T>()
   for (const value of values) { const id = key(value); if (result.has(id)) return publicationInvalid(message); result.set(id, value) }
@@ -111,15 +132,18 @@ function validateInput(input: TombstonePlanInput) {
     if (found) base.set(row.key, found); else missing.add(row.key)
   }
   const identities = unique(input.authority.identities, row => row.id, 'tombstone真实identity重复。')
+  const localDeletions = unique((input.authority.localDocumentDeletions ?? []).map(validateLocalDocumentDeletion),
+    row => 'doc:' + row.documentId, '重复的本机文档删除记录。')
+  if ([...localDeletions.keys()].some(key => physicalLocal.has(key))) return publicationInvalid('本机删除记录对应仍在使用的文档。')
   const pins = unique(input.authority.pins, row => publicationJson([row.groupId, row.kind, row.pinId]), 'tombstone真实pin重复。')
   for (const row of pins.values()) { assertSyncedShape(row, ['groupId', 'kind', 'pinId', 'sourceHash'])
     if (!isSyncedUuid(row.groupId) || typeof row.kind !== 'string' || !row.kind.length || !isSyncedBlockId(row.pinId) || !isHash(row.sourceHash)) return publicationInvalid('tombstone真实pin来源无效。') }
-  return { state, local, physicalLocal, remote, facts, baseline, base, missing, identities, pins }
+  return { state, local, physicalLocal, remote, facts, baseline, base, missing, identities, pins, localDeletions }
 }
 
 /** Same-target complete graph planning only; actual remote/spool provenance, proof mint and owned SQL remain private runtime work. */
 export function planSyncedTombstoneExchange(input: TombstonePlanInput): TombstoneExchangePlan {
-  const data = validateInput(input), { state, local, physicalLocal, remote, facts, baseline, base, missing, identities, pins } = data
+  const { state, local, physicalLocal, remote, facts, baseline, base, missing, identities, pins, localDeletions } = validateInput(input)
   const keys = sorted([...local.keys(), ...remote.keys(), ...baseline.keys()]), graph = new Map(keys.map(key => [key, new Set<string>()]))
   const edge = (left: string, right: string): void => { if (left !== right && graph.has(left) && graph.has(right)) { graph.get(left)!.add(right); graph.get(right)!.add(left) } }
   for (const row of baseline.values()) for (const key of row.dependencyKeys) edge(row.key, key)
@@ -162,7 +186,8 @@ export function planSyncedTombstoneExchange(input: TombstonePlanInput): Tombston
     for (let index = 0; index < pending.length; index++) { const next = pending[index]; part.push(next); for (const neighbor of graph.get(next)!) if (!seen.has(neighbor)) { seen.add(neighbor); pending.push(neighbor) } }
     parts.push(part.sort(publicationCompare))
   }
-  const specialParts = parts.filter(part => part.some(key => [local.get(key), remote.get(key), base.get(key)].some(row => row && deleted(row.record)) || baseline.get(key)?.local.kind === 'absent'))
+  const specialParts = parts.filter(part => part.some(key => localDeletions.has(key) && baseline.has(key)
+    || [local.get(key), remote.get(key), base.get(key)].some(row => row && deleted(row.record)) || baseline.get(key)?.local.kind === 'absent'))
   const special = new Set(specialParts.flat()), normalBaseline = state.baseline.filter(row => !special.has(row.key))
   const normalState: ExchangeState = { ...state, version: 1, baseline: normalBaseline.map(row => {
     if (row.local.kind !== 'live') return publicationInvalid('tombstone absent状态不得伪装旧live算法。')
@@ -197,7 +222,18 @@ export function planSyncedTombstoneExchange(input: TombstonePlanInput): Tombston
       if (reason) break
       const left = local.get(key), right = remote.get(key), previous = baseline.get(key)
       if (!right && previous) { reason = 'tombstone'; break }
-      if (!left && previous) { reason = 'local-removal'; break }
+      if (!left && previous) {
+        const deletion = localDeletions.get(key)
+        if (!deletion) { reason = 'local-removal'; break }
+        if (right!.record.kind === 'document' && right!.hash !== previous.remoteHash) { reason = 'diverged'; break }
+        if (missing.has(key)) { reason = 'baseline-missing'; break }
+        const planned = localDocumentDeletionIntent(key, base.get(key), deletion, identities)
+        if ('reason' in planned) { reason = planned.reason; break }
+        if (right!.record.kind !== 'document' && right!.hash !== planned.choice.hash) { reason = 'tombstone'; break }
+        choices.set(key, planned.choice)
+        intents.push({ ...planned.intent, intentHash: '' })
+        continue
+      }
       if (left && deleted(left.record) && right && !deleted(right.record)) { reason = 'tombstone'; break }
       if (left?.hash === right?.hash) { if (left) choices.set(key, left); continue }
       if (previous && missing.has(key)) { reason = 'baseline-missing'; break }
@@ -215,7 +251,7 @@ export function planSyncedTombstoneExchange(input: TombstonePlanInput): Tombston
       }
     }
     for (const [key, choice] of choices) {
-      if (reason || !deleted(choice.record)) continue
+      if (reason || !deleted(choice.record) || intents.some(intent => intent.key === key)) continue
       if (facts.has(key)) { if (choice.hash !== facts.get(key)!.tombstoneHash) reason = 'tombstone'; continue }
       const before = physicalLocal.get(key), original = base.get(key)
       if (!before || !original || deleted(original.record)) { reason = 'baseline-missing'; break }
@@ -305,7 +341,8 @@ export function planSyncedTombstoneExchange(input: TombstonePlanInput): Tombston
   const acceptedKeys = sorted(accepted), acceptedSet = new Set(acceptedKeys), writes = acceptedKeys.filter(key => remote.get(key)?.hash !== nextRemote.get(key)?.hash)
   const next = withProtocol5Successor(snapshot(nextRemote, state.remoteWorkspaceId), input.remote.manifest, input.operationId, writes.length > 0)
   const finalKnowledge = snapshot(localFinal, state.workspaceScope), finalPhysical = snapshot(live(localFinal), state.workspaceScope)
-  const incoming = acceptedKeys.filter(key => physicalLocal.get(key)?.hash !== (deleted(localFinal.get(key)!.record) ? undefined : localFinal.get(key)?.hash))
+  const physicalChanges = acceptedKeys.filter(key => physicalLocal.get(key)?.hash !== (deleted(localFinal.get(key)!.record) ? undefined : localFinal.get(key)?.hash))
+  const incoming = sorted([...physicalChanges, ...deletions.filter(intent => intent.localDeletionHash).map(intent => intent.key)])
   const sides: TombstoneAcceptedSide[] = acceptedKeys.map(key => {
     const row = localFinal.get(key)!, existing = facts.get(key), intent = acceptedIntents.get(key)
     let outcome: TombstoneLocalOutcome
@@ -321,7 +358,7 @@ export function planSyncedTombstoneExchange(input: TombstonePlanInput): Tombston
   const updates = new Map(baseline)
   for (const side of sides) updates.set(side.key, { key: side.key, local: side.local, remoteHash: side.remoteHash, commonHash: side.commonHash,
     dependencyKeys: side.dependencyKeys, dependencySignature: side.dependencySignature, acceptedOperationId: input.operationId })
-  const historyBoundaryKeys = sorted(incoming.filter(key => key.startsWith('doc:') || key.startsWith('group:')))
+  const historyBoundaryKeys = sorted(physicalChanges.filter(key => key.startsWith('doc:') || key.startsWith('group:')))
   const historyGraph = new Map<string, Set<string>>()
   for (const members of input.authority.historyComponents) for (const key of members) { const list = historyGraph.get(key) ?? new Set<string>()
     if (members.length) { list.add(members[0]); const root = historyGraph.get(members[0]) ?? new Set<string>(); root.add(key); historyGraph.set(members[0], root) }

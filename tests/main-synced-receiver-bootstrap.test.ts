@@ -4,7 +4,6 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { AttachmentStore } from '../src/main/attachments'
 import { createEphemeralCredentialStorage } from '../src/main/credential-storage'
 import { KnowbookStore } from '../src/main/database/store'
 import { assertRawSyncedHistoricalEvidenceOwned } from '../src/main/database/synced-operation-history-read'
@@ -52,23 +51,23 @@ test('ordinary startup still seeds its examples and receiver initialization does
   } finally { store?.destroy(); rmSync(profile, { recursive: true, force: true }) }
 })
 
-test('production WebDAV opt-in and pending route are device settings, separate from strict historical evidence', async () => {
+test('production WebDAV settings and routes use protocol 5 without a protocol choice', async () => {
   const profile = mkdtempSync(join(tmpdir(), 'kb-protocol5-history-'))
   const server = await createWebDavServer()
   const store = KnowbookStore.openCanonicalRuntime(join(profile, 'storage', 'knowbook.db'))
-  const service = new WebDavSyncService(store, new AttachmentStore(join(profile, 'storage', 'attachments')),
-    createEphemeralCredentialStorage(randomUUID), undefined, undefined, profile)
+  const service = new WebDavSyncService(store, profile, createEphemeralCredentialStorage(randomUUID))
   try {
     const db = store.getUnsafeDatabaseHandle()
     const historical = db.transaction(() => assertRawSyncedHistoricalEvidenceOwned(db))
     const before = historical()
     service.saveConfig({ url: server.url, username: 'test', password: 'app-secret', directory: 'history',
-      enabled: false, intervalMinutes: 5, allowInsecureHttp: true, protocol5: true })
-    await assert.rejects(service.sync(), /同步块/)
-    const settings = db.prepare("SELECT key FROM app_settings WHERE key LIKE '%protocol5%' ORDER BY key").all() as { key: string }[]
-    assert.ok(settings.some(row => row.key.includes('.opt-in.v1.')))
-    assert.ok(settings.some(row => row.key.includes('.route.v1.')))
+      enabled: false, intervalMinutes: 5, allowInsecureHttp: true })
     assert.deepEqual(historical(), before)
+    assert.ok((await service.sync()).uploaded > 0)
+    const settings = db.prepare("SELECT key FROM app_settings WHERE key LIKE '%protocol5%' ORDER BY key").all() as { key: string }[]
+    assert.ok(settings.every(row => !row.key.includes('.opt-in.v1.')))
+    assert.ok(settings.some(row => row.key.includes('.route.v1.')))
+    assert.doesNotThrow(historical)
     store.saveSetting('sync.webdav.protocol5.unrecognized.v1.test', '{}')
     assert.throws(historical, /未知protocol5 metadata/)
   } finally {

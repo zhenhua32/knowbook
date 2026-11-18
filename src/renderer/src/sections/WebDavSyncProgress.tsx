@@ -12,7 +12,7 @@ export default function WebDavSyncProgress({ progress, isZh, now = Date.now() }:
     publishing: t('正在保存云端同步结果', 'Saving cloud sync results'),
     applying: t('正在保存本地同步结果', 'Saving local sync results')
   }
-  const total = progress.total === null ? 0 : progress.total + progress.attachmentsTotal
+  const total = (progress.total ?? 0) + progress.attachmentsTotal
   const completed = progress.completed + progress.attachmentsCompleted
   const elapsed = Math.max(0, Math.floor((now - Date.parse(progress.startedAt)) / 1000))
   const duration = elapsed < 60 ? t(`${elapsed} 秒`, `${elapsed}s`) : t(`${Math.floor(elapsed / 60)} 分 ${elapsed % 60} 秒`, `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`)
@@ -21,8 +21,8 @@ export default function WebDavSyncProgress({ progress, isZh, now = Date.now() }:
   return <div className="webdav-sync-progress">
     <p role="status">{stages[progress.stage]}</p>
     <progress aria-label={t('本阶段进度', 'Current stage progress')} max={total || 1} value={total ? Math.min(completed, total) : undefined} />
-    {progress.total !== null ? <div className="webdav-sync-progress-counts">
-      <span>{t('本阶段：文档与数据库', 'Current stage: documents and databases')} {progress.completed} / {progress.total}</span>
+    {progress.total !== null || progress.attachmentsTotal > 0 ? <div className="webdav-sync-progress-counts">
+      {progress.total !== null ? <span>{t('本阶段：文档与数据库', 'Current stage: documents and databases')} {progress.completed} / {progress.total}</span> : null}
       {progress.attachmentsTotal > 0 ? <span>{t('附件已处理', 'Attachments processed')} {progress.attachmentsCompleted} / {progress.attachmentsTotal}</span> : null}
     </div> : null}
     {progress.currentItem ? <p className="webdav-sync-progress-item">{t('当前文档：', 'Current document: ')}{progress.currentItem}</p> : null}

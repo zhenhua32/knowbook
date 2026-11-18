@@ -6,6 +6,8 @@ import { SyncedPublicationError, publicationHash, publicationInvalid, publicatio
   frozenPublicationFacts, validatePublicationDescriptor, type PublicationDescriptor } from '../sync/synced-publication-model'
 import { assertRawSyncedPublicationSqlStructureOwned } from './synced-publication-sql-read'
 import { readRawSyncedPersistentPublicationSnapshotOwned, type SyncedPublicationLocalSnapshot } from './synced-publication-raw-read'
+import { confirmOrdinaryPublicationAttempt, insertOrdinaryPublicationAttempt, readOrdinaryPublicationAttempt,
+  type SyncedPublicationAttemptRow } from './synced-ordinary-publication-attempt'
 export type { SyncedPublicationLocalSnapshot } from './synced-publication-raw-read'
 
 export interface SyncedPublicationCapture { readonly kind: 'synced-publication-capture' }
@@ -13,8 +15,6 @@ export interface SyncedPublicationClaim { readonly kind: 'synced-publication-cla
 type Identity = { workspaceScope: string; recoveryEpoch: string }
 type Capture = { db: Database.Database; snapshot: SyncedPublicationLocalSnapshot }
 type Claim = { db: Database.Database; attemptId: string; descriptor: PublicationDescriptor; publicationHash: string; requestHash: string }
-type AttemptRow = { id: string; request_hash: string; channel: string; target_fingerprint: string; publication_hash: string;
-  state: string; created_at: string; confirmed_at: string | null }
 type MemberRow = { attempt_id: string; group_id: string; creation_id: string; revision: string; topology_revision: string; semantic_hash: string }
 const captures = new WeakMap<SyncedPublicationCapture, Capture>(), claims = new WeakMap<SyncedPublicationClaim, Claim>()
 function unavailable(message: string): never { throw new SyncedPublicationError('unavailable', message) }
@@ -47,7 +47,7 @@ export function readSyncedPersistentPublicationSnapshot(db: Database.Database): 
   assertSyncedPersistentPublicationReadAdmissionOwned(db)
   return readRawSyncedPersistentPublicationSnapshotOwned(db)
 }
-export function captureSyncedPublicationSnapshot(db: Database.Database):
+export function captureSyncedPublicationSnapshot(db: Database.Database, allowEmpty = false):
   { status: 'ready'; capture: SyncedPublicationCapture } | { status: 'unsupported'; reason: 'schema-27-required' | 'no-active-groups' } {
   outer(db)
   const version = db.pragma('user_version', { simple: true })
@@ -55,7 +55,7 @@ export function captureSyncedPublicationSnapshot(db: Database.Database):
   if (version !== 27) return publicationInvalid('未知、未来或损坏的数据库版本；不会迁移或修复。')
   return database(() => db.transaction(() => {
     const snapshot = readSyncedPersistentPublicationSnapshot(db)
-    if (!snapshot.groups.length) return { status: 'unsupported' as const, reason: 'no-active-groups' as const }
+    if (!allowEmpty && !snapshot.groups.length) return { status: 'unsupported' as const, reason: 'no-active-groups' as const }
     const capture = Object.freeze({ kind: 'synced-publication-capture' as const })
     captures.set(capture, { db, snapshot }); return { status: 'ready' as const, capture }
   })())
@@ -98,14 +98,28 @@ function current(db: Database.Database, claim: SyncedPublicationClaim): Claim {
   if (context.workspaceScope !== saved.descriptor.workspaceScope || context.recoveryEpoch !== saved.descriptor.recoveryEpoch) return unavailable('发布 workspace/recovery 世代失效。')
   return saved
 }
-function attempt(db: Database.Database, saved: Claim): AttemptRow | null {
-  const row = db.prepare('SELECT * FROM synced_exposure_attempts WHERE id=?').get(saved.attemptId) as AttemptRow | undefined
+function groupAttempt(db: Database.Database, attemptId: string): SyncedPublicationAttemptRow | undefined {
+  return db.prepare('SELECT * FROM synced_exposure_attempts WHERE id=?').get(attemptId) as SyncedPublicationAttemptRow | undefined
+}
+
+export function hasInitialSyncedPublicationAttempt(db: Database.Database, attemptId: string): boolean {
+  const grouped = groupAttempt(db, attemptId), ordinary = readOrdinaryPublicationAttempt(db, attemptId)
+  if (grouped && ordinary) return publicationInvalid('同一次首发存在两条持久记录。')
+  return grouped?.channel === 'webdav-manifest5' || ordinary !== undefined
+}
+
+function attempt(db: Database.Database, saved: Claim): SyncedPublicationAttemptRow | null {
+  const grouped = groupAttempt(db, saved.attemptId), ordinary = readOrdinaryPublicationAttempt(db, saved.attemptId)?.attempt
+  if (ordinary && (grouped || saved.descriptor.members.length) || grouped && !saved.descriptor.members.length)
+    return publicationInvalid('原首发持久记录与实际组成员不一致。')
+  const row = grouped ?? ordinary
   if (!row) return null
   if (row.id !== saved.attemptId || row.request_hash !== saved.requestHash || row.channel !== 'webdav-manifest5'
     || row.target_fingerprint !== saved.descriptor.targetFingerprint || row.publication_hash !== saved.publicationHash
     || !Number.isFinite(Date.parse(row.created_at)) || row.state !== 'possible' && row.state !== 'confirmed'
     || row.state === 'possible' && row.confirmed_at !== null
     || row.state === 'confirmed' && (row.confirmed_at === null || !Number.isFinite(Date.parse(row.confirmed_at)))) return publicationInvalid('原 attempt 请求/目标/原件与准确状态不一致。')
+  if (ordinary) return row
   const rows = db.prepare('SELECT * FROM synced_group_exposure_members WHERE attempt_id=? ORDER BY group_id').all(saved.attemptId) as MemberRow[]
   const expected = saved.descriptor.members.map(({ portableHash: _portableHash, ...member }) => member)
   const actual = rows.map(item => ({ groupId: item.group_id, creationId: item.creation_id, revision: item.revision,
@@ -144,12 +158,16 @@ export function claimSyncedPublication(db: Database.Database, claim: SyncedPubli
     if (snapshot.localFingerprint !== saved.descriptor.localFingerprint) return 'stale' as const
     assertMembers(snapshot, saved.descriptor)
     if (existing) return 'possible' as const
-    if (!saved.descriptor.members.length) return publicationInvalid('禁止提交空成员 attempt。')
     const now = new Date().toISOString()
-    db.prepare("INSERT INTO synced_exposure_attempts(id,request_hash,channel,target_fingerprint,publication_hash,state,created_at,confirmed_at) VALUES(?,?, 'webdav-manifest5',?,?, 'possible',?,NULL)")
-      .run(saved.attemptId, saved.requestHash, saved.descriptor.targetFingerprint, saved.publicationHash, now)
-    const insert = db.prepare('INSERT INTO synced_group_exposure_members(attempt_id,group_id,creation_id,revision,topology_revision,semantic_hash) VALUES(?,?,?,?,?,?)')
-    for (const member of saved.descriptor.members) insert.run(saved.attemptId, member.groupId, member.creationId, member.revision, member.topologyRevision, member.semanticHash)
+    if (saved.descriptor.members.length) {
+      db.prepare("INSERT INTO synced_exposure_attempts(id,request_hash,channel,target_fingerprint,publication_hash,state,created_at,confirmed_at) VALUES(?,?, 'webdav-manifest5',?,?, 'possible',?,NULL)")
+        .run(saved.attemptId, saved.requestHash, saved.descriptor.targetFingerprint, saved.publicationHash, now)
+      const insert = db.prepare('INSERT INTO synced_group_exposure_members(attempt_id,group_id,creation_id,revision,topology_revision,semantic_hash) VALUES(?,?,?,?,?,?)')
+      for (const member of saved.descriptor.members) insert.run(saved.attemptId, member.groupId, member.creationId, member.revision, member.topologyRevision, member.semanticHash)
+    } else {
+      insertOrdinaryPublicationAttempt(db, { id: saved.attemptId, request_hash: saved.requestHash, channel: 'webdav-manifest5',
+        target_fingerprint: saved.descriptor.targetFingerprint, publication_hash: saved.publicationHash, state: 'possible', created_at: now, confirmed_at: null })
+    }
     if (attempt(db, saved)?.state !== 'possible') return publicationInvalid('提交前原成员/attempt闭合失败。')
     return 'possible' as const
   }).immediate())
@@ -167,8 +185,11 @@ export function confirmSyncedPublication(db: Database.Database, claim: SyncedPub
     const row = attempt(db, saved)
     if (!row) return unavailable('确认没有原 possible attempt。')
     if (row.state === 'confirmed') return { replayed: true }
-    const changed = db.prepare("UPDATE synced_exposure_attempts SET state='confirmed',confirmed_at=? WHERE id=? AND state='possible'").run(new Date().toISOString(), saved.attemptId)
-    if (changed.changes !== 1 || attempt(db, saved)?.state !== 'confirmed') return publicationInvalid('原确认事务未准确闭合。')
+    const now = new Date(Math.max(Date.now(), Date.parse(row.created_at))).toISOString()
+    const confirmed = saved.descriptor.members.length
+      ? db.prepare("UPDATE synced_exposure_attempts SET state='confirmed',confirmed_at=? WHERE id=? AND state='possible'").run(now, saved.attemptId).changes === 1
+      : confirmOrdinaryPublicationAttempt(db, row, now)
+    if (!confirmed || attempt(db, saved)?.state !== 'confirmed') return publicationInvalid('原确认事务未准确闭合。')
     return { replayed: false }
   }).immediate())
 }

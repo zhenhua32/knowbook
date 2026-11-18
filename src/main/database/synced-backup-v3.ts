@@ -9,6 +9,7 @@ import { assertSyncedBlockSchema } from './synced-schema'
 import { assertSyncedLifecycleSchema } from './synced-lifecycle-schema'
 import { readSyncedGroupLifecycles, syncedLifecycleSemanticHash } from './synced-lifecycle-state'
 import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-read'
+import { readV3SourceGroupRetirementsOwned, v3SourceGroupRetirementHash } from './v3-source-group-retirement'
 import { getSyncedGroupSnapshots } from './synced-blocks-read'
 import { assertSyncedStoredBindings } from './synced-block-links'
 import { strictSavedViewConfig, validateFieldValues } from '../backup/v2-format'
@@ -151,6 +152,7 @@ function snapshot(db: Database.Database): { snapshot: SyncedBackupV3Snapshot; me
   const foreignKeys = db.pragma('foreign_key_check')
   if (!Array.isArray(foreignKeys) || foreignKeys.length) return bad('真实 FK 损坏')
   const scope = identity(db), deleted = assertSyncedLogicalDeletionRecords(db)
+  const retired = readV3SourceGroupRetirementsOwned(db)
   const documents: ExportDocument[] = [], hosts: SyncedBackupV3Snapshot['hosts'] = [], graphDocuments: Array<{ documentId: string; blocks: NonNullable<ReturnType<typeof readStrictHostDocument>>['content']['blocks'] }> = []
   for (const row of sortedRows(db, 'documents')) {
     const documentId = id(row.id), host = readStrictHostDocument(db, documentId)
@@ -175,7 +177,8 @@ function snapshot(db: Database.Database): { snapshot: SyncedBackupV3Snapshot; me
     if (result.workspaceScope !== scope.workspaceScope) return bad('组 scope 漂移')
     for (const item of result.items) {
       if (item.status !== 'ready') {
-        if (!deleted.has('group:' + item.groupId) && life.get(item.groupId)?.state !== 'retired-create') return bad('活动组不可以 missing')
+        if (!deleted.has('group:' + item.groupId) && !retired.has(item.groupId) && life.get(item.groupId)?.state !== 'retired-create')
+          return bad('活动组不可以 missing')
         continue
       }
       const group = wire(item.snapshot)
@@ -212,7 +215,8 @@ function snapshot(db: Database.Database): { snapshot: SyncedBackupV3Snapshot; me
     'database_entities', 'database_entity_values', 'document_database_values', 'synced_groups', 'synced_group_blocks',
     'synced_instances', 'block_identities', 'synced_group_lifecycle', 'synced_group_retirements', 'synced_group_pins'].map(table => [table, sortedRows(db, table)]))
   const fingerprint = publicationHash(publicationJson({ ...scope, catalogId: catalogs.catalog.id, raw,
-    deleted: [...deleted].map(([key, proof]) => [key, publicationHash(publicationJson(proof))]).sort(([a], [b]) => publicationCompare(a, b)) }))
+    deleted: [...deleted].map(([key, proof]) => [key, publicationHash(publicationJson(proof))]).sort(([a], [b]) => publicationCompare(a, b)),
+    ...(retired.size ? { retired: [...retired.values()].map(v3SourceGroupRetirementHash) } : {}) }))
   return { snapshot: { ...scope, fingerprint, documents, ...catalogs, groups, hosts }, members }
 }
 export function captureSyncedBackupV3(db: Database.Database): SyncedBackupV3Capture {

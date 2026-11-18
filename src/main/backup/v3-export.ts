@@ -7,11 +7,12 @@ import { buildSyncedPortableAssetUri, rewriteSyncedGroupAssets, rewriteSyncedPor
   syncedManagedAssetBudgetUri, syncedPortableAssetBackupPath, measureSyncedPortableGroup, measureSyncedPortableHost } from '../../shared/syncedBlockPortable'
 import { BACKUP_V3_MAX_ASSET_BYTES, backupV3FileDigest, backupV3InventoryHash, buildBackupV3Files, type ArchiveV3Snapshot, type BackupV3File } from './v3-format'
 import { verifyBackupV3Archive } from './v3-reader'
+import { backupV3PredecessorForEdition, type BackupV3ExportPredecessor } from './v3-publication-lineage'
 import { captureSyncedBackupV3, readSyncedBackupV3Capture, claimSyncedBackupV3, confirmSyncedBackupV3,
   type SyncedBackupV3Snapshot } from '../database/synced-backup-v3'
 import { SyncedPublicationError, publicationCompare, publicationInvalid } from '../sync/synced-publication-model'
 
-export interface WriteSyncedBackupV3Input { userDataRoot: string; destination: string; snapshotId: string }
+export interface WriteSyncedBackupV3Input { userDataRoot: string; destination: string; snapshotId: string; predecessor?: BackupV3ExportPredecessor }
 export interface WriteSyncedBackupV3Result { snapshotId: string; documents: number; groups: number }
 type Paths = { root: string; storage: string; assets: string; destination: string; databasePath: string }
 type Alias = ManagedAssetSource
@@ -31,7 +32,7 @@ function safe(path: string): void {
   }
 }
 function environment(db: Database.Database, input: WriteSyncedBackupV3Input): Paths {
-  assertSyncedShape(input, ['userDataRoot', 'destination', 'snapshotId'])
+  assertSyncedShape(input, ['userDataRoot', 'destination', 'snapshotId'], ['predecessor'])
   if (typeof input.userDataRoot !== 'string' || !isAbsolute(input.userDataRoot) || typeof input.destination !== 'string'
     || !isAbsolute(input.destination) || !isSyncedUuid(input.snapshotId)) return publicationInvalid('V3 root/destination 必须绝对路径，snapshotId 必须 UUID。')
   if (!db.open || db.readonly) return error('unavailable', 'V3 producer 要求真实可写 connection。')
@@ -147,7 +148,9 @@ export function writeSyncedBackupV3(db: Database.Database, input: WriteSyncedBac
     const paths = environment(db, input), capture = captureSyncedBackupV3(db), source = readSyncedBackupV3Capture(capture)
     if (!source) return error('unavailable', 'V3 原 capture 不存在。')
     // The builder completes strict whole-archive preflight before it returns.
-    const material = portable(source, paths), files = buildBackupV3Files(material.snapshot, input.snapshotId)
+    const { workspaceScope, recoveryEpoch, catalog } = source
+    const predecessor = backupV3PredecessorForEdition(input.predecessor, { workspaceScope, recoveryEpoch, catalogId: catalog.id })
+    const material = portable(source, paths), files = buildBackupV3Files(material.snapshot, input.snapshotId, predecessor)
     const archiveHash = backupV3InventoryHash(files.map(backupV3FileDigest)), pathsSeen = new Set<string>()
     for (const file of files) { const path = spelling(outputPath(paths.destination, file)); if (pathsSeen.has(path)) return publicationInvalid('V3 输出路径在本机碰撞。'); pathsSeen.add(path) }
     verifyAliases(material.aliases, paths)

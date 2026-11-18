@@ -1,18 +1,27 @@
 import { lstatSync, realpathSync, type BigIntStats } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
+import type Database from 'better-sqlite3'
 import { assertSyncedShape, isSyncedUuid } from '../../shared/syncedBlockValidation'
 import { readRestoreText, restoreDirectory, syncRestoreDirectory, writeRestoreJson } from '../database/restore-safety-files'
 import { parseRestoreJson, restoreHash } from '../database/restore-safety-model'
 import type { KnowbookStore } from '../database/store'
+import { readConfirmedSyncedBackupV3PublicationClaimOwned } from '../database/synced-backup-v3-publication-read'
+import type { BackupV3PublicationIdentity } from './v3-format'
 import { captureBackupV3PublicationFiles, readBackupV3RestorePublicationSource, type BackupV3RestoreSource } from './v3-reader'
 
 const kind = 'knowbook-v3-publication-head'
 const hashPattern = /^[0-9a-f]{64}$/
-type Claim = ReturnType<KnowbookStore['readConfirmedCanonicalBackupPublication']>
+type ReadClaim = KnowbookStore['readConfirmedCanonicalBackupPublication']
+type Claim = ReturnType<ReadClaim>
 type Edition = Claim & { snapshotId: string; catalogId: string; destination: string; treeHash: string }
 type Parent = { archivedId: string; predecessor: Edition }
 type Head = { kind: typeof kind; version: 1; profile: string; current: Edition; parent: Parent | null }
 type Files = ReturnType<typeof captureBackupV3PublicationFiles>
+export interface BackupV3ExportPredecessor {
+  identity: BackupV3PublicationIdentity
+  workspaceScope: string
+  recoveryEpoch: string
+}
 
 function privateDirectory(profile: string): string {
   return join(profile, 'backups', '.knowbook-v3-publications')
@@ -72,8 +81,8 @@ function matches(edition: Edition, files: Files): boolean {
   return files.inventoryHash === edition.archiveHash && files.treeHash === edition.treeHash
 }
 
-function claimStillMatches(store: KnowbookStore, edition: Edition): boolean {
-  const actual = store.readConfirmedCanonicalBackupPublication(edition.snapshotId, edition.destination)
+function claimStillMatches(readClaim: ReadClaim, edition: Edition): boolean {
+  const actual = readClaim(edition.snapshotId, edition.destination)
   return actual.archiveHash === edition.archiveHash && actual.workspaceScope === edition.workspaceScope
     && actual.recoveryEpoch === edition.recoveryEpoch && actual.claimHash === edition.claimHash
 }
@@ -82,6 +91,30 @@ function captureEdition(path: string, edition: Edition): Files {
   const files = captureBackupV3PublicationFiles(path)
   if (!matches(edition, files)) throw new Error('V3 publication archive was replaced')
   return files
+}
+
+export async function readBackupV3ExportPredecessor(store: KnowbookStore, profile: string, backupRoot: string) {
+  if (backupRoot !== join(profile, 'backups', 'markdown')) return null
+  try {
+    const record = await captureHead(profile), prior = record.head?.current
+    if (!prior) return null
+    const files = captureEdition(backupRoot, prior)
+    const assertCurrent = () => {
+      if (!claimStillMatches(store.readConfirmedCanonicalBackupPublication.bind(store), prior)) throw new Error('V3 predecessor SQL claim changed')
+      files.assertCurrent()
+      record.assertCurrent()
+    }
+    assertCurrent()
+    const { snapshotId, catalogId, archiveHash, workspaceScope, recoveryEpoch } = prior
+    return { input: { identity: { snapshotId, catalogId, archiveHash }, workspaceScope, recoveryEpoch }, assertCurrent }
+  } catch { return null }
+}
+
+export function backupV3PredecessorForEdition(previous: BackupV3ExportPredecessor | undefined,
+  edition: { catalogId: string; workspaceScope: string; recoveryEpoch: string }): BackupV3PublicationIdentity | undefined {
+  if (!previous || previous.workspaceScope !== edition.workspaceScope || previous.recoveryEpoch !== edition.recoveryEpoch
+    || previous.identity.catalogId !== edition.catalogId) return undefined
+  return previous.identity
 }
 
 /** Only the canonical profile export owns this record. The returned callback runs
@@ -100,7 +133,7 @@ export async function prepareBackupV3Publication(store: KnowbookStore, profile: 
   if (prior && successive(current, prior)) {
     try {
       const priorFiles = captureEdition(backupRoot, prior)
-      if (claimStillMatches(store, prior)) candidate = { edition: prior, files: priorFiles }
+      if (claimStillMatches(store.readConfirmedCanonicalBackupPublication.bind(store), prior)) candidate = { edition: prior, files: priorFiles }
       priorFiles.assertCurrent()
     } catch { candidate = null } // Legacy rotations, incomplete promotions and replacements start a fresh chain.
   }
@@ -119,7 +152,8 @@ export async function prepareBackupV3Publication(store: KnowbookStore, profile: 
     await syncRestoreDirectory(history)
     await syncRestoreDirectory(dirname(backupRoot))
     await writeRestoreJson(previous.path, head, profile, false, () => {
-      if (!claimStillMatches(store, current) || parent && !claimStillMatches(store, parent.predecessor)) {
+      const readClaim = store.readConfirmedCanonicalBackupPublication.bind(store)
+      if (!claimStillMatches(readClaim, current) || parent && !claimStillMatches(readClaim, parent.predecessor)) {
         throw new Error('V3 publication SQL claim changed')
       }
       installed.assertCurrent()
@@ -134,6 +168,25 @@ export async function prepareBackupV3Publication(store: KnowbookStore, profile: 
 export async function readBackupV3PublishedPredecessor(store: KnowbookStore, selected: BackupV3RestoreSource) {
   const profile = store.getCanonicalBackupSource()?.userDataRoot
   if (!profile) return null
+  return readBackupV3PublicationEdge(profile, selected, store.readConfirmedCanonicalBackupPublication.bind(store))
+}
+
+/** The verified index binds the claimed parent to these exact archive bytes. */
+export function readPortableBackupV3PublicationEdge(selected: BackupV3RestoreSource) {
+  const source = readBackupV3RestorePublicationSource(selected), parent = source.previousPublication
+  if (!parent) return null
+  const current = { snapshotId: source.snapshotId, catalogId: source.catalogId, archiveHash: source.inventoryHash }
+  return { current, parent, publicationHeadHash: restoreHash({ domain: 'knowbook.backup-v3.portable-predecessor.v1', current, parent }) }
+}
+
+/** Reads the same publication evidence with claims captured from the sealed restore SQL. */
+export async function readBackupV3PublicationEdgeFromSealedSql(profile: string, selected: BackupV3RestoreSource, db: Database.Database) {
+  if (!db.open || !db.readonly || db.inTransaction) throw new Error('V3 publication lookup requires the sealed readonly SQL connection')
+  return readBackupV3PublicationEdge(profile, selected, (snapshotId, destination) =>
+    db.transaction(() => readConfirmedSyncedBackupV3PublicationClaimOwned(db, snapshotId, destination))())
+}
+
+async function readBackupV3PublicationEdge(profile: string, selected: BackupV3RestoreSource, readClaim: ReadClaim) {
   const source = readBackupV3RestorePublicationSource(selected), backupRoot = join(profile, 'backups', 'markdown')
   if (source.root !== backupRoot) return null
   try {
@@ -142,7 +195,7 @@ export async function readBackupV3PublishedPredecessor(store: KnowbookStore, sel
       || !matches(head.current, source)) return null
     const { current, parent: { archivedId, predecessor } } = head
     const archived = captureEdition(join(`${backupRoot}-history`, archivedId), predecessor)
-    if (!claimStillMatches(store, current) || !claimStillMatches(store, predecessor)) return null
+    if (!claimStillMatches(readClaim, current) || !claimStillMatches(readClaim, predecessor)) return null
     source.assertCurrent()
     archived.assertCurrent()
     record.assertCurrent()

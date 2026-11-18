@@ -5,14 +5,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { closeElectronApp, launchElectronApp, relaunchElectronApp, uiText, type ElectronAppContext } from './helpers/electron'
 import { createWebDavServer } from '../tests/helpers/webdav-server'
-import { randomUUID } from 'node:crypto'
-import { protocol5HistoryLink, publicationHash, publicationJson, validateInitialManifest5 } from '../src/main/sync/synced-publication-model'
-import { validateSyncedProtocol5Snapshot } from '../src/main/sync/synced-protocol5-model'
+import { publicationHash } from '../src/main/sync/synced-publication-model'
 
-function configure(page: Page, url: string, directory: string, protocol5: boolean) {
+function configure(page: Page, url: string, directory: string) {
   return page.evaluate(input => window.knowbook.saveWebDavSyncConfig({ ...input,
     enabled: false, username: 'test', password: 'app-secret', intervalMinutes: 5, allowInsecureHttp: true
-  }), { url, directory, protocol5 })
+  }), { url, directory })
 }
 
 type SyncedAddress = { hostDocumentId: string; instanceId: string; groupId: string }
@@ -50,42 +48,16 @@ function editDocumentBody(page: Page, id: string, content: string) {
   }, { id, content })
 }
 
-/** Fixture peer. The desktop product only consumes this independently published valid tombstone. */
-async function publishDocumentTombstone(server: Awaited<ReturnType<typeof createWebDavServer>>, directory: string, documentId: string) {
-  const prefix = '/' + directory + '/', objectPath = (digest: string) => 'objects/' + digest + '.json'
-  const manifestPath = 'manifest.json', original = server.files.get(prefix + manifestPath)!
-  const manifest = validateInitialManifest5(JSON.parse(original.toString()))
-  const key = 'doc:' + documentId, baseHash = manifest.entries[key], old = server.files.get(prefix + objectPath(baseHash))!
-  expect(publicationHash(old)).toBe(baseHash)
-  expect(JSON.parse(old.toString()).kind).toBe('document')
-  const record = { kind: 'deleted', id: documentId }, bytes = publicationJson(record), digest = publicationHash(bytes)
-  manifest.entries[key] = digest
-  const beforeHash = publicationHash(original)
-  if (manifest.history) manifest.history = protocol5HistoryLink(manifest.history.targetFingerprint, randomUUID(), beforeHash)
-  validateSyncedProtocol5Snapshot(manifest, Object.entries(manifest.entries).map(([entry, hash]) => ({
-    key: entry, record: hash === digest ? record : JSON.parse(server.files.get(prefix + objectPath(hash))!.toString())
-  })))
-  const authorization = 'Basic ' + Buffer.from('test:app-secret').toString('base64')
-  const put = (path: string, body: string, condition: Record<string, string>) => fetch(new URL(directory + '/' + path, server.url),
-    { method: 'PUT', headers: { authorization, ...condition }, body })
-  expect((await put(objectPath(digest), bytes, { 'If-None-Match': '*' })).ok).toBe(true)
-  if (manifest.history) expect((await put('objects/manifest-' + beforeHash + '.json', original.toString(), { 'If-None-Match': '*' })).ok).toBe(true)
-  expect((await put(manifestPath, publicationJson(manifest), { 'If-Match': '"' + beforeHash + '"' })).ok).toBe(true)
-  return Buffer.from(server.files.get(prefix + manifestPath)!)
-}
-
-test('production WebDAV preserves legacy data, joins a fresh independent profile and resolves offline competition @electron', async () => {
+test('production WebDAV publishes ordinary notes, joins a later version and resolves offline competition and deletion @electron', async () => {
   // Keep the loopback connection available while Main revalidates the SQLite snapshot.
   const server = await createWebDavServer({ keepAliveTimeout: 0 }), receiverRoot = mkdtempSync(join(tmpdir(), 'kb-webdav-receiver-'))
   let sender: ElectronAppContext | null = null, receiver: ElectronAppContext | null = null
   let receiverLaunchStarted = false
   let receiverLaunch: Promise<ElectronAppContext> | null = null
   try {
-    sender = await launchElectronApp({}, { editorMode: 'markdown' })
+    sender = await launchElectronApp({ KNOWBOOK_E2E_SEED_EXAMPLES: '0' }, { editorMode: 'markdown' })
     receiverLaunchStarted = true
-    receiverLaunch = launchElectronApp({}, { userDataRoot: receiverRoot, startupArgs: [
-      `--knowbook-user-data-dir=${receiverRoot}`, '--knowbook-initialize-sync-receiver'
-    ] })
+    receiverLaunch = launchElectronApp({ KNOWBOOK_E2E_SEED_EXAMPLES: '0' }, { userDataRoot: receiverRoot })
     // Observe a launch failure even while the sender is still publishing.
     void receiverLaunch.catch(() => undefined)
     const { page } = sender
@@ -95,10 +67,18 @@ test('production WebDAV preserves legacy data, joins a fresh independent profile
       await window.knowbook.updateDocument(doc.id, { title, summary: '', blocks: [{ id: blockId, type: 'paragraph', content, checked: false, depth: 0 }] })
       return { docId: doc.id, blockId, title, content }
     })
-    await configure(page, server.url, 'legacy-keep', false)
+    const legacyManifest = Buffer.from(JSON.stringify({ version: 1, workspaceId: 'unsupported', entries: {} }))
+    server.files.set('/legacy-keep/manifest.json', legacyManifest)
+    await configure(page, server.url, 'legacy-keep')
+    const requestStart = server.requests.length
+    await expect(page.evaluate(() => window.knowbook.syncWebDavNow())).rejects.toThrow(/协议不受支持/)
+    expect(server.files.get('/legacy-keep/manifest.json')).toEqual(legacyManifest)
+    expect(server.requests.slice(requestStart).every(request => ['GET', 'HEAD', 'PROPFIND'].includes(request.method))).toBe(true)
+
+    await configure(page, server.url, 'protocol5-test')
     await page.evaluate(() => window.knowbook.syncWebDavNow())
-    const legacyManifest = Buffer.from(server.files.get('/legacy-keep/manifest.json')!)
-    expect(JSON.parse(legacyManifest.toString()).version).toBe(1)
+    const genesis = Buffer.from(server.files.get('/protocol5-test/manifest.json')!)
+    expect(JSON.parse(genesis.toString())).toMatchObject({ version: 5, history: { previousHash: null }, syncedInstances: [] })
 
     await page.reload()
     await page.locator('.tree-button', { hasText: original.title }).first().click()
@@ -117,41 +97,29 @@ test('production WebDAV preserves legacy data, joins a fresh independent profile
       return { hostDocumentId, instanceId: ref.id, groupId: JSON.parse(ref.content).groupId as string }
     }, original.docId)
 
-    await page.getByTitle(uiText('Settings', '配置中心'), { exact: true }).click()
-    await page.getByRole('tab', { name: uiText('Sync', '同步') }).click()
-    const settings = page.getByRole('region', { name: uiText('WebDAV sync', 'WebDAV 同步') })
-    const mode = settings.getByRole('checkbox', { name: uiText('Enable synced-block protocol for this folder', '在此目录启用同步块协议') })
-    await mode.check()
-    await settings.getByRole('button', { name: uiText('Save sync settings', '保存同步设置') }).click()
-    await expect.poll(() => page.evaluate(async () => (await window.knowbook.getWebDavSyncStatus()).protocol5)).toBe(true)
-    const requestStart = server.requests.length
-    await expect(page.evaluate(() => window.knowbook.syncWebDavNow())).rejects.toThrow(/旧版 KnowBook 同步/)
-    expect(server.files.get('/legacy-keep/manifest.json')).toEqual(legacyManifest)
-    expect(server.requests.slice(requestStart).every(request => ['GET', 'HEAD', 'PROPFIND'].includes(request.method))).toBe(true)
-    await configure(page, server.url, 'protocol5-test', true)
     await page.evaluate(() => window.knowbook.syncWebDavNow())
     const manifest = JSON.parse(server.files.get('/protocol5-test/manifest.json')!.toString())
     expect(manifest.version).toBe(5)
-    expect(manifest.history.previousHash).toBeNull()
+    expect(manifest.history.previousHash).toBe(publicationHash(genesis))
     expect(manifest.entries[`group:${address.groupId}`]).toMatch(/^[a-f0-9]{64}$/)
 
     receiver = await receiverLaunch
     receiverLaunch = null
     expect(await receiver.page.evaluate(async () => (await window.knowbook.getHomeData()).documentCatalog.length)).toBe(0)
-    await configure(receiver.page, server.url, 'protocol5-test', true)
+    await configure(receiver.page, server.url, 'protocol5-test')
     const incoming = await receiver.page.evaluate(() => window.knowbook.syncWebDavNow())
     expect(incoming.downloaded).toBeGreaterThan(0)
     await closeElectronApp(receiver, { preserveUserData: true })
     receiver = null
     receiver = await relaunchElectronApp({ userDataRoot: receiverRoot })
-    expect((await receiver.page.evaluate(() => window.knowbook.getWebDavSyncStatus())).protocol5).toBe(true)
+    expect((await receiver.page.evaluate(() => window.knowbook.getWebDavSyncStatus())).lastSyncAt).toBeTruthy()
     const resolved = await receiver.page.evaluate(input => window.knowbook.resolveSyncedInlineInstance(input), address)
     expect(resolved.status).toBe('ready')
     if (resolved.status !== 'ready') throw new Error('The independently reopened Main could not resolve the imported instance.')
     expect(resolved.snapshot.blocks.find(block => block.id === original.blockId)?.content).toBe(original.content)
     // The default E2E credential backend is intentionally per process.
     // Re-enter the fixture password while preserving the actual sync route.
-    await configure(receiver.page, server.url, 'protocol5-test', true)
+    await configure(receiver.page, server.url, 'protocol5-test')
     const common = 'Shared body updated on B'
     await editSharedBody(receiver.page, address, common)
     const edited = await receiver.page.evaluate(async () => {
@@ -218,7 +186,13 @@ test('production WebDAV preserves legacy data, joins a fresh independent profile
     const editedBeforeDeletion = 'Local document edited before the deletion arrived'
     const editedAfterDeletionPreview = 'Local document edited after the deletion preview'
     await editDocumentBody(receiver.page, edited, editedBeforeDeletion)
-    const tombstone = await publishDocumentTombstone(server, 'protocol5-test', edited)
+    await page.evaluate(async id => {
+      await window.knowbook.deleteDocument(id)
+      await window.knowbook.syncWebDavNow()
+    }, edited)
+    const tombstone = Buffer.from(server.files.get('/protocol5-test/manifest.json')!)
+    const deletedHash = JSON.parse(tombstone.toString()).entries[`doc:${edited}`]
+    expect(JSON.parse(server.files.get(`/protocol5-test/objects/${deletedHash}.json`)!.toString())).toMatchObject({ kind: 'deleted', id: edited })
     const deletionConflict = await receiver.page.evaluate(() => window.knowbook.syncWebDavNow())
     expect(deletionConflict.message).toMatch(/冲突仍保留/)
     const deletionRegion = receiver.page.getByRole('region', { name: uiText('Synced block deletion conflicts', '同步块删除冲突') })

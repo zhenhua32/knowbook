@@ -1,5 +1,5 @@
 import type { WebDavProtocol5DeletionPreview, WebDavProtocol5DeletionSide } from '../../shared/webdav-sync'
-import { publicationInvalid } from './synced-publication-model'
+import { publicationHash, publicationInvalid, publicationJson } from './synced-publication-model'
 import type { DeletionDecisionSource, SyncedExchangeDeletionPreview } from './synced-exchange-deletion-choice-model'
 
 const MAX_SIDE_TEXT = 4000
@@ -10,6 +10,7 @@ type Row = DeletionDecisionSource['baseRecords'][number]
 export function projectDeletionPreview(preview: SyncedExchangeDeletionPreview, source: DeletionDecisionSource): WebDavProtocol5DeletionPreview {
   const map = (rows: Row[]) => new Map(rows.map(row => [row.key, row]))
   const base = map(source.baseRecords), local = map(source.localKnowledge.records), remote = map(source.remote.records)
+  const localDeletions = new Map((source.authority.localDocumentDeletions ?? []).map(row => ['doc:' + row.documentId, row]))
   let remaining = MAX_VIEW_TEXT
   function side(hash: string | null, row?: Row): WebDavProtocol5DeletionSide {
     if (hash === null) return { kind: 'missing', hash }
@@ -47,7 +48,10 @@ export function projectDeletionPreview(preview: SyncedExchangeDeletionPreview, s
       }
       // The planner also uses an unchanged side as the exact common object when its hash matches.
       const b = [base.get(row.key), l, r].find(candidate => candidate && candidate.hash === row.baseHash)
-      return { key: row.key, base: side(row.baseHash, b), local: side(row.localHash, l), remote: side(row.remoteHash, r) }
+      const pending = !l && component.deletionKeys.includes(row.key) ? localDeletions.get(row.key) : undefined
+      const localSide: WebDavProtocol5DeletionSide = pending ? { kind: 'deleted', deletedAt: pending.deletedAt,
+        hash: publicationHash(publicationJson({ kind: 'deleted', id: pending.documentId })) } : side(row.localHash, l)
+      return { key: row.key, base: side(row.baseHash, b), local: localSide, remote: side(row.remoteHash, r) }
     })
     const completeText = records.every(row => complete(row.base) && complete(row.local) && complete(row.remote))
     return { componentId: component.componentId, records, completeText, choices: completeText ? [...component.choices] : [],

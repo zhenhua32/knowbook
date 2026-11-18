@@ -8,7 +8,7 @@ import { validateCoverageRootReference, type CoverageRootReference } from './res
 import { assertCapsule2AssetDirectory, readCapsule2AssetCopy, writeCapsule2AssetCopy } from './restore-knowledge-capsule2-assets-files'
 import { CAPSULE_V3_ASSET_MAX_FILE_BYTES } from './restore-knowledge-capsule2-assets-model'
 import type { Capsule2ManagedTreeData } from './restore-knowledge-capsule2-managed-assets-files'
-import { readArchivedTransferFacts4, readPinnedTransferManifestText4 } from './restore-asset-transfer4'
+import { readArchivedTransferFacts4, readPinnedTransferManifestBytes4 } from './restore-asset-transfer4'
 import { restoreDirectory, syncRestoreDirectory } from './restore-safety-files'
 
 type Alias = Capsule2ManagedTreeData['aliases'][number]
@@ -101,7 +101,7 @@ export async function writeInstalledV3ManyFiles(profileRoot: string, output: str
   const transfers: TransferFile[] = []
   let total = 0
   for (const [key, transfer] of [...byKey].sort(([left], [right]) => order(left, right))) {
-    const bytes = Buffer.from(await readPinnedTransferManifestText4(profileRoot, transfer))
+    const bytes = await readPinnedTransferManifestBytes4(profileRoot, transfer)
     if ((total += bytes.length) > maxTransferFile) return bad('transfer 封存超过总预算')
     const file = { ...transfer, bytes: bytes.length, sha256: capsuleBytesHash(bytes) }
     await writeCapsule2AssetCopy(join(directory, key + '.json'), bytes, profileRoot)
@@ -127,8 +127,9 @@ export async function assertInstalledV3ManyFiles(proof: InstalledV3Many, output:
   await closure()
   for (const file of proof.transfers) {
     const bytes = await readCapsule2AssetCopy(join(directory, transferName(file)), profileRoot, file.bytes, file.sha256, maxTransferFile)
-    const text = bytes.toString('utf8')
-    if (!Buffer.from(text).equals(bytes)) return bad('transfer 原件不是准确的 UTF-8 字节')
+    let text: string
+    try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes) }
+    catch { return bad('transfer 原件不是准确的 UTF-8 字节') }
     const facts = new Map(readArchivedTransferFacts4(text, file).map(entry => [aliasPath(entry.hash, entry.logicalName), entry]))
     for (const { alias, identity } of byTransfer.get(transferKey(file)) ?? []) {
       const fact = facts.get(alias.relativePath)

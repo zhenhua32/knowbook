@@ -4,7 +4,7 @@
 
 ## Project Overview
 - **Type**: Electron desktop app (local-first, single-user knowledge management)
-- **产品范围**：专注本地单人编辑；同步仅指同一用户的跨设备数据同步。多人协作、团队工作区、成员权限及协作评论／建议审阅不属于产品目标，不得加入实施计划、待办或完成度统计。同步块是同一用户工作区中的正文复用，个人同步的离线冲突处理和真实多设备验收仍须保留。
+- **产品范围**：专注本地单人编辑；同步仅指同一用户的跨设备数据同步。多人协作、团队工作区、成员权限及协作评论／建议审阅不属于产品目标，不得加入实施计划、待办或完成度统计。同步块是同一用户工作区中的正文复用。个人同步及离线冲突处理使用同机两个独立应用配置进行 WebDAV 端到端验收。实体双设备及虚拟机验证移出验收范围和完成度统计。
 - **Stack**: TypeScript, React, SQLite (`better-sqlite3`), Vite, Electron
 - **Entry**: `src/main/index.ts` (main process), `src/renderer/src/main.tsx` (renderer)
 - **Shared types & contracts**: `src/shared/contracts.ts`

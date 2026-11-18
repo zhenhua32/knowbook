@@ -4,6 +4,8 @@ import { mkdir, readFile, readdir, rename } from 'node:fs/promises'
 import { join } from 'node:path'
 import test from 'node:test'
 import { writeSyncedBackupV3 } from '../src/main/backup/v3-export'
+import { readV3RestoreSourceTombstone } from '../src/main/backup/v3-restore-source-tombstone'
+import { createEphemeralCredentialStorage } from '../src/main/credential-storage'
 import { recoverControlledDatabaseRestore, restoreControlledBackupV3 } from '../src/main/database/restore-safety'
 import { restoreInventory, restorePaths } from '../src/main/database/restore-safety-files'
 import { KnowbookStore } from '../src/main/database/store'
@@ -13,6 +15,9 @@ import { confirmProtocol5RestoreRejoin, prepareProtocol5RestoreRejoin } from '..
 import { exchangeRejoinFile, exchangeRejoinPrefix } from '../src/main/database/synced-exchange-rejoin-model'
 import { assertRawSyncedExchangeHistoricalMetadataOwned } from '../src/main/database/synced-exchange-history-metadata-read'
 import { exchangeStateKey, exchangeTargetFingerprint } from '../src/main/sync/synced-exchange-model'
+import { WebDavSyncService } from '../src/main/sync/service'
+import { validateSyncedProtocol5Record } from '../src/main/sync/synced-protocol5-model'
+import { protocol5HistoryLink, publicationJson, validateInitialManifest5 } from '../src/main/sync/synced-publication-model'
 import { completed, exchangeSyncedSnapshot, hash, hostEdit, runtime } from './helpers/synced-exchange-fixture'
 import { withIncomingFixture } from './helpers/synced-initial-incoming-fixture'
 
@@ -21,14 +26,17 @@ test('restore rejoin preparation reconstructs authenticated B and the real advan
   const realStore = (file: string) => KnowbookStore.openCanonicalRuntime(file)
   A.db.close()
   const source = realStore(A.file)
-  try { await runProtocol5WebDav(source, A.root, targetConfig, runtime, false) } finally { source.destroy() }
+  try { await runProtocol5WebDav(source, A.root, targetConfig, runtime) } finally { source.destroy() }
   A.db = fixture.connect(A)
   B.db.close()
   const receiver = realStore(B.file)
   try {
+    const service = new WebDavSyncService(receiver, B.root, createEphemeralCredentialStorage(randomUUID))
+    service.saveConfig({ ...targetConfig, password: runtime.password })
+    await service.stop()
     receiver.saveSetting(SYNC_RECEIVER_PROFILE_KEY, 'true')
-    await runProtocol5WebDav(receiver, B.root, targetConfig, runtime, false)
-    await runProtocol5WebDav(receiver, B.root, targetConfig, runtime, false)
+    await runProtocol5WebDav(receiver, B.root, targetConfig, runtime)
+    await runProtocol5WebDav(receiver, B.root, targetConfig, runtime)
   } finally { receiver.destroy() }
   B.db = fixture.connect(B)
   hostEdit(B.db, fixture.target, 'Accepted receiver parent before controlled backup restore')
@@ -37,7 +45,7 @@ test('restore rejoin preparation reconstructs authenticated B and the real advan
   let oldHead: Buffer, oldState: { recoveryEpoch: string; baseline: Array<{ key: string; remoteHash: string; acceptedOperationId: string }> }
   const manifest = '/Incoming/manifest.json'
   try {
-    await runProtocol5WebDav(beforeRestore, B.root, targetConfig, runtime, false)
+    await runProtocol5WebDav(beforeRestore, B.root, targetConfig, runtime)
     oldHead = Buffer.from(server.files.get(manifest)!)
     oldState = JSON.parse(beforeRestore.getSettingPublic(exchangeStateKey(exchangeTargetFingerprint(targetConfig)))!)
   } finally { beforeRestore.destroy() }
@@ -59,7 +67,7 @@ test('restore rejoin preparation reconstructs authenticated B and the real advan
   const reopened = realStore(B.file)
   let installedBridgeKey: string
   try {
-    await assert.rejects(runProtocol5WebDav(reopened, B.root, targetConfig, runtime, false), /旧的同步块任务已暂停/)
+    await assert.rejects(runProtocol5WebDav(reopened, B.root, targetConfig, runtime), /旧的同步块任务已暂停/)
     const db = reopened.getUnsafeDatabaseHandle(), path = restorePaths(B.root, result.operationId)
     const originalRoute = reopened.getSettingPublic(protocol5RouteKey(targetConfig))
     assert.ok(originalRoute)
@@ -132,7 +140,28 @@ test('restore rejoin preparation reconstructs authenticated B and the real advan
       const raw = JSON.parse(reopened.getSettingPublic(exchangeStateKey(exchangeTargetFingerprint(targetConfig)))!)
       assert.equal(raw.recoveryEpoch, oldState.recoveryEpoch)
     } finally { await rename(bridgeFile + '-held', bridgeFile) }
-    const synced = await runProtocol5WebDav(reopened, B.root, targetConfig, runtime, false)
+
+    const head = validateInitialManifest5(JSON.parse(newHead.toString()))
+    const groupKey = 'group:' + fixture.orphanId, previousHash = head.entries[groupKey]
+    const group = validateSyncedProtocol5Record(JSON.parse(server.files.get('/Incoming/objects/' + previousHash + '.json')!.toString()), groupKey)
+    assert.equal(group.kind, 'synced-group')
+    const tombstone = Buffer.from(publicationJson({ kind: 'synced-group-deleted', id: group.id, creationId: group.creationId,
+      previousHash, deletedAt: new Date().toISOString() }))
+    const tombstoneHash = hash(tombstone)
+    server.files.set('/Incoming/objects/' + tombstoneHash + '.json', tombstone)
+    server.files.set('/Incoming/objects/manifest-' + hash(newHead) + '.json', newHead)
+    server.files.set(manifest, Buffer.from(publicationJson({ ...head, entries: { ...head.entries, [groupKey]: tombstoneHash },
+      history: protocol5HistoryLink(head.history!.targetFingerprint, randomUUID(), hash(newHead)) })))
+    const sealed = fixture.connect(B, true)
+    try {
+      const evidence = await readV3RestoreSourceTombstone(sealed, { databasePath: B.file, config: targetConfig, runtime, group })
+      assert.ok(evidence)
+      assert.equal(evidence.evidence.rejoinHash, bridge.bridgeHash)
+      assert.equal(evidence.evidence.acceptedManifestHash, hash(newHead))
+      assert.equal(evidence.evidence.workspace.recoveryEpoch, observed.installedRecoveryEpoch)
+    } finally { sealed.close(); server.files.set(manifest, newHead) }
+
+    const synced = await runProtocol5WebDav(reopened, B.root, targetConfig, runtime)
     assert.ok(synced.downloaded > 0)
     assert.equal(JSON.parse(reopened.getSettingPublic(exchangeStateKey(exchangeTargetFingerprint(targetConfig)))!).recoveryEpoch, observed.installedRecoveryEpoch)
     assert.equal(reopened.getDocumentDetail(fixture.other)?.blocks[0]?.content, 'Genuine independently advanced remote after receiver restore')
@@ -143,7 +172,7 @@ test('restore rejoin preparation reconstructs authenticated B and the real advan
   const cold = realStore(B.file)
   try {
     assert.ok(cold.getSettingPublic(installedBridgeKey))
-    await runProtocol5WebDav(cold, B.root, targetConfig, runtime, false)
+    await runProtocol5WebDav(cold, B.root, targetConfig, runtime)
   } finally { cold.destroy() }
 
-}))
+}, { orphan: true }))

@@ -1,7 +1,9 @@
 import { assertSyncedBlockSchema } from '../database/synced-schema'
 import { validateSyncedProtocol5Record, validateSyncedProtocol5Snapshot,
   type SyncedProtocol5Record } from './synced-protocol5-model'
-import { readInitialIncomingLocal, readInitialIncomingReceipt, readInitialIncomingBaseline, readInitialIncomingIdentityDigest, type InitialIncomingLocal } from '../database/synced-initial-incoming-read'
+import { isPristineInitialIncomingWorkspace, readInitialIncomingLocal, readInitialIncomingReceipt, readInitialIncomingBaseline,
+  readInitialIncomingIdentityDigest, type InitialIncomingLocal } from '../database/synced-initial-incoming-read'
+import { assertProtocol5ManifestLineage } from './synced-manifest-history'
 import { readSyncedPersistentPublicationSnapshot } from '../database/synced-publication'
 import { installSyncedRestoreRecords } from '../database/synced-restore-write'
 import { parseDatabaseViewPayload } from '../../shared/databaseViewBlock'
@@ -9,7 +11,7 @@ import { SYNC_TABLES, type SyncDatabases } from './model'
 import { initialIncomingTargetFingerprint, initialIncomingRequestHash, initialIncomingBaselineKey, initialIncomingReservationKey,
   initialIncomingPortableDigest, initialIncomingReservationDigest, incomingComponents, inverseInitialIncomingCatalog,
   validateInitialIncomingReceipt, validateInitialIncomingBaseline, type InitialIncomingRequest, type InitialIncomingReceipt,
-  type InitialIncomingBaseline, type InitialIncomingReservationSource, type SyncedInitialIncomingInput,
+  type InitialIncomingBaseline, type InitialIncomingReservationSource, type InitialIncomingTombstone, type SyncedInitialIncomingInput,
   type SyncedInitialIncomingResult, type SyncedInitialIncomingAccepted, type SyncedInitialIncomingComponent } from './synced-initial-incoming-model'
 export type { SyncedInitialIncomingInput, SyncedInitialIncomingResult, SyncedInitialIncomingAccepted,
   SyncedInitialIncomingConflictReason, SyncedInitialIncomingComponent } from './synced-initial-incoming-model'
@@ -40,6 +42,7 @@ import { WebDavClient, WebDavHttpError, normalizeWebDavConfig } from './webdav-c
 import { bindSyncedPublicationCapture, captureSyncedPublicationSnapshot, claimSyncedPublication, confirmSyncedPublication,
   currentSyncedPublicationMatches, readSyncedPublicationAttempt, readSyncedPublicationCapture, recoverSyncedPublicationClaim,
   syncedPublicationRequestHash, type SyncedPublicationClaim, type SyncedPublicationLocalSnapshot } from '../database/synced-publication'
+import { readOrdinaryPublicationAttempts } from '../database/synced-ordinary-publication-attempt'
 import { SyncedPublicationError, decodePublicationJson, frozenPublicationFacts, mapPublicationCatalog, publicationCompare,
   protocol5HistoryLink, protocol5HistoryTarget, publicationHash, publicationInvalid, publicationJson, publicationRecordKey, PUBLICATION_RECORD_MAX_BYTES,
   validateInitialSnapshot, validateInitialRecord, validateInitialManifest5, validatePublicationDescriptor, type InitialPublicationRecord, type PublicationDescriptor,
@@ -246,6 +249,7 @@ async function inspectSpool(paths: Paths, read: SpoolFileReader, readAsset: Spoo
     if (publicationJson(found.sort(publicationCompare)) !== publicationJson([...new Set(files)].sort(publicationCompare))) throw new Error('spool不是精确文件闭集。')
     const validated = validateInitialSnapshot(decodePublicationJson(manifest), descriptor.objects.map(item => ({ key: item.key, record: decodePublicationJson(objects.get(item.key)!) })))
     if (validated.manifest.workspaceId !== descriptor.workspaceScope) throw new Error('manifest workspace不符。')
+    if (!descriptor.members.length && !validated.manifest.history) throw new Error('普通工作区首发必须包含当前协议历史根。')
     if (validated.manifest.history && publicationJson(validated.manifest.history)
       !== publicationJson(protocol5HistoryLink(protocol5HistoryTarget(state.target), state.attemptId, null))) throw new Error('初始历史根与原发布尝试不符。')
     const assetSizes = new Map(descriptor.assets.map(asset => [asset.hash, asset.bytes]))
@@ -293,7 +297,7 @@ export async function readSyncedPublicationSpoolOriginal(profileRoot: string, at
 function originalSpool(data: Prepared, loaded: LoadedSpool): void { if (publicationJson(data.state) !== publicationJson(loaded.state)) throw new SyncedPublicationError('spool', 'spool不是该真实handle的原状态。') }
 export async function prepareInitialSyncedPublication(db: Database.Database, input: SyncedPublicationPrepareInput, history = false): Promise<SyncedPublicationPrepareResult> {
   return publicBoundary(async () => {
-    const { paths, target } = environment(db, input), capture = captureSyncedPublicationSnapshot(db)
+    const { paths, target } = environment(db, input), capture = captureSyncedPublicationSnapshot(db, history)
     if (capture.status === 'unsupported') return capture
     const snapshot = readSyncedPublicationCapture(capture.capture) ?? unavailable('真实捕获缺失。')
     const loaded = build(snapshot, target, input.attemptId, await portable(snapshot, paths), history); loaded.state.databasePath = paths.databasePath
@@ -372,12 +376,12 @@ export async function queryInitialSyncedPublication(db: Database.Database, prepa
 }
 async function verifyCurrentAssets(data: Prepared, spool: LoadedSpool): Promise<boolean> {
   if (!currentSyncedPublicationMatches(data.db, data.claim)) return false
-  const capture = captureSyncedPublicationSnapshot(data.db)
+  const history = Boolean(validateInitialManifest5(decodePublicationJson(spool.manifest)).history)
+  const capture = captureSyncedPublicationSnapshot(data.db, history)
   if (capture.status !== 'ready') return false
   const snapshot = readSyncedPublicationCapture(capture.capture)
   if (!snapshot || snapshot.localFingerprint !== data.state.descriptor.localFingerprint) return false
   // This proof is discarded; every HTTP payload still comes only from the original spool buffers.
-  const history = Boolean(validateInitialManifest5(decodePublicationJson(spool.manifest)).history)
   const checked = build(snapshot, data.target, data.state.attemptId, await portable(snapshot, data.paths), history)
   return publicationJson(checked.state.descriptor) === publicationJson(spool.state.descriptor)
 }
@@ -402,12 +406,14 @@ export async function publishInitialSyncedPublication(db: Database.Database, pre
       if (claimed === 'stale') return { status: 'stale', ...identity(data) }
       if (claimed === 'confirmed') return { status: 'confirmed', ...identity(data), replayed: true }
       // All content HEAD/PUT requests, cached paths and later temporary Manifest PUT are after committed all-member possible.
-      for (const asset of data.state.descriptor.assets) {
+      for (const [index, asset] of data.state.descriptor.assets.entries()) {
+        client.transferProgress('uploading', index, data.state.descriptor.assets.length, asset.names[0])
         if (await contentNetwork(data, () => client.exists(asset.path))) {
           const cached = await contentNetwork(data, () => client.get(asset.path, ATTACHMENT_MAX_FILE_BYTES))
           if (!cached || publicationHash(cached.bytes) !== asset.hash) return publicationInvalid('目标缓存资产不是原hash bytes。')
         } else await contentNetwork(data, () => client.put(asset.path, spool.assets.get(asset.hash)!))
       }
+      client.transferProgress('uploading', data.state.descriptor.assets.length, data.state.descriptor.assets.length)
       for (const object of data.state.descriptor.objects) {
         if (await contentNetwork(data, () => client.exists(object.path))) {
           const cached = await contentNetwork(data, () => client.get(object.path, PUBLICATION_RECORD_MAX_BYTES))
@@ -416,6 +422,7 @@ export async function publishInitialSyncedPublication(db: Database.Database, pre
       }
       if (!await verifyCurrentAssets(data, spool) || !currentSyncedPublicationMatches(db, data.claim)) return { status: 'stale', ...identity(data) }
       readSyncedPublicationAttempt(db, data.claim) // Recheck original connection/epoch before the actual create job.
+      client.transferProgress('publishing', 0, 0)
       try { await client.create('manifest.json', spool.manifest) } catch (cause) {
         if (!(cause instanceof WebDavHttpError) || cause.status !== 412) throw new SyncedPublicationError('transport', 'Manifest落盘响应失败；原possible保持，使用显式query确认。', cause)
         const checked = await query(data, spool, client)
@@ -659,7 +666,17 @@ export async function observeSyncedRemoteExposure(observation: SyncedRemoteObser
 
 type IncomingPlan = { mode: 'applied' | 'noop'; local: InitialIncomingLocal; records: InitialPublicationRecord[];
   documentPaths: Map<string, string>; physicalIds: string[]; reservedIds: string[]; reservationSources: InitialIncomingReservationSource[];
-  reservationSourceKey: string; reservationDigest: string; portableDigest: string }
+  reservationSourceKey: string; reservationDigest: string }
+function projectIncomingSnapshot(closure: Protocol5RemoteClosure): { remote: Remote; tombstones: InitialIncomingTombstone[] } {
+  const records: SyncedPublishedSnapshotFacts['records'] = [], tombstones: InitialIncomingTombstone[] = []
+  for (const item of closure.facts.records) {
+    const { record } = item
+    if (record.kind === 'deleted' || record.kind === 'synced-group-deleted') tombstones.push({ key: item.key, record })
+    else records.push({ ...item, record })
+  }
+  const manifest = { ...closure.facts.manifest, entries: Object.fromEntries(records.map(({ key, hash }) => [key, hash])) }
+  return { remote: { ...closure, facts: { ...closure.facts, manifest, records } }, tombstones }
+}
 function completeObservedRemote(data: Observation, remote: ObservedClosure, known: Map<string, SyncedObservedIncarnation>): ObservationProof {
   const proof = sourceObservationProof(data, remote, known), pending = retainObservationProof(proof)
   observationBoundary(() => commitObservationProofs(data, [pending]))
@@ -803,8 +820,7 @@ function planInitialIncoming(db: Database.Database, remote: Remote, local: Initi
   }
   if (conflicts.length) return incomingComponents(conflicts)
   return { mode: exact ? 'noop' : 'applied', local, records, documentPaths, physicalIds: [...physical.keys()].sort(publicationCompare),
-    reservedIds, reservationSources: sources, reservationSourceKey: sourceKey, reservationDigest,
-    portableDigest: initialIncomingPortableDigest(remote.facts.manifest.entries, remote.facts.manifest.syncedInstances) }
+    reservedIds, reservationSources: sources, reservationSourceKey: sourceKey, reservationDigest }
 }
 function verifyIncomingAliases(remote: Remote, root: string): void {
   try {
@@ -848,7 +864,7 @@ async function publishIncomingAssets(remote: Remote, root: string, operationId: 
     throw new SyncedPublicationError('asset', '接收私有 stage/无覆盖 hardlink 发布失败；未写知识。', cause)
   }
 }
-/** Initial introduction/exact-noop only. All incoming authority stays inside this real HTTP consumer. */
+/** Introduce the verified current head on a new receiver. */
 export async function receiveInitialSyncedSnapshot(db: Database.Database, input: SyncedInitialIncomingInput, options: SyncedPublicationRuntime): Promise<SyncedInitialIncomingResult> {
   return publicBoundary(async (): Promise<SyncedInitialIncomingResult> => {
     assertSyncedShape(input, ['operationId', 'userDataRoot', 'target'])
@@ -866,16 +882,21 @@ export async function receiveInitialSyncedSnapshot(db: Database.Database, input:
     if (previous) return frozenPublicationFacts({ ...previous.result, replayed: true })
     incomingAborted(credentials.signal)
     const known = knownObservationIncarnations(data), client = new WebDavClient(data.target, credentials.password, credentials.signal)
-    let original: Remote | undefined, proof: ObservationProof | undefined
-    const received = await readPublishedSnapshot(client, remote => {
-      // Same continuation: fully verified original bytes -> sticky proof -> durable observation. No abort can skip this.
-      proof = completeObservedRemote(data, remote, known); original = remote
-    }, data.target)
-    if (received.status !== 'ready') return Object.freeze(received)
-    if (!original || !proof) return publicationInvalid('incoming 未经过同次真实闭包/观察完成点。')
-    const remote = original, observed = proof
+    const received = await loadProtocol5RemoteClosure(client, closure => {
+      const incoming = projectIncomingSnapshot(closure)
+      if (incoming.tombstones.length && !closure.facts.manifest.history) return null
+      // Complete and persist observation within the verified read's continuation.
+      return { ...incoming, manifest: closure.facts.manifest, observed: completeObservedRemote(data, closure, known) }
+    }, manifest => manifest.history
+      ? network(() => assertProtocol5ManifestLineage(client, data.target, manifest, null)) : Promise.resolve())
+    if (received.status === 'missing') return Object.freeze(received)
+    if (received.status === 'unsupported' || !received.remote) return Object.freeze({ status: 'unsupported', reason: 'initial-snapshot-only' })
+    const { remote, manifest, observed, tombstones } = received.remote
     databaseBoundary(db)
     const local = db.transaction(() => { currentObservation(data); return readInitialIncomingLocal(db, request) })()
+    if (manifest.history && (manifest.history.previousHash !== null || tombstones.length)
+      && (local.baseline || !isPristineInitialIncomingWorkspace(local)))
+      return frozenPublicationFacts({ status: 'conflict', components: [{ reason: 'non-initial-target', keys: Object.keys(manifest.entries) }] })
     const plan = planInitialIncoming(db, remote, local, request, data.root)
     if (Array.isArray(plan)) return frozenPublicationFacts({ status: 'conflict', components: plan })
     incomingAborted(credentials.signal)
@@ -915,11 +936,12 @@ export async function receiveInitialSyncedSnapshot(db: Database.Database, input:
           counts: { documents: plan.records.filter(record => record.kind === 'document').length, groups: plan.records.filter(record => record.kind === 'synced-group').length,
             instances: remote.facts.manifest.syncedInstances.length, physicalBlocks: plan.physicalIds.length, reservations: plan.reservedIds.length,
             assets: remote.facts.assets.reduce((count, asset) => count + asset.names.length, 0) } }
-        const provenance = { manifestEtag: remote.manifestEtag, portableDigest: plan.portableDigest, reservationSourceKey: plan.reservationSourceKey,
-          reservedIds: plan.reservedIds, reservationSources: plan.reservationSources, reservationDigest: plan.reservationDigest }
+         const provenance = { manifestEtag: remote.manifestEtag, portableDigest: initialIncomingPortableDigest(manifest.entries, manifest.syncedInstances),
+           reservationSourceKey: plan.reservationSourceKey, reservedIds: plan.reservedIds, reservationSources: plan.reservationSources,
+           reservationDigest: plan.reservationDigest, ...(tombstones.length ? { tombstones } : {}) }
         const receipt: InitialIncomingReceipt = validateInitialIncomingReceipt({ kind: 'synced-initial-incoming-operation', version: 1, request, result, provenance })
         const baseline: InitialIncomingBaseline = validateInitialIncomingBaseline({ kind: 'synced-initial-incoming-baseline', version: 1,
-          databasePath: request.databasePath, targetFingerprint: request.targetFingerprint, manifest: remote.facts.manifest, result, provenance, lastReceivedAt: now })
+           databasePath: request.databasePath, targetFingerprint: request.targetFingerprint, manifest, result, provenance, lastReceivedAt: now })
         db.prepare('INSERT INTO synced_operations(client_operation_id,request_hash,result_json,created_at) VALUES(?,?,?,?)')
           .run(operationId, initialIncomingRequestHash(request), publicationJson(receipt), now)
         db.prepare('INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at')
@@ -973,7 +995,8 @@ export function fetchProtocol5RemoteClosure(client: WebDavClient) {
   return loadProtocol5RemoteClosure(client, remote => remote)
 }
 
-async function loadProtocol5RemoteClosure<T>(client: WebDavClient, complete: (remote: Protocol5RemoteClosure) => T): Promise<
+async function loadProtocol5RemoteClosure<T>(client: WebDavClient, complete: (remote: Protocol5RemoteClosure) => T,
+  verifyManifest?: (manifest: SyncedInitialManifest5) => Promise<void>): Promise<
   { status: 'missing' } | { status: 'unsupported' } | { status: 'ready'; remote: T }> {
   const response = await network(() => client.getVersioned('manifest.json', PUBLICATION_RECORD_MAX_BYTES))
   if (!response) return { status: 'missing' }
@@ -981,6 +1004,7 @@ async function loadProtocol5RemoteClosure<T>(client: WebDavClient, complete: (re
   if (!raw || typeof raw !== 'object' || !('version' in raw)) return publicationInvalid('增量清单版本缺失。')
   if (raw.version !== 5) return { status: 'unsupported' }
   const manifest = validateInitialManifest5(decodePublicationJson(response.bytes))
+  if (verifyManifest) await verifyManifest(manifest)
   const values: Array<{ key: string; record: unknown }> = [], objects = new Map<string, Buffer>()
   for (const [key, hash] of Object.entries(manifest.entries)) {
     const object = await network(() => client.get('objects/' + hash + '.json', PUBLICATION_RECORD_MAX_BYTES))
@@ -991,11 +1015,13 @@ async function loadProtocol5RemoteClosure<T>(client: WebDavClient, complete: (re
   const checked = validateSyncedProtocol5Snapshot(manifest, values), assets = new Map<string, Buffer>()
   const assetFacts: PublicationAssetDescriptor[] = []
   for (const [hash, names] of checked.assetNames) {
+    client.transferProgress('downloading', assetFacts.length, checked.assetNames.size, names.values().next().value ?? null)
     const object = await network(() => client.get('assets/' + hash, ATTACHMENT_MAX_FILE_BYTES))
     if (!object || publicationHash(object.bytes) !== hash) return publicationInvalid('增量资产原 bytes/hash 缺失或损坏。')
     assets.set(hash, Buffer.from(object.bytes))
     assetFacts.push({ path: 'assets/' + hash, hash, bytes: object.bytes.length, names: [...names].sort(publicationCompare) })
   }
+  if (assetFacts.length) client.transferProgress('downloading', assetFacts.length, assetFacts.length)
   const remote = { manifest: Buffer.from(response.bytes), manifestEtag: response.etag, objects, assets,
     facts: frozenPublicationFacts({ manifest: checked.manifest,
       records: checked.records.map(item => ({ ...item, bytes: objects.get(item.key)!.length })),
@@ -1075,8 +1101,14 @@ export async function readConfirmedSyncedPublicationSeeds(db: Database.Database,
     const data = exchangeObservation(db, input), originalTarget = targetFingerprint(data.target)
     const rows = db.transaction(() => {
       currentObservation(data)
-      return db.prepare("SELECT id,request_hash,publication_hash FROM synced_exposure_attempts WHERE channel='webdav-manifest5' AND target_fingerprint=? AND state='confirmed' ORDER BY id")
+      const grouped = db.prepare("SELECT id,request_hash,publication_hash FROM synced_exposure_attempts WHERE channel='webdav-manifest5' AND target_fingerprint=? AND state='confirmed' ORDER BY id")
         .all(originalTarget) as Array<{ id: string; request_hash: string; publication_hash: string }>
+      const ordinary = readOrdinaryPublicationAttempts(db).map(record => record.attempt)
+        .filter(row => row.target_fingerprint === originalTarget && row.state === 'confirmed')
+      const exists = db.prepare('SELECT 1 FROM synced_exposure_attempts WHERE id=?')
+      if (ordinary.some(row => exists.get(row.id))) return publicationInvalid('同一次首发存在两条持久记录。')
+      return [...grouped.map(row => ({ ...row, ordinary: false })), ...ordinary.map(row => ({ ...row, ordinary: true }))]
+        .sort((a, b) => publicationCompare(a.id, b.id))
     })()
     const result: Array<{ operationId: string; manifest: SyncedInitialManifest5; records: Array<{ key: string; hash: string; record: InitialPublicationRecord }> }> = []
     for (const row of rows) {
@@ -1085,7 +1117,8 @@ export async function readConfirmedSyncedPublicationSeeds(db: Database.Database,
         spoolRoot: join(data.root, 'storage', 'synced-publications-v1'), directory: join(data.root, 'storage', 'synced-publications-v1', row.id) }
       const loaded = await loadSpool(paths), state = loaded.state
       if (state.attemptId !== row.id || state.publicationHash !== row.publication_hash || state.requestHash !== row.request_hash
-        || state.descriptor.targetFingerprint !== originalTarget || publicationJson(state.target) !== publicationJson(storedTarget(data.target))) return publicationInvalid('原 confirmed source/target/descriptor 不闭合。')
+        || state.descriptor.targetFingerprint !== originalTarget || row.ordinary !== (state.descriptor.members.length === 0)
+        || publicationJson(state.target) !== publicationJson(storedTarget(data.target))) return publicationInvalid('原 confirmed source/target/descriptor 不闭合。')
       if (state.descriptor.workspaceScope !== data.context.workspaceScope || state.descriptor.recoveryEpoch !== data.context.recoveryEpoch) continue
       const manifest = validateInitialManifest5(decodePublicationJson(loaded.manifest))
       const records = state.descriptor.objects.map(item => ({ key: item.key, hash: item.hash,

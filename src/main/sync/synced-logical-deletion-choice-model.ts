@@ -18,7 +18,7 @@ export interface DeletionChoiceIntent {
   base: SyncedPortableHostRecord | SyncedGroupWire; baseLiveHash: string
   /** Actual physical live L explicitly accepted for removal. */
   before: SyncedPortableHostRecord | SyncedGroupWire; localBeforeHash: string
-  tombstoneHash: string; identities: TombstoneIdentityEffect[]; decision: DeletionChoiceProofBinding; intentHash: string
+  tombstoneHash: string; identities: TombstoneIdentityEffect[]; decision: DeletionChoiceProofBinding; intentHash: string; localDeletionHash?: string
 }
 export interface SyncedLogicalDeletionChoiceProof extends Omit<SyncedLogicalDeletionProof, 'version' | 'baseLiveHash'> {
   version: 2; base: SyncedPortableHostRecord | SyncedGroupWire; baseLiveHash: string
@@ -55,7 +55,7 @@ function livePair(base:SyncedPortableHostRecord|SyncedGroupWire,before:SyncedPor
   return before.kind==='document'&&base.createdAt===before.createdAt
 }
 export function validateDeletionChoiceIntent(value:unknown):DeletionChoiceIntent {
-  assertConflictData(value);shape(value,['kind','key','base','baseLiveHash','before','localBeforeHash','tombstoneHash','identities','decision','intentHash'])
+  assertConflictData(value);assertSyncedShape(value,['kind','key','base','baseLiveHash','before','localBeforeHash','tombstoneHash','identities','decision','intentHash'],['localDeletionHash'])
   const id=key(value.key),base=validateSyncedProtocol5Record(value.base,id),before=validateSyncedProtocol5Record(value.before,id)
   if((base.kind!=='document'&&base.kind!=='synced-group')||(before.kind!=='document'&&before.kind!=='synced-group')||!livePair(base,before)||value.kind!==(before.kind==='document'?'document':'group'))return publicationInvalid('删除选择B/L不是同一真实doc/incarnation。')
   const baseLiveHash=hash(value.baseLiveHash),localBeforeHash=hash(value.localBeforeHash)
@@ -69,7 +69,10 @@ export function validateDeletionChoiceIntent(value:unknown):DeletionChoiceIntent
     if(!effect||effect.before.last_owner_kind!==(before.kind==='document'?'document':'group')||effect.before.last_owner_id!==before.id||before.kind==='synced-group'&&effect.before.created_at!==births.get(block.id))return publicationInvalid('删除选择identity owner/birth不是实际L。')
     if(effect.after.kind==='transferred'&&effect.after.ownerKind===effect.before.last_owner_kind&&effect.after.ownerId===effect.before.last_owner_id)return publicationInvalid('删除来源不可又作为转域目的。')
   }
-  return {kind:before.kind==='document'?'document':'group',key:id,base,baseLiveHash,before,localBeforeHash,tombstoneHash:hash(value.tombstoneHash),identities,decision:validateDeletionChoiceProofBinding(value.decision),intentHash:hash(value.intentHash)}
+  if('localDeletionHash'in value&&(before.kind!=='document'||identities.some(effect=>effect.after.kind!=='retained')))
+    return publicationInvalid('本机文档删除选择不能替代组删除或跨所有者转移。')
+  return {kind:before.kind==='document'?'document':'group',key:id,base,baseLiveHash,before,localBeforeHash,tombstoneHash:hash(value.tombstoneHash),identities,decision:validateDeletionChoiceProofBinding(value.decision),intentHash:hash(value.intentHash),
+    ...('localDeletionHash'in value?{localDeletionHash:hash(value.localDeletionHash)}:{})}
 }
 export function logicalDeletionChoiceIntentHash(intent:Omit<DeletionChoiceIntent,'intentHash'>,source:{operationId:string;workspaceScope:string;recoveryEpoch:string;targetFingerprint:string;remoteWorkspaceId:string}):string {
   return publicationHash(publicationJson({domain:'synced-deletion-intent.v2',...source,...intent}))
@@ -83,16 +86,19 @@ export function validateSyncedLogicalDeletionChoiceProof(value:unknown):SyncedLo
   assertConflictData(value)
   shape(value,['kind','version','key','intentHash','base','baseLiveHash','localBeforeHash','tombstoneHash','deletion','before','identities','decision','localBefore','localAfter','source','scopeAtApply','application','persistence'])
   if(value.kind!=='synced-logical-deletion-proof'||value.version!==2)return publicationInvalid('删除选择证明finite版本无效。')
-  const candidate=validateDeletionChoiceIntent({kind:(value.before as Record<string,unknown>)?.kind==='document'?'document':'group',key:value.key,base:value.base,baseLiveHash:value.baseLiveHash,before:value.before,localBeforeHash:value.localBeforeHash,tombstoneHash:value.tombstoneHash,identities:value.identities,decision:value.decision,intentHash:value.intentHash})
+  const beforeFact=value.localBefore
+  const pendingDeletion=beforeFact&&typeof beforeFact==='object'&&'localDeletionHash'in beforeFact?{localDeletionHash:beforeFact.localDeletionHash}:{}
+  const candidate=validateDeletionChoiceIntent({kind:(value.before as Record<string,unknown>)?.kind==='document'?'document':'group',key:value.key,base:value.base,baseLiveHash:value.baseLiveHash,before:value.before,localBeforeHash:value.localBeforeHash,tombstoneHash:value.tombstoneHash,identities:value.identities,decision:value.decision,intentHash:value.intentHash,...pendingDeletion})
   const deletion=validateSyncedProtocol5Record(value.deletion,candidate.key)
   if(deletion.kind!=='deleted'&&deletion.kind!=='synced-group-deleted'||(candidate.before.kind==='document')!==(deletion.kind==='deleted')||publicationHash(publicationJson(deletion))!==candidate.tombstoneHash)return publicationInvalid('删除选择首证没有原准确remote墓碑。')
   if(deletion.kind==='synced-group-deleted'&&(candidate.base.kind!=='synced-group'||deletion.creationId!==candidate.base.creationId||deletion.previousHash!==candidate.baseLiveHash))return publicationInvalid('删除选择墓碑previousHash不属于真实B。')
   let localBefore:SyncedLogicalDeletionProof['localBefore'],localAfter:SyncedLogicalDeletionProof['localAfter']
   const before=candidate.before,old=value.localBefore,next=value.localAfter
   if(before.kind==='document'){
-    shape(old,['kind','documentId','createdAt','path','updatedAt','keyGuard']);shape(next,['kind','documentId'])
+    assertSyncedShape(old,['kind','documentId','createdAt','path','updatedAt','keyGuard'],['localDeletionHash']);shape(next,['kind','documentId'])
     if(old.kind!=='document'||next.kind!=='document'||old.documentId!==before.id||next.documentId!==before.id||old.createdAt!==before.createdAt||typeof old.path!=='string')return publicationInvalid('删除选择文档实际birth/path不符。')
-    localBefore={kind:'document',documentId:before.id,createdAt:date(old.createdAt),path:old.path,updatedAt:date(old.updatedAt),keyGuard:hash(old.keyGuard)}
+    localBefore={kind:'document',documentId:before.id,createdAt:date(old.createdAt),path:old.path,updatedAt:date(old.updatedAt),keyGuard:hash(old.keyGuard),
+      ...(candidate.localDeletionHash?{localDeletionHash:candidate.localDeletionHash}:{})}
     localAfter={kind:'document',documentId:before.id}
   }else{
     shape(old,['kind','groupId','creationId','createdAt','origin','revision','topologyRevision','historyCursor','historyPosition','semanticHash','keyGuard']);shape(next,['kind','groupId','revision','topologyRevision','historyCursor','historyPosition'])

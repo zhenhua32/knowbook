@@ -83,10 +83,8 @@ export function canCaptureCanonicalCrossMoveGroupOwned(db: Database.Database, ho
       || reference?.id !== instance.instanceId || parseSyncedBlockPayload(reference.content).groupId !== move.groupId) return false
   }
   if (instances.length > 1) {
-    const listWithTargetPeer = !direct && move.selectedRootIds.length === 1 && move.dependencyDocumentIds.length === 0
-      && instances.length === 2 && instances.some(item => item !== instance && item.hostDocumentId === move.targetDocumentId)
     const guards = new Map(move.input.expectedInstances.map(guard => [guard.instanceId, guard]))
-    if (move.kind === 'batch' || !direct && !listWithTargetPeer || instances.some(item => {
+    if (move.kind === 'batch' || !direct && move.dependencyDocumentIds.length > 0 || instances.some(item => {
       const guard = guards.get(item.instanceId)
       return guard?.hostDocumentId !== item.hostDocumentId || guard.bindingVersion !== item.bindingVersion
         || item.hostDocumentId !== move.binding.hostDocumentId && item.hostDocumentId !== move.targetDocumentId

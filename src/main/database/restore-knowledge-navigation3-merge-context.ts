@@ -12,7 +12,7 @@ import { canBlockNestUnder } from '../../shared/blockTypes'
 import { parseSyncedBlockPayload, SYNCED_MAX_BLOCKS, SYNCED_MAX_DEPTH, validateSyncedCanonicalEdit, validateSyncedHostForest } from '../../shared/syncedBlockValidation'
 import { parseStrictJson } from '../../shared/strictJson'
 import { capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
-import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
+import { capsuleJsonStringBytes, hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
 import { CAPSULE2_RAW_MAX_ROWS, CAPSULE2_RAW_MAX_VALUE_BYTES } from './restore-knowledge-capsule2-raw-model'
 import { findGraph3OriginalRow, graph3Conflict, graph3Key, graph3Text, graph3Value } from './restore-knowledge-graph3-data'
 import { assertMerge3JsonBudget } from './restore-knowledge-merge3-storage'
@@ -156,29 +156,42 @@ function originalAccess(data: Graph3Inputs) {
   }
   return { table, value, values, identity, findIdentity, ref, assertRef, checkedValues }
 }
-function finalEntries(tables: readonly Navigation3Table[]): FinalEntry[] {
+const finalFields: Partial<Record<Navigation3Table['name'], readonly string[]>> = {
+  documents: ['id', 'created_at', 'path', 'title', 'summary'],
+  blocks: ['id', 'created_at', 'document_id', 'sort_order', 'type', 'content', 'checked', 'depth', 'parent_block_id',
+    'tags_json', 'language', 'list_start', 'markdown_format_json', 'highlight'],
+  synced_group_blocks: ['id', 'created_at', 'group_id', 'sort_order', 'type', 'content', 'checked', 'depth', 'parent_block_id',
+    'tags_json', 'language', 'list_start', 'markdown_format_json', 'highlight'],
+  synced_groups: ['id', 'created_at'],
+  synced_instances: ['instance_id', 'host_document_id', 'group_id', 'parent_block_id', 'depth']
+}
+
+function finalEntries(tables: readonly Navigation3Table[]): Map<Navigation3Table['name'], FinalEntry[]> {
   assertMerge3JsonBudget(tables)
   let rows = 0, valueBytes = 0
-  const names = new Set<string>(), targetRows = new Set<string>()
-  return tables.flatMap(table => {
-    if (names.has(table.name)) return graph3Conflict('navigation-final-table-duplicate', table.name)
-    names.add(table.name)
-    return table.rows.map(row => {
+  const entries = new Map<Navigation3Table['name'], FinalEntry[]>()
+  for (const table of tables) {
+    if (entries.has(table.name)) return graph3Conflict('navigation-final-table-duplicate', table.name)
+    const items: FinalEntry[] = [], targetRows = new Set<string>()
+    entries.set(table.name, items)
+    const columns = table.columns.map(column => finalFields[table.name]?.includes(column) ? column : null)
+    for (const row of table.rows) {
       if (++rows > CAPSULE2_RAW_MAX_ROWS || row.cells.length !== table.columns.length) return graph3Conflict('navigation-final-row-budget-or-width', table.name)
-      const locator = graph3Key(table.name, row.targetRowId)
-      if (targetRows.has(locator)) return graph3Conflict('navigation-final-rowid-duplicate', locator)
-      targetRows.add(locator)
-      const value = Object.fromEntries(table.columns.map((column, index) => {
+      if (targetRows.has(row.targetRowId)) return graph3Conflict('navigation-final-rowid-duplicate', graph3Key(table.name, row.targetRowId))
+      targetRows.add(row.targetRowId)
+      const value: Values = {}
+      for (const [index, column] of columns.entries()) {
         const cell = row.cells[index]
         const bytes = cell[0] === 'text' || cell[0] === 'blob' ? cell[1].length / 4 * 3 - (cell[1].endsWith('==') ? 2 : cell[1].endsWith('=') ? 1 : 0) : 8
         valueBytes += bytes
         if (!Number.isSafeInteger(valueBytes) || valueBytes > CAPSULE2_RAW_MAX_VALUE_BYTES) return graph3Conflict('navigation-final-value-budget', null)
-        return [column, cell[0] === 'null' ? null : cell[0] === 'text' ? graph3Text(cell, table.encoding) : cell[0] === 'integer' ? BigInt(cell[1])
-          : cell[0] === 'real-ieee754-le' ? Buffer.from(cell[1], 'hex').readDoubleLE() : Buffer.from(cell[1], 'base64')]
-      }))
-      return { table, row, value }
-    })
-  })
+        const decoded = graph3Value(cell, table.encoding)
+        if (column !== null) value[column] = decoded
+      }
+      if (finalFields[table.name]) items.push({ table, row, value })
+    }
+  }
+  return entries
 }
 function blockSyntax(value: Values): SyncedStableBlockDraft {
   const json = (value: unknown) => { const raw = text(value); return parseStrictJson(raw, { maxBytes: Math.max(1, Buffer.byteLength(raw)), maxDepth: 32 }) }
@@ -236,9 +249,7 @@ function captureGrammar(blocks: readonly SyncedStableBlockDraft[]) {
  * replaced by an empty binding wire. Physical forests, registry mirrors and
  * every expanded occurrence are checked directly; no live authority is minted. */
 export function buildMerge3NavigationFinalIndex3(data: Graph3Inputs, tables: readonly Navigation3Table[]): Navigation3FinalIndex {
-  const access = originalAccess(data), entries = finalEntries(tables), byTable = new Map<string, FinalEntry[]>()
-  for (const entry of entries) { const values = byTable.get(entry.table.name) ?? []; values.push(entry); byTable.set(entry.table.name, values) }
-  const physical = entries.filter(entry => ['documents', 'blocks', 'synced_groups', 'synced_group_blocks'].includes(entry.table.name))
+  const access = originalAccess(data), byTable = finalEntries(tables)
   const assignments = new Map<string, typeof data.value.assignments>()
   for (const item of data.value.assignments) { const key = graph3Key(item.kind, item.sourceId), values = assignments.get(key) ?? []; values.push(item); assignments.set(key, values) }
   function mapped(side: Side, kind: 'document' | 'block' | 'group', original: Values, ownerKind: 'document' | 'group' | null, ownerId: string | null) {
@@ -250,7 +261,7 @@ export function buildMerge3NavigationFinalIndex3(data: Graph3Inputs, tables: rea
   }
   const documents: Navigation3FinalDocument[] = [], physicalBlocks: Navigation3FinalBlock[] = []
   const documentEntries = new Map<string, FinalEntry>(), blockEntries = new Map<string, FinalEntry>(), groupEntries = new Map<string, FinalEntry>()
-  for (const entry of physical) {
+  for (const [table, entries] of byTable) if (table !== 'synced_instances') for (const entry of entries) {
     const name = entry.table.name, kind = name === 'documents' ? 'document' : name === 'synced_groups' ? 'group' : 'block'
     const ownerKind = kind !== 'block' ? null : name === 'blocks' ? 'document' : 'group'
     const ownerColumn = ownerKind === null ? null : ownerKind === 'document' ? 'document_id' : 'group_id'
@@ -306,14 +317,15 @@ export function buildMerge3NavigationFinalIndex3(data: Graph3Inputs, tables: rea
   const instances = new Map((byTable.get('synced_instances') ?? []).map(entry => [text(entry.value.instance_id), entry]))
   const usedInstances = new Set<string>(), scopes: Navigation3FinalScope[] = [], headingNamespaces: Navigation3FinalIndex['headingNamespaces'][number][] = []
   let expandedJsonBytes = 0, expandedMinimumBytes = 0
-  const minimumByGroup = new Map([...groupRows].map(([id, items]) => [id, items.reduce((bytes, item) => bytes + Buffer.byteLength(capsuleJson(item.block.content)) * 2, 0)]))
+  const expandedBudget = 128 * 1024 * 1024
+  const minimumByGroup = new Map([...groupRows].map(([id, items]) => [id, items.reduce((bytes, item) => bytes + capsuleJsonStringBytes(item.block.content, expandedBudget) * 2, 0)]))
   for (const document of documents) {
     const hosts = hostRows.get(document.id) ?? [], wrapperCount = hosts.reduce((count, item) => count + (item.block.type === 'synced-block'
       ? (groupRows.get(parseSyncedBlockPayload(item.block.content).groupId)?.length ?? 0) : 1), 0)
     if (wrapperCount > SYNCED_MAX_BLOCKS) return graph3Conflict('navigation-final-expanded-host-budget', document.id)
     for (const item of hosts) expandedMinimumBytes += item.block.type === 'synced-block' ? minimumByGroup.get(parseSyncedBlockPayload(item.block.content).groupId) ?? 0
-      : Buffer.byteLength(capsuleJson(item.block.content)) * 2
-    if (expandedMinimumBytes > 128 * 1024 * 1024) return graph3Conflict('navigation-final-expanded-json-budget', null)
+      : capsuleJsonStringBytes(item.block.content, expandedBudget) * 2
+    if (expandedMinimumBytes > expandedBudget) return graph3Conflict('navigation-final-expanded-json-budget', null)
     const expanded: Navigation3FinalScope['blocks'][number][] = []
     const add = (item: Navigation3FinalBlock, instance: Navigation3FinalBlock | null, depth: number, parent: string | null) => {
       const key = graph3Key(instance?.id ?? null, item.id), original = blockEntries.get(item.id)!
@@ -323,7 +335,7 @@ export function buildMerge3NavigationFinalIndex3(data: Graph3Inputs, tables: rea
       const block = { ...item.block, id: key, depth, parentBlockId: parent }
       const value = { occurrenceKey: key, finalOccurrenceKey: key, block, location, cell: cell(original, 'content') }
       expandedJsonBytes += Buffer.byteLength(capsuleJson(value))
-      if (expandedJsonBytes > 128 * 1024 * 1024) return graph3Conflict('navigation-final-expanded-json-budget', null)
+      if (expandedJsonBytes > expandedBudget) return graph3Conflict('navigation-final-expanded-json-budget', null)
       expanded.push(value)
     }
     for (const host of hosts) {
@@ -391,16 +403,17 @@ export function deriveRootRestoreNavigationMergeContext3(data: Graph3Inputs,
   const occurrences = new Map(final.scopes.filter(scope => scope.field === 'body').map(scope => [scope.finalDocumentId,
     new Map(scope.blocks.map(block => [block.occurrenceKey, block]))]))
   const selectedCells = new Map<string, Navigation3Cell>()
-  for (const table of merged.tables) if (table.name === 'documents' || table.name === 'blocks' || table.name === 'synced_group_blocks') {
-    const column = table.name === 'documents' ? 'summary' : 'content'
-    for (const row of table.rows) {
-      access.assertRef(row.sourceRef)
-      const key = graph3Key(refKey(row.sourceRef), column)
-      if (selectedCells.has(key)) return graph3Conflict('navigation-selected-cell-duplicate-origin', key)
-      selectedCells.set(key, { table: table.name, rowKey: row.key, targetRowId: row.targetRowId, column, sourceRef: row.sourceRef,
-        encoding: table.encoding, text: graph3Text(row.cells[table.columns.indexOf(column)], table.encoding) })
-    }
+  const encodings = new Map(merged.tables.map(table => [table.name, table.encoding]))
+  const addSelectedCell = (row: Navigation3FinalDocument | Navigation3FinalBlock, table: Navigation3Cell['table'],
+    column: Navigation3Cell['column'], content: string) => {
+    access.assertRef(row.sourceRef)
+    const key = graph3Key(refKey(row.sourceRef), column), encoding = encodings.get(table)
+    if (!encoding) return graph3Conflict('navigation-selected-cell-missing-table', table)
+    if (selectedCells.has(key)) return graph3Conflict('navigation-selected-cell-duplicate-origin', key)
+    selectedCells.set(key, { table, rowKey: row.rowKey, targetRowId: row.targetRowId, column, sourceRef: row.sourceRef, encoding, text: content })
   }
+  for (const document of final.documents) addSelectedCell(document, 'documents', 'summary', document.summary)
+  for (const block of final.physicalBlocks) addSelectedCell(block, block.groupId === null ? 'blocks' : 'synced_group_blocks', 'content', block.block.content)
   function evidence(side: Side, kind: 'document' | 'block', identity: OriginalIdentity) {
     let table: 'documents' | 'blocks' | 'synced_group_blocks' = 'documents'
     if (kind === 'block') table = identity.ownerKind === 'group' ? 'synced_group_blocks' : 'blocks'

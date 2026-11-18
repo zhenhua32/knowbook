@@ -5,6 +5,7 @@ import { assertSyncedLifecycleCoverage } from './synced-lifecycle-state'
 import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-read'
 import { LOGICAL_DELETION_PREFIX } from '../sync/synced-logical-deletion-model'
 import { assertSyncedRecoveryBoundaryRecords } from './synced-recovery-boundary-read'
+import { readV3SourceGroupRetirementsOwned } from './v3-source-group-retirement'
 import { readRawSyncedGroupSnapshotsOwned as readGroups, readRawSyncedWorkspaceScopeOwned as workspaceScope,
   decodeRawSyncedHistoryTail as historyTail } from './synced-blocks-raw-read'
 
@@ -43,15 +44,17 @@ export function listSyncedGroups(db: Database.Database, input: unknown): SyncedG
     if (lifecycle) assertSyncedRecoveryBoundaryRecords(db)
     if (lifecycle) assertSyncedLifecycleCoverage(db)
     if (lifecycle) assertSyncedLogicalDeletionRecords(db)
+    const retired = readV3SourceGroupRetirementsOwned(db)
     // Use the same active predicate before count and pagination; filtering the
     // returned page afterward would leak totals and create short/empty pages.
     const active = lifecycle ? `EXISTS(SELECT 1 FROM synced_group_lifecycle l WHERE l.group_id=g.id AND l.state='active') AND
       NOT EXISTS(SELECT 1 FROM synced_operations o WHERE o.client_operation_id='${LOGICAL_DELETION_PREFIX}group:'||g.id||':'||g.creation_id) AND ` : ''
-    const where = active + `(?='' OR instr(lower(json_extract(g.origin_json,'$.pathAtCreation')),lower(?))>0
+    const eligible = JSON.stringify([...retired.keys()])
+    const where = active + `g.id NOT IN (SELECT value FROM json_each(?)) AND (?='' OR instr(lower(json_extract(g.origin_json,'$.pathAtCreation')),lower(?))>0
       OR EXISTS(SELECT 1 FROM synced_group_blocks b WHERE b.group_id=g.id AND instr(lower(b.content),lower(?))>0))`
-    const total = (db.prepare(`SELECT count(*) AS count FROM synced_groups g WHERE ${where}`).get(query, query, query) as { count: number }).count
+    const total = (db.prepare(`SELECT count(*) AS count FROM synced_groups g WHERE ${where}`).get(eligible, query, query, query) as { count: number }).count
     const page = db.prepare(`SELECT g.id FROM synced_groups g WHERE ${where} ORDER BY g.created_at DESC,g.id LIMIT ? OFFSET ?`)
-      .all(query, query, query, limit, offset) as Array<{ id: string }>
+      .all(eligible, query, query, query, limit, offset) as Array<{ id: string }>
     const snapshots = readGroups(db, page.map(row => row.id))
     return { total, items: page.map(({ id }) => {
       const snapshot = snapshots.get(id)

@@ -11,6 +11,7 @@ import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-re
 import { assertSyncedRecoveryBoundaryRecords } from './synced-recovery-boundary-read'
 import { assertSyncedStoredBindings } from './synced-stored-binding-read'
 import { readCanonicalRuntimeHostDocumentOwned } from './synced-host-document-read'
+import { readV3SourceGroupRetirementsOwned } from './v3-source-group-retirement'
 
 function owned(db:Database.Database):number{
   if(!db.open||!db.inTransaction)throw new Error('Canonical runtime admission requires the actual owned SQL snapshot.')
@@ -32,14 +33,14 @@ export function hasCanonicalRuntimeDataOwned(db:Database.Database):boolean{
 export function assertCanonicalRuntimeReadableOwned(db:Database.Database):void{
   const version=owned(db);if(version<26)return
   assertSyncedBlockSchema(db);if(version>=27){assertSyncedLifecycleSchema(db);assertSyncedRecoveryBoundaryRecords(db)}
-  const deleted=assertSyncedLogicalDeletionRecords(db)
+  const deleted=assertSyncedLogicalDeletionRecords(db),retired=readV3SourceGroupRetirementsOwned(db)
   if(!hasCanonicalRuntimeDataOwned(db))return
   if((db.pragma('foreign_key_check') as unknown[]).length)throw new Error('Canonical runtime found broken original foreign keys; no data was repaired.')
   const groups=new Map<string,SyncedGroupWire>(),ids=(db.prepare('SELECT id FROM synced_groups ORDER BY id').all() as Array<{id:string}>).map(row=>row.id)
   for(let start=0;start<ids.length||start===0;start+=SYNCED_MAX_BLOCKS){
     const batch=ids.slice(start,start+SYNCED_MAX_BLOCKS),ready=readRawSyncedGroupSnapshotsOwned(db,batch),life=version>=27?readSyncedGroupLifecycles(db,batch):null
     for(const id of batch){const group=ready.get(id)
-      if(!group){if(deleted.has('group:'+id)||life?.get(id)?.state==='retired-create')continue;throw new Error('Canonical runtime cannot read an actual active group.')}
+      if(!group){if(retired.has(id)||deleted.has('group:'+id)||life?.get(id)?.state==='retired-create')continue;throw new Error('Canonical runtime cannot read an actual active group.')}
       const wire:SyncedGroupWire={kind:'synced-group',id:group.groupId,creationId:group.creationId,createdAt:group.createdAt,origin:group.origin,blocks:group.blocks,bindings:group.bindings}
       assertSyncedStoredBindings(db,wire.origin,wire.blocks,wire.bindings);projectSyncedGroupBudget(wire);groups.set(id,wire)
     }

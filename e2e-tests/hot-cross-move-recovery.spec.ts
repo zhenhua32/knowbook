@@ -26,10 +26,12 @@ const scenarios = [
   ['hot-nested-before-move', ' for a nested reference moved under a list item', false, 0],
   ['hot-list-parent-before-move', ' for a moved list parent with a shared and an ordinary child', false, 0],
   ['hot-list-parent-target-peer-before-move', ' for a list parent moved into a page already sharing the same body', false, 0],
+  ['hot-list-parent-source-peer-before-move', ' for a list parent when another reference remains on the source page', false, 0],
   ['hot-shared-target-before-move', ' into a page already sharing the same body', false, 0],
   ['hot-shared-source-before-move', ' while the source still displays another reference to the same body', false, 0],
   ['hot-batch-before-move', ' in a batch with a staged ordinary source and a live shared draft', false, 1],
   ['hot-mixed-root-pair-before-move', ' with an ordinary root from the same source', true, 0],
+  ['hot-mixed-target-peer-before-move', ' with mixed roots entering a page already sharing the same body', true, 0],
   ['hot-shared-wiki-before-move', ' with a shared reference in both hosts and a Wiki dependency', false, 1],
   ['hot-shared-markdown-before-move', ' with a shared reference in both hosts and a Markdown dependency', false, 1],
   ['hot-shared-multiple-dependencies-before-move', ' with references in both hosts and multiple dependencies including a clean neighboring group', false, 2],
@@ -252,12 +254,12 @@ for (const [mode, name, emptiesSource, dependencyCount] of scenarios) test(`Move
         expect((await probe()).groupWrites).toBe(0)
       }
       if (placement) {
-        expect(targetGroup?.instances).toHaveLength(sharedTarget ? 2 : 1)
+        expect(targetGroup?.instances).toHaveLength(1 + Number(Boolean(sharedSource)) + Number(Boolean(sharedTarget)))
         expect(targetGroup?.instances.find(item => item.instanceId === seed.instanceId))
           .toMatchObject({ parentBlockId: targetParentId, depth: targetDepth })
         if (forest) {
           await expectForest('target')
-          expect((await sourceRows()).map(block => block.id)).toEqual([forest.outsideId])
+          expect((await sourceRows()).map(block => block.id)).toEqual([forest.outsideId, ...(seed.sharedSourceId ? [seed.sharedSourceId] : [])])
         } else expect(await sourceRows()).toEqual([expect.objectContaining({ id: placement.sourceParentId, type: 'bulleted-list', depth: 0 })])
         expect((await rows(seed.targetId)).find(block => block.id === seed.instanceId)).toMatchObject({ parentBlockId: targetParentId, depth: targetDepth })
       }

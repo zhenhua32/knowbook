@@ -118,7 +118,7 @@ test('category keyboard navigation and switching preserve controlled, sync, and 
   }
   Object.defineProperty(dom.window, 'matchMedia', { value: () => media })
   const status: WebDavSyncStatus = { config: { ...DEFAULT_WEBDAV_SYNC_CONFIG }, hasPassword: false,
-    phase: 'idle', lastSyncAt: null, message: '', uploaded: 0, downloaded: 0, merged: 0, progress: null, conflicts: [] }
+    phase: 'idle', lastSyncAt: null, message: '', uploaded: 0, downloaded: 0, merged: 0, progress: null }
   Object.defineProperty(dom.window, 'knowbook', { value: { getWebDavSyncStatus: async () => { syncReads++; return status } } })
   for (const [key, value] of Object.entries({ window: dom.window, document: dom.window.document, navigator: dom.window.navigator,
     HTMLElement: dom.window.HTMLElement, HTMLInputElement: dom.window.HTMLInputElement,

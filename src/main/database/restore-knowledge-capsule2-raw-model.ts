@@ -103,7 +103,8 @@ export function hashValidatedCapsule2RawSqlTable(domain: string, value: Capsule2
 
 /** Hash two views of one inspected table without rereading or storing rows. */
 export function hashValidatedCapsule2RawSqlTablePair(domain: string, table: Capsule2RawStreamTable,
-  include: (row: Capsule2RawSqlRow) => readonly [boolean, boolean]): readonly [string, string] {
+  include: (row: Capsule2RawSqlRow) => readonly [boolean, boolean],
+  projectRight?: (row: Capsule2RawSqlRow) => Capsule2RawSqlRow | null): readonly [string, string] {
   const left = createHash('sha256').update(domain + '\0'), right = createHash('sha256').update(domain + '\0')
   const write = (text: string) => { left.update(text); right.update(text) }
   writeRawObject(table, 'rows', () => {
@@ -112,9 +113,10 @@ export function hashValidatedCapsule2RawSqlTablePair(domain: string, table: Caps
     for (const row of table.rows) {
       const [keepLeft, keepRight] = include(row)
       if (!keepLeft && !keepRight) continue
-      const text = capsuleJson(row)
-      if (keepLeft) { if (!firstLeft) left.update(','); left.update(text); firstLeft = false }
-      if (keepRight) { if (!firstRight) right.update(','); right.update(text); firstRight = false }
+      const projected = keepRight ? projectRight ? projectRight(row) : row : null
+      const text = keepLeft || projected === row ? capsuleJson(row) : null
+      if (keepLeft) { if (!firstLeft) left.update(','); left.update(text!); firstLeft = false }
+      if (projected) { if (!firstRight) right.update(','); right.update(projected === row ? text! : capsuleJson(projected)); firstRight = false }
     }
     write(']')
   }, write)

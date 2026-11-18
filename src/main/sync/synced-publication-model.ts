@@ -324,7 +324,6 @@ export function validatePublicationDescriptor(value: unknown): PublicationDescri
     return { groupId: uuid(raw.groupId), creationId: uuid(raw.creationId), revision: uuid(raw.revision), topologyRevision: uuid(raw.topologyRevision),
       semanticHash: hash(raw.semanticHash), portableHash: hash(raw.portableHash) }
   }), item => item.groupId)
-  if (!members.length) return publicationInvalid('发布不得为空成员。')
   const sortedKeys = <T>(items: T[], key: (item: T) => string): void => {
     const keys = items.map(key)
     if (publicationJson(keys) !== publicationJson([...keys].sort(publicationCompare))) publicationInvalid('描述符闭集没有规范排序。')
