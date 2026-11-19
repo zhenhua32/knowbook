@@ -66,7 +66,8 @@ export function pristine(profile: Profile) {
   assert.deepEqual(profile.db.prepare('SELECT id,name,description,created_at FROM databases').get(), { id: profile.defaultId, name: 'Default', description: 'Default database', created_at: profile.defaultBirth })
   assertSyncedLifecycleSchema(profile.db)
 }
-type Options = { assets?: boolean; catalog?: boolean; orphan?: boolean; missing?: boolean; sameUrl?: boolean; notes?: boolean; caseTitles?:'separate-parents'|'unicode' }
+type Options = { assets?: boolean; catalog?: boolean; orphan?: boolean; richOrphan?: boolean; richOrphanAnchor?: string;
+  missing?: boolean; sameUrl?: boolean; notes?: boolean; caseTitles?: 'separate-parents' | 'unicode' }
 type Server = Awaited<ReturnType<typeof createPublicationHttpServer>>
 export async function withIncomingFixture(run: (f: Awaited<ReturnType<typeof setup>>) => Promise<void>, options: Options = {}) {
   const folder = mkdtempSync(join(tmpdir(), 'knowbook-incoming-')), server = await createPublicationHttpServer()
@@ -101,7 +102,14 @@ async function setup(folder: string, server: Server, connections: Database.Datab
   try {
     const views=options.catalog?[block(groupView,serializeDatabaseViewPayload({version:1,databaseId:A.defaultId,viewId:null,config}),'database-view')]:[]
     store.updateDocument(host,{title:'Source',summary:'Original source summary',blocks:[block(sourceBlock,text),...views,...(options.missing?[block(missingId,'Real historical missing target')]:[])]})
-    store.updateDocument(target,{title:options.caseTitles==='separate-parents'?'Shared':options.caseTitles==='unicode'?'Ä':'Target',summary:'Original target',blocks:[block(randomUUID(),'Target body')]})
+    const targetHeading = randomUUID()
+    const targetBlocks = options.richOrphan ? [
+      block(targetHeading, 'Retiring heading', 'heading-2'),
+      block(randomUUID(), '[outward](Other.md) and [self](#^' + targetHeading + ')'
+        + (options.richOrphanAnchor ? ' <a id="' + options.richOrphanAnchor + '"></a>' : '')),
+      block(randomUUID(), 'A formatted list item', 'bulleted-list')
+    ] : [block(randomUUID(), 'Target body')]
+    store.updateDocument(target,{title:options.caseTitles==='separate-parents'?'Shared':options.caseTitles==='unicode'?'Ä':'Target',summary:'Original target',blocks:targetBlocks})
     const hostViews=options.catalog?[block(hostView,serializeDatabaseViewPayload({version:1,databaseId:A.defaultId,viewId:null,config}),'database-view')]:[]
     store.updateDocument(other,{title:options.caseTitles==='unicode'?'ä':'Other',summary:'Other target',blocks:[block(randomUUID(),'Other body [back](Source.md)'),...hostViews]})
     store.updateDocument(child,{title:options.caseTitles==='separate-parents'?'Shared':'Nested',summary:'Child stats',blocks:[block(randomUUID(),'A nested child')]})
@@ -129,8 +137,8 @@ async function setup(folder: string, server: Server, connections: Database.Datab
   }
   let orphanId:string|null=null
   if(options.orphan) {
-    const id=(A.db.prepare("SELECT id FROM blocks WHERE document_id=? AND type='paragraph' ORDER BY sort_order LIMIT 1").get(target) as {id:string}).id
-    const orphan=created(applySyncedHostCommand(A.db,createRequest(A.db,{documentId:target,selectedRootIds:[id]})));orphanId=orphan.createdLifecycle.groupId
+    const ids=(A.db.prepare('SELECT id FROM blocks WHERE document_id=? ORDER BY sort_order').all(target) as Array<{id:string}>).map(row=>row.id)
+    const orphan=created(applySyncedHostCommand(A.db,createRequest(A.db,{documentId:target,selectedRootIds:ids})));orphanId=orphan.createdLifecycle.groupId
     const removal=request(A.db,[target],after=>{after[0].blocks=[freshBlock(randomUUID(),'Explicit paragraph after orphaning')]})
     assert.equal(applySyncedHostFinal(A.db,removal).status,'applied');assert.equal(snapshot(A.db,orphanId).instances.length,0)
   }

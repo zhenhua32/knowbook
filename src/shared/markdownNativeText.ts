@@ -132,6 +132,32 @@ export function nativeTextSourceOffset(projection: NativeTextProjection, positio
   if (!projection.starts || !projection.ends) return position
   return end ? position === 0 ? 0 : projection.ends[position - 1] : projection.starts[position] ?? projection.source.length
 }
+
+/** Map normalized UTF-16 boundaries back to the original text. Only CRLF
+ * pairs change length, and a newline boundary still points at the original CR. */
+export function markdownOriginalOffsetLookup(blocks: readonly { content: string }[]) {
+  const byBlock = new Map<number, number[]>()
+  return (blockIndex: number, offset: number): number | null => {
+    const block = blocks[blockIndex]
+    if (!block || !Number.isSafeInteger(offset) || offset < 0) return null
+    let collapsed = byBlock.get(blockIndex)
+    if (!collapsed) {
+      collapsed = []
+      for (let position = block.content.indexOf('\r\n'); position !== -1; position = block.content.indexOf('\r\n', position + 2))
+        collapsed.push(position - collapsed.length)
+      byBlock.set(blockIndex, collapsed)
+    }
+    if (offset > block.content.length - collapsed.length) return null
+    let left = 0, right = collapsed.length
+    while (left < right) {
+      const middle = (left + right) >>> 1
+      if (collapsed[middle] < offset) left = middle + 1
+      else right = middle
+    }
+    return offset + left
+  }
+}
+
 type NativeTextToken = { type: string; map: [number, number] | null; meta: Record<string, unknown> | null }
 /** Restore persistence slices only where the block parser enabled this scope.
  * Native children override their ancestor; opaque code/math never decode. */

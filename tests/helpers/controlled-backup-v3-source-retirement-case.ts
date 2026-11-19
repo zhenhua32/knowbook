@@ -81,11 +81,17 @@ if (!input) void withIncomingFixture(async fixture => {
       await runProtocol5WebDav(receiver, B.root, targetConfig, runtime)
     } finally { receiver.destroy() }
 
+    const other = source.createDocument(null)
+    source.updateDocument(other, { title: 'Other', summary: '', blocks: [freshBlock(randomUUID(), 'Retain the real outbound target')] })
+    await runProtocol5WebDav(source, publisher.root, targetConfig, runtime)
     const original = snapshot(A.db, fixture.orphanId!)
+    assert.ok(original.bindings.some(binding => binding.target.kind === 'document' && binding.target.id === fixture.other))
+    const rich = { ...original, bindings: original.bindings.map(binding => binding.target.kind === 'document' && binding.target.id === fixture.other
+      ? { ...binding, target: { ...binding.target, id: other } } : binding) }
     const headPath = '/Incoming/manifest.json'
-    const addedGroups = [original, { ...original, groupId: randomUUID(), creationId: randomUUID(),
-      origin: { ...original.origin, firstInstanceId: randomUUID() },
-      blocks: original.blocks.map(block => ({ ...block, id: randomUUID(), parentBlockId: null, content: 'Second independent source body' })) }]
+    const addedGroups = [rich, { ...original, groupId: randomUUID(), creationId: randomUUID(),
+      origin: { ...original.origin, firstInstanceId: randomUUID() }, bindings: [],
+      blocks: [{ ...original.blocks[0], type: 'paragraph', id: randomUUID(), parentBlockId: null, content: 'Second independent source body' }] }]
     const firstBytes = server.files.get(headPath)!, firstHash = publicationHash(firstBytes)
     const firstHead = validateInitialManifest5(JSON.parse(firstBytes.toString()))
     const firstEntries = { ...firstHead.entries }
@@ -106,10 +112,12 @@ if (!input) void withIncomingFixture(async fixture => {
     await runRestore({ profileRoot: B.root, backup, expectedSourceGroupIds: [] })
     await recoverControlledDatabaseRestore(B.root, legacy.recoverLegacy)
     const reopened = KnowbookStore.openCanonicalRuntime(B.file)
-    let localGroupIds: string[]
+    let localGroupIds: string[], localOtherId: string
     try {
       const db = reopened.getUnsafeDatabaseHandle()
       localGroupIds = db.prepare('SELECT id FROM synced_groups WHERE id<>? ORDER BY id').pluck().all(retainedId) as string[]
+      localOtherId = db.prepare('SELECT id FROM documents WHERE path=?').pluck().get('Other') as string
+      assert.ok(localOtherId, 'The first archive installs the outbound target once')
       assert.equal(localGroupIds.length, addedGroups.length)
       assert.ok(localGroupIds.every(id => !addedGroups.some(group => group.groupId === id)), 'V3 reassigns the direct source group identities')
       const rejoin = await prepareProtocol5RestoreRejoin(db, B.root, targetConfig, runtime)
@@ -149,7 +157,15 @@ if (!input) void withIncomingFixture(async fixture => {
     try {
       assert.equal(server.requests.length, requestsBeforeCold, 'Cold reopening verifies the sealed evidence without a network request')
       const db = cold.getUnsafeDatabaseHandle()
-      assert.deepEqual([...db.transaction(() => readV3SourceGroupRetirementsOwned(db))().keys()], localGroupIds)
+      const retirements = db.transaction(() => readV3SourceGroupRetirementsOwned(db))()
+      assert.deepEqual([...retirements.keys()], localGroupIds)
+      const retiredRichGroup = [...retirements.values()].find(record => record.sourceGroupId === rich.groupId)?.group
+      assert.ok(retiredRichGroup)
+      assert.deepEqual(retiredRichGroup.blocks.map(block => block.type), ['heading-2', 'paragraph', 'bulleted-list'])
+      assert.ok(retiredRichGroup.bindings.some(binding => binding.target.kind === 'block'
+        && binding.target.id === retiredRichGroup.blocks[0].id))
+      assert.ok(retiredRichGroup.bindings.some(binding => binding.target.kind === 'document' && binding.target.id === localOtherId))
+      assert.equal(cold.getDocumentDetail(localOtherId)?.title, 'Other')
       assert.ok(db.prepare('SELECT 1 FROM synced_group_blocks WHERE group_id=?').get(retainedId))
       const template = cold.listDocumentTemplates().find(template => template.name === 'Independent template')
       assert.ok(template)
@@ -175,7 +191,7 @@ if (!input) void withIncomingFixture(async fixture => {
       assert.ok(template.blocks.every(block => !existsInLedger.get(block.id)), 'Confirmation and sync must not reserve draft-local IDs')
     } finally { cold.destroy() }
   } finally { source.destroy() }
-}, { orphan: true }).catch(error => {
+}, { orphan: true, richOrphan: true }).catch(error => {
   console.error(error)
   process.exitCode = 1
 })

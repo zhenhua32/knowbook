@@ -42,7 +42,6 @@ export function validateV3SourceGroupRetirement(value: unknown): V3SourceGroupRe
     || typeof publicationHeadHash !== 'string' || !digest.test(publicationHeadHash)
     || typeof remoteEvidenceHash !== 'string' || !digest.test(remoteEvidenceHash)) return invalid('原来源、后继或远端证据不完整。')
   const group = validateSyncedGroupWire(value.group)
-  if (group.bindings.length) return invalid('带实际绑定的组不符合此退场格式。')
   return { kind, version, operationId, group, sourceGroupId, sourceCreationId, sourceSnapshotId, successorSnapshotId, publicationHeadHash, remoteEvidenceHash }
 }
 
@@ -59,7 +58,8 @@ export function assertV3SourceGroupRetirementPhysicalOwned(db: Database.Database
       history_position: number; state: string } | undefined
   if (!header || header.creation_id !== group.creationId || header.created_at !== group.createdAt || header.state !== 'active'
     || header.history_position !== 0 || capsuleJson(parseStrictJson(header.origin_json, { maxBytes: MAX_BYTES, maxDepth: 32 })) !== capsuleJson(group.origin)
-    || capsuleJson(parseStrictJson(header.bindings_json, { maxBytes: MAX_BYTES, maxDepth: 32 })) !== '[]') return invalid('原物理组头或执行边界变化。')
+    || capsuleJson(parseStrictJson(header.bindings_json, { maxBytes: MAX_BYTES, maxDepth: 32 })) !== capsuleJson(group.bindings))
+    return invalid('原物理组头或执行边界变化。')
   if (db.prepare(`SELECT 1 WHERE EXISTS(SELECT 1 FROM main.synced_group_blocks WHERE group_id=@id)
     OR EXISTS(SELECT 1 FROM main.synced_instances WHERE group_id=@id)
     OR EXISTS(SELECT 1 FROM main.synced_group_history WHERE group_id=@id)

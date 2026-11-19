@@ -1,12 +1,12 @@
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { graph3Conflict, graph3Encode, graph3Key, graph3Rows, type Graph3Inputs } from './restore-knowledge-graph3-data'
-import { buildMerge3NavigationFinalIndex3, type Navigation3FinalScope, type Navigation3Table } from './restore-knowledge-navigation3-merge-context'
+import { withStoredMerge3NavigationFinalIndex3, type Navigation3FinalScope, type Navigation3Table,
+  type StoredNavigation3Index } from './restore-knowledge-navigation3-merge-context'
 import type { deriveRootRestoreNavigationRewrite3 } from './restore-knowledge-navigation3-rewrite-model'
 import type { SelectedPendingLocalBody5 } from './restore-knowledge-pending-local-selection5'
 import { projectWorkingAssetBodyCells5, workingAssetCellPosition5 } from './restore-knowledge-working-asset-cells5'
 
 type Ordinary = ReturnType<typeof deriveRootRestoreNavigationRewrite3>
-type Index = ReturnType<typeof buildMerge3NavigationFinalIndex3>
 const same = (left: unknown, right: unknown) => capsuleJson(left) === capsuleJson(right)
 const fail = (reason: string): never => graph3Conflict('pending-local-cell-' + reason, null)
 const hash = (domain: string, value: unknown) => capsuleBytesHash(domain + '\0' + capsuleJson(value))
@@ -53,7 +53,7 @@ function assertNavigationClosure5(previous: Navigation3FinalScope, next: Navigat
 
 /** The sourceRef is copied from the existing checked business row. This
  * function only substitutes its content cell after validating exact identity. */
-export function applySelectedPendingLocalBody5(data: Graph3Inputs, ordinary: Ordinary, prior: Index, selected: SelectedPendingLocalBody5) {
+export function applySelectedPendingLocalBody5(data: Graph3Inputs, ordinary: Ordinary, prior: StoredNavigation3Index, selected: SelectedPendingLocalBody5) {
   const blocks = ordinary.tables.find(table => table.name === 'blocks') ?? fail('missing-business-table')
   const column = blocks.columns.indexOf('content')
   const rows = blocks.rows.filter(row => row.sourceRef.side === 'source' && row.sourceRef.sourceRowId === selected.sourceRowId)
@@ -72,23 +72,24 @@ export function applySelectedPendingLocalBody5(data: Graph3Inputs, ordinary: Ord
   const tables = ordinary.tables.map(table => table === blocks ? { ...table, rows: table.rows.map(row => row === target ? {
     ...row, cells: row.cells.map((cell, index) => index === column ? graph3Encode(selected.after, table.encoding) : cell)
   } : row) } : table)
-  const final = buildMerge3NavigationFinalIndex3(data, tables)
-  const previousScope = prior.scopes.find(scope => scope.field === 'body' && scope.finalDocumentId === document.id)
-  const nextScope = final.scopes.find(scope => scope.scopeId === previousScope?.scopeId)
-  const occurrence = nextScope?.blocks.find(block => block.cell.rowKey === target.key)?.occurrenceKey
-  if (!previousScope || !nextScope || !occurrence || !same(prior.headingNamespaces, final.headingNamespaces) || !same(prior.routes, final.routes))
-    return fail('final-heading-or-route')
-  assertNavigationClosure5(previousScope, nextScope, occurrence, selected)
+  return withStoredMerge3NavigationFinalIndex3(data, tables, final => {
+    const scopeId = graph3Key('body', document.id)
+    const previousScope = prior.scope(scopeId), nextScope = final.scope(scopeId)
+    const occurrence = nextScope?.blocks.find(block => block.cell.rowKey === target.key)?.occurrenceKey
+    if (!previousScope || !nextScope || !occurrence || !same(prior.headingNamespaces, final.headingNamespaces) || !same(prior.routes, final.routes))
+      return fail('final-heading-or-route')
+    assertNavigationClosure5(previousScope, nextScope, occurrence, selected)
 
-  const body = { kind: 'pending-working-content' as const, version: 1 as const,
-    choiceHash: hash('knowbook.restore.pending-local-choice.v1', selected.locator), sourceRef: target.sourceRef,
-    targetRowId: target.targetRowId, column: 'content' as const, blockId: physical.id, documentId: document.id,
-    originalBlockId: selected.blockId, originalDocumentId: selected.documentId, scopeSource: selected.scopeSource,
-    contextHash: selected.locator.contextHash, resultHash: selected.locator.localFinalHash, blockBirth: physical.birth,
-    beforeHash: pendingLocalCellTextHash5(selected.before), afterHash: pendingLocalCellTextHash5(selected.after),
-    assets: selected.assets, beforeSyntaxHash: prior.indexHash, afterSyntaxHash: final.indexHash }
-  const proof = freezeCapsuleValue({ ...body, proofHash: hash('knowbook.restore.pending-local-cell-proof.v1', body) })
-  return { tables, final, proof }
+    const body = { kind: 'pending-working-content' as const, version: 1 as const,
+      choiceHash: hash('knowbook.restore.pending-local-choice.v1', selected.locator), sourceRef: target.sourceRef,
+      targetRowId: target.targetRowId, column: 'content' as const, blockId: physical.id, documentId: document.id,
+      originalBlockId: selected.blockId, originalDocumentId: selected.documentId, scopeSource: selected.scopeSource,
+      contextHash: selected.locator.contextHash, resultHash: selected.locator.localFinalHash, blockBirth: physical.birth,
+      beforeHash: pendingLocalCellTextHash5(selected.before), afterHash: pendingLocalCellTextHash5(selected.after),
+      assets: selected.assets, beforeSyntaxHash: prior.indexHash, afterSyntaxHash: final.indexHash }
+    const proof = freezeCapsuleValue({ ...body, proofHash: hash('knowbook.restore.pending-local-cell-proof.v1', body) })
+    return { tables, proof }
+  })
 }
 
 export function assertPendingLocalCandidateCellOnly5(previous: readonly Navigation3Table[], next: readonly Navigation3Table[],

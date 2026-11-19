@@ -65,8 +65,18 @@ test('production WebDAV publishes ordinary notes, joins a later version and reso
       const doc = await window.knowbook.createDocument(null), blockId = crypto.randomUUID()
       const title = 'Protocol 5 ordinary seed', content = 'Original shared text 中文'
       await window.knowbook.updateDocument(doc.id, { title, summary: '', blocks: [{ id: blockId, type: 'paragraph', content, checked: false, depth: 0 }] })
-      return { docId: doc.id, blockId, title, content }
+      const database = await window.knowbook.createDocumentDatabase({ name: 'Protocol 5 user database', description: '' })
+      const field = await window.knowbook.createDocumentDatabaseColumn({ databaseId: database.id, name: 'Notes', type: 'text' })
+      const databaseValue = 'First published notes 中文'
+      const record = await window.knowbook.createDatabaseEntity({ databaseId: database.id, title: 'Synced user record',
+        fieldValues: { [field.id]: databaseValue } })
+      return { docId: doc.id, blockId, title, content, record, fieldId: field.id, databaseValue }
     })
+    const { record, fieldId, databaseValue } = original
+    const recordAddress = { databaseId: record.databaseId, id: record.id }
+    const recordIdentity = { ...recordAddress, title: record.title, createdAt: record.createdAt }
+    const readRecord = (target: Page) => target.evaluate(async ({ databaseId, id }) =>
+      (await window.knowbook.getDatabaseEntities(databaseId)).find(entity => entity.id === id), recordAddress)
     const legacyManifest = Buffer.from(JSON.stringify({ version: 1, workspaceId: 'unsupported', entries: {} }))
     server.files.set('/legacy-keep/manifest.json', legacyManifest)
     await configure(page, server.url, 'legacy-keep')
@@ -78,7 +88,14 @@ test('production WebDAV publishes ordinary notes, joins a later version and reso
     await configure(page, server.url, 'protocol5-test')
     await page.evaluate(() => window.knowbook.syncWebDavNow())
     const genesis = Buffer.from(server.files.get('/protocol5-test/manifest.json')!)
-    expect(JSON.parse(genesis.toString())).toMatchObject({ version: 5, history: { previousHash: null }, syncedInstances: [] })
+    const genesisManifest = JSON.parse(genesis.toString())
+    expect(genesisManifest).toMatchObject({ version: 5, history: { previousHash: null }, syncedInstances: [],
+      entries: { databases: expect.stringMatching(/^[a-f0-9]{64}$/) } })
+    const catalog = JSON.parse(server.files.get(`/protocol5-test/objects/${genesisManifest.entries.databases}.json`)!.toString())
+    expect(catalog).toMatchObject({ kind: 'databases', tables: {
+      database_entities: expect.arrayContaining([expect.objectContaining({ id: record.id, database_id: record.databaseId, title: record.title })]),
+      database_entity_values: expect.arrayContaining([expect.objectContaining({ entity_id: record.id, column_id: fieldId, value_text: databaseValue })])
+    } })
 
     await page.reload()
     await page.locator('.tree-button', { hasText: original.title }).first().click()
@@ -113,6 +130,7 @@ test('production WebDAV publishes ordinary notes, joins a later version and reso
     receiver = null
     receiver = await relaunchElectronApp({ userDataRoot: receiverRoot })
     expect((await receiver.page.evaluate(() => window.knowbook.getWebDavSyncStatus())).lastSyncAt).toBeTruthy()
+    expect(await readRecord(receiver.page)).toMatchObject({ ...recordIdentity, fieldValues: { [fieldId]: databaseValue } })
     const resolved = await receiver.page.evaluate(input => window.knowbook.resolveSyncedInlineInstance(input), address)
     expect(resolved.status).toBe('ready')
     if (resolved.status !== 'ready') throw new Error('The independently reopened Main could not resolve the imported instance.')
@@ -122,16 +140,19 @@ test('production WebDAV publishes ordinary notes, joins a later version and reso
     await configure(receiver.page, server.url, 'protocol5-test')
     const common = 'Shared body updated on B'
     await editSharedBody(receiver.page, address, common)
-    const edited = await receiver.page.evaluate(async () => {
+    const updatedValue = 'Notes edited on the joined profile 中文'
+    const edited = await receiver.page.evaluate(async ({ entityId, fieldId, value }) => {
+      await window.knowbook.updateDatabaseEntity({ entityId, fieldValues: { [fieldId]: value } })
       const doc = await window.knowbook.createDocument(null)
       await window.knowbook.updateDocument(doc.id, { title: 'From independent receiver', summary: '', blocks: [
         { id: crypto.randomUUID(), type: 'paragraph', content: 'B to A', checked: false, depth: 0 }
       ] })
       await window.knowbook.syncWebDavNow()
       return doc.id
-    })
+    }, { entityId: record.id, fieldId, value: updatedValue })
     await page.evaluate(() => window.knowbook.syncWebDavNow())
     expect((await page.evaluate(id => window.knowbook.getDocumentDetail(id), edited))?.title).toBe('From independent receiver')
+    expect(await readRecord(page)).toMatchObject({ ...recordIdentity, fieldValues: { [fieldId]: updatedValue } })
     const creationId = resolved.snapshot.creationId
     expect(await readSharedBody(page, address, original.blockId)).toEqual({ creationId, content: common })
 

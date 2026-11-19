@@ -3,11 +3,14 @@ import type { SyncedLinkBinding, SyncedStableBlockDraft } from '../../shared/syn
 import { expandSyncedGraphDocument, validateSyncedWorkspaceGraph } from '../../shared/syncedBlockGraph'
 import { parseSyncedBlockPayload, SYNCED_MAX_BLOCKS } from '../../shared/syncedBlockValidation'
 import { collectDocumentMarkdownLinks, getMarkdownHeadingTargets } from '../../shared/markdownLinkMaintenance'
+import { markdownOriginalOffsetLookup } from '../../shared/markdownNativeText'
 import { parseLocalMarkdownUrl, resolveMarkdownDocumentPath } from '../../shared/markdownLinks'
 import { parseWikiReference, resolveWikiDocument, wikiDocumentPaths } from '../../shared/markdownWiki'
-import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
+import { freezeCapsuleValue } from './restore-knowledge-capsule-model'
+import { capsuleJsonStringBytes, hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, type Capsule2RawContent, type Capsule2RawSqlRow } from './restore-knowledge-capsule2-raw-model'
 import { graph3Conflict, graph3Key, graph3Value, type Graph3Inputs } from './restore-knowledge-graph3-data'
+import { withStoredRestoreScopes } from './restore-knowledge-stored-scopes'
 import { captureSyncedCreateSourceFacts } from './synced-host-create-plan'
 
 type SourceLocation = { table: 'blocks' | 'synced_group_blocks' | 'documents'; sourceRowId: string; column: 'content' | 'summary';
@@ -16,6 +19,7 @@ type SourceLocation = { table: 'blocks' | 'synced_group_blocks' | 'documents'; s
 type IdentityReference = { id: string; birth: string; assignmentKey: string | null; targetId: string; ownerKind: 'document' | 'group' | null; ownerId: string | null }
 type Heading = ReturnType<typeof getMarkdownHeadingTargets>[number] & { location: SourceLocation | null }
 type Side = 'source' | 'current'
+type NavigationGraphInputs = Pick<Graph3Inputs, 'inputs' | 'value'>
 type Route = { table: 'document_block_routes'; sourceRowId: string; path: string; blockId: string }
 type Target =
   | { kind: 'document'; document: IdentityReference }
@@ -80,17 +84,11 @@ function indexOriginalRoutes(db: Database.Database, raw: Capsule2RawContent) {
   }
 }
 
-function deriveSideNavigationRewriteInputs3(data: Graph3Inputs, side: Side) {
-  const routes = new Database(':memory:')
-  try { return deriveSideNavigationWithRoutes3(data, side, routes) }
-  finally { routes.close() }
-}
-
 /** Fixed source-side rewrite inputs, before final paths/current retention exist.
  * Actual physical births authorize ordinary navigation observations only.
  * A canonical destination keeps its captured historical binding; resolving its
  * spelling in today's host would replace its provenance. */
-function deriveSideNavigationWithRoutes3(data: Graph3Inputs, side: Side, routeDb: Database.Database) {
+function prepareSideNavigation(data: NavigationGraphInputs, side: Side, routeDb: Database.Database) {
   const source = data.inputs[side].source, physical = source.physical, raw = source.sourceContent
   const documentRows = indexOriginalIdentities(raw, 'documents'), blockRows = indexOriginalIdentities(raw, 'blocks')
   const canonicalRows = indexOriginalIdentities(raw, 'synced_group_blocks')
@@ -158,8 +156,8 @@ function deriveSideNavigationWithRoutes3(data: Graph3Inputs, side: Side, routeDb
   // objects. This lower bound counts fields that must appear in every emitted
   // wrapper; it cannot reject an output that would fit the final JSON budget.
   const groupMinimum = new Map(snapshots.map(group => [group.groupId, { count: group.blocks.length,
-    bytes: group.blocks.reduce((bytes, block) => bytes + Buffer.byteLength(capsuleJson(block.content))
-      + Buffer.byteLength(capsuleJson(block.id)) + 30, 0) }]))
+    bytes: group.blocks.reduce((bytes, block) => bytes + capsuleJsonStringBytes(block.content, CAPSULE2_RAW_MAX_JSON_BYTES)
+      + capsuleJsonStringBytes(block.id, CAPSULE2_RAW_MAX_JSON_BYTES) + 30, 0) }]))
   let minimumBytes = 0
   for (const document of physical.documents) {
     let count = 0
@@ -167,15 +165,11 @@ function deriveSideNavigationWithRoutes3(data: Graph3Inputs, side: Side, routeDb
       const group = block.type === 'synced-block' ? groupMinimum.get(parseSyncedBlockPayload(block.content).groupId) : undefined
       if (block.type === 'synced-block' && !group) return graph3Conflict('navigation-missing-expanded-group', block.id)
       count += group?.count ?? 1
-      minimumBytes += group?.bytes ?? Buffer.byteLength(capsuleJson(block.content)) + Buffer.byteLength(capsuleJson(block.id)) + 30
+      minimumBytes += group?.bytes ?? capsuleJsonStringBytes(block.content, CAPSULE2_RAW_MAX_JSON_BYTES)
+        + capsuleJsonStringBytes(block.id, CAPSULE2_RAW_MAX_JSON_BYTES) + 30
       if (!Number.isSafeInteger(count) || count > SYNCED_MAX_BLOCKS) return graph3Conflict('navigation-expanded-host-block-budget', document.documentId)
       if (!Number.isSafeInteger(minimumBytes) || minimumBytes > CAPSULE2_RAW_MAX_JSON_BYTES) return graph3Conflict('complete-navigation-input-budget', null)
     }
-  }
-  let projectedBytes = 0
-  const charge = (bytes: number) => {
-    projectedBytes += bytes
-    if (!Number.isSafeInteger(projectedBytes) || projectedBytes > CAPSULE2_RAW_MAX_JSON_BYTES) return graph3Conflict('complete-navigation-input-budget', null)
   }
   const graph = validateSyncedWorkspaceGraph(physical.documents.map(({ documentId, blocks }) => ({ documentId, blocks })),
     snapshots.map(group => ({ kind: 'synced-group', id: group.groupId, creationId: group.creationId, createdAt: group.createdAt,
@@ -193,8 +187,7 @@ function deriveSideNavigationWithRoutes3(data: Graph3Inputs, side: Side, routeDb
     const view = { ...graph, documents: [graphDocuments.get(document.documentId)!], groups: [...referenced].map(id => graphGroups.get(id)!) }
     const instanceGroups = new Map(instances.map(instance => [instance.instance_id, instance.group_id]))
     const locations = new Map<string, SourceLocation>()
-    const blocks: SyncedStableBlockDraft[] = [], entries: Array<{ occurrenceKey: string; block: SyncedStableBlockDraft; location: SourceLocation }> = []
-    let blockBytes = 0
+    const blocks: SyncedStableBlockDraft[] = []
     for (const item of expandSyncedGraphDocument(view, document.documentId)) {
       const groupId = item.instanceId === null ? null : instanceGroups.get(item.instanceId) ?? graph3Conflict('navigation-missing-instance', item.instanceId)
       const row = (groupId === null ? blockRows : canonicalRows).rows.get(item.block.id)
@@ -206,31 +199,17 @@ function deriveSideNavigationWithRoutes3(data: Graph3Inputs, side: Side, routeDb
         blockIdentity, instanceIdentity: item.instanceId === null ? null : identity('block', item.instanceId) })
       const { createdAt: _birth, ...syntax } = { ...item.block, createdAt: null }
       const block = { ...syntax, id, depth: item.depth, parentBlockId: item.parent === null ? null : graph3Key(item.parent.instanceId, item.parent.blockId) }
-      const entry = { occurrenceKey: id, block, location: locations.get(id)! }, bytes = Buffer.byteLength(capsuleJson(entry))
-      charge(bytes); blockBytes += bytes; entries.push(entry); blocks.push(block)
+      blocks.push(block)
     }
-    return { blocks, locations, entries, blockBytes }
+    return { blocks, locations }
   }
-  const views = new Map(physical.documents.map(document => [document.documentId, expanded(document)]))
-  const headingNamespaces = physical.documents.map(document => {
-    const view = views.get(document.documentId)!
-    const namespace = { document: docRef(document.documentId), headings: getMarkdownHeadingTargets(view.blocks, document.title)
+  function headingNamespace(document: typeof physical.documents[number]) {
+    const view = expanded(document)
+    return { document: docRef(document.documentId), headings: getMarkdownHeadingTargets(view.blocks, document.title)
       .map(heading => ({ ...heading, location: heading.blockId === null ? null : view.locations.get(heading.blockId)! })) }
-    charge(Buffer.byteLength(capsuleJson(namespace)))
-    return namespace
-  })
-  const headingIndex = new Map(headingNamespaces.map(namespace => {
-    const slug = new Map<string, Heading>(), normalizedText = new Map<string, Heading>()
-    for (const heading of namespace.headings) {
-      // The shared Wiki resolver chooses the first exact slug, then the first
-      // NFC/case-normalized text. Preserve that order without per-link scans.
-      if (!slug.has(heading.slug)) slug.set(heading.slug, heading)
-      const key = heading.text.normalize('NFC').toLowerCase()
-      if (!normalizedText.has(key)) normalizedText.set(key, heading)
-    }
-    return [namespace.document.id, { slug, normalizedText }] as const
-  }))
-  function targetFor(document: typeof physical.documents[number], url: string, wiki: boolean): Target {
+  }
+  type FindHeading = (id: string, fragment: string, wiki: boolean) => Heading | undefined
+  function targetFor(document: typeof physical.documents[number], url: string, wiki: boolean, findHeading: FindHeading): Target {
     const reference = wiki ? parseWikiReference(url) : null, local = wiki ? null : parseLocalMarkdownUrl(url)
     const resolved = wiki ? null : resolveMarkdownDocumentPath(document.path, url)
     if (!wiki && !resolved) return local && /\.md$/i.test(local.path) ? unresolved('invalid-local-path', local.path, local.fragment)
@@ -270,8 +249,7 @@ function deriveSideNavigationWithRoutes3(data: Graph3Inputs, side: Side, routeDb
       const block = blockAt(destination.path, fragment, destination.documentId)
       if (block) return block
       if (blockFragment(fragment, wiki)) return unresolved('missing-block', path, fragment)
-      const headings = headingIndex.get(destination.documentId)!
-      const heading = headings.slug.get(fragment) ?? (wiki ? headings.normalizedText.get(fragment.normalize('NFC').toLowerCase()) : undefined)
+      const heading = findHeading(destination.documentId, fragment, wiki)
       return heading ? { kind: 'heading', document: docRef(destination.documentId), headingKey: heading.key, slug: heading.slug, location: heading.location }
         : unresolved('missing-heading', path, fragment)
     } catch (cause) {
@@ -279,25 +257,24 @@ function deriveSideNavigationWithRoutes3(data: Graph3Inputs, side: Side, routeDb
       throw cause
     }
   }
-  function scope(document: typeof physical.documents[number], field: 'body' | 'summary') {
-    const scopeId = graph3Key(field, document.documentId), view = views.get(document.documentId)!
+  function scope(document: typeof physical.documents[number], field: 'body' | 'summary', findHeading: FindHeading) {
+    const scopeId = graph3Key(field, document.documentId), view = field === 'body' ? expanded(document) : null
     const summaryId = graph3Key('summary', document.documentId)
-    const blocks: SyncedStableBlockDraft[] = field === 'body' ? view.blocks : [{ id: summaryId, parentBlockId: null,
+    const blocks: SyncedStableBlockDraft[] = view?.blocks ?? [{ id: summaryId, parentBlockId: null,
       type: 'paragraph', content: document.summary, checked: false, depth: 0 }]
-    const locations = field === 'body' ? view.locations : new Map<string, SourceLocation>([[summaryId, { table: 'documents',
+    const locations = view?.locations ?? new Map<string, SourceLocation>([[summaryId, { table: 'documents',
       sourceRowId: documentRows.rows.get(document.documentId)!.sourceRowId, column: 'summary', blockId: null, groupId: null, instanceId: null,
       blockIdentity: null, instanceIdentity: null }]])
     const facts = captureSyncedCreateSourceFacts(blocks)
     // Match grammar by the exact physical range, never by URL. The strict facts
     // reader proves all ranges; the public parser supplies HTML escaping roles.
-    const rawOffsets = blocks.map(block => {
-      const positions: number[] = []
-      for (let i = 0; i < block.content.length; i++) { positions.push(i); if (block.content[i] === '\r' && block.content[i + 1] === '\n') i++ }
-      positions.push(block.content.length); return positions
-    })
-    const grammar = new Map(collectDocumentMarkdownLinks(blocks.map(block => ({ ...block, content: block.content.replace(/\r\n?/g, '\n') }))).map(link => [
-      graph3Key(link.blockId, rawOffsets[link.blockIndex][link.start], rawOffsets[link.blockIndex][link.end]), link
-    ]))
+    const originalOffset = markdownOriginalOffsetLookup(blocks)
+    const normalized = blocks.map(block => block.content.includes('\r') ? { ...block, content: block.content.replace(/\r\n?/g, '\n') } : block)
+    const grammar = new Map(collectDocumentMarkdownLinks(normalized).map(link => {
+      const from = originalOffset(link.blockIndex, link.start), to = originalOffset(link.blockIndex, link.end)
+      if (from === null || to === null) return graph3Conflict('navigation-range-grammar-mismatch', scopeId)
+      return [graph3Key(link.blockId, from, to), link] as const
+    }))
     if (grammar.size !== facts.links.length) return graph3Conflict('navigation-incomplete-grammar', scopeId)
     const destinations = facts.links.map(link => {
       const location = locations.get(link.key.blockId)!, role = grammar.get(graph3Key(link.key.blockId, link.key.from, link.key.to))
@@ -313,17 +290,14 @@ function deriveSideNavigationWithRoutes3(data: Graph3Inputs, side: Side, routeDb
         const binding = bindingIndexes.get(location.groupId)?.get(graph3Key(location.blockId, link.key.from, link.key.to, link.key.raw, link.key.syntax))
         if (!knowledge || !snapshot || !binding) return graph3Conflict('navigation-missing-original-captured-binding', { scopeId, key: link.key })
         target = { kind: 'captured-binding', groupId: location.groupId, tuple: knowledge.tuple, groupSource: knowledge.source, binding, hintsOnly: true }
-      } else target = targetFor(document, link.url, link.key.syntax === 'wiki')
+      } else target = targetFor(document, link.url, link.key.syntax === 'wiki', findHeading)
       return { key: link.key, url: link.url, image: link.image, grammar: { kind: role.kind, syntax: role.kind === 'wiki' ? 'wiki' : role.syntax ?? null }, location, target }
     })
-    const result = { scopeId, field, document: docRef(document.documentId), path: document.path, title: document.title,
-      blocks: field === 'body' ? view.entries : blocks.map(block => ({ occurrenceKey: block.id, block, location: locations.get(block.id)! })), destinations,
+    return { scopeId, field, document: docRef(document.documentId), path: document.path, title: document.title,
+      blocks: blocks.map(block => ({ occurrenceKey: block.id, block, location: locations.get(block.id)! })), destinations,
       definitions: facts.definitions, effectiveDefinitions: [...facts.effective].map(([key, definition]) => ({ key, definition })),
       uses: [...facts.uses].map(([blockId, definitions]) => ({ blockId, definitions: [...definitions] })), units: facts.units }
-    charge(Buffer.byteLength(capsuleJson(result)) - (field === 'body' ? view.blockBytes : 0))
-    return result
   }
-  const scopes = physical.documents.flatMap(document => [scope(document, 'body'), scope(document, 'summary')])
   const currentPayloads = side === 'current' ? data.inputs.knowledge.constraints.payloads.filter(payload => !payload.witness.domain.length && payload.witness.side === 'current') : []
   if (side === 'current' && currentPayloads.length !== 1) return graph3Conflict('navigation-current-payload-closure', null)
   const body = { kind: 'complete-root-restore-navigation-rewrite-inputs' as const, version: 3 as const,
@@ -332,19 +306,79 @@ function deriveSideNavigationWithRoutes3(data: Graph3Inputs, side: Side, routeDb
     sourcePayload: side === 'source' ? data.value.sourcePayload : currentPayloads[0].key,
     conservationHash: data.inputs.knowledge.conservationHash, identityAllocationHash: data.value.allocationHash,
     sourceMaterialHash: data.inputs.source.materialHash, currentMaterialHash: data.inputs.current.materialHash,
-    scopes, headingNamespaces, ordinaryNavigationCaptured: true as const, templateNavigationCaptured: false as const,
+    ordinaryNavigationCaptured: true as const, templateNavigationCaptured: false as const,
     canonicalBindingsAreHistoricalHints: true as const,
     finalConstraints: ['retain-qualified-target-identities', 'preserve-unresolved-and-ambiguous', 'consume-effective-definition-occurrences',
       'retain-instance-heading-occurrences', 'reparse-complete-final-forests-and-summary-separately'] as const,
     finalLayoutApplied: false as const, referenceRewriteComplete: false as const, semanticValidationComplete: false as const,
     sourcePolicyReplayed: false as const, sourceHistoryReplayed: false as const, acceptedCoverage: false as const, effective: false as const, permit: false as const }
-  const encoded = capsuleJson(body)
-  if (Buffer.byteLength(encoded) > CAPSULE2_RAW_MAX_JSON_BYTES) return graph3Conflict('complete-navigation-input-budget', null)
-  return freezeCapsuleValue({ ...body, navigationInputHash: capsuleBytesHash((side === 'source'
-    ? 'knowbook.restore.navigation3.inputs.v1\0' : 'knowbook.restore.navigation3.current-inputs.v1\0') + encoded) })
+  return { body, documents: physical.documents, headingNamespace, scope }
+}
+
+type NavigationProjection = ReturnType<typeof prepareSideNavigation>
+type OriginalScope = ReturnType<NavigationProjection['scope']>
+type HeadingNamespace = ReturnType<NavigationProjection['headingNamespace']>
+type Navigation3Inputs = NavigationProjection['body'] & {
+  readonly scopes: readonly OriginalScope[]; readonly headingNamespaces: readonly HeadingNamespace[]; readonly navigationInputHash: string
+}
+export type StoredNavigation3Inputs = Omit<Navigation3Inputs, 'scopes' | 'headingNamespaces'> & {
+  readonly scopeCount: number
+  /** Canonical hashing only. Data readers must use the cursor methods below. */
+  readonly hashInput: Navigation3Inputs
+  scopes(): IterableIterator<OriginalScope>
+  readScope(scopeId: string): OriginalScope | undefined
+  headingNamespaces(): IterableIterator<HeadingNamespace>
+  headingNamespace(documentId: string): HeadingNamespace | undefined
+}
+
+/** Keep expanded forests out of memory between documents. The first pass
+ * seals heading namespaces. The second resolves links one scope at a time. */
+export function withStoredRootRestoreNavigationInputs3<T>(data: NavigationGraphInputs, side: Side, read: (input: StoredNavigation3Inputs) => T): T {
+  const routes = new Database(':memory:')
+  try {
+    const projection = prepareSideNavigation(data, side, routes)
+    return withStoredRestoreScopes<HeadingNamespace, void, T>(append => {
+      for (const document of projection.documents) append(document.documentId, projection.headingNamespace(document))
+    }, (_, headings) => withStoredRestoreScopes<OriginalScope, void, T>(append => {
+      let cached: { id: string; slug: Map<string, Heading>; normalizedText: Map<string, Heading> } | undefined
+      const findHeading = (id: string, fragment: string, wiki: boolean) => {
+        if (cached?.id !== id) {
+          const namespace = headings.byId(id) ?? graph3Conflict('navigation-heading-namespace-missing', id)
+          const slug = new Map<string, Heading>(), normalizedText = new Map<string, Heading>()
+          // Lookup prefers the first exact slug, followed by the first normalized Wiki heading.
+          for (const heading of namespace.headings) {
+            if (!slug.has(heading.slug)) slug.set(heading.slug, heading)
+            const key = heading.text.normalize('NFC').toLowerCase()
+            if (!normalizedText.has(key)) normalizedText.set(key, heading)
+          }
+          cached = { id, slug, normalizedText }
+        }
+        return cached.slug.get(fragment) ?? (wiki ? cached.normalizedText.get(fragment.normalize('NFC').toLowerCase()) : undefined)
+      }
+      for (const document of projection.documents) for (const field of ['body', 'summary'] as const) {
+        const scope = projection.scope(document, field, findHeading)
+        append(scope.scopeId, scope)
+      }
+    }, (_, scopes) => {
+      const metadata = freezeCapsuleValue(projection.body)
+      const body = { ...metadata, scopes: scopes.hashInput, headingNamespaces: headings.hashInput }
+      const navigationInputHash = hashBoundedCapsuleJson(body, CAPSULE2_RAW_MAX_JSON_BYTES, side === 'source'
+        ? 'knowbook.restore.navigation3.inputs.v1\0' : 'knowbook.restore.navigation3.current-inputs.v1\0')
+      if (!navigationInputHash) return graph3Conflict('complete-navigation-input-budget', null)
+      const hashInput = Object.freeze({ ...body, navigationInputHash })
+      return read(Object.freeze({ ...metadata, navigationInputHash, scopeCount: scopes.count, hashInput,
+        scopes: () => scopes.iterate(), readScope: (id: string) => scopes.byId(id),
+        headingNamespaces: () => headings.iterate(), headingNamespace: (id: string) => headings.byId(id) }))
+    }))
+  } finally { routes.close() }
+}
+
+function deriveSideNavigationRewriteInputs3(data: NavigationGraphInputs, side: Side) {
+  return withStoredRootRestoreNavigationInputs3(data, side, ({ hashInput, scopes, headingNamespaces }) =>
+    freezeCapsuleValue({ ...hashInput, scopes: [...scopes()], headingNamespaces: [...headingNamespaces()] }))
 }
 
 /** The original source DTO/hash preimage is unchanged. */
-export function deriveRootRestoreNavigationRewriteInputs3(data: Graph3Inputs) { return deriveSideNavigationRewriteInputs3(data, 'source') }
+export function deriveRootRestoreNavigationRewriteInputs3(data: NavigationGraphInputs) { return deriveSideNavigationRewriteInputs3(data, 'source') }
 /** Actual current originals, no source/current DTO swap or invented assignment. */
-export function deriveRootRestoreCurrentNavigationRewriteInputs3(data: Graph3Inputs) { return deriveSideNavigationRewriteInputs3(data, 'current') }
+export function deriveRootRestoreCurrentNavigationRewriteInputs3(data: NavigationGraphInputs) { return deriveSideNavigationRewriteInputs3(data, 'current') }

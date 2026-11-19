@@ -3,6 +3,14 @@ import { capsuleJson } from './restore-knowledge-capsule-model'
 
 const bufferLimit = 64 * 1024
 const stringUnits = Math.floor(bufferLimit / 6) // An escaped code unit can occupy six bytes.
+const storedArrays = new WeakMap<readonly unknown[], () => Iterable<string>>()
+
+/** Private hash serializer input for arrays already encoded by an owned plan. */
+export function capsuleJsonStoredArray<T>(encodedItems: () => Iterable<string>): readonly T[] {
+  const array: readonly T[] = Object.freeze([])
+  storedArrays.set(array, encodedItems)
+  return array
+}
 
 function* capsuleJsonStringChunks(value: string): IterableIterator<string> {
   if (value.length <= stringUnits) { yield JSON.stringify(value); return }
@@ -30,8 +38,7 @@ export function capsuleJsonStringBytes(value: string, limit: number): number {
 /** Canonical bytes for privately built SQL packets. A complete encoded packet
  * is never needed for its byte budget or digest. JSON still orders array-index
  * object keys numerically after the canonical lexical property sort. */
-export function hashBoundedCapsuleJson(value: object, maxBytes: number, prefix = '',
-  streamedArray?: { field: string; encodedItems: Iterable<string> }): string | null {
+export function hashBoundedCapsuleJson(value: object, maxBytes: number, prefix = ''): string | null {
   const hash = createHash('sha256').update(prefix)
   let pending = '', bytes = 0
   const emit = (part: string) => {
@@ -61,9 +68,20 @@ export function hashBoundedCapsuleJson(value: object, maxBytes: number, prefix =
     if (typeof item === 'string') writeString(item)
     else if (Array.isArray(item)) {
       emit('[')
-      for (let index = 0; index < item.length && bytes <= maxBytes; index++) {
-        if (index) emit(',')
-        write(item[index])
+      const stored = storedArrays.get(item)
+      if (stored) {
+        let first = true
+        for (const encoded of stored()) {
+          if (bytes > maxBytes) break
+          if (!first) emit(',')
+          emit(encoded)
+          first = false
+        }
+      } else {
+        for (let index = 0; index < item.length && bytes <= maxBytes; index++) {
+          if (index) emit(',')
+          write(item[index])
+        }
       }
       emit(']')
     } else if (item && typeof item === 'object') {
@@ -79,25 +97,13 @@ export function hashBoundedCapsuleJson(value: object, maxBytes: number, prefix =
         const value = fields[key]
         if (value === undefined || typeof value === 'function' || typeof value === 'symbol') continue
         if (!first) emit(',')
-        writeString(key); emit(':')
-        if (item === root && streamedArray?.field === key) {
-          emit('[')
-          let firstItem = true
-          for (const encoded of streamedArray.encodedItems) {
-            if (bytes > maxBytes) break
-            if (!firstItem) emit(',')
-            emit(encoded)
-            firstItem = false
-          }
-          emit(']')
-        } else write(value)
+        writeString(key); emit(':'); write(value)
         first = false
       }
       emit('}')
     } else emit(JSON.stringify(item) ?? 'null')
   }
-  const root = value
-  write(root)
+  write(value)
   flush()
   return bytes <= maxBytes ? hash.digest('hex') : null
 }

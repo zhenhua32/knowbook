@@ -2,6 +2,7 @@ import { expect, test, type Page } from '@playwright/test'
 import type { ElectronApplication } from 'playwright'
 import type { IpcMainInvokeEvent } from 'electron'
 import type { SyncedEditingRequest } from '../src/shared/synced-editing-session'
+import type { ApplyEditorRecoveryCrossMoveInput, EditorRecoveryExpected, EditorRecoveryReceipt, WriteEditorRecoveryDraftsInput } from '../src/shared/editor-recovery-drafts'
 import { appendCanonicalText, expectCanonicalRow, inlineInstance, openInlineHost, saveCanonical, setInlineReading, withCanonicalInlineApp } from './helpers/canonical-inline'
 import { hasBuiltElectronApp, uiText } from './helpers/electron'
 import type { CanonicalHostBody } from './helpers/canonical-inline-seed'
@@ -59,6 +60,9 @@ async function observeOrdinaryRoute(app: ElectronApplication, sourceId: string) 
   }, sourceId)
 }
 
+const selectedHostIds = (page: Page) => page.locator('.block-editor-row-selected')
+  .evaluateAll(rows => rows.map(row => row.getAttribute('data-block-id')))
+
 async function openMixedMove(page: Page, source: CanonicalHostBody, destination: CanonicalHostBody) {
   const row = (id: string) => page.locator(`.block-editor-row[data-block-id="${id}"]`)
   const first = row(source.blocks[0].id), last = row(source.blocks[1].id)
@@ -69,12 +73,43 @@ async function openMixedMove(page: Page, source: CanonicalHostBody, destination:
   if (!start || !end) throw new Error('Both host rows must be visible')
   await page.mouse.move(start.x + 2, start.y + Math.min(10, start.height / 2)); await page.mouse.down()
   await page.mouse.move(end.x + 2, end.y + Math.min(10, end.height / 2), { steps: 4 }); await page.mouse.up()
-  await expect(page.locator('.block-editor-row-selected')).toHaveCount(2)
+  await expect.poll(() => selectedHostIds(page)).toEqual(source.blocks.slice(0, 2).map(block => block.id))
+  return openMoveForSelection(page, destination)
+}
+
+async function openMoveForSelection(page: Page, destination: CanonicalHostBody) {
   await page.locator('.block-selection-toolbar').getByRole('button', { name: uiText('Move to document…', '移动到文档…'), exact: true }).click()
   const dialog = page.locator('.document-block-move-dialog')
   await dialog.locator('.document-capture-field input').fill(destination.title)
   await dialog.locator(`input[value="${destination.id}"]`).check()
   return dialog
+}
+
+type MoveDraftHeads = { host: EditorRecoveryExpected; stationary: EditorRecoveryExpected }
+
+async function observeMoveDraftHeads(app: ElectronApplication, blockId: string) {
+  await app.evaluate(({ ipcMain }, blockId) => {
+    const handlers = (ipcMain as unknown as { _invokeHandlers: Map<string, unknown> })._invokeHandlers
+    const writeChannel = 'knowbook:write-editor-recovery-drafts', moveChannel = 'knowbook:apply-editor-recovery-cross-move'
+    const write = handlers.get(writeChannel) as (event: IpcMainInvokeEvent, input: WriteEditorRecoveryDraftsInput) => EditorRecoveryReceipt
+    const move = handlers.get(moveChannel) as (event: IpcMainInvokeEvent, input: ApplyEditorRecoveryCrossMoveInput) => unknown
+    if (!write || !move) throw new Error('The real recovery handlers are required')
+    let stationary: EditorRecoveryExpected | undefined
+    ipcMain.removeHandler(writeChannel)
+    ipcMain.handle(writeChannel, (event, input: WriteEditorRecoveryDraftsInput) => {
+      const receipt = write(event, input)
+      const saved = input.records.find(record => record.working.kind === 'group' && record.working.blocks.some(block => block.id === blockId))
+      const head = saved && receipt.records.find(item => item.draftSessionId === saved.draftSessionId && item.generation === saved.generation)
+      if (head) stationary = { recordId: head.recordId, generation: head.generation, hash: head.hash }
+      return receipt
+    })
+    ipcMain.removeHandler(moveChannel)
+    ipcMain.handle(moveChannel, (event, input: ApplyEditorRecoveryCrossMoveInput) => {
+      if (!stationary) throw new Error('The unchanged draft must have received its durable receipt before Main starts moving')
+      ;(globalThis as typeof globalThis & { moveDraftHeads?: MoveDraftHeads }).moveDraftHeads = { host: input.hostHead, stationary }
+      return move(event, input)
+    })
+  }, blockId)
 }
 
 async function pauseAutosave(page: Page) {
@@ -164,7 +199,9 @@ test('moves ordinary and shared roots across pages and restores dependent Markdo
   })
 })
 
-test('declines a mixed cross-page move while two groups have unsaved shared text @electron', async ({}, info) => {
+for (const moveBoth of [false, true]) test(moveBoth
+  ? 'declines a move that would transfer two unsaved shared bodies @electron'
+  : 'moves one unsaved shared body and keeps a separate draft in the original editing scope @electron', async ({}, info) => {
   await withCanonicalInlineApp(info, async fixture => {
     const { seed } = fixture, [source, destination] = seed.hosts, { page } = fixture.context()
     const independent = await page.evaluate(async ({ sourceId, originalGroupId }) => {
@@ -182,8 +219,8 @@ test('declines a mixed cross-page move while two groups have unsaved shared text
         mode: 'command', clientOperationId: crypto.randomUUID(),
         action: { kind: 'create', documentId: sourceId, selectedRootIds: [blockId], groupId, instanceId },
         hostsWorkingBefore: [{ documentId: sourceId, expectedPersistedUpdatedAt: doc.updatedAt,
-          workingBefore: { title: doc.title, summary: doc.summary, blocks: [...blocks,
-            { id: blockId, type: 'paragraph', content: text, checked: false, depth: 0, parentBlockId: null }] } }],
+          workingBefore: { title: doc.title, summary: doc.summary, blocks: [...blocks.slice(0, 2),
+            { id: blockId, type: 'paragraph', content: text, checked: false, depth: 0, parentBlockId: null }, ...blocks.slice(2)] } }],
         groups: [{ groupId: originalGroupId, expectedRevision: original.snapshot.revision, expectedTopologyRevision: original.snapshot.topologyRevision }],
         expectedInstances: original.snapshot.instances.filter(row => row.hostDocumentId === sourceId)
           .map(({ instanceId, hostDocumentId, bindingVersion }) => ({ instanceId, hostDocumentId, bindingVersion }))
@@ -194,37 +231,80 @@ test('declines a mixed cross-page move while two groups have unsaved shared text
     await page.reload()
     const instanceId = seed.instanceIds[0], suffix = ' still private', edited = seed.primaryText + suffix
     const otherSuffix = ' another private draft', otherEdited = independent.text + otherSuffix
-    const readActual = () => page.evaluate(async ({ sourceId, destinationId, bindings }) => {
+    const readActual = (moved = false) => page.evaluate(async ({ sourceId, destinationId, bindings }) => {
       const pages = await Promise.all([sourceId, destinationId].map(id => window.knowbook.getDocumentDetail(id)))
       const canonical = await Promise.all(bindings.map(async binding => {
-        const state = await window.knowbook.resolveSyncedInlineInstance({ hostDocumentId: sourceId, ...binding })
+        const state = await window.knowbook.resolveSyncedInlineInstance(binding)
         if (state.status !== 'ready') throw new Error('An original instance is missing')
         return state.snapshot
       }))
       return { pages, canonical }
     }, { sourceId: source.id, destinationId: destination.id, bindings: [
-      { groupId: seed.groupId, instanceId }, { groupId: independent.groupId, instanceId: independent.instanceId }
+      { hostDocumentId: moved ? destination.id : source.id, groupId: seed.groupId, instanceId },
+      { hostDocumentId: source.id, groupId: independent.groupId, instanceId: independent.instanceId }
     ] })
     await openInlineHost(page, source); await setInlineReading(page, false)
     const original = await readActual()
+    if (!moveBoth) await observeMoveDraftHeads(fixture.context().app, independent.blockId)
     // Hold the periodic Save so both edits stay live until the move decision.
     const paused = await pauseAutosave(page)
     try {
       await appendCanonicalText(page, instanceId, seed.primaryId, seed.primaryText, suffix)
       await appendCanonicalText(page, independent.instanceId, independent.blockId, independent.text, otherSuffix)
       expect(await readActual()).toEqual(original)
-      const dialog = await openMixedMove(page, source, destination)
+      const sourceIds = original.pages[0]?.blocks.map(row => row.id)
+      if (!sourceIds?.includes(instanceId) || !sourceIds.includes(independent.instanceId)) throw new Error('Both groups must have a source reference')
+      if (moveBoth) {
+        const first = page.locator('.block-editor-row').filter({ has: page.locator('textarea.block-inline-textarea') }).first()
+          .locator('textarea.block-inline-textarea')
+        await first.focus()
+        await expect(first).toBeFocused()
+        await page.keyboard.press('ControlOrMeta+a')
+        await page.keyboard.press('ControlOrMeta+a')
+        await expect.poll(() => selectedHostIds(page)).toEqual(sourceIds)
+      }
+      const dialog = await (moveBoth ? openMoveForSelection(page, destination) : openMixedMove(page, source, destination))
       await dialog.getByRole('button', { name: uiText('Move', '移动'), exact: true }).click()
-      await expect(dialog.getByRole('alert')).toBeVisible()
-      await expect(page.getByText(/参与此操作的共享正文还有未保存|A shared body involved in this operation has unsaved/)).toBeVisible()
-      expect(await readActual()).toEqual(original)
-      await dialog.press('Escape')
-      await expect(dialog).toHaveCount(0)
-      await expect(page.locator('.block-editor-row-selected')).toHaveCount(2)
-      await expectCanonicalRow(inlineInstance(page, instanceId), seed.primaryId, edited)
+      if (moveBoth) {
+        await expect(dialog.getByRole('alert')).toBeVisible()
+        await expect(page.getByText(/参与此操作的共享正文还有未保存|A shared body involved in this operation has unsaved/)).toBeVisible()
+        expect(await readActual()).toEqual(original)
+        await dialog.press('Escape')
+        await expect(dialog).toHaveCount(0)
+        await expect.poll(() => selectedHostIds(page)).toEqual(sourceIds)
+        await expectCanonicalRow(inlineInstance(page, instanceId), seed.primaryId, edited)
+      } else {
+        await expect(dialog).toHaveCount(0)
+        await expect(inlineInstance(page, instanceId)).toHaveCount(0)
+        const moved = await readActual(true)
+        expect(moved.pages.map(doc => doc?.blocks.map(block => block.id))).toEqual([
+          original.pages[0]?.blocks.slice(2).map(block => block.id),
+          [...destination.blocks, ...source.blocks.slice(0, 2)].map(block => block.id)
+        ])
+        expect(moved.canonical[0].blocks).toEqual(original.canonical[0].blocks)
+        expect(moved.canonical[1]).toEqual(original.canonical[1])
+        const heads = await fixture.context().app.evaluate(() => (globalThis as typeof globalThis & { moveDraftHeads?: MoveDraftHeads }).moveDraftHeads)
+        if (!heads) throw new Error('The original recovery heads must be present')
+        const recovery = await page.evaluate(async heads => {
+          const read = (head: EditorRecoveryExpected) => window.knowbook.readEditorRecoveryDraft(head)
+          const { canonicalCrossMoveRecovery } = await read(heads.host)
+          if (!canonicalCrossMoveRecovery) throw new Error('The moved draft must have its original destination proof')
+          const { recordId, generation, hash } = canonicalCrossMoveRecovery.group
+          return { canonicalCrossMoveRecovery, moving: (await read({ recordId, generation, hash })).record.draft.working,
+            stationary: (await read(heads.stationary)).record.draft.working }
+        }, heads)
+        expect(recovery.canonicalCrossMoveRecovery).toMatchObject({ hostDocumentId: destination.id, instanceId })
+        expect(recovery.moving).toMatchObject({ kind: 'group', blocks: expect.arrayContaining([expect.objectContaining({ id: seed.primaryId, content: edited })]) })
+        expect(recovery.stationary).toMatchObject({ kind: 'group', blocks: [expect.objectContaining({ id: independent.blockId, content: otherEdited })] })
+        const stationary = inlineInstance(page, independent.instanceId)
+        await expectCanonicalRow(stationary, independent.blockId, otherEdited)
+        await stationary.getByRole('button', { name: uiText('Undo', '撤销'), exact: true }).click()
+        await expectCanonicalRow(stationary, independent.blockId, independent.text)
+        await stationary.getByRole('button', { name: uiText('Redo', '重做'), exact: true }).click()
+      }
       await expectCanonicalRow(inlineInstance(page, independent.instanceId), independent.blockId, otherEdited)
     } finally { await paused.evaluate(resume => resume()); await paused.dispose() }
-    await saveCanonical(page, seed, instanceId, edited)
+    if (moveBoth) await saveCanonical(page, seed, instanceId, edited)
     await saveCanonical(page, { ...seed, groupId: independent.groupId, primaryId: independent.blockId }, independent.instanceId, otherEdited)
   })
 })

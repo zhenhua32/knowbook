@@ -193,39 +193,44 @@ export class EditorRecoveryCoordinator {
   }
   checkpointPendingHost(identity: object, operationId: string, shouldContinue: () => boolean,
     method: 'applySyncedHostStructure' | 'restoreSyncedHostOperation' = 'applySyncedHostStructure', groupIdentity?: object,
-    linkDurableGroup = false): Promise<boolean> {
+    linkDurableGroup = false, stationaryGroupIdentities: readonly object[] = []): Promise<boolean> {
     return this.serial(async () => {
       await this.settleOriginal()
       const entry = this.entries.get(identity)
-      const group = groupIdentity && this.entries.get(groupIdentity)
+      const groups: Entry[] = []
+      for (const id of groupIdentity ? [groupIdentity, ...stationaryGroupIdentities] : stationaryGroupIdentities) {
+        const group = this.entries.get(id)
+        if (group?.address.kind !== 'group') return false
+        groups.push(group)
+      }
       const current = () => !this.frozen && shouldContinue() && entry && !entry.detached && this.entries.get(identity) === entry
-        && (!groupIdentity || group && !group.detached && this.entries.get(groupIdentity) === group)
+        && groups.every(group => !group.detached && this.entries.get(group.identity) === group)
       if (!entry || entry.address.kind !== 'host' || !current()) return false
       const captured = await this.capture(entry)
       if (!current() || captured.draft.composing || captured.draft.importing || captured.draft.sources.length
         || captured.draft.pending.length !== 1 || captured.draft.pending[0].clientOperationId !== operationId
         || captured.draft.pending[0].method !== method) return false
-      const shared = group && await this.capture(group)
-      if (shared && (group?.address.kind !== 'group' || shared.unedited || shared.draft.composing
-        || shared.draft.importing || shared.draft.sources.length || shared.draft.pending.length)) return false
-      if (shared) {
-        const { base } = await shared.entry.opening()
+      const sharedGroups = await Promise.all(groups.map(group => this.capture(group)))
+      for (const { entry, draft, unedited } of sharedGroups) {
+        if (unedited || draft.composing || draft.importing || draft.sources.length || draft.pending.length) return false
+        const { base } = await entry.opening()
         const owner = base.owner, body = base.persistedWorking
-        const snapshot = validateSyncedGroupSnapshot(JSON.parse(shared.draft.replayJson!).snapshot)
+        const snapshot = validateSyncedGroupSnapshot(JSON.parse(draft.replayJson!).snapshot)
         if (owner.kind !== 'group' || body.kind !== 'group' || owner.groupId !== snapshot.groupId || owner.creationId !== snapshot.creationId
           || owner.createdAt !== snapshot.createdAt || owner.revision !== snapshot.revision || owner.topologyRevision !== snapshot.topologyRevision
           || owner.historyCursor !== snapshot.history.cursor || canonicalSyncedPortableJson(body.blocks) !== canonicalSyncedPortableJson(syncedCanonicalEdits(snapshot.blocks))) return false
       }
-      const captures = shared ? [captured, shared] : [captured]
+      const captures = [captured, ...sharedGroups]
       const changed = captures.filter(item => item.fingerprint !== item.entry.fingerprint)
       if (!current()) return false
-      if (linkDurableGroup && shared && changed.includes(shared)) {
-        // Main seals a cross-page host relation only to an already committed
-        // shared head. Ordinary same-parent moves still write a single batch.
-        await this.write([shared], { purpose: 'background' })
+      const durableGroups = linkDurableGroup ? changed.filter(item => item !== captured) : []
+      if (durableGroups.length) {
+        // Main links the move to the already committed moving group head.
+        // Stationary group heads keep their original scope and remain live.
+        await this.write(durableGroups, { purpose: 'background' })
         if (!current()) return false
       }
-      const remaining = linkDurableGroup ? changed.filter(item => item !== shared) : changed
+      const remaining = linkDurableGroup ? changed.filter(item => item === captured) : changed
       if (remaining.length) await this.write(remaining, { purpose: 'background' })
       if (!current() || captures.some(item => !item.entry.head)) return false
       const latest = await Promise.all(captures.map(item => this.capture(item.entry)))

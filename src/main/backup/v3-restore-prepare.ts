@@ -38,7 +38,7 @@ import { prepareBackupV3RestoreSqlStage } from './v3-restore-sql-stage'
 import { readBackupV3PublicationEdgeFromSealedSql, readPortableBackupV3PublicationEdge } from './v3-publication-lineage'
 import { readV3SourceOwnedMissingGroups } from './v3-restore-source-ownership'
 import { hasNoV3RetirementDrafts, hasNoV3RetirementReferenceDependencies, hasNoV3RetirementSqlDependencies,
-  hasNoV3RetirementHistoricalReferences, plainV3RetirementGroup } from './v3-restore-source-dependencies'
+  hasNoV3RetirementHistoricalReferences } from './v3-restore-source-dependencies'
 import type { Graph3Inputs } from '../database/restore-knowledge-graph3-data'
 import { readV3RestoreSourceTombstones } from './v3-restore-source-tombstone'
 import { normalizeWebDavConfig } from '../sync/webdav-client'
@@ -173,7 +173,7 @@ async function inspectSourceOwnership(input: BackupV3RestorePreparation, current
     missing.sort((a, b) => a.groupId < b.groupId ? -1 : a.groupId > b.groupId ? 1 : 0)
     const retained = missing.map(({ groupId, createdAt, sourceGroupId, sourceSnapshotId }) => ({ groupId, createdAt, sourceGroupId, sourceSnapshotId }))
     const localWires = missing.map(group => group.wire)
-    if (!retirementCredentials || !missing.length || missing.some(group => !group.noHistoricalReferences || !plainV3RetirementGroup(group.sourceWire))
+    if (!retirementCredentials || !missing.length || missing.some(group => !group.noHistoricalReferences)
       || !hasNoV3RetirementReferenceDependencies(reference.candidate, localWires)
       || !db.transaction(() => hasNoV3RetirementSqlDependencies(db, localWires))()
       || !await hasNoV3RetirementDrafts(profileRoot)) return { retained }

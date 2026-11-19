@@ -55,8 +55,11 @@ type SourceState = { id: object; local: Readonly<MarkdownSourceLocalState>; repo
 type MountedInline = { mount: InlineMount; binding: SyncedGroupBinding }
 type CrossDraftProtection = { instanceId: string; groupId: string; group: SyncedGroupController; identity: object; hold: HostReorderGroupHold;
   survivors: readonly MountedInline[]; current(): boolean }
+type StationaryCrossDraft = Pick<CrossDraftProtection, 'group' | 'identity' | 'hold' | 'current'> & {
+  snapshot: ReturnType<SyncedGroupController['getSnapshot']>['snapshot']
+}
 type CrossWrite = { opening: SyncedHostSourceCurrent; peers: readonly DocumentDetail[]; key: string; input: SyncedStructureInput | SyncedRestoreHostInput;
-  protection?: CrossDraftProtection; hostHead?: EditorRecoveryExpected }
+  stationary: Map<string, StationaryCrossDraft>; protection?: CrossDraftProtection; hostHead?: EditorRecoveryExpected }
 export type InlineDialog = ({ kind: 'canonical'; binding: SyncedGroupBinding; opener: HTMLElement | null; restored?: RestoredCanonicalSource }
   | { kind: 'host'; opening: SyncedHostSourceCurrent; opener: HTMLElement | null; operationId: string; restored?: RestoredSyncedHostSource }) & SourceState
 export interface InlineNavigation {
@@ -750,6 +753,23 @@ class InlineRuntime {
       current: () => hold.current() && active.binding.isCurrent() && survivors.every(item => item.binding.isCurrent()) }
   }
 
+  private holdStationaryCrossMoveDraft(opening: SyncedHostSourceCurrent, group: SyncedGroupController): StationaryCrossDraft | undefined {
+    const { snapshot, dirty } = group.getSnapshot(), { groupId, instances } = snapshot
+    const identity = this.recoveryGroups.get(groupId), { documentId } = opening.host
+    if (!dirty || !identity || !instances.length) return undefined
+    const bindings: SyncedGroupBinding[] = []
+    for (const instance of instances) {
+      const item = this.mounts.get(JSON.stringify([documentId, instance.instanceId]))
+      if (!item || instance.hostDocumentId !== documentId || item.mount.hostSession !== opening.hostSession
+        || item.mount.groupId !== groupId || item.mount.depth !== instance.depth || item.mount.parentBlockId !== instance.parentBlockId
+        || item.binding.scope.bindingVersion !== instance.bindingVersion || !item.binding.isCurrent()) return undefined
+      bindings.push(item.binding)
+    }
+    const hold = holdGroupForHostReorder(group)
+    if (!hold) return undefined
+    this.cancelGroupSave(groupId)
+    return { group, identity, snapshot, hold, current: () => hold.current() && bindings.every(binding => binding.isCurrent()) }
+  }
   async moveBetweenHosts(opening: SyncedHostSourceCurrent, source: DocumentDetail, peers: readonly DocumentDetail[],
     input: Pick<SyncedStructureInput, 'hostsWorkingBefore'> & ({ selection: string[]; placement?: SyncedPlacement }
       | { action: Extract<SyncedStructureAction, { kind: 'move-batch' }> }) | { historyToken: string; direction: 'undo' | 'redo'; groupIds: string[] },
@@ -757,13 +777,17 @@ class InlineRuntime {
     requiredDependencies?: ControlledDocumentBlockMove['dependencies']): Promise<boolean> {
     const prior = this.crossWrite
     let protection = prior?.protection
+    const stationary = prior?.stationary ?? new Map<string, StationaryCrossDraft>()
     try {
       const exact = () => current() && same(this.sourceCurrent(), opening)
       const groupsClean = (ids: Iterable<string>) => {
         for (const id of ids) {
           const group = this.workspace.getGroup(id)
           if (id === protection?.groupId && group === protection.group && protection.current()) continue
-          if (group && !clean(group.getSnapshot())) return false
+          const retained = stationary.get(id)
+          if (retained) {
+            if (group !== retained.group || !retained.current()) return false
+          } else if (group && !clean(group.getSnapshot())) return false
         }
         return true
       }
@@ -796,11 +820,18 @@ class InlineRuntime {
         const readGuards = async () => {
           const persisted = pages.flatMap(page => refs(page).map(ref => ({ ...ref, hostDocumentId: page.id })))
           for (const ref of persisted) ids.add(ref.groupId)
+          if (protection) for (const id of ids) {
+            const group = this.workspace.getGroup(id)
+            if (!group || id === protection.groupId || stationary.has(id) || clean(group.getSnapshot())) continue
+            const retained = this.holdStationaryCrossMoveDraft(opening, group)
+            if (retained) stationary.set(id, retained)
+          }
           if (!groupsClean(ids)) { reportDirty(); return null }
           const snapshots = await this.invoke('getSyncedGroupSnapshots', { groupIds: [...ids] })
           if (!canSubmit() || snapshots.workspaceScope !== this.session?.workspaceScope || snapshots.items.length !== ids.size
             || snapshots.items.some(item => item.status !== 'ready' || !ids.has(item.snapshot.groupId))) return null
           const groups = snapshots.items.flatMap(item => item.status === 'ready' ? [item.snapshot] : [])
+          if ([...stationary.values()].some(({ snapshot }) => !same(groups.find(item => item.groupId === snapshot.groupId), snapshot))) { reportDirty(); return null }
           const expectedInstances = []
           for (const { hostDocumentId, instanceId, groupId } of persisted) {
             const instance = groups.find(group => group.groupId === groupId)?.instances.find(item => item.instanceId === instanceId)
@@ -810,8 +841,8 @@ class InlineRuntime {
           return { expectedInstances, groups: groups.map(group => ({ groupId: group.groupId,
             expectedRevision: group.revision, expectedTopologyRevision: group.topologyRevision })) }
         }
-        // A shallow move uses committed content for its CAS and final graph. It
-        // must never flush a controller or rebind an instance with queued edits.
+        // The shallow host CAS uses committed group content. Main checks the
+        // original placement before allowing any held, nonmoving shared work.
         for (const page of pages) if (!await this.open({ kind: 'host', hostDocumentId: page.id }) || !canSubmit()) return false
         const guards = await readGuards()
         if (!guards) return false
@@ -852,13 +883,14 @@ class InlineRuntime {
         if (!canSubmit() || this.crossWrite) return false
         if (!groupsClean(ids)) return reportDirty()
         this.observeRecoveryHost()
-        const write: CrossWrite = { opening, peers: pages.slice(1), key, input: request, protection }
+        const write: CrossWrite = { opening, peers: pages.slice(1), key, input: request, protection, stationary }
         this.crossWrite = write; this.emit()
         const ready = () => this.crossWrite === write && canSubmit() && groupsClean(ids)
         let protectedOriginal = false
         try {
           protectedOriginal = await this.recovery.checkpointPendingHost(opening.hostSession, request.clientOperationId, ready,
-            'mode' in request ? 'applySyncedHostStructure' : 'restoreSyncedHostOperation', protection?.identity, Boolean(protection)) && ready()
+            'mode' in request ? 'applySyncedHostStructure' : 'restoreSyncedHostOperation', protection?.identity, Boolean(protection),
+            [...stationary.values()].map(item => item.identity)) && ready()
           if (protectedOriginal && protection) {
             write.hostHead = this.recovery.durableHead(opening.hostSession) ?? undefined
             protectedOriginal = !!write.hostHead
@@ -871,8 +903,9 @@ class InlineRuntime {
       const write = this.crossWrite!, { input: request, peers: participants } = write
       if (protection) {
         const sessionId = this.session?.sessionId
-        if (!write.hostHead || !sessionId || !canSubmit() || !protection.current()) return false
+        if (!write.hostHead || !sessionId || !canSubmit() || !groupsClean(request.groups.map(group => group.groupId))) return false
         protection.hold.expectCrossMove(request.clientOperationId)
+        for (const retained of stationary.values()) retained.hold.expectCrossMove(request.clientOperationId)
         const invoke = () => window.knowbook.applyEditorRecoveryCrossMove({ sessionId, hostHead: write.hostHead! })
         const moved = await invoke().catch(invoke)
         if (moved.status === 'rejected') {
@@ -880,7 +913,8 @@ class InlineRuntime {
           return reportDirty()
         }
         const result = moved.result
-        if (result.operationId !== request.clientOperationId || !result.historyToken) throw new Error('The original protected cross-page receipt changed')
+        if (result.operationId !== request.clientOperationId || !result.historyToken || [...stationary.values()].some(({ snapshot }) =>
+          !same(result.groups.find(item => item.groupId === snapshot.groupId), snapshot))) throw new Error('The original protected cross-page receipt changed')
         this.recovery.releaseCompletedCrossMove(opening.hostSession, protection.identity)
         const retired = this.workspace.releaseCrossMove(protection.groupId, protection.group, protection.hold)
         if (retired) {
@@ -930,6 +964,10 @@ class InlineRuntime {
       return true
     } finally {
       if (protection && this.crossWrite?.protection !== protection) protection.hold.release()
+      if (this.crossWrite?.stationary !== stationary) for (const [id, retained] of stationary) {
+        retained.hold.release()
+        if (this.workspace.getGroup(id) === retained.group) this.scheduleGroupSave(id, retained.group)
+      }
     }
   }
   async saveHostWorking(before: SyncedHostSourceCurrent): Promise<{ result: SyncedStructureApplied; submitted: SyncedHostSourceCurrent }> {

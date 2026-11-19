@@ -3,6 +3,7 @@ import { capsuleJson } from './restore-knowledge-capsule-model'
 import type { Capsule2Encoding, Capsule2RawSqlRow, Capsule2RawStreamTable } from './restore-knowledge-capsule2-raw-model'
 import { graph3Encode } from './restore-knowledge-graph3-data'
 import { readRawSyncedGroupSnapshotsOwned } from './synced-blocks-raw-read'
+import { assertSyncedStoredBindings } from './synced-stored-binding-read'
 import { assertV3SourceGroupRetirementPhysicalOwned, v3SourceGroupRetirementKey, writeV3SourceGroupRetirementsOwned,
   type V3SourceGroupRetirement } from './v3-source-group-retirement'
 
@@ -12,9 +13,10 @@ const fail = (reason: string): never => { throw new Error('V3 同步组裁剪候
 export function assertV3RetirementBeforeSql(db: Database.Database, { group }: V3SourceGroupRetirement) {
   const actual = readRawSyncedGroupSnapshotsOwned(db, [group.id]).get(group.id)
   if (!actual || actual.history.undoToken || actual.history.redoToken || actual.instances.length
-    || actual.bindings.length || !group.blocks.length || group.bindings.length
+    || !group.blocks.length
     || !equal(group, { kind: 'synced-group', id: actual.groupId, creationId: actual.creationId, createdAt: actual.createdAt,
       origin: actual.origin, blocks: actual.blocks, bindings: actual.bindings })) fail('原组正文、来源或引用')
+  assertSyncedStoredBindings(db, group.origin, group.blocks, group.bindings)
   if (db.prepare('SELECT 1 FROM synced_group_pins WHERE group_id=? LIMIT 1').get(group.id)
     || db.prepare('SELECT 1 FROM synced_group_history WHERE group_id=? LIMIT 1').get(group.id))
     fail('原组仍有历史或固定引用')

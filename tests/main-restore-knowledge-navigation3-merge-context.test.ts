@@ -2,9 +2,10 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { capsule2ApplicationColumns, type Capsule2Encoding, type Capsule2RawSqlTable } from '../src/main/database/restore-knowledge-capsule2-raw-model'
 import { capsuleBytesHash, capsuleJson } from '../src/main/database/restore-knowledge-capsule-model'
+import { markdownOriginalOffsetLookup } from '../src/shared/markdownNativeText'
 import { graph3Encode, graph3Key, graph3Text, type Graph3Inputs } from '../src/main/database/restore-knowledge-graph3-data'
 import { deriveRootRestoreNavigationMergeContext3, buildMerge3NavigationFinalIndex3, resolveFinalNavigation3,
-  withStoredMerge3NavigationFinalIndex3 } from '../src/main/database/restore-knowledge-navigation3-merge-context'
+  withStoredMerge3NavigationFinalIndex3, withStoredRootRestoreNavigationMergeContext3 } from '../src/main/database/restore-knowledge-navigation3-merge-context'
 import { finishMerge3Table, prepareMerge3Table, type Merge3Material } from '../src/main/database/restore-knowledge-merge3-storage'
 import type { deriveRootRestoreMergedContent3 } from '../src/main/database/restore-knowledge-merge3-model'
 import type { RawRestoreSqlCell } from '../src/main/database/restore-knowledge-sql-cell'
@@ -117,13 +118,35 @@ function fixture(repeated = false, originalAccess?: { source: Capsule2Encoding; 
 test('the SQLite scope index preserves the native navigation hash and yields every scope in original order', () => {
   const { data, merged } = fixture(true)
   const full = buildMerge3NavigationFinalIndex3(data, merged.tables)
-  withStoredMerge3NavigationFinalIndex3(data, merged.tables, ({ scopes, scope, scopeCount, ...metadata }) => {
+  withStoredMerge3NavigationFinalIndex3(data, merged.tables, ({ scopes, scope, scopeCount, hashInput: _hashInput, ...metadata }) => {
     assert.equal(scopeCount, full.scopes.length)
     assert.deepEqual({ ...metadata, scopes: [...scopes()] }, full)
     assert.deepEqual([...scopes()], full.scopes)
     assert.deepEqual(scope(full.scopes[0].scopeId), full.scopes[0])
     assert.equal(scope('unused'), undefined)
   })
+})
+
+test('original Markdown offsets preserve surrogate pairs, lone CR and exact CRLF boundaries', () => {
+  const rawOffset = markdownOriginalOffsetLookup([{ content: '😀\r\nx\ry\r\n' }])
+  assert.deepEqual(Array.from({ length: 8 }, (_, offset) => rawOffset(0, offset)), [0, 1, 2, 4, 5, 6, 7, 9])
+  assert.equal(rawOffset(0, 8), null)
+  assert.equal(rawOffset(0, 2.5), null)
+  assert.equal(rawOffset(1, 0), null)
+})
+
+test('stored source, current and final scopes preserve the complete merge context and its canonical hash', () => {
+  for (const repeated of [false, true]) {
+    const { data, merged } = fixture(repeated)
+    const full = deriveRootRestoreNavigationMergeContext3(data, merged)
+    withStoredRootRestoreNavigationMergeContext3(data, merged, stored => {
+      assert.equal(stored.contextHash, full.contextHash)
+      assert.equal(stored.sourceNavigationInputHash, full.source.navigationInputHash)
+      assert.equal(stored.currentNavigationInputHash, full.current.navigationInputHash)
+      assert.equal(stored.final.indexHash, full.final.indexHash)
+      assert.deepEqual([...stored.scopes()], full.scopes)
+    })
+  }
 })
 
 test('navigation merge context preserves source/current birth evidence and maps retained links before final path lookup', () => {

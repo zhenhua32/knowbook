@@ -13,7 +13,7 @@ import { findGraph3OriginalRow, graph3Conflict, graph3Encode, graph3Key, graph3V
 import { assertMerge3JsonBudget, type MergedRow3 } from './restore-knowledge-merge3-storage'
 import type { RootRestoreMergedContentChoices3 } from './restore-knowledge-merge3-read'
 import { deriveRootRestoreNavigationRewrite3 } from './restore-knowledge-navigation3-rewrite-model'
-import { buildMerge3NavigationFinalIndex3, resolveFinalNavigation3, withStoredMerge3NavigationFinalIndex3,
+import { resolveFinalNavigation3, withStoredMerge3NavigationFinalIndex3,
   type Navigation3FinalIndex, type Navigation3Table, type StoredNavigation3Index } from './restore-knowledge-navigation3-merge-context'
 import { renderNavigation3Destination } from './restore-knowledge-navigation3-rewrite-cells'
 import { deriveRootRestoreReferenceAllocation3, toReference3GraphInputs } from './restore-knowledge-reference3-model'
@@ -177,11 +177,8 @@ function deriveWithCanonicalIndexes(db: Database.Database, data: Graph3Inputs, a
   choices?: RootRestoreMergedContentChoices3, pending?: SelectedPendingLocalBody5) {
   const derived = toReference3GraphInputs(data, allocation)
   const ordinary = deriveRootRestoreNavigationRewrite3(derived, choices)
-  const selectedPending = pending && (() => {
-    const { tables, proof } = applySelectedPendingLocalBody5(derived, ordinary,
-      buildMerge3NavigationFinalIndex3(derived, ordinary.tables), pending)
-    return { tables, proof }
-  })()
+  const selectedPending = pending && withStoredMerge3NavigationFinalIndex3(derived, ordinary.tables,
+    prior => applySelectedPendingLocalBody5(derived, ordinary, prior, pending))
   const ordinaryTables = selectedPending?.tables ?? ordinary.tables
   return withStoredMerge3NavigationFinalIndex3(derived, ordinaryTables, before =>
     deriveCanonicalFromOrdinary(db, data, allocation, derived, ordinary, ordinaryTables, selectedPending?.proof, before))

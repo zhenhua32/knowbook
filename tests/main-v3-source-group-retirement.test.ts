@@ -20,13 +20,14 @@ import { applySyncedHostCommand, applySyncedHostFinal, createRequest, freshBlock
 test('a V3 retirement hides only its proven group, retains block births, and checks the sealed witness offline', () => withV3Fixture(async f => {
   const { db, store } = f
   const documentId = store.createDocument(null), blockId = randomUUID()
-  store.updateDocument(documentId, { title: 'Imported page', summary: '', blocks: [freshBlock(blockId, 'Retiring body')] })
+  store.updateDocument(documentId, { title: 'Imported page', summary: '',
+    blocks: [freshBlock(blockId, 'Retiring [target](V3%20Target.md#target-heading)')] })
   const create = createRequest(db, { documentId, selectedRootIds: [blockId] }), groupId = create.action.groupId
   assert.equal(applySyncedHostCommand(db, create).status, 'applied')
   const removal = request(db, [documentId], ([host]) => { host.blocks = [freshBlock(randomUUID(), 'Live page')] })
   assert.equal(applySyncedHostFinal(db, removal).status, 'applied')
   const original = snapshot(db, groupId)
-  assert.equal(original.bindings.length, 0)
+  assert.equal(original.bindings[0]?.target.kind, 'heading')
   assert.equal(original.instances.length, 0)
   const coverage = actualHistorySyntax(db, '2048-01-02T03:04:05.006Z')
   insertCoverageSyntax(db, coverage)
@@ -56,6 +57,10 @@ test('a V3 retirement hides only its proven group, retains block births, and che
     db.prepare('DELETE FROM app_settings WHERE key=?').run(key)
     getSyncedGroupSnapshots(db, { groupIds: [groupId] })
   }), /同步块内容或结构无效/)
+  assert.throws(db.transaction(() => {
+    db.prepare("UPDATE synced_groups SET bindings_json='[]' WHERE id=?").run(groupId)
+    readV3SourceGroupRetirementsOwned(db)
+  }), /原物理组头/)
   assert.throws(db.transaction(() => {
     const columns = Object.keys(body)
     db.prepare(`INSERT INTO synced_group_blocks(${columns.join(',')}) VALUES(${columns.map(column => '@' + column).join(',')})`).run(body)

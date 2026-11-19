@@ -34,8 +34,8 @@ import { validateSyncedRestoreHostInput, validateSyncedStructureInput } from '..
 import { parseStrictJson } from '../../shared/strictJson'
 import { captureCrossHostBatchJournal, captureCrossHostJournal4, captureCrossHostLinkJournal,
   CrossMoveJournalError, decodeCrossHostJournal4 } from '../database/synced-cross-host-journal4'
-import { matchesCanonicalV4CrossMoveForest, readCanonicalBatchCrossMoveJournal, readCanonicalBatchInitiatingHost,
-  readCanonicalLinkedCrossMoveJournal, readCanonicalStationaryInstances } from './canonical-cross-move-original4'
+import { isCanonicalCrossMoveGroupUnchanged, matchesCanonicalV4CrossMoveForest, readCanonicalBatchCrossMoveJournal,
+  readCanonicalBatchInitiatingHost, readCanonicalLinkedCrossMoveJournal, readCanonicalStationaryInstances } from './canonical-cross-move-original4'
 import { MoveRefused } from '../database/synced-host-cross-move-plan'
 import type { SyncedEditingRequest, SyncedEditingResult } from '../../shared/synced-editing-session'
 
@@ -611,12 +611,23 @@ export class EditorRecoveryDraftService {
             const outside = new Set(dependencyIds)
             if (original.persisted.some(page => outside.has(page.documentId) && !checkDraft(page.documentId, page.content))) return false
           }
-          if (linked || batch || stationary?.length) {
-            const groups = new Set(original.groups.filter(item => batch || stationary?.length || item.groupId !== move.groupId).map(item => item.groupId))
-            if (groups.size && this.side.someHead(record => record.base.workspaceScope === host.base.workspaceScope
-              && record.base.recoveryEpoch === host.base.recoveryEpoch && record.base.owner.kind === 'group' && groups.has(record.base.owner.groupId)
-              && record.recordId !== group.recordId && !alreadySavedCanonicalRecoveryOwned(db, record))) return false
-          }
+          const groups = new Set(original.groups.filter(item => item.groupId !== move.groupId || batch || stationary?.length).map(item => item.groupId))
+          const unchanged = new Set<string>()
+          if (groups.size && this.side.someHead(record => {
+            const { owner, workspaceScope, recoveryEpoch } = record.base
+            if (workspaceScope !== host.base.workspaceScope || recoveryEpoch !== host.base.recoveryEpoch
+              || owner.kind !== 'group' || !groups.has(owner.groupId) || record.recordId === group.recordId
+              || alreadySavedCanonicalRecoveryOwned(db, record)) return false
+            const draft = record.draft, producer = this.live.get(draft.draftSessionId)
+            const guard = move.input.groups.find(item => item.groupId === owner.groupId)
+            if (owner.groupId === move.groupId || producer?.frame !== frame || producer.sender !== event.sender || producer.groupSessionId !== sessionId
+              || draft.composing || draft.importing || draft.pending.length || draft.sources.length
+              || draft.working.kind !== 'group' || draft.working.incoming !== null
+              || owner.revision !== guard?.expectedRevision || owner.topologyRevision !== guard.expectedTopologyRevision) return true
+            if (!unchanged.has(owner.groupId) && !isCanonicalCrossMoveGroupUnchanged(db, original, owner.groupId)) return true
+            unchanged.add(owner.groupId)
+            return false
+          })) return false
           const target = original.after.find(page => page.documentId === move.targetDocumentId)
           const leaf = target?.content.blocks.find(block => block.id === move.binding.instanceId)
           if (leaf?.type !== 'synced-block') return false

@@ -133,10 +133,14 @@ export function readCanonicalBatchCrossMoveOriginalOwned(db: Database.Database, 
 
 /** Read the exact untouched memberships from the original P/guards and
  * require the same physical leaf and placement throughout its derived plan. */
-export function readCanonicalStationaryInstances(original: ReturnType<typeof decodeCrossHostJournal4>, groupId: string, movedId: string) {
+type CrossMovePositions = Pick<ReturnType<typeof decodeCrossHostJournal4>, 'before' | 'after' | 'persisted' | 'crossMove'>
+  & { input: Pick<ReturnType<typeof decodeCrossHostJournal4>['input'], 'expectedInstances' | 'groups'> }
+
+export function readCanonicalStationaryInstances(original: CrossMovePositions, groupId: string, movedId?: string) {
   const retained: Array<{ position: SyncedInstancePosition; createdAt: string }> = []
   if (original.input.expectedInstances.length < 2) return retained
   const guards = new Map(original.input.expectedInstances.map(guard => [guard.instanceId, guard]))
+  const transferred = new Set(original.crossMove.transfers.map(transfer => transfer.blockId))
   for (const page of original.persisted) {
     const stationary = page.content.blocks.filter(block => block.id !== movedId && block.type === 'synced-block'
       && parseSyncedBlockPayload(block.content).groupId === groupId)
@@ -148,7 +152,7 @@ export function readCanonicalStationaryInstances(original: ReturnType<typeof dec
     for (const block of stationary) {
       const guard = guards.get(block.id), createdAt = births.get(block.id)
       const parentType = block.parentBlockId === null ? null : blocks.get(block.parentBlockId)?.type ?? null
-      if (guard?.hostDocumentId !== page.documentId || !createdAt || sides.length !== 2 || !sides.every(blocks => {
+      if (transferred.has(block.id) || guard?.hostDocumentId !== page.documentId || !createdAt || sides.length !== 2 || !sides.every(blocks => {
         const found = blocks.get(block.id)
         return found?.type === block.type && found.content === block.content && found.parentBlockId === block.parentBlockId
           && found.depth === block.depth && (found.parentBlockId === null ? null : blocks.get(found.parentBlockId)?.type) === parentType
@@ -157,6 +161,21 @@ export function readCanonicalStationaryInstances(original: ReturnType<typeof dec
     }
   }
   return retained
+}
+
+/** A cross-host command writes ordinary host blocks and rebinds only changed
+ * occurrences. A different group can keep its existing recovery producer
+ * when the actual original accounts for every one of its bindings. */
+export function isCanonicalCrossMoveGroupUnchanged(db: Database.Database, original: CrossMovePositions, groupId: string): boolean {
+  const positions = readCanonicalStationaryInstances(original, groupId)
+  if (!positions?.length) return false
+  const guard = original.input.groups.find(item => item.groupId === groupId)
+  const [actual] = getSyncedGroupSnapshots(db, { groupIds: [groupId] }).items
+  if (!guard || actual?.status !== 'ready') return false
+  const { revision, topologyRevision, instances } = actual.snapshot
+  const byInstance = new Map(positions.map(({ position }) => [position.instanceId, position]))
+  return revision === guard.expectedRevision && topologyRevision === guard.expectedTopologyRevision && instances.length === byInstance.size
+    && instances.every(instance => hostEqual(instance, byInstance.get(instance.instanceId)))
 }
 
 function readCanonicalCrossMoveOriginalOwned(db: Database.Database, input: unknown, hasDependencies: boolean,

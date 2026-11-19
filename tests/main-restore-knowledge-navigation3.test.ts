@@ -4,7 +4,9 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { prepareRootRestoreIdentityPlan3 } from '../src/main/database/restore-knowledge-identity3-read'
 import { prepareRootRestoreNavigationRewriteInputs3, readRootRestoreNavigationRewriteInputs3 } from '../src/main/database/restore-knowledge-navigation3-read'
-import { deriveRootRestoreNavigationRewriteInputs3 } from '../src/main/database/restore-knowledge-navigation3-model'
+import { deriveRootRestoreCurrentNavigationRewriteInputs3, deriveRootRestoreNavigationRewriteInputs3, withStoredRootRestoreNavigationInputs3 } from '../src/main/database/restore-knowledge-navigation3-model'
+import { capsuleBytesHash, capsuleJson } from '../src/main/database/restore-knowledge-capsule-model'
+import { hashBoundedCapsuleJson } from '../src/main/database/restore-knowledge-capsule-json-hash'
 import { RestoreGraph3Conflict, type Graph3Inputs } from '../src/main/database/restore-knowledge-graph3-data'
 import { allTables } from './helpers/synced-backup-v3-fixture'
 import { tamperContent3VerificationOriginals } from './helpers/content3-fixture'
@@ -206,6 +208,28 @@ test('actual complete originals capture ordinary navigation by exact scope range
       assert.equal(n.templateBlockId, f.source.hostBodyId, 'A template may spell a physical ID without gaining that owner')
       for (const flag of ['finalLayoutApplied', 'referenceRewriteComplete', 'semanticValidationComplete', 'acceptedCoverage', 'effective', 'permit'] as const)
         assert.equal(value[flag], false)
+    })
+    await t.test('ordered cursors and nested canonical hashes reproduce both original navigation DTOs', () => {
+      const graph = { inputs: { knowledge: f.saved.knowledgeValue, source: f.sourcePacket, current: f.currentPacket }, value: identity.value }
+      const materialized = { source: value, current: deriveRootRestoreCurrentNavigationRewriteInputs3(graph) }
+      for (const side of ['source', 'current'] as const) withStoredRootRestoreNavigationInputs3(graph, side, stored => {
+        const baseline = materialized[side]
+        assert.equal(stored.scopeCount, baseline.scopes.length)
+        assert.deepEqual([...stored.scopes()], baseline.scopes)
+        assert.deepEqual([...stored.headingNamespaces()], baseline.headingNamespaces)
+        assert.deepEqual(stored.readScope(baseline.scopes[0].scopeId), baseline.scopes[0])
+        assert.deepEqual(stored.headingNamespace(baseline.headingNamespaces[0].document.id), baseline.headingNamespaces[0])
+        assert.equal(stored.readScope('missing'), undefined)
+        assert.equal(stored.headingNamespace('missing'), undefined)
+        const { navigationInputHash, ...body } = baseline
+        const prefix = side === 'source' ? 'knowbook.restore.navigation3.inputs.v1\0' : 'knowbook.restore.navigation3.current-inputs.v1\0'
+        assert.equal(stored.navigationInputHash, navigationInputHash)
+        assert.equal(navigationInputHash, capsuleBytesHash(prefix + capsuleJson(body)))
+        const packet = capsuleJson({ parts: [baseline] })
+        const bytes = Buffer.byteLength(packet)
+        assert.equal(hashBoundedCapsuleJson({ parts: [stored.hashInput] }, bytes), capsuleBytesHash(packet))
+        assert.equal(hashBoundedCapsuleJson({ parts: [stored.hashInput] }, bytes - 1), null)
+      })
     })
     await t.test('existing finite budgets reject occurrence multiplication before materializing or parsing its expanded forest', () => {
       // Deliberate pure-model rejection fixtures. Only the needed original

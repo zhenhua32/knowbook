@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { exchangeJobHash } from '../src/main/sync/synced-exchange-model'
+import { capsuleBytesHash, capsuleJson } from '../src/main/database/restore-knowledge-capsule-model'
 import { graph3Text } from '../src/main/database/restore-knowledge-graph3-data'
 import { pendingLocalComponentHash5, type PendingLocalComponentLocator5 } from '../src/main/database/restore-knowledge-pending-local-selection5'
 import { previewRootRestorePendingLocalBody5 } from '../src/main/database/restore-knowledge-reference3-read'
@@ -39,6 +40,8 @@ test('the explicit pending component preview changes only its selected native pa
     assert.equal(proof.originalDocumentId, f.documentId)
     assert.equal(proof.sourceRef.table, 'blocks')
     assert.ok(proof.assets.length > 0 && proof.assets.every(asset => asset.uri === f.portable && asset.hash === f.digest && asset.bytes === f.bytes.length))
+    assert.notEqual(proof.beforeSyntaxHash, proof.afterSyntaxHash)
+    const cellHash = (text: string) => capsuleBytesHash('knowbook.restore.pending-local-cell-text.v1\0' + capsuleJson(text))
     const diffs: Array<{ table: string; column: string; targetRowId: string }> = []
     for (const [index, table] of original.tables.entries()) {
       const effective = candidate.tables[index]
@@ -51,7 +54,10 @@ test('the explicit pending component preview changes only its selected native pa
           const after = final.cells[columnIndex]
           if (before.length === after.length && before.every((value, field) => value === after[field])) continue
           diffs.push({ table: table.name, column: table.columns[columnIndex], targetRowId: row.targetRowId })
-          assert.ok(graph3Text(after, table.encoding).includes(f.portable))
+          const originalText = graph3Text(before, table.encoding), finalText = graph3Text(after, table.encoding)
+          assert.ok(finalText.includes(f.portable))
+          assert.equal(proof.beforeHash, cellHash(originalText))
+          assert.equal(proof.afterHash, cellHash(finalText))
         }
       }
     }

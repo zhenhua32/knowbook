@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import type { SyncedBindingKey, SyncedStableBlockDraft, SyncedStructureInput } from '../../shared/synced-blocks'
 import { canonicalSyncedPortableJson } from '../../shared/syncedBlockPortable'
 import { serializeMarkdownHostSource } from '../../shared/markdownSource'
-import { projectedMarkdownContentPosition } from '../../shared/markdownNativeText'
+import { markdownOriginalOffsetLookup, projectedMarkdownContentPosition } from '../../shared/markdownNativeText'
 import { collectMarkdownSourceLinks } from '../../shared/markdownLinks'
 import { markdownEngine, type MarkdownEnvironment, type MarkdownToken } from '../../shared/markdownEngine'
 import { SyncedValidationError, validateSyncedHostForest } from '../../shared/syncedBlockValidation'
@@ -47,8 +47,8 @@ export function captureSyncedCreateSourceFacts(blocks: readonly SyncedStableBloc
   for (const range of source.ranges) for (let line = range.startLine; line < range.endLine; line++) {
     if (lineOwner[line] !== -1) unsupported(); lineOwner[line] = range.index
   }
-  const normalized = blocks.map(block => ({ ...block, content: block.content.replace(/\r\n?/g, '\n') }))
-  const rawOffsets = blocks.map(block => { const result: number[] = []; for (let i = 0; i < block.content.length; i++) { result.push(i); if (block.content[i] === '\r' && block.content[i + 1] === '\n') i++ } result.push(block.content.length); return result })
+  const normalized = blocks.map(block => block.content.includes('\r') ? { ...block, content: block.content.replace(/\r\n?/g, '\n') } : block)
+  const rawOffset = markdownOriginalOffsetLookup(blocks)
   function local(position: number, end = false): { index: number; offset: number } {
     if (!Number.isSafeInteger(position) || position < 0 || position > source.markdown.length) return unsupported()
     let lo = 0, hi = offsets.length
@@ -58,8 +58,9 @@ export function captureSyncedCreateSourceFacts(blocks: readonly SyncedStableBloc
     const index = lineOwner[line]
     if (index === undefined || index < 0) return unsupported()
     const value = projectedMarkdownContentPosition(normalized[index], source.ranges[index], source.markdown, lines, offsets, position, undefined, end)
-    if (value === null || rawOffsets[index][value] === undefined) return unsupported()
-    return { index, offset: rawOffsets[index][value] }
+    const offset = value === null ? null : rawOffset(index, value)
+    if (offset === null) return unsupported()
+    return { index, offset }
   }
   const links: CreatePhysicalLink[] = []
   for (const link of collectMarkdownSourceLinks(source.markdown)) {
