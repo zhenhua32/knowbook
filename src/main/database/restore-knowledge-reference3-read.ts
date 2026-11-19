@@ -87,7 +87,7 @@ function checkedPendingCandidateWithCells(captured: Captured, data: Data, alloca
 }
 function manifestBody(base: BaseLocation, planId: string, data: Data, kernel: Reference3Kernel,
   choices: Reference3Choices, value: Reference3Allocation, candidate: Candidate, pending?: Pending) {
-  const fields = { kind: 'prepared-root-restore-reference-plan' as const, policyVersion: 1 as const, purposeVersion: 1 as const,
+  const fields = { kind: 'prepared-root-restore-reference-plan' as const, policyVersion: kernel.policyVersion, purposeVersion: 1 as const,
     planId, baseIdentityPlanId: base.planId, baseIdentityManifestHash: base.manifestHash,
     baseIdentityAllocationHash: data.value.allocationHash, originalDescriptorHash: base.location.descriptorHash,
     conservationHash: data.inputs.knowledge.conservationHash, sourceMaterialHash: data.inputs.source.materialHash,
@@ -116,7 +116,8 @@ async function readManifest(saved: Saved): Promise<Manifest> {
     'derivedReferenceAllocationHash','canonicalCandidateHash','checkedCanonicalCandidateHash','finalCurrentRetainedCutComplete',
     'referenceRewriteComplete','semanticValidationComplete','acceptedCoverage','effective','permit',
     ...(version === 2 ? ['pendingSelection','pendingBaseCandidateHash','pendingCellProofHash'] : [])])
-  if (row.kind !== 'prepared-root-restore-reference-plan' || row.version !== version || row.policyVersion !== 1 || row.purposeVersion !== 1
+  const kernel = validateReference3Kernel(row.kernel as Reference3Kernel)
+  if (row.kind !== 'prepared-root-restore-reference-plan' || row.version !== version || row.policyVersion !== kernel.policyVersion || row.purposeVersion !== 1
     || durableSqlDagUuid(row.planId) !== saved.planId || durableSqlDagUuid(row.baseIdentityPlanId) !== saved.basePlanId
     || row.baseIdentityManifestHash !== saved.baseManifestHash || row.originalDescriptorHash !== saved.location.descriptorHash
     || row.finalCurrentRetainedCutComplete !== false || row.referenceRewriteComplete !== false || row.semanticValidationComplete !== false
@@ -125,7 +126,6 @@ async function readManifest(saved: Saved): Promise<Manifest> {
     'currentMaterialHash','sourceWitnessHash','currentWitnessHash','derivedReferenceAllocationHash','canonicalCandidateHash',
     'checkedCanonicalCandidateHash']) durableSqlDagHash(row[name])
   if (typeof row.sourcePayload !== 'string' || typeof row.currentPayload !== 'string') return invalid('清单角色来源不是原完整payload key')
-  validateReference3Kernel(row.kernel as Reference3Kernel)
   normalizeReference3Choices(row.choices as Reference3Choices)
   if (version === 2) {
     parsePendingLocalComponentLocator5(row.pendingSelection)
@@ -178,7 +178,7 @@ async function prepareReference3(identity: RootRestoreIdentityPlan3, inputChoice
   const choices = normalizeReference3Choices(inputChoices), base = await readRootRestoreIdentityPlanLocation3(identity)
   const captured = scope ? await readPreparedRootRestoreIdentityInputs5(identity, scope) : undefined
   const data = captured?.actual ?? await readRootRestoreIdentityGraphInputs3(identity)
-  const kernel: Reference3Kernel = { kind: 'root-restore-reference-kernel', version: 1, policyVersion: 1, purposeVersion: 1,
+  const kernel: Reference3Kernel = { kind: 'root-restore-reference-kernel', version: 1, policyVersion: 2, purposeVersion: 1,
     seed: randomBytes(32).toString('hex'), preparedAt: new Date().toISOString() }
   const planId = randomUUID(), allocation = deriveRootRestoreReferenceAllocation3(data, kernel, choices)
   if (allocation.purposes.some(purpose => purpose.targetId === planId)) return invalid('引用plan locator与新分配身份碰撞')

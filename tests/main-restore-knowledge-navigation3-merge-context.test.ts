@@ -3,11 +3,13 @@ import test from 'node:test'
 import { capsule2ApplicationColumns, type Capsule2Encoding, type Capsule2RawSqlTable } from '../src/main/database/restore-knowledge-capsule2-raw-model'
 import { capsuleBytesHash, capsuleJson } from '../src/main/database/restore-knowledge-capsule-model'
 import { markdownOriginalOffsetLookup } from '../src/shared/markdownNativeText'
+import { deriveStage4AliasNavigation } from '../src/main/database/restore-knowledge-derived-stage4-observation'
 import { graph3Encode, graph3Key, graph3Text, type Graph3Inputs } from '../src/main/database/restore-knowledge-graph3-data'
 import { deriveRootRestoreNavigationMergeContext3, buildMerge3NavigationFinalIndex3, resolveFinalNavigation3,
   withStoredMerge3NavigationFinalIndex3, withStoredRootRestoreNavigationMergeContext3 } from '../src/main/database/restore-knowledge-navigation3-merge-context'
 import { finishMerge3Table, prepareMerge3Table, type Merge3Material } from '../src/main/database/restore-knowledge-merge3-storage'
 import type { deriveRootRestoreMergedContent3 } from '../src/main/database/restore-knowledge-merge3-model'
+import { toReference3GraphInputs } from '../src/main/database/restore-knowledge-reference3-model'
 import type { RawRestoreSqlCell } from '../src/main/database/restore-knowledge-sql-cell'
 
 // These are small pure syntax/projection fixtures, never Main handles, certified
@@ -125,6 +127,38 @@ test('the SQLite scope index preserves the native navigation hash and yields eve
     assert.deepEqual(scope(full.scopes[0].scopeId), full.scopes[0])
     assert.equal(scope('unused'), undefined)
   })
+})
+
+test('attachment alias navigation compares projected ranges and preserves the exact rewritten index and routes', () => {
+  const { data, merged } = fixture(false, { source: 'UTF-16le', current: 'UTF-8' })
+  const body = { kind: 'root-restore-reference-allocation', version: 1, policyVersion: 1, purposeVersion: 1,
+    baseIdentityAllocationHash: data.value.allocationHash, conservationHash: data.inputs.knowledge.conservationHash,
+    sourceMaterialHash: data.inputs.source.materialHash, currentMaterialHash: data.inputs.current.materialHash,
+    assignments: data.value.assignments, execution: [] }
+  const allocation = { ...body,
+    derivedReferenceAllocationHash: capsuleBytesHash('knowbook.restore.reference3.allocation.v1\0' + capsuleJson(body))
+  } as unknown as Parameters<typeof toReference3GraphInputs>[1]
+  const graph = toReference3GraphInputs(data, allocation)
+  const fromUri = 'file:///a.png', toUri = 'file:///new-attachments/a.png'
+  const prefix = '😀\r\n\r\n![photo](<'
+  const content = (uri: string, target: string) => `${prefix}${uri}>) [target](${target})`
+  const blocks = merged.tables.find(item => item.name === 'blocks')!
+  const column = blocks.columns.indexOf('content')
+  const retained = blocks.rows.find(row => row.sourceRef.side === 'current')!
+  const tables = (uri: string, target: string) => merged.tables.map(table => ({ ...table,
+    rows: table.rows.map(row => row !== retained || table !== blocks ? row : { ...row,
+      cells: row.cells.map((cell, index) => index === column ? graph3Encode(content(uri, target), table.encoding) : cell) }) }))
+  const original = tables(fromUri, '/Restored.md'), rewritten = tables(toUri, '/Restored.md')
+  const source = { data, allocation, physical: { tables: original, finalSyntaxIndexHash: buildMerge3NavigationFinalIndex3(graph, original).indexHash },
+    tables: rewritten, navigationEdits: [{ table: 'blocks', targetRowId: retained.targetRowId, column: 'content', edits: [{
+      from: prefix.length, to: prefix.length + fromUri.length, before: fromUri, after: toUri, uri: fromUri, kind: 'image' }] }]
+  } as unknown as Parameters<typeof deriveStage4AliasNavigation>[0]
+  const result = deriveStage4AliasNavigation(source)
+  assert.equal(result.syntaxIndexHash, buildMerge3NavigationFinalIndex3(graph, rewritten).indexHash)
+  assert.deepEqual(result.routes.routes.get(capsuleJson(['Previous route 🍃', 'retained'])), {
+    path: 'Previous route 🍃', blockId: 'retained', documentId: 'r', createdAt: born, currentRowId: '-9223372036854775808'
+  })
+  assert.throws(() => deriveStage4AliasNavigation({ ...source, tables: tables(toUri, '/Unexpected.md') }), /实际导航或有效定义/)
 })
 
 test('original Markdown offsets preserve surrogate pairs, lone CR and exact CRLF boundaries', () => {

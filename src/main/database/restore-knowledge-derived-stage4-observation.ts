@@ -9,6 +9,7 @@ import { toReference3GraphInputs } from './restore-knowledge-reference3-model'
 import { readRootRestoreReferenceGraphInputs3, type RootRestoreReferencePlan3 } from './restore-knowledge-reference3-read'
 import type { reopenRootRestorePhysicalStage3 } from './restore-knowledge-stage3-physical'
 import type { readRootRestoreSqlAssetAliasDerivationSource5 } from './restore-knowledge-sql-asset-alias-stage5'
+import { withStoredRestoreScopes } from './restore-knowledge-stored-scopes'
 import { iterateRawActiveSyncedGroupSnapshotsOwned } from './synced-blocks-raw-read'
 import { assertSyncedLifecycleCoverage } from './synced-lifecycle-state'
 import { canonicalSearchOccurrencesSql, occurrenceFromCanonicalSearchRow,
@@ -103,23 +104,40 @@ export function deriveStage4AliasNavigation(source: AliasSql) {
       destinations, definitions: value.definitions.map(range),
       effectiveDefinitions: value.effectiveDefinitions.map(({ key, definition }) => ({ key, definition: range(definition) })), uses: value.uses }
   }
-  return withStoredMerge3NavigationFinalIndex3(graph, source.physical.tables, before => {
-    if (before.indexHash !== source.physical.finalSyntaxIndexHash) return fail('原导航索引与物理暂存不同')
-    return withStoredMerge3NavigationFinalIndex3(graph, source.tables, after => {
-      const headings = (value: Pick<Navigation3FinalIndex, 'headingNamespaces'>) => value.headingNamespaces.map(({ document, headings }) => [document.id, headings])
-      if (!same(headings(before), headings(after)) || !same(before.routes, after.routes) || before.scopeCount !== after.scopeCount)
-        return fail('地址改写改变标题或原路由')
-      const actual = after.scopes()
-      try {
-        for (const item of before.scopes()) {
-          const next = actual.next()
-          if (next.done || !same(scope(item, true), scope(next.value, false))) return fail('地址改写改变实际导航或有效定义')
-        }
-        if (!actual.next().done) return fail('地址改写改变实际导航范围')
-      } finally { actual.return?.() }
-      return { routes: routesFromIndex(after, source.data.inputs.current.source.sourceContent), syntaxIndexHash: after.indexHash }
-    })
-  })
+  const heading = ({ document, headings }: Navigation3FinalIndex['headingNamespaces'][number]) => [document.id, headings] as const
+  type ComparisonRow = ReturnType<typeof heading> | Navigation3FinalIndex['routes'][number] | ReturnType<typeof scope>
+
+  // Spool the ordered navigation comparison and close the original index
+  // before decoding the rewritten physical bodies.
+  return withStoredRestoreScopes((append: (id: string, row: ComparisonRow) => void) =>
+    withStoredMerge3NavigationFinalIndex3(graph, source.physical.tables, before => {
+      if (before.indexHash !== source.physical.finalSyntaxIndexHash) return fail('原导航索引与物理暂存不同')
+      for (const [ordinal, item] of before.headingNamespaces.entries()) append(`heading:${ordinal}`, heading(item))
+      for (const [ordinal, route] of before.routes.entries()) append(`route:${ordinal}`, route)
+      for (const item of before.scopes()) append(`scope:${item.scopeId}`, scope(item, true))
+      return { headings: before.headingNamespaces.length, routes: before.routes.length, scopes: before.scopeCount }
+    }), (counts, expected) => withStoredMerge3NavigationFinalIndex3(graph, source.tables, after => {
+    if (counts.headings !== after.headingNamespaces.length || counts.routes !== after.routes.length || counts.scopes !== after.scopeCount)
+      return fail('地址改写改变标题或原路由')
+    const rows = expected.iterateEncoded()
+    const sameNext = (value: ComparisonRow) => {
+      const next = rows.next()
+      return !next.done && next.value === capsuleJson(value)
+    }
+    try {
+      for (const item of after.headingNamespaces)
+        if (!sameNext(heading(item))) return fail('地址改写改变标题或原路由')
+      for (const route of after.routes)
+        if (!sameNext(route)) return fail('地址改写改变标题或原路由')
+      for (const item of after.scopes()) {
+        const next = rows.next()
+        if (next.done) return fail('地址改写改变实际导航范围')
+        if (next.value !== capsuleJson(scope(item, false))) return fail('地址改写改变实际导航或有效定义')
+      }
+      if (!rows.next().done) return fail('地址改写改变实际导航或有效定义')
+    } finally { rows.return?.() }
+    return { routes: routesFromIndex(after, source.data.inputs.current.source.sourceContent), syntaxIndexHash: after.indexHash }
+  }))
 }
 
 function actualRoutes(db: Database.Database, plan: DerivedRoutePlan4) {

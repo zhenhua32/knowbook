@@ -25,12 +25,14 @@ test('first controlled restore installs a genuine source and records exact SQLit
   const source = KnowbookStore.createEmptySyncedReceiver(join(userDataRoot, 'storage', 'knowbook.db'))
   try {
     const documentId = source.createDocument(null), blockId = randomUUID()
+    const linkId = randomUUID()
     source.updateDocument(documentId, { title: 'Canonical source', summary: 'V3 repeated backup', blocks: [
       freshBlock(randomUUID(), 'An ordinary persisted block'),
-      freshBlock(blockId, 'A canonical body')
+      freshBlock(blockId, 'A canonical body'),
+      freshBlock(linkId, '[same group](#^' + blockId + ')')
     ] })
     const db = source.getUnsafeDatabaseHandle()
-    created(applySyncedHostCommand(db, createRequest(db, { documentId, selectedRootIds: [blockId] })))
+    created(applySyncedHostCommand(db, createRequest(db, { documentId, selectedRootIds: [blockId, linkId] })))
     writeSyncedBackupV3(db, { userDataRoot, destination: archive, snapshotId: randomUUID() })
   } finally { source.destroy() }
   await mkdir(requested)
@@ -48,6 +50,14 @@ test('first controlled restore installs a genuine source and records exact SQLit
   const before = stableIdentities(database)
   assert.equal(before.groups.length, 1)
   assert.equal(before.instances.length, 1)
+  const [{ id: groupId, bindings_json }] = before.groups as { id: string; bindings_json: string }[]
+  const [binding, ...extra] = JSON.parse(bindings_json)
+  const canonical = before.canonical as { id: string; group_id: string }[]
+  assert.deepEqual(extra, [])
+  assert.deepEqual(binding.target, { kind: 'block', id: binding.target.id, state: 'live', documentId: null })
+  assert.notEqual(binding.blockId, binding.target.id)
+  assert.equal(binding.raw, '#^' + binding.target.id)
+  assert.ok([binding.blockId, binding.target.id].every(id => canonical.some(block => block.id === id && block.group_id === groupId)))
   await writeFile(record, JSON.stringify({ firstPid: process.pid, operationId: result.operationId, oldDocument, before, first }))
 })
 

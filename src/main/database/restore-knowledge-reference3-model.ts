@@ -12,7 +12,7 @@ import { deriveRootRestoreProvenanceSources3 } from './restore-knowledge-provena
 export interface Reference3Kernel {
   readonly kind: 'root-restore-reference-kernel'
   readonly version: 1
-  readonly policyVersion: 1
+  readonly policyVersion: 1 | 2
   readonly purposeVersion: 1
   readonly seed: string
   readonly preparedAt: string
@@ -86,6 +86,8 @@ export interface Reference3BindingTarget {
   readonly originalTarget: SyncedLinkTarget
   readonly target: SyncedLinkTarget
   readonly proofKind: 'current-domain-preserved' | 'unresolved-url-preserved' | 'qualified-missing' | 'inactive-not-materialized'
+    | 'proved-same-source-group-block'
+  readonly provedTargetBirth?: string
   readonly originalHint: string | null
   readonly sourceCapture: KnowledgeCapturedBinding
   readonly occurrence: number
@@ -117,7 +119,7 @@ export type Reference3Execution = Omit<Graph3Inputs['value']['execution'], 'grou
 export interface Reference3Allocation {
   readonly kind: 'root-restore-reference-allocation'
   readonly version: 1
-  readonly policyVersion: 1
+  readonly policyVersion: Reference3Kernel['policyVersion']
   readonly purposeVersion: 1
   readonly choices: Reference3Choices
   readonly referenceKernelHash: string
@@ -172,7 +174,7 @@ export function normalizeReference3Choices(input?: Reference3Choices): Reference
 }
 export function validateReference3Kernel(input: Reference3Kernel): Reference3Kernel {
   const raw = capsuleRecord(input, ['kind','version','policyVersion','purposeVersion','seed','preparedAt'])
-  if (raw.kind !== 'root-restore-reference-kernel' || raw.version !== 1 || raw.policyVersion !== 1 || raw.purposeVersion !== 1
+  if (raw.kind !== 'root-restore-reference-kernel' || raw.version !== 1 || (raw.policyVersion !== 1 && raw.policyVersion !== 2) || raw.purposeVersion !== 1
     || typeof raw.seed !== 'string' || !/^[0-9a-f]{64}$/.test(raw.seed) || typeof raw.preparedAt !== 'string'
     || !Number.isFinite(Date.parse(raw.preparedAt)) || new Date(raw.preparedAt).toISOString() !== raw.preparedAt)
     return fail('unsupported-or-invalid-kernel', null)
@@ -434,6 +436,8 @@ export function deriveRootRestoreReferenceAllocation3(data: Graph3Inputs, inputK
   }
   const bindingTargets: Reference3BindingTarget[] = []
   const priorBindings = new Map(data.repeat?.bindings.map(item => [graph3Key(item.sourceGroupId, item.key), item]))
+  const sourceGroupIdentities = new Map(kernel.policyVersion === 2
+    ? source.identities.filter(identity => identity.ownerKind === 'group' && identity.state === 'live').map(identity => [identity.id, identity]) : [])
   for (const side of ['source', 'current'] as const) {
     const knowledge = data.inputs[side].knowledge
     const captures = new Map<string, Array<{ capture: KnowledgeCapturedBinding; occurrence: number }>>()
@@ -447,25 +451,52 @@ export function deriveRootRestoreReferenceAllocation3(data: Graph3Inputs, inputK
       const entries = captures.get(graph3Key(group.source)) ?? []
       const raw = originalHeaders.get(side)!.get(group.tuple.groupId)!
       if (!same(entries.map(e => e.capture.binding), JSON.parse(text(raw.bindings_json)))) return fail('stored-capture-exact-row-closure', { side, source: group.source })
-      const active = (side === 'source' ? sourcePhysical : currentPhysical).get(group.tuple.groupId)?.snapshot !== null
+      const snapshot = (side === 'source' ? sourcePhysical : currentPhysical).get(group.tuple.groupId)!.snapshot
+      const active = snapshot !== null
+      const ownBlocks = side === 'source' && sourceGroupIdentities.size > 0 && snapshot
+        ? new Map(snapshot.blocks.map(block => [block.id, block])) : null
       for (const { capture, occurrence } of entries) {
         const key = bindingKey(capture.binding), originalTarget = capture.binding.target
         let target = originalTarget, proofKind: Reference3BindingTarget['proofKind'] = side === 'current'
           ? 'current-domain-preserved' : !active ? 'inactive-not-materialized' : 'qualified-missing'
+        let provedTargetBirth: string | undefined
         const originalHint = originalTarget.kind === 'block' ? originalTarget.documentId : null
         if (side === 'source' && active) {
+          // The source ledger never reuses a born block ID. A matching block in
+          // the same immutable group may follow its own exact physical slot.
+          const block = originalTarget.kind === 'block' && originalTarget.state === 'live' ? ownBlocks?.get(originalTarget.id) : undefined
+          const identity = block ? sourceGroupIdentities.get(block.id) : undefined
+          const slots = block && identity?.ownerId === group.tuple.groupId && identity.createdAt === block.createdAt
+            ? (physicalSlots.get(graph3Key('block', block.id)) ?? []).filter(slot => !slot.ambiguous
+              && slot.ownerKind === 'group' && slot.ownerId === group.tuple.groupId && slot.birth === block.createdAt) : []
+          const proved = slots.length === 1 && block
+            ? { birth: block.createdAt, target: { kind: 'block', id: slots[0].targetId, documentId: null, state: 'live' } as const } : undefined
           if (repeatedGroups.has(group.tuple.groupId)) {
             const prior = priorBindings.get(graph3Key(group.tuple.groupId, key))
             if (!prior || !same(prior.originalTarget, originalTarget) || prior.comparisonKey !== group.comparisonKey
-              || prior.proofKind !== 'qualified-missing' && prior.proofKind !== 'unresolved-url-preserved')
+              || prior.proofKind !== 'qualified-missing' && prior.proofKind !== 'unresolved-url-preserved' && prior.proofKind !== 'proved-same-source-group-block')
               return fail('installed-v3-binding-target', group.source)
             target = prior.target
             proofKind = prior.proofKind
+            if (proofKind === 'proved-same-source-group-block') {
+              if (!proved || !same(target, proved.target) || prior.provedTargetBirth !== proved.birth)
+                return fail('installed-v3-same-group-binding-target', group.source)
+              const localGroupId = groupSlot(group).targetId, local = currentIdentities.get(proved.target.id)
+              if (local?.ownerKind !== 'group' || local.ownerId !== localGroupId || local.state !== 'live' || local.createdAt !== proved.birth
+                || !currentPhysical.get(localGroupId)?.snapshot?.blocks.some(item => item.id === proved.target.id && item.createdAt === proved.birth))
+                return fail('installed-v3-same-group-binding-owner', group.source)
+              provedTargetBirth = proved.birth
+            }
             if (target.kind === 'block' && prior.proofKind === 'qualified-missing') {
               const identity = currentIdentities.get(target.id)
               if (identity?.ownerKind !== 'reserved' || identity.state !== 'retained' || identity.createdAt !== null)
                 return fail('installed-v3-binding-reservation', target.id)
             }
+          }
+          else if (proved) {
+            target = proved.target
+            proofKind = 'proved-same-source-group-block'
+            provedTargetBirth = proved.birth
           }
           else if (originalTarget.kind === 'unresolved-url') proofKind = 'unresolved-url-preserved'
           else if (originalTarget.kind === 'document') target = { kind: 'document', state: 'missing',
@@ -480,7 +511,8 @@ export function deriveRootRestoreReferenceAllocation3(data: Graph3Inputs, inputK
           }
         }
         bindingTargets.push({ side, sourceGroupId: group.tuple.groupId, sourceGroupSource: group.source, comparisonKey: group.comparisonKey,
-          key, originalTarget, target, proofKind, originalHint, sourceCapture: capture, occurrence })
+          key, originalTarget, target, proofKind, ...(provedTargetBirth === undefined ? {} : { provedTargetBirth }),
+          originalHint, sourceCapture: capture, occurrence })
       }
       captures.delete(graph3Key(group.source))
     }
@@ -547,7 +579,7 @@ export function deriveRootRestoreReferenceAllocation3(data: Graph3Inputs, inputK
       activationHashRequiredFromFinalWire: true, activationInstancesRequireFinalClosure: true,
       originalLifecycleRetainedInK: true, actualSqlRowReady: false }
   })
-  const body = { kind: 'root-restore-reference-allocation' as const, version: 1 as const, policyVersion: 1 as const, purposeVersion: 1 as const,
+  const body = { kind: 'root-restore-reference-allocation' as const, version: 1 as const, policyVersion: kernel.policyVersion, purposeVersion: 1 as const,
     choices, referenceKernelHash: hash('knowbook.restore.reference3.kernel.v1', kernel), baseIdentityAllocationHash: data.value.allocationHash,
     provenanceSourceHash: provenance.provenanceSourceHash,
     sourceWitness: sourcePayload.witness, sourcePayload: sourcePayload.key, currentWitness: currentPayload.witness, currentPayload: currentPayload.key,
@@ -570,7 +602,7 @@ export function toReference3GraphInputs(data: Graph3Inputs, allocation: Referenc
   assertMerge3JsonBudget(allocation)
   const { derivedReferenceAllocationHash, ...body } = allocation
   if (allocation.kind !== 'root-restore-reference-allocation' || allocation.version !== 1
-    || allocation.policyVersion !== 1 || allocation.purposeVersion !== 1 || hash(allocationDomain, body) !== derivedReferenceAllocationHash
+    || (allocation.policyVersion !== 1 && allocation.policyVersion !== 2) || allocation.purposeVersion !== 1 || hash(allocationDomain, body) !== derivedReferenceAllocationHash
     || allocation.baseIdentityAllocationHash !== data.value.allocationHash || allocation.conservationHash !== data.inputs.knowledge.conservationHash
     || allocation.sourceMaterialHash !== data.inputs.source.materialHash || allocation.currentMaterialHash !== data.inputs.current.materialHash)
     return fail('derived-view-binding', null)

@@ -11,10 +11,11 @@ import { withV3Fixture, allTables, randomUUID, createRequest, created, freshBloc
   snapshot, type V3Fixture } from './synced-backup-v3-fixture'
 
 function createCollisionGroup(f: V3Fixture, ids: { groupId: string; rootId: string; childId: string; instanceId: string }, side: 'source' | 'current') {
+  const within = side === 'source' ? ' [within](#^' + ids.rootId + ') [[#^' + ids.rootId + '|wiki alias]]' : ''
   const input = createRequest(f.db, { documentId: f.hostId, groupId: ids.groupId, instanceId: ids.instanceId,
     selectedRootIds: [ids.rootId], dirty(working) {
       working.blocks.push({ ...freshBlock(ids.rootId, side + ' canonical root'), type: 'callout' },
-        { ...freshBlock(ids.childId, '[' + side + ' target](/V3%20Target.md#^' + f.targetBodyId + ')'),
+        { ...freshBlock(ids.childId, '[' + side + ' target](/V3%20Target.md#^' + f.targetBodyId + ')' + within),
           depth: 1, parentBlockId: ids.rootId })
     } })
   const ack = created(applySyncedHostCommand(f.db, input))

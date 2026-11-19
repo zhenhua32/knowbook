@@ -15,6 +15,7 @@ import { confirmProtocol5RestoreRejoin, prepareProtocol5RestoreRejoin } from '..
 import { runProtocol5WebDav } from '../../src/main/sync/protocol5-service'
 import { WebDavSyncService } from '../../src/main/sync/service'
 import { protocol5HistoryLink, publicationHash, publicationJson, validateInitialManifest5 } from '../../src/main/sync/synced-publication-model'
+import type { SyncedGroupWire } from '../../src/shared/synced-blocks'
 import { applySyncedHostCommand, created, createRequest, freshBlock, snapshot } from './synced-publication-fixture'
 import { runtime, withIncomingFixture } from './synced-initial-incoming-fixture'
 
@@ -88,6 +89,10 @@ if (!input) void withIncomingFixture(async fixture => {
     assert.ok(original.bindings.some(binding => binding.target.kind === 'document' && binding.target.id === fixture.other))
     const rich = { ...original, bindings: original.bindings.map(binding => binding.target.kind === 'document' && binding.target.id === fixture.other
       ? { ...binding, target: { ...binding.target, id: other } } : binding) }
+    assert.ok(rich.bindings.some(binding => binding.target.kind === 'block' && binding.target.id === rich.blocks[0].id),
+      'The source archive has a binding to the heading block in its own group')
+    assert.ok(rich.bindings.some(binding => binding.target.kind === 'document' && binding.target.id === other),
+      'The source archive also has an outbound document binding')
     const headPath = '/Incoming/manifest.json'
     const addedGroups = [rich, { ...original, groupId: randomUUID(), creationId: randomUUID(),
       origin: { ...original.origin, firstInstanceId: randomUUID() }, bindings: [],
@@ -112,7 +117,7 @@ if (!input) void withIncomingFixture(async fixture => {
     await runRestore({ profileRoot: B.root, backup, expectedSourceGroupIds: [] })
     await recoverControlledDatabaseRestore(B.root, legacy.recoverLegacy)
     const reopened = KnowbookStore.openCanonicalRuntime(B.file)
-    let localGroupIds: string[], localOtherId: string
+    let localGroupIds: string[], localOtherId: string, installedRichGroup: SyncedGroupWire
     try {
       const db = reopened.getUnsafeDatabaseHandle()
       localGroupIds = db.prepare('SELECT id FROM synced_groups WHERE id<>? ORDER BY id').pluck().all(retainedId) as string[]
@@ -120,6 +125,14 @@ if (!input) void withIncomingFixture(async fixture => {
       assert.ok(localOtherId, 'The first archive installs the outbound target once')
       assert.equal(localGroupIds.length, addedGroups.length)
       assert.ok(localGroupIds.every(id => !addedGroups.some(group => group.groupId === id)), 'V3 reassigns the direct source group identities')
+      const installed = localGroupIds.map(id => snapshot(db, id)).find(group => group.blocks[0]?.type === 'heading-2')
+      assert.ok(installed, 'The first archive installs the rich group')
+      const { groupId, creationId, createdAt, origin, blocks, bindings } = installed
+      assert.deepEqual(blocks.map(block => block.type), ['heading-2', 'paragraph', 'bulleted-list'])
+      assert.deepEqual(bindings.map(binding => binding.target.kind).sort(), ['block', 'document'])
+      assert.ok(bindings.some(binding => binding.target.kind === 'block' && binding.target.id === blocks[0].id && binding.target.state === 'live'),
+        'Restore must preserve the exact same-group block target under its installed ID')
+      installedRichGroup = { kind: 'synced-group', id: groupId, creationId, createdAt, origin, blocks, bindings }
       const rejoin = await prepareProtocol5RestoreRejoin(db, B.root, targetConfig, runtime)
       await confirmProtocol5RestoreRejoin(db, B.root, targetConfig, runtime, rejoin.owner)
       const unrelated = reopened.createDocument(null)
@@ -160,11 +173,7 @@ if (!input) void withIncomingFixture(async fixture => {
       const retirements = db.transaction(() => readV3SourceGroupRetirementsOwned(db))()
       assert.deepEqual([...retirements.keys()], localGroupIds)
       const retiredRichGroup = [...retirements.values()].find(record => record.sourceGroupId === rich.groupId)?.group
-      assert.ok(retiredRichGroup)
-      assert.deepEqual(retiredRichGroup.blocks.map(block => block.type), ['heading-2', 'paragraph', 'bulleted-list'])
-      assert.ok(retiredRichGroup.bindings.some(binding => binding.target.kind === 'block'
-        && binding.target.id === retiredRichGroup.blocks[0].id))
-      assert.ok(retiredRichGroup.bindings.some(binding => binding.target.kind === 'document' && binding.target.id === localOtherId))
+      assert.deepEqual(retiredRichGroup, installedRichGroup, 'Retirement must seal the exact installed content and every binding')
       assert.equal(cold.getDocumentDetail(localOtherId)?.title, 'Other')
       assert.ok(db.prepare('SELECT 1 FROM synced_group_blocks WHERE group_id=?').get(retainedId))
       const template = cold.listDocumentTemplates().find(template => template.name === 'Independent template')

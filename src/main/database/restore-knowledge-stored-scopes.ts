@@ -9,6 +9,7 @@ export interface StoredRestoreScopes<Scope> {
   /** Use only as part of an input to hashBoundedCapsuleJson. */
   readonly hashInput: readonly Scope[]
   byId(id: string): Scope | undefined
+  iterateEncoded(): IterableIterator<string>
   iterate(): IterableIterator<Scope>
 }
 
@@ -34,7 +35,7 @@ export function withStoredRestoreScopes<Scope, Projection, Result>(
       insert.run(count++, key, encoded)
     }))()
     const encodedRows = () => rows.iterate() as IterableIterator<string>
-    return read(projection, Object.freeze({ count, hashInput: capsuleJsonStoredArray<Scope>(encodedRows),
+    return read(projection, Object.freeze({ count, hashInput: capsuleJsonStoredArray<Scope>(encodedRows), iterateEncoded: encodedRows,
       byId(id: string) {
         const encoded = lookup.get(id)
         return typeof encoded === 'string' ? JSON.parse(encoded) as Scope : undefined

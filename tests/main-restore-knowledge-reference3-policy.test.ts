@@ -95,8 +95,31 @@ test('independent Main same-ID group births remain distinct and every incoming i
     assert.equal(currentOrigin.originPolicy, 'retained-current')
     assert.deepEqual(currentOrigin.origin, f.currentGroup.origin)
     const sourceTargets = allocation.bindingTargets.filter(target => target.side === 'source' && target.sourceGroupId === f.ids.groupId)
-    assert.ok(sourceTargets.length > 0)
-    for (const target of sourceTargets) {
+    const within = sourceTargets.filter(item => item.originalTarget.kind === 'block' && item.originalTarget.id === f.ids.rootId)
+    assert.equal(within.length, 2, 'The actual Main writer captured Markdown and Wiki links to the same original group member')
+    const incomingWire = candidate.activeGroupWires.find(wire => wire.id === group.targetId)!
+    assert.equal(candidate.canonicalParserClosureValidated, true)
+    assert.deepEqual(candidate.conflicts.filter(conflict => conflict.code === 'canonical3-proved-source-group-target-not-materialized'), [])
+    assert.equal(allocation.policyVersion, 2)
+    assert.equal(root.birth, f.sourceGroup.blocks.find(block => block.id === f.ids.rootId)?.createdAt)
+    assert.notEqual(root.birth, f.currentGroup.blocks.find(block => block.id === f.ids.rootId)?.createdAt)
+    const expected = { kind: 'block', id: root.targetId, documentId: null, state: 'live' }
+    for (const target of within) {
+      assert.ok(target.originalTarget.kind === 'block' && target.originalTarget.state === 'live')
+      assert.equal(target.proofKind, 'proved-same-source-group-block')
+      assert.equal(target.provedTargetBirth, root.birth)
+      assert.deepEqual(target.target, expected)
+      const final = incomingWire.bindings.find(binding => binding.syntax === target.key.syntax && binding.raw.startsWith('#^'))!
+      assert.deepEqual(final.target, expected)
+      assert.equal(final.blockId, child.targetId)
+      assert.equal(final.raw, '#^' + root.targetId + (target.key.syntax === 'wiki' ? '|wiki alias' : ''))
+    }
+    assert.deepEqual(candidate.materialization.ledgerOverlay.find(row => row.id === root.targetId), {
+      id: root.targetId, last_owner_kind: 'group', last_owner_id: group.targetId, state: 'live', created_at: root.birth
+    })
+    const external = sourceTargets.filter(target => !within.includes(target))
+    assert.ok(external.length > 0)
+    for (const target of external) {
       assert.equal(target.proofKind, 'qualified-missing')
       assert.equal(target.target.kind, 'block')
       if (target.target.kind === 'block') {

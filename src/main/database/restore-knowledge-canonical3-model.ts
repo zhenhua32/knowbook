@@ -142,10 +142,8 @@ function* projectEntries(tables: readonly Navigation3Table[], projection: EntryP
   }
 }
 
-/** Isolating an unknown block target can be expressed without guessing a
- * document path: retain its declared path/query/alias and address the reserved
- * block ID. Document/heading missing targets keep their original spelling. */
-function missingBlockUrl(url: string, syntax: 'markdown' | 'wiki', id: string) {
+/** Replace only the block coordinate. Keep the original path, query and alias. */
+function remappedBlockUrl(url: string, syntax: 'markdown' | 'wiki', id: string) {
   if (syntax === 'wiki') {
     const reference = parseWikiReference(url), tail = reference.alias === null ? '' : url.slice(url.indexOf('|'))
     return (reference.hasFragment ? reference.path : '') + '#^' + id + tail
@@ -283,8 +281,9 @@ function deriveCanonicalFromOrdinary(db: Database.Database, data: Graph3Inputs, 
       const role = grammar.get(graph3Key(binding.blockId, binding.from, binding.to))
       if (!role || role.url !== parsedLink.url) return graph3Conflict('canonical3-binding-grammar-source', binding)
       let replacement = binding.raw
-      if (side === 'source' && target.proofKind === 'qualified-missing' && target.target.kind === 'block') {
-        const url = missingBlockUrl(parsedLink.url, binding.syntax, target.target.id)
+      if (side === 'source' && target.target.kind === 'block' && (target.proofKind === 'qualified-missing'
+        || target.proofKind === 'proved-same-source-group-block' && binding.target.kind === 'block' && binding.target.id !== target.target.id)) {
+        const url = remappedBlockUrl(parsedLink.url, binding.syntax, target.target.id)
         replacement = role.kind === 'wiki' ? binding.raw.includes('\\|') ? url.replace(/\|/g, '\\|') : url
           : escapeMarkdownDestination(url, role.syntax)
       } else if (side === 'current' && target.proofKind === 'current-domain-preserved') {
@@ -417,9 +416,11 @@ function buildLedgerOverlay(data: Graph3Inputs, final: Pick<Navigation3FinalInde
   return [...rows.values()]
 }
 function validateTypedTargets(data: Graph3Inputs, final: StoredNavigation3Index, wires: readonly SyncedGroupWire[], ledger: readonly Ledger[], allocation: Allocation,
-  projections: readonly { side: Side; binding: SyncedLinkBinding; rowKey: string; proofKind: string }[], conflict: Conflict) {
+  projections: readonly { side: Side; groupId: string; original: SyncedLinkBinding; binding: SyncedLinkBinding; rowKey: string; proofKind: string }[], conflict: Conflict) {
   const ids = new Map(ledger.map(row => [row.id, row])), docs = new Map(final.documents.map(document => [document.id, document]))
   const blocks = new Map(final.physicalBlocks.map(block => [block.id, block]))
+  const provedTargets = new Map(allocation.bindingTargets.filter(item => item.proofKind === 'proved-same-source-group-block')
+    .map(item => [keyOf(item.key), item]))
   const currentDocs = new Map(data.inputs.current.source.physical.documents.map(document => [document.documentId, document]))
   const currentBlocks = new Map(data.inputs.current.source.physical.identities.filter(identity => identity.state === 'live')
     .map(identity => [identity.id, identity.created_at] as const))
@@ -439,6 +440,14 @@ function validateTypedTargets(data: Graph3Inputs, final: StoredNavigation3Index,
   for (const item of projections) {
     const target = item.binding.target
     if (target.kind === 'block' && !ids.has(target.id)) conflict('canonical3-block-target-without-ledger', item.side, [item.rowKey], target)
+    if (item.side === 'source' && item.proofKind === 'proved-same-source-group-block') {
+      const proved = provedTargets.get(keyOf(item.original)), mapped = target.kind === 'block' ? blocks.get(target.id) : undefined
+      const identity = mapped && ids.get(mapped.id)
+      if (!proved?.provedTargetBirth || !same(proved.target, target) || !mapped || mapped.sourceRef.side !== 'source'
+        || mapped.groupId !== item.groupId || mapped.birth !== proved.provedTargetBirth || identity?.state !== 'live'
+        || identity.last_owner_kind !== 'group' || identity.last_owner_id !== item.groupId || identity.created_at !== mapped.birth)
+        conflict('canonical3-proved-source-group-target-not-materialized', item.side, [item.rowKey], target)
+    }
     if (item.side === 'source' && item.proofKind === 'qualified-missing') {
       if (target.kind === 'document' && (target.state !== 'missing' || docs.has(target.id))
         || target.kind === 'heading' && (target.state !== 'missing' || docs.has(target.documentId))
