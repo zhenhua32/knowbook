@@ -15,7 +15,7 @@ import { createEditorCloseBarrier, type EditorCloseIpcEvent } from '../src/main/
 import { EditorRecoveryDraftService } from '../src/main/editor-recovery/draft-service'
 import { EditorRecoveryDraftStore } from '../src/main/editor-recovery/draft-store'
 import { readCanonicalRecoveryClosedFrames } from '../src/shared/editor-recovery-canonical'
-import type { EditorRecoveryDraftInput, EditorRecoveryReceipt } from '../src/shared/editor-recovery-drafts'
+import type { EditorRecoveryDraftInput, EditorRecoveryReceipt, EditorRecoveryRecord } from '../src/shared/editor-recovery-drafts'
 import type { ElectronApi } from '../src/shared/contracts'
 import type { SyncedEditingMethod, SyncedEditingRequest, SyncedEditingResult } from '../src/shared/synced-editing-session'
 import { syncedCanonicalEdits, validateSyncedCanonicalProjection } from '../src/shared/syncedBlockValidation'
@@ -61,7 +61,7 @@ const linkedCases: Partial<Record<typeof states[number], {
   'hot-multiple': { version: 9, links: ['wiki', 'markdown'] }, 'hot-v9-empty': { version: 9, links: ['wiki'] },
   'hot-reference': { version: 10, links: ['reference'] }, 'hot-html': { version: 10, links: ['html'] },
   'hot-stationary': { version: 11, links: ['reference'], stationary: true },
-  'hot-stationary-dirty': { version: 11, links: ['reference'], stationary: true, reject: true },
+  'hot-stationary-dirty': { version: 11, links: ['reference'], stationary: true },
   'hot-shared-wiki': { version: 6, links: ['wiki'] },
   'hot-shared-markdown': { version: 7, links: ['markdown'] },
   'hot-shared-wiki-source-only': { version: 6, links: ['wiki'] },
@@ -74,7 +74,7 @@ const linkedCases: Partial<Record<typeof states[number], {
   'hot-shared-two-dependencies': { version: 9, links: ['wiki', 'markdown'] },
   'hot-shared-v10-multiple': { version: 10, links: ['wiki', 'reference'] },
   'hot-shared-v11-multiple': { version: 11, links: ['wiki', 'reference'], stationary: true },
-  'hot-shared-v11-multiple-group-draft': { version: 11, links: ['wiki', 'reference'], stationary: true, reject: true },
+  'hot-shared-v11-multiple-group-draft': { version: 11, links: ['wiki', 'reference'], stationary: true },
   'hot-shared-v11-multiple-host-draft': { version: 11, links: ['wiki', 'reference'], stationary: true, reject: true },
   'hot-shared-later-outside-member': { version: 11, links: ['wiki', 'markdown'], reject: true }
 }
@@ -200,13 +200,33 @@ for (const state of states) {
           working: { kind: 'host', ...workingBefore, blocks: workingBefore.blocks.map(block => block.type === 'synced-block' ? block
             : { ...block, content: block.content + ' third-page W' }) } }] }, { kind: 'background' }).records[0]
       }
-      if ((state === 'hot-stationary-dirty' || state === 'hot-shared-v11-multiple-group-draft') && stationary) {
-        const baseline = f.store.invokeSyncedEditingSession(hostEvent.senderFrame!, { sessionId, method: 'captureBaseline', input: { groupId: stationary.groupId } })
+      const movesBothGroups = state === 'hot-list-parent-other-ref'
+      const keepsOtherGroup = state === 'hot-stationary-dirty' || state === 'hot-shared-v11-multiple-group-draft'
+      const otherInstanceId = movesBothGroups ? nested!.forest!.otherReferenceId : keepsOtherGroup ? stationary?.instanceId : undefined
+      if (movesBothGroups || keepsOtherGroup) assert.ok(otherInstanceId, 'This fixture requires an independent reference')
+      let separate: { head: EditorRecoveryReceipt['records'][number]; record: EditorRecoveryRecord; groupId: string; instanceId: string; hostDocumentId: string } | undefined
+      if (otherInstanceId) {
+        const binding = expectedInstances.find(item => item.instanceId === otherInstanceId)
+        const row = f.db.prepare('SELECT group_id FROM synced_instances WHERE instance_id=?').get(otherInstanceId) as { group_id: string } | undefined
+        assert.ok(binding && row && row.group_id !== f.groupId)
+        const groupId = row.group_id
+        const occurrence = f.store.openSyncedEditingSession(hostEvent.senderFrame!, {
+          kind: 'instance', groupId, instanceId: otherInstanceId, hostDocumentId: binding.hostDocumentId
+        })
+        assert.ok(occurrence.status === 'ready' && occurrence.instance && occurrence.session.sessionId === sessionId)
+        assert.equal(occurrence.instance.bindingVersion, binding.bindingVersion)
+        const baseline = f.store.invokeSyncedEditingSession(hostEvent.senderFrame!, { sessionId, method: 'captureBaseline', input: { groupId } })
         assert.equal(baseline.status, 'ready')
-        const owner = service.open(hostEvent, { kind: 'group', groupId: stationary.groupId, sessionId, readOwnerId: baseline.readOwnerId, openRequestId: randomUUID() })
-        outsideHead = service.write(hostEvent, { records: [{ ...hostDraft, draftSessionId: owner.draftSessionId, pending: [],
-          working: { kind: 'group', blocks: syncedCanonicalEdits(baseline.snapshot.blocks).map(block => ({ ...block, content: block.content + ' separate W' })), incoming: null } }] },
-        { kind: 'background' }).records[0]
+        const owner = service.open(hostEvent, { kind: 'group', groupId, sessionId, readOwnerId: baseline.readOwnerId, openRequestId: randomUUID() })
+        const before = syncedCanonicalEdits(baseline.snapshot.blocks)
+        const after = before.map(block => ({ ...block, content: block.content + ' separate W' }))
+        const draft: EditorRecoveryDraftInput = { ...groupDraft, draftSessionId: owner.draftSessionId,
+          working: { kind: 'group', blocks: after, incoming: null },
+          replayJson: JSON.stringify({ kind: 'knowbook-canonical-recovery-data', version: 2, snapshot: baseline.snapshot,
+            readSource: null, accepted: null, frames: [{ before, after, instance: binding, copySources: [], sequence: 1, transactionId: randomUUID() }],
+            redoFrames: [], serverRedo: [], cutServerRedo: true }) }
+        const [head] = service.write(hostEvent, { records: [draft] }, { kind: 'background' }).records
+        separate = { head, record: side.read(head), groupId, instanceId: otherInstanceId, hostDocumentId: binding.hostDocumentId }
       }
 
       const hotRequest = { sessionId: hostSource.session.sessionId, hostHead }
@@ -234,8 +254,18 @@ for (const state of states) {
         assert.deepEqual(sameGroupPeers(f.db), sameGroupBefore)
         assert.equal(f.store.getDocumentDetail(f.hostId)!.blocks.find(block => block.id === f.instanceId)?.parentBlockId, nested?.sourceParentId ?? null)
         if (mixed) assert.deepEqual(f.store.getDocumentDetail(f.hostId)!.blocks.map(block => block.id), sourceBeforeIds)
-        if (state === 'hot-list-parent-other-ref') assert.ok(f.store.getDocumentDetail(f.hostId)!.blocks.some(block =>
-          block.id === nested!.forest!.otherReferenceId && block.type === 'synced-block' && block.parentBlockId === nested!.sourceParentId))
+        if (movesBothGroups) {
+          assert.ok(separate)
+          const { instanceId } = separate
+          const plan = f.db.transaction(() => decodeCrossHostJournal4(captureCrossHostJournal4(f.db, input, new Date().toISOString())))()
+          const transfers = plan.crossMove.transfers.filter(item => item.blockId === f.instanceId || item.blockId === instanceId)
+          assert.equal(transfers.length, 2, 'The actual selected forest transfers both separately edited groups')
+          assert.ok(transfers.every(transfer => transfer.from === f.hostId && transfer.to === f.targetId))
+          assert.deepEqual(f.store.getDocumentDetail(f.hostId)!.blocks.map(block => block.id), sourceBeforeIds)
+          assert.ok(f.store.getDocumentDetail(f.targetId)!.blocks.every(block => !transfers.some(transfer => transfer.blockId === block.id)))
+          assert.equal(side.head(separate.head.draftSessionId)?.expected.hash, separate.head.hash)
+          assert.deepEqual(side.read(separate.head), separate.record)
+        }
         if (dependency) assert.equal(f.store.getDocumentDetail(dependency.documentId)?.blocks[0].content, dependency.before)
         return
       }
@@ -254,7 +284,11 @@ for (const state of states) {
         assert.equal(moved.status, 'moved')
         assert.deepEqual(await hotApply(), moved)
         assert.equal(commits, 1)
-        assert.equal(service.activeDraftSessionIds(hostEvent).length, 0)
+        assert.deepEqual(service.activeDraftSessionIds(hostEvent), separate ? [separate.head.draftSessionId] : [])
+        if (separate) {
+          assert.equal(side.head(separate.head.draftSessionId)?.expected.hash, separate.head.hash)
+          assert.deepEqual(side.read(separate.head), separate.record)
+        }
       }
       if (state === 'different-frame' || state === 'newer-group') {
         assert.deepEqual(await hotApply(), { status: 'rejected' })
@@ -404,6 +438,21 @@ for (const state of states) {
           assert.equal(candidate.writePermit, false)
           assert.deepEqual(candidate.pending, [{ clientOperationId, status: 'committed-attested' }])
           assert.throws(() => coldService.decide(coldEvent, candidate.recoveryOwnerId, 'restore-draft'), /explicit review/)
+          if (separate) {
+            assert.deepEqual(stationaryFacts(db), untouched)
+            const { recordId, generation, hash } = separate.head
+            const original = coldService.read(coldEvent, { recordId, generation, hash })
+            assert.deepEqual(original.record, separate.record)
+            assert.equal(original.canonicalHostDocumentId, separate.hostDocumentId)
+            assert.equal(original.canonicalCrossMoveRecovery, undefined)
+            const { groupId, instanceId, hostDocumentId } = separate
+            const unchanged = cold.openSyncedEditingSession(coldEvent.senderFrame!, { kind: 'instance', groupId, instanceId, hostDocumentId })
+            assert.ok(unchanged.status === 'ready' && unchanged.instance && unchanged.snapshot)
+            const { frames } = readCanonicalRecoveryClosedFrames(original.record, unchanged.snapshot, unchanged.session.workspaceScope)
+            assert.deepEqual(frames.map(frame => frame.instance), [{ instanceId, hostDocumentId, bindingVersion: unchanged.instance.bindingVersion }])
+            assert.equal(original.record.draft.working.kind, 'group')
+            assert.deepEqual(frames[0].after, original.record.draft.working.blocks)
+          }
           if (state === 'exact' || receives || state === 'renderer' || state === 'hot') {
             const prepared = candidate.canonicalCrossMoveRecovery
             assert.ok(prepared)
