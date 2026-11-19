@@ -1,14 +1,16 @@
 import { captureSyncedCreateSourceFacts } from './synced-host-create-plan'
 import { parseLocalMarkdownUrl, resolveMarkdownDocumentPath } from '../../shared/markdownLinks'
 import { parseWikiReference, wikiDocumentPaths } from '../../shared/markdownWiki'
-import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
-import { CAPSULE2_RAW_MAX_VALUE_BYTES } from './restore-knowledge-capsule2-raw-model'
+import { capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
+import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
+import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_RAW_MAX_VALUE_BYTES } from './restore-knowledge-capsule2-raw-model'
 import { graph3Conflict, graph3Encode, graph3Key, type Graph3Inputs } from './restore-knowledge-graph3-data'
 import { deriveRootRestoreMergedContent3 } from './restore-knowledge-merge3-model'
 import type { RootRestoreMergedContentChoices3 } from './restore-knowledge-merge3-read'
 import { assertMerge3JsonBudget, type Merge3OriginalRowRef } from './restore-knowledge-merge3-storage'
-import { buildMerge3NavigationFinalIndex3, deriveRootRestoreNavigationMergeContext3, resolveFinalNavigation3,
-  type Navigation3Cell, type Navigation3ContextScope, type Navigation3FinalIndex, type Navigation3Table } from './restore-knowledge-navigation3-merge-context'
+import { deriveRootRestoreNavigationMergeContext3, resolveFinalNavigation3, withStoredMerge3NavigationFinalIndex3,
+  type Navigation3Cell, type Navigation3ContextScope, type Navigation3FinalScope,
+  type Navigation3Table, type StoredNavigation3Index } from './restore-knowledge-navigation3-merge-context'
 import { applyNavigation3TextEdits, createNavigation3RangeProjection, renderNavigation3Destination,
   type Navigation3FinalTarget, type Navigation3TextEdit } from './restore-knowledge-navigation3-rewrite-cells'
 
@@ -106,58 +108,65 @@ export function deriveRootRestoreNavigationRewrite3(data: Graph3Inputs, choices?
     return { ...row, cells: row.cells.map((cell, i) => i === index ? graph3Encode(changed, table.encoding) : cell) }
   }) }))
   assertMerge3JsonBudget(tables)
-  const final = buildMerge3NavigationFinalIndex3(data, tables)
-  const rangeProjections = new Map([...editsByCell].map(([key, list]) => [key, createNavigation3RangeProjection(list)]))
-  const unchangedRange = createNavigation3RangeProjection([])
-  const finalScopes = new Map(final.scopes.map(scope => [graph3Key(scope.field, scope.finalDocumentId), scope]))
-  const finalDestinations = new Map(final.scopes.map(scope => [scope.scopeId, new Map(scope.destinations.map(link => [exactKey(link.key), link]))]))
-  const projections: Array<{ side: 'source' | 'current'; scopeId: string; rowKey: string; before: Destination['key'];
-    after: Destination['key']; expectedTarget: Navigation3FinalTarget | null; actualTarget: ReturnType<typeof resolveFinalNavigation3> | null }> = []
-  for (const { scope, link, target } of observations) {
-    const cell = link.cell!, destinationScope = finalScopes.get(graph3Key(scope.field, scope.finalDocumentId))
-    if (!destinationScope) return graph3Conflict('navigation-final-scope-missing', scope.scopeId)
-    const text = changedText.get(fieldKey(cell)) ?? cell.text
-    const range = (rangeProjections.get(fieldKey(cell)) ?? unchangedRange)(link.key.from, link.key.to)
-    if (!range) return graph3Conflict('navigation-final-range-overlap', link.key)
-    const key = { ...link.key, blockId: link.finalOccurrenceKey!, ...range, raw: text.slice(range.from, range.to) }
-    const actual = finalDestinations.get(destinationScope.scopeId)!.get(exactKey(key))
-    if (!actual || !same(actual.grammar, link.grammar) || actual.image !== link.image) {
-      conflict('navigation-final-grammar-or-range-changed', scope, [cell.rowKey], { before: link.key, after: key }); continue
+  return withStoredMerge3NavigationFinalIndex3(data, tables, final => {
+    const rangeProjections = new Map([...editsByCell].map(([key, list]) => [key, createNavigation3RangeProjection(list)]))
+    const unchangedRange = createNavigation3RangeProjection([])
+    let destinationScope: Navigation3FinalScope | undefined
+    let destinations = new Map<string, Navigation3FinalScope['destinations'][number]>()
+    const projections: Array<{ side: 'source' | 'current'; scopeId: string; rowKey: string; before: Destination['key'];
+      after: Destination['key']; expectedTarget: Navigation3FinalTarget | null; actualTarget: ReturnType<typeof resolveFinalNavigation3> | null }> = []
+    for (const { scope, link, target } of observations) {
+      const cell = link.cell!, scopeId = graph3Key(scope.field, scope.finalDocumentId)
+      if (destinationScope?.scopeId !== scopeId) {
+        destinationScope = final.scope(scopeId)
+        if (!destinationScope) return graph3Conflict('navigation-final-scope-missing', scope.scopeId)
+        destinations = new Map(destinationScope.destinations.map(link => [exactKey(link.key), link]))
+      }
+      const text = changedText.get(fieldKey(cell)) ?? cell.text
+      const range = (rangeProjections.get(fieldKey(cell)) ?? unchangedRange)(link.key.from, link.key.to)
+      if (!range) return graph3Conflict('navigation-final-range-overlap', link.key)
+      const key = { ...link.key, blockId: link.finalOccurrenceKey!, ...range, raw: text.slice(range.from, range.to) }
+      const actual = destinations.get(exactKey(key))
+      if (!actual || !same(actual.grammar, link.grammar) || actual.image !== link.image) {
+        conflict('navigation-final-grammar-or-range-changed', scope, [cell.rowKey], { before: link.key, after: key }); continue
+      }
+      const resolved = link.target.kind === 'opaque' ? null
+        : resolveFinalNavigation3(final, destinationScope.finalDocumentId, actual.url, key.syntax === 'wiki')
+      projections.push({ side: scope.side, scopeId: scope.scopeId, rowKey: cell.rowKey, before: link.key, after: key, expectedTarget: target, actualTarget: resolved })
+      if (target && resolved && !targetMatches(target, resolved))
+        conflict('navigation-final-target-identity-changed', scope, [cell.rowKey], { before: link.key, expected: target, actual: resolved })
+      else if (!target && resolved && ['document', 'block', 'heading'].includes(resolved.kind))
+        conflict('unresolved-navigation-became-live', scope, [cell.rowKey], { before: link.key, actual: resolved })
+      const originalPath = key.syntax === 'wiki' ? parseWikiReference(link.url).path : parseLocalMarkdownUrl(link.url)?.path
+      const relativeUnknown = Boolean(originalPath && (key.syntax === 'wiki' ? /^\.\.?\//.test(originalPath) : !originalPath.startsWith('/')))
+      if (link.target.kind === 'unresolved' && relativeUnknown) {
+        const before = key.syntax === 'wiki' ? wikiDocumentPaths(parseWikiReference(link.url).path, scope.path)
+          : resolveMarkdownDocumentPath(scope.path, link.url)
+        const after = key.syntax === 'wiki' ? wikiDocumentPaths(parseWikiReference(actual.url).path, destinationScope.path)
+          : resolveMarkdownDocumentPath(destinationScope.path, actual.url)
+        if (!same(before, after)) conflict('unresolved-navigation-path-context-changed', scope, [cell.rowKey], { before, after, key: link.key })
+      }
     }
-    const resolved = link.target.kind === 'opaque' ? null
-      : resolveFinalNavigation3(final, destinationScope.finalDocumentId, actual.url, key.syntax === 'wiki')
-    projections.push({ side: scope.side, scopeId: scope.scopeId, rowKey: cell.rowKey, before: link.key, after: key, expectedTarget: target, actualTarget: resolved })
-    if (target && resolved && !targetMatches(target, resolved))
-      conflict('navigation-final-target-identity-changed', scope, [cell.rowKey], { before: link.key, expected: target, actual: resolved })
-    else if (!target && resolved && ['document', 'block', 'heading'].includes(resolved.kind))
-      conflict('unresolved-navigation-became-live', scope, [cell.rowKey], { before: link.key, actual: resolved })
-    const originalPath = key.syntax === 'wiki' ? parseWikiReference(link.url).path : parseLocalMarkdownUrl(link.url)?.path
-    const relativeUnknown = Boolean(originalPath && (key.syntax === 'wiki' ? /^\.\.?\//.test(originalPath) : !originalPath.startsWith('/')))
-    if (link.target.kind === 'unresolved' && relativeUnknown) {
-      const before = key.syntax === 'wiki' ? wikiDocumentPaths(parseWikiReference(link.url).path, scope.path)
-        : resolveMarkdownDocumentPath(scope.path, link.url)
-      const after = key.syntax === 'wiki' ? wikiDocumentPaths(parseWikiReference(actual.url).path, destinationScope.path)
-        : resolveMarkdownDocumentPath(destinationScope.path, actual.url)
-      if (!same(before, after)) conflict('unresolved-navigation-path-context-changed', scope, [cell.rowKey], { before, after, key: link.key })
-    }
-  }
-  validateDefinitionEnvironments(context.scopes, final, changedText, conflict)
-  const body = { kind: 'root-restore-navigation-text-candidate' as const, version: 3 as const,
-    scope: 'source-and-current-ordinary-body-and-summary' as const,
-    mergedContentHash: merged.mergedContentHash, navigationContextHash: context.contextHash,
-    sourceNavigationInputHash: context.source.navigationInputHash, currentNavigationInputHash: context.current.navigationInputHash,
-    conservationHash: merged.conservationHash, identityAllocationHash: merged.identityAllocationHash,
-    sourceMaterialHash: merged.sourceMaterialHash, currentMaterialHash: merged.currentMaterialHash, choices: merged.choices,
-    targetEncoding: merged.targetEncoding, tables, edits, projections, unresolved,
-    finalSyntaxIndexHash: final.indexHash, finalHeadingNamespaces: final.headingNamespaces,
-    conflicts: [...merged.conflicts, ...conflicts], candidateConflictFree: merged.conflicts.length === 0 && conflicts.length === 0,
-    ordinaryNavigationCellsRewritten: true as const, completeFinalScopesReparsed: true as const,
-    canonicalBindingsRewritten: false as const, templateNavigationRewritten: false as const,
-    originalRouteRowsRewritten: false as const, documentLinkCountsRecomputed: false as const,
-    referenceRewriteComplete: false as const, semanticValidationComplete: false as const,
-    sourcePolicyReplayed: false as const, sourceHistoryReplayed: false as const, acceptedCoverage: false as const, effective: false as const, permit: false as const }
-  assertMerge3JsonBudget(body)
-  return freezeCapsuleValue({ ...body, navigationRewriteHash: capsuleBytesHash('knowbook.restore.navigation3.rewritten-cells.v1\0' + capsuleJson(body)) })
+    validateDefinitionEnvironments(context.scopes, final, changedText, conflict)
+    const body = { kind: 'root-restore-navigation-text-candidate' as const, version: 3 as const,
+      scope: 'source-and-current-ordinary-body-and-summary' as const,
+      mergedContentHash: merged.mergedContentHash, navigationContextHash: context.contextHash,
+      sourceNavigationInputHash: context.source.navigationInputHash, currentNavigationInputHash: context.current.navigationInputHash,
+      conservationHash: merged.conservationHash, identityAllocationHash: merged.identityAllocationHash,
+      sourceMaterialHash: merged.sourceMaterialHash, currentMaterialHash: merged.currentMaterialHash, choices: merged.choices,
+      targetEncoding: merged.targetEncoding, tables, edits, projections, unresolved,
+      finalSyntaxIndexHash: final.indexHash, finalHeadingNamespaces: final.headingNamespaces,
+      conflicts: [...merged.conflicts, ...conflicts], candidateConflictFree: merged.conflicts.length === 0 && conflicts.length === 0,
+      ordinaryNavigationCellsRewritten: true as const, completeFinalScopesReparsed: true as const,
+      canonicalBindingsRewritten: false as const, templateNavigationRewritten: false as const,
+      originalRouteRowsRewritten: false as const, documentLinkCountsRecomputed: false as const,
+      referenceRewriteComplete: false as const, semanticValidationComplete: false as const,
+      sourcePolicyReplayed: false as const, sourceHistoryReplayed: false as const, acceptedCoverage: false as const, effective: false as const, permit: false as const }
+    assertMerge3JsonBudget(body)
+    const navigationRewriteHash = hashBoundedCapsuleJson(body, CAPSULE2_RAW_MAX_JSON_BYTES, 'knowbook.restore.navigation3.rewritten-cells.v1\0')
+    if (!navigationRewriteHash) return graph3Conflict('navigation-rewrite-hash-budget', null)
+    return freezeCapsuleValue({ ...body, navigationRewriteHash })
+  })
 }
 
 function storageValueBytes(tables: readonly Navigation3Table[]) {
@@ -169,14 +178,14 @@ function storageValueBytes(tables: readonly Navigation3Table[]) {
   return bytes
 }
 
-function validateDefinitionEnvironments(scopes: readonly Navigation3ContextScope[], final: Navigation3FinalIndex,
+function validateDefinitionEnvironments(scopes: readonly Navigation3ContextScope[], final: StoredNavigation3Index,
   changed: ReadonlyMap<string, string>,
   conflict: (code: string, scope: Navigation3ContextScope, rowKeys: readonly string[], detail: unknown) => void) {
-  const finalScopes = new Map(final.scopes.map(scope => [graph3Key(scope.field, scope.finalDocumentId), scope]))
   for (const scope of scopes) {
     const ordinary = scope.blocks.filter(block => block.cell && block.finalOccurrenceKey !== null && block.location.groupId === null)
     if (!ordinary.length || scope.finalDocumentId === null) continue
-    const actual = finalScopes.get(graph3Key(scope.field, scope.finalDocumentId))!
+    const actual = final.scope(graph3Key(scope.field, scope.finalDocumentId))
+      ?? graph3Conflict('navigation-final-scope-missing', scope.scopeId)
     // Reparse the complete OLD environment with just the declared destination
     // edits. This permits changed hrefs while retaining semantic units/uses.
     const expected = captureSyncedCreateSourceFacts(scope.blocks.map(entry => ({ ...entry.block,

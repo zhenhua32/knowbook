@@ -22,7 +22,8 @@ import { readSyncedExchangeCutJournal } from '../database/synced-exchange-host-c
 import { readSyncedExchangeLocal, readSyncedExchangeReceipt, type SyncedExchangeLocal } from '../database/synced-exchange-read'
 import { readSyncedExchangeReceiptById } from '../database/synced-exchange-receipt'
 import { readActiveExchangeRejoin } from '../database/synced-exchange-rejoin-model'
-import { readRejoinedPublicationSnapshot } from './synced-exchange-rejoin-publication'
+import { readInitialPublicationRejoinSnapshot, readRejoinedPublicationSnapshot } from './synced-exchange-rejoin-publication'
+import { initialPublicationSeed } from '../database/synced-initial-publication-receipt'
 import { readSyncedExchangeConflictPreviewIndex } from '../database/synced-exchange-conflict-read'
 import { WebDavClient, WebDavHttpError, normalizeWebDavConfig } from './webdav-client'
 import { assertProtocol5ManifestLineage, preserveProtocol5Predecessor } from './synced-manifest-history'
@@ -254,11 +255,18 @@ async function readReceivedExchangeSeed(client: WebDavClient, origin: SyncedInit
   if (!original.missing.length) return validateSyncedProtocol5Snapshot(origin, original.records.map(({ key, record }) => ({ key, record })))
 }
 async function initialState(c: Context, local: SyncedExchangeLocal, localWire: SyncedProtocol5Snapshot,
-  remote: SyncedProtocol5Snapshot): Promise<{ state: M.ExchangeState; original?: SyncedProtocol5Snapshot }> {
+  remote: SyncedProtocol5Snapshot, client: WebDavClient): Promise<{ state: M.ExchangeState; original?: SyncedProtocol5Snapshot }> {
   if (local.state) return { state: legacyState(local.state) }
+  if (local.initialRejoin?.kind === 'publish') {
+    const original = await readInitialPublicationRejoinSnapshot(client, c.target, remote.manifest, local.initialRejoin, c.root)
+    return { state: seedState(c, initialPublicationSeed(local.initialRejoin.receipt), original), original }
+  }
   if (local.initialBaseline) {
     const original = local.initialBaseline
-    if (original.result.workspaceScope !== c.workspaceScope || original.result.recoveryEpoch !== c.recoveryEpoch
+    const inheritedInitial = local.initialRejoin?.kind === 'receive' && local.initialRejoin.value.newEpoch === c.recoveryEpoch
+      && local.initialRejoin.initial.result.operationId === original.result.operationId
+      && local.initialRejoin.value.acceptedHead.hash === original.result.manifestHash
+    if (original.result.workspaceScope !== c.workspaceScope || original.result.recoveryEpoch !== c.recoveryEpoch && !inheritedInitial
       || original.manifest.workspaceId !== remote.manifest.workspaceId) return unavailable('初始接收共同来源不属于原scope/epoch/remote。')
     // The exact bodies are fetched by bases before the planner consumes this authenticated manifest.
     const edges = new Map<string, string[]>()
@@ -294,7 +302,8 @@ const connections = new WeakMap<Context, Database.Database>()
 function captureConnection(c: Context): Database.Database { return connections.get(c) ?? unavailable('exchange原connection不可用。') }
 
 async function assertKnownRemoteLineage(db: Database.Database, c: Context, client: WebDavClient, state: M.AnyExchangeState,
-  origin: SyncedInitialManifest5 | undefined, remote: SyncedInitialManifest5): Promise<void> {
+  origin: SyncedInitialManifest5 | undefined, remote: SyncedInitialManifest5, remoteEtag: string,
+  initialRejoin: SyncedExchangeLocal['initialRejoin']): Promise<void> {
   if (!origin?.history && !remote.history) return
   if (!origin?.history || !remote.history || origin.history.previousHash !== null && state.source.kind !== 'initial-receipt'
     || publicationHash(publicationJson(origin)) !== state.source.manifestHash) return unavailable('远端历史方言与原工作区首发不同，已暂停同步。')
@@ -308,7 +317,11 @@ async function assertKnownRemoteLineage(db: Database.Database, c: Context, clien
   if (state.currentOperationId && (!latest || latest.request.targetFingerprint !== c.request.targetFingerprint
     || latest.result.workspaceScope !== c.workspaceScope || latest.result.recoveryEpoch !== c.recoveryEpoch && !inheritedHead
     || latest.result.remoteWorkspaceId !== remote.workspaceId)) return publicationInvalid('原历史链的本机接受回执不符。')
-  await network(() => assertProtocol5ManifestLineage(client, c.target, remote, inheritedHead ?? latest?.result.afterManifestHash ?? state.source.manifestHash))
+  const confirmedInitialHead = !state.currentOperationId ? initialRejoin?.value.observedHead : undefined
+  if (confirmedInitialHead && publicationHash(publicationJson(remote)) === confirmedInitialHead.hash && remoteEtag !== confirmedInitialHead.etag)
+    return unavailable('续接确认的同一远端清单 ETag 已变化。')
+  await network(() => assertProtocol5ManifestLineage(client, c.target, remote,
+    inheritedHead ?? latest?.result.afterManifestHash ?? confirmedInitialHead?.hash ?? state.source.manifestHash))
 }
 
 function authority(local: SyncedExchangeLocal, missingBaseKeys: string[], deferredKeys: string[] = []) {
@@ -344,8 +357,8 @@ async function prepare(db: Database.Database, c: Context, runtime: SyncedExchang
   const material = readSyncedExchangeLocalMaterial(localMaterial), local = captured?.local ?? capture(db, c)
   if (!material || material.snapshot.localFingerprint !== local.snapshot.localFingerprint) return { status: 'stale', side: 'local' }
   const localWire = wire(material.records, c.workspaceScope), remoteWire = fromRemote(remote)
-  const initialized = await initialState(c, local, localWire, remoteWire)
   const client = new WebDavClient(c.target, runtime.password, runtime.signal)
+  const initialized = await initialState(c, local, localWire, remoteWire, client)
   let origin = initialized.original?.manifest ?? local.initialBaseline?.manifest
   const common = await bases(initialized.state, localWire, remoteWire, client, initialized.original)
   let state = initialized.state
@@ -353,6 +366,7 @@ async function prepare(db: Database.Database, c: Context, runtime: SyncedExchang
     // A seed is one complete original graph. Missing any old object means its unobserved edges are unknown.
     // Join the entire old key set conservatively rather than certify a partial manifest as an empty dependency graph.
     if (common.missing.length) {
+      if (local.initialRejoin) return unavailable('首接收续接缺完整的原始共同版本。')
       const all = state.baseline.map(row => row.key)
       state = M.validateExchangeState({ ...state, baseline: state.baseline.map(row => ({ ...row, dependencyKeys: all.filter(key => key !== row.key),
         dependencySignature: publicationHash(publicationJson({ unknownOriginalClosure: state.source.manifestHash, key: row.key, all })) })) })
@@ -379,7 +393,7 @@ async function prepare(db: Database.Database, c: Context, runtime: SyncedExchang
       common.missing.push(...state.baseline.map(row => row.key))
     }
   }
-  await assertKnownRemoteLineage(db, c, client, state, origin, remote.manifest)
+  await assertKnownRemoteLineage(db, c, client, state, origin, remote.manifest, remote.manifestEtag, local.initialRejoin)
   const now = capture(db, c)
   if (now.fingerprint !== local.fingerprint) return { status: 'stale', side: 'local' }
   const planningAuthority = authority(local, sort(common.missing), deferredKeys)
@@ -392,6 +406,10 @@ async function prepare(db: Database.Database, c: Context, runtime: SyncedExchang
 type TombstonePlanningMode = 'tombstone' | 'tombstone-or-legacy' | 'deletion-choice'
 async function confirmedExchangeSeed(db: Database.Database, c: Context, client: WebDavClient, local: SyncedExchangeLocal,
   state: M.AnyExchangeState, remote: SyncedInitialManifest5) {
+  if (local.initialRejoin?.kind === 'publish' && same(initialPublicationSeed(local.initialRejoin.receipt), state.source)) {
+    await network(() => assertProtocol5ManifestLineage(client, c.target, remote, state.source.manifestHash))
+    return readInitialPublicationRejoinSnapshot(client, c.target, remote, local.initialRejoin, c.root)
+  }
   const bridge = local.rejoin
   if (bridge?.publication && same(bridge.old.source, state.source)) {
     await network(() => assertProtocol5ManifestLineage(client, c.target, remote, state.source.manifestHash))
@@ -420,13 +438,15 @@ async function prepareTombstone(db: Database.Database, c: Context, runtime: Sync
     || local.localDocumentDeletions.length > 0
     || remoteWire.records.some(row => row.record.kind === 'deleted' || row.record.kind === 'synced-group-deleted')
   if (mode === 'tombstone-or-legacy' && !needsTombstones) return prepare(db,c,runtime,deferredKeys,2,{source,localMaterial,local})
-  const initialized = local.state ? { state: local.state, original: undefined } : await initialState(c, local, localPhysical, remoteWire)
-  let state = initialized.state.version === 2 ? initialized.state : M.liftTombstoneExchangeState(initialized.state)
   const client = new WebDavClient(c.target, runtime.password, runtime.signal)
+  const initialized = local.state ? { state: local.state, original: undefined } : await initialState(c, local, localPhysical, remoteWire, client)
+  let state = initialized.state.version === 2 ? initialized.state : M.liftTombstoneExchangeState(initialized.state)
   let origin = initialized.original?.manifest ?? local.initialBaseline?.manifest
   const common = await bases(state, localWire, remoteWire, client, initialized.original)
   if (!local.state && state.source.kind === 'initial-receipt') {
-    if (common.missing.length) { const all = state.baseline.map(row => row.key)
+    if (common.missing.length) {
+      if (local.initialRejoin) return unavailable('首接收续接缺完整的原始共同版本。')
+      const all = state.baseline.map(row => row.key)
       state = M.validateTombstoneExchangeState({ ...state, baseline: state.baseline.map(row => ({ ...row, dependencyKeys: all.filter(key => key !== row.key),
         dependencySignature: publicationHash(publicationJson({ unknownOriginalClosure: state.source.manifestHash, key: row.key, all })) })) })
     } else {
@@ -449,7 +469,7 @@ async function prepareTombstone(db: Database.Database, c: Context, runtime: Sync
       for (const row of state.baseline) if (row.acceptedOperationId === state.source.operationId && !same(row, expected.get(row.key))) return publicationInvalid('删除baseline冒借/修改原seed事实。')
     } else if (state.baseline.some(row => row.acceptedOperationId === state.source.operationId)) common.missing.push(...state.baseline.map(row => row.key))
   }
-  await assertKnownRemoteLineage(db, c, client, state, origin, remote.manifest)
+  await assertKnownRemoteLineage(db, c, client, state, origin, remote.manifest, remote.manifestEtag, local.initialRejoin)
   if (capture(db, c).fingerprint !== local.fingerprint) return { status: 'stale', side: 'local' }
   if (mode === 'deletion-choice') {
     // The deletion planner builds the automatic tombstone plan from these same inputs.

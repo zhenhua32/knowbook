@@ -61,7 +61,11 @@ async function observeOrdinaryRoute(app: ElectronApplication, sourceId: string) 
 
 async function openMixedMove(page: Page, source: CanonicalHostBody, destination: CanonicalHostBody) {
   const row = (id: string) => page.locator(`.block-editor-row[data-block-id="${id}"]`)
-  const start = await row(source.blocks[0].id).boundingBox(), end = await row(source.blocks[1].id).boundingBox()
+  const first = row(source.blocks[0].id), last = row(source.blocks[1].id)
+  await first.evaluate(element => element.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' }))
+  await expect(first).toBeInViewport()
+  await expect(last).toBeInViewport()
+  const start = await first.boundingBox(), end = await last.boundingBox()
   if (!start || !end) throw new Error('Both host rows must be visible')
   await page.mouse.move(start.x + 2, start.y + Math.min(10, start.height / 2)); await page.mouse.down()
   await page.mouse.move(end.x + 2, end.y + Math.min(10, end.height / 2), { steps: 4 }); await page.mouse.up()
@@ -160,23 +164,55 @@ test('moves ordinary and shared roots across pages and restores dependent Markdo
   })
 })
 
-test('declines cross-page moves with unsaved shared text without saving or discarding it @electron', async ({}, info) => {
+test('declines a mixed cross-page move while two groups have unsaved shared text @electron', async ({}, info) => {
   await withCanonicalInlineApp(info, async fixture => {
     const { seed } = fixture, [source, destination] = seed.hosts, { page } = fixture.context()
+    const independent = await page.evaluate(async ({ sourceId, originalGroupId }) => {
+      const doc = await window.knowbook.getDocumentDetail(sourceId)
+      const opened = await window.knowbook.openSyncedEditingSession({ kind: 'host', hostDocumentId: sourceId })
+      if (!doc || opened.status !== 'ready') throw new Error('The original host session is required')
+      const { sessionId } = opened.session
+      const original = (await window.knowbook.invokeSyncedEditingSession({ sessionId,
+        method: 'getSyncedGroupSnapshots', input: { groupIds: [originalGroupId] } })).items[0]
+      if (original?.status !== 'ready') throw new Error('The original shared group is required')
+      const groupId = crypto.randomUUID(), instanceId = crypto.randomUUID(), blockId = crypto.randomUUID()
+      const text = 'Independent shared body on the source page'
+      const blocks = doc.blocks.map(({ sortOrder: _order, ...block }) => ({ ...block, parentBlockId: block.parentBlockId ?? null }))
+      const result = await window.knowbook.invokeSyncedEditingSession({ sessionId, method: 'applySyncedHostStructure', input: {
+        mode: 'command', clientOperationId: crypto.randomUUID(),
+        action: { kind: 'create', documentId: sourceId, selectedRootIds: [blockId], groupId, instanceId },
+        hostsWorkingBefore: [{ documentId: sourceId, expectedPersistedUpdatedAt: doc.updatedAt,
+          workingBefore: { title: doc.title, summary: doc.summary, blocks: [...blocks,
+            { id: blockId, type: 'paragraph', content: text, checked: false, depth: 0, parentBlockId: null }] } }],
+        groups: [{ groupId: originalGroupId, expectedRevision: original.snapshot.revision, expectedTopologyRevision: original.snapshot.topologyRevision }],
+        expectedInstances: original.snapshot.instances.filter(row => row.hostDocumentId === sourceId)
+          .map(({ instanceId, hostDocumentId, bindingVersion }) => ({ instanceId, hostDocumentId, bindingVersion }))
+      } })
+      if (result.status !== 'applied') throw new Error('The fixture must establish a second registered group')
+      return { groupId, instanceId, blockId, text }
+    }, { sourceId: source.id, originalGroupId: seed.groupId })
+    await page.reload()
     const instanceId = seed.instanceIds[0], suffix = ' still private', edited = seed.primaryText + suffix
-    const readActual = () => page.evaluate(async ({ sourceId, destinationId, instanceId, groupId }) => {
-      const state = await window.knowbook.resolveSyncedInlineInstance({ hostDocumentId: sourceId, instanceId, groupId })
-      if (state.status !== 'ready') throw new Error('The original instance is missing')
+    const otherSuffix = ' another private draft', otherEdited = independent.text + otherSuffix
+    const readActual = () => page.evaluate(async ({ sourceId, destinationId, bindings }) => {
       const pages = await Promise.all([sourceId, destinationId].map(id => window.knowbook.getDocumentDetail(id)))
-      return { pages, canonical: state.snapshot }
-    }, { sourceId: source.id, destinationId: destination.id, groupId: seed.groupId, instanceId })
+      const canonical = await Promise.all(bindings.map(async binding => {
+        const state = await window.knowbook.resolveSyncedInlineInstance({ hostDocumentId: sourceId, ...binding })
+        if (state.status !== 'ready') throw new Error('An original instance is missing')
+        return state.snapshot
+      }))
+      return { pages, canonical }
+    }, { sourceId: source.id, destinationId: destination.id, bindings: [
+      { groupId: seed.groupId, instanceId }, { groupId: independent.groupId, instanceId: independent.instanceId }
+    ] })
     await openInlineHost(page, source); await setInlineReading(page, false)
     const original = await readActual()
-    // Separate the editor's ordinary periodic Save from a Save caused by
-    // clicking Move. Real group edits, Main writes and reads remain in place.
+    // Hold the periodic Save so both edits stay live until the move decision.
     const paused = await pauseAutosave(page)
     try {
       await appendCanonicalText(page, instanceId, seed.primaryId, seed.primaryText, suffix)
+      await appendCanonicalText(page, independent.instanceId, independent.blockId, independent.text, otherSuffix)
+      expect(await readActual()).toEqual(original)
       const dialog = await openMixedMove(page, source, destination)
       await dialog.getByRole('button', { name: uiText('Move', '移动'), exact: true }).click()
       await expect(dialog.getByRole('alert')).toBeVisible()
@@ -186,8 +222,10 @@ test('declines cross-page moves with unsaved shared text without saving or disca
       await expect(dialog).toHaveCount(0)
       await expect(page.locator('.block-editor-row-selected')).toHaveCount(2)
       await expectCanonicalRow(inlineInstance(page, instanceId), seed.primaryId, edited)
+      await expectCanonicalRow(inlineInstance(page, independent.instanceId), independent.blockId, otherEdited)
     } finally { await paused.evaluate(resume => resume()); await paused.dispose() }
     await saveCanonical(page, seed, instanceId, edited)
+    await saveCanonical(page, { ...seed, groupId: independent.groupId, primaryId: independent.blockId }, independent.instanceId, otherEdited)
   })
 })
 

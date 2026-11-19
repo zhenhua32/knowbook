@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3'
 import { assertSyncedShape, isSyncedUuid, validateSyncedGroupWire } from '../../shared/syncedBlockValidation'
-import { readInitialIncomingLocal, type InitialIncomingIdentity } from './synced-initial-incoming-read'
+import { readSyncedExchangeIncomingLocal, type InitialIncomingIdentity } from './synced-initial-incoming-read'
 import { assertSyncedExchangeHostCutRecords } from './synced-exchange-host-cut'
 import type { SyncedPublicationLocalSnapshot } from './synced-publication'
 import type { InitialIncomingBaseline } from '../sync/synced-initial-incoming-model'
@@ -10,7 +10,7 @@ import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-re
 import type { TombstonePinFact } from '../sync/synced-exchange-tombstone-types'
 import { publicationHash, publicationInvalid, publicationJson, SyncedPublicationError } from '../sync/synced-publication-model'
 import { readExactSyncedExchangeReceipt, readSyncedExchangeReceiptById } from './synced-exchange-receipt'
-import { exchangeRejoinBaseline, readActiveExchangeRejoin } from './synced-exchange-rejoin-model'
+import { exchangeRejoinBaseline, readActiveExchangeRejoin, readActiveInitialRejoin } from './synced-exchange-rejoin-model'
 import { readLocalDocumentDeletions, type LocalDocumentDeletion } from './local-document-deletions'
 
 export interface SyncedExchangeLocal {
@@ -20,6 +20,7 @@ export interface SyncedExchangeLocal {
   keyGuards: Record<string, string>; knownGroupIds: string[]
   localDocumentDeletions: LocalDocumentDeletion[]
   deletionPins: TombstonePinFact[]; rejoin?: NonNullable<ReturnType<typeof readActiveExchangeRejoin>>
+  initialRejoin?: NonNullable<ReturnType<typeof readActiveInitialRejoin>>
 }
 function owned(db: Database.Database): void {
   if (!db.inTransaction) return publicationInvalid('exchange readonly authority requires an owned transaction。')
@@ -98,13 +99,19 @@ function readState(db: Database.Database, request: ExchangeRequest,
 export function readSyncedExchangeLocal(db: Database.Database,
   input: { request: ExchangeRequest; initialTargetFingerprint: string }): SyncedExchangeLocal {
   owned(db)
-  const legacy = readInitialIncomingLocal(db, { method: 'receiveInitialSyncedSnapshot', operationId: input.request.operationId,
+  const legacy = readSyncedExchangeIncomingLocal(db, { method: 'receiveInitialSyncedSnapshot', operationId: input.request.operationId,
     databasePath: input.request.databasePath, targetFingerprint: input.initialTargetFingerprint })
   // State and archive checks use the same exact owned SQL snapshot. Never
   // reuse a verified receipt across another capture or a write boundary.
   const readReceipt = snapshotReceiptReader(db)
   const rejoin = readActiveExchangeRejoin(db, input.request.databasePath, input.request.targetFingerprint) ?? undefined
   const state = readState(db, input.request, legacy.snapshot, readReceipt, rejoin)
+  const initialRejoin = !state || state.value.source.kind === 'confirmed-publication'
+    ? readActiveInitialRejoin(db, input.request.databasePath, input.request.targetFingerprint) ?? undefined : undefined
+  if (initialRejoin && (rejoin || (initialRejoin.kind === 'receive' ? publicationJson(initialRejoin.initial) !== legacy.baselineRaw
+    : legacy.baseline !== null || state && (state.value.source.operationId !== initialRejoin.operationId
+      || state.value.source.manifestHash !== initialRejoin.acceptedHead.hash))))
+    return publicationInvalid('首同步续接与当前同步目标的原基线不一致。')
   // The schema27 snapshot already authenticated the complete deletion proof set.
   const logicalDeletions = db.pragma('user_version', { simple: true }) === 27
     ? legacy.snapshot.deletions ?? [] : assertSyncedLogicalDeletionRecords(db).values()
@@ -233,7 +240,8 @@ export function readSyncedExchangeLocal(db: Database.Database,
     historyComponents, pinnedGroupIds: [...pinned].sort(), initialBaseline: legacy.baseline,
     state: state?.value ?? null, stateRaw: state?.raw ?? null,
     knownGroupIds: [...legacy.groupIds].sort(), keyGuards, deletionPins, localDocumentDeletions, ...(rejoin ? { rejoin } : {}),
+    ...(initialRejoin ? { initialRejoin } : {}),
     fingerprint: publicationHash(publicationJson({ snapshot: legacy.snapshot.localFingerprint, keyGuards, identities: [...legacy.identities.values()], history, state: state?.raw ?? null, archives,
       hostCuts: [...hostCuts.values()].sort((a, b) => a.historyToken < b.historyToken ? -1 : a.historyToken > b.historyToken ? 1 : 0),
-      ...(rejoin ? { rejoinHash: rejoin.hash } : {}) })) }
+      ...(rejoin ? { rejoinHash: rejoin.hash } : {}), ...(initialRejoin ? { initialRejoinHash: initialRejoin.hash } : {}) })) }
 }

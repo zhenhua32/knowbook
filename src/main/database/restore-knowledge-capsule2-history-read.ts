@@ -9,6 +9,7 @@ import { TITLE2_OPERATION_KIND, TITLE2_GROUP_HEAD_PREFIX, title2CompanionKey } f
 import { isSyncedUuid } from '../../shared/syncedBlockValidation'
 import { parseExchangeStored, exchangeJobKey, exchangeJobPhaseKey } from '../sync/synced-exchange-model'
 import { initialIncomingRequestHash, validateInitialIncomingReceipt } from '../sync/synced-initial-incoming-model'
+import { INITIAL_PUBLICATION_RECEIPT_KIND, readInitialPublicationReceipt } from './synced-initial-publication-receipt'
 import { publicationCompare, publicationHash, publicationJson } from '../sync/synced-publication-model'
 import { LOGICAL_DELETION_CHANNEL } from '../sync/synced-logical-deletion-model'
 import { decodeSyncedOperationAck } from './synced-host-operation-receipt'
@@ -170,6 +171,12 @@ export function readRawCapsule2HistoricalEvidenceSourceOwned(db: Database.Databa
       if (receipt.request.operationId !== row.client_operation_id || row.request_hash !== initialIncomingRequestHash(receipt.request)
         || row.created_at !== receipt.result.acceptedAt) return historicalEvidenceInvalid('原incoming行/request/hash/时点损坏。')
       facts.push(historicalFact('initial-incoming', 1, historicalOperationLocator(row)))
+    } else if (kind === INITIAL_PUBLICATION_RECEIPT_KIND) {
+      const original = schema === 27 ? readInitialPublicationReceipt(db, row.client_operation_id) : null
+      if (!original) return historicalEvidenceInvalid('首发原回执缺准确尝试和版本证明。')
+      const evidence = original.publication
+      facts.push(historicalFact('initial-publication-receipt', 1, historicalOperationLocator(row), evidence.ordinarySetting
+        ? [historicalMetadataLocator(evidence.ordinarySetting)] : attemptSupport(evidence.exposure.id)))
     } else if (kind === 'synced-exchange-operation') {
       if (schema !== 27) return historicalEvidenceInvalid('schema26不支持exchange receipt。')
       const evidence = readSyncedExchangeDenialEvidenceById(db, row.client_operation_id)

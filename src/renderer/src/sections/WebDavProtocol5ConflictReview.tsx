@@ -8,6 +8,11 @@ type Decision = Omit<Extract<ResolveWebDavProtocol5Conflict, { choice: 'merge' }
   | { choice: 'local' | 'remote' | 'both' }
 type Resolve = (input: ResolveWebDavProtocol5Conflict, onError: (message: string) => void) => Promise<boolean>
 type Feedback = { placement: 'merge' | 'whole'; error: string }
+const wholeChoices = [
+  ['local', '应用本机整组', 'Apply entire local group'],
+  ['remote', '应用远端整组', 'Apply entire remote group'],
+  ['both', '同时保留本机和远端', 'Keep both versions']
+] as const
 
 function partLabel(part: WebDavSyncMergePart, blocks: readonly string[], t: Translate): string {
   if (part.field === 'title') return t('标题', 'Title')
@@ -73,12 +78,9 @@ function ConflictGroup({ component, disabled, decide, runAction, fallback, feedb
       {component.choices.length ? <>
         {feedback?.placement === 'whole' && <ActionFeedback pending={pending !== null} error={feedback.error} t={t} />}
         <div className="settings-actions">
-          {component.choices.includes('local') && <button className="secondary-button" type="button" disabled={disabled}
-            aria-busy={pending === 'local'} onClick={event => submit(event.currentTarget, { choice: 'local' })}>{t('应用本机整组', 'Apply entire local group')}</button>}
-          {component.choices.includes('remote') && <button className="secondary-button" type="button" disabled={disabled}
-            aria-busy={pending === 'remote'} onClick={event => submit(event.currentTarget, { choice: 'remote' })}>{t('应用远端整组', 'Apply entire remote group')}</button>}
-          {component.choices.includes('both') && <button className="secondary-button" type="button" disabled={disabled}
-            aria-busy={pending === 'both'} onClick={event => submit(event.currentTarget, { choice: 'both' })}>{t('同时保留本机和远端', 'Keep both versions')}</button>}
+          {wholeChoices.map(([choice, zh, en]) => component.choices.includes(choice) &&
+            <button key={choice} className="secondary-button" type="button" disabled={disabled}
+              aria-busy={pending === choice} onClick={event => submit(event.currentTarget, { choice })}>{t(zh, en)}</button>)}
           {component.choices.includes('merge') && <button className="secondary-button" type="button" disabled={disabled}
             aria-expanded={merging} aria-controls={`${prefix}-merge`} onClick={() => setMerging(value => !value)}>{t('逐项合并', 'Merge changes')}</button>}
         </div>

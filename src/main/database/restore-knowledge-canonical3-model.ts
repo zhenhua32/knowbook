@@ -13,7 +13,8 @@ import { findGraph3OriginalRow, graph3Conflict, graph3Encode, graph3Key, graph3V
 import { assertMerge3JsonBudget, type MergedRow3 } from './restore-knowledge-merge3-storage'
 import type { RootRestoreMergedContentChoices3 } from './restore-knowledge-merge3-read'
 import { deriveRootRestoreNavigationRewrite3 } from './restore-knowledge-navigation3-rewrite-model'
-import { buildMerge3NavigationFinalIndex3, resolveFinalNavigation3, type Navigation3FinalIndex, type Navigation3Table } from './restore-knowledge-navigation3-merge-context'
+import { buildMerge3NavigationFinalIndex3, resolveFinalNavigation3, withStoredMerge3NavigationFinalIndex3,
+  type Navigation3FinalIndex, type Navigation3Table, type StoredNavigation3Index } from './restore-knowledge-navigation3-merge-context'
 import { renderNavigation3Destination } from './restore-knowledge-navigation3-rewrite-cells'
 import { deriveRootRestoreReferenceAllocation3, toReference3GraphInputs } from './restore-knowledge-reference3-model'
 import { collectSyncedBindingOccurrences } from '../sync/synced-binding-occurrences'
@@ -98,7 +99,7 @@ function stageCanonicalCellPatches(db: Database.Database) {
   }
 }
 
-function indexFinalMembers(db: Database.Database, final: Navigation3FinalIndex, tables: readonly Navigation3Table[]) {
+function indexFinalMembers(db: Database.Database, final: Pick<Navigation3FinalIndex, 'physicalBlocks'>, tables: readonly Navigation3Table[]) {
   db.exec(`CREATE TEMP TABLE canonical_final_members (kind TEXT NOT NULL, owner BLOB NOT NULL, sort_order INTEGER NOT NULL,
     ordinal INTEGER NOT NULL, PRIMARY KEY(kind,owner,sort_order,ordinal)) WITHOUT ROWID`)
   const insert = db.prepare('INSERT INTO canonical_final_members(kind,owner,sort_order,ordinal) VALUES (?,?,?,?)')
@@ -176,9 +177,19 @@ function deriveWithCanonicalIndexes(db: Database.Database, data: Graph3Inputs, a
   choices?: RootRestoreMergedContentChoices3, pending?: SelectedPendingLocalBody5) {
   const derived = toReference3GraphInputs(data, allocation)
   const ordinary = deriveRootRestoreNavigationRewrite3(derived, choices)
-  const ordinaryIndex = buildMerge3NavigationFinalIndex3(derived, ordinary.tables)
-  const selectedPending = pending && applySelectedPendingLocalBody5(derived, ordinary, ordinaryIndex, pending)
-  const before = selectedPending?.final ?? ordinaryIndex, ordinaryTables = selectedPending?.tables ?? ordinary.tables
+  const selectedPending = pending && (() => {
+    const { tables, proof } = applySelectedPendingLocalBody5(derived, ordinary,
+      buildMerge3NavigationFinalIndex3(derived, ordinary.tables), pending)
+    return { tables, proof }
+  })()
+  const ordinaryTables = selectedPending?.tables ?? ordinary.tables
+  return withStoredMerge3NavigationFinalIndex3(derived, ordinaryTables, before =>
+    deriveCanonicalFromOrdinary(db, data, allocation, derived, ordinary, ordinaryTables, selectedPending?.proof, before))
+}
+
+function deriveCanonicalFromOrdinary(db: Database.Database, data: Graph3Inputs, allocation: Allocation, derived: Graph3Inputs,
+  ordinary: ReturnType<typeof deriveRootRestoreNavigationRewrite3>, ordinaryTables: readonly Navigation3Table[],
+  pendingProof: ReturnType<typeof applySelectedPendingLocalBody5>['proof'] | undefined, before: StoredNavigation3Index) {
   const originals = (side: Side) => {
     const raw = data.inputs[side].source.sourceContent
     return { raw, groups: originalTable(raw, 'synced_groups'), blocks: originalTable(raw, 'synced_group_blocks') }
@@ -324,59 +335,61 @@ function deriveWithCanonicalIndexes(db: Database.Database, data: Graph3Inputs, a
   }
   const tables = ordinaryTables.map(changes.apply)
   assertFinalStorageBudget(tables)
-  const final = buildMerge3NavigationFinalIndex3(derived, tables), physicalMembers = indexFinalMembers(db, final, tables)
-  const afterGroups = new Map<string, Entry>()
-  for (const entry of projectEntries(tables, { synced_groups: ['id'] })) afterGroups.set(string(entry.value.id), entry)
-  const wires: SyncedGroupWire[] = []
-  for (const id of active) {
-    const { table, row } = afterGroups.get(id)!
-    const field = (name: string) => {
-      const index = table.columns.indexOf(name)
-      if (index < 0) return graph3Conflict('canonical3-projection-column', { table: table.name, column: name })
-      return graph3Value(row.cells[index], table.encoding)
+  return withStoredMerge3NavigationFinalIndex3(derived, tables, final => {
+    const physicalMembers = indexFinalMembers(db, final, tables)
+    const afterGroups = new Map<string, Entry>()
+    for (const entry of projectEntries(tables, { synced_groups: ['id'] })) afterGroups.set(string(entry.value.id), entry)
+    const wires: SyncedGroupWire[] = []
+    for (const id of active) {
+      const { table, row } = afterGroups.get(id)!
+      const field = (name: string) => {
+        const index = table.columns.indexOf(name)
+        if (index < 0) return graph3Conflict('canonical3-projection-column', { table: table.name, column: name })
+        return graph3Value(row.cells[index], table.encoding)
+      }
+      const blocks = Array.from(physicalMembers('group', id), block => ({ ...block.block, createdAt: block.birth })) as SyncedCanonicalWire[]
+      const wire = validateSyncedGroupWire({ kind: 'synced-group', id, creationId: field('creation_id'), createdAt: field('created_at'),
+        origin: JSON.parse(string(field('origin_json'))), bindings: JSON.parse(string(field('bindings_json'))), blocks })
+      const parsed = collectSyncedBindingOccurrences(wire.origin, wire.blocks), actual = new Set(parsed.map(keyOf))
+      if (actual.size !== parsed.length || parsed.length !== wire.bindings.length || wire.bindings.some(binding => !actual.has(keyOf(binding))))
+        return graph3Conflict('canonical3-final-parser-closure', id)
+      projectSyncedGroupBudget(wire); wires.push(wire)
     }
-    const blocks = Array.from(physicalMembers('group', id), block => ({ ...block.block, createdAt: block.birth })) as SyncedCanonicalWire[]
-    const wire = validateSyncedGroupWire({ kind: 'synced-group', id, creationId: field('creation_id'), createdAt: field('created_at'),
-      origin: JSON.parse(string(field('origin_json'))), bindings: JSON.parse(string(field('bindings_json'))), blocks })
-    const parsed = collectSyncedBindingOccurrences(wire.origin, wire.blocks), actual = new Set(parsed.map(keyOf))
-    if (actual.size !== parsed.length || parsed.length !== wire.bindings.length || wire.bindings.some(binding => !actual.has(keyOf(binding))))
-      return graph3Conflict('canonical3-final-parser-closure', id)
-    projectSyncedGroupBudget(wire); wires.push(wire)
-  }
-  const ledgerOverlay = buildLedgerOverlay(data, final, allocation, conflict)
-  validateTypedTargets(data, final, wires, ledgerOverlay, allocation, bindingProjections, conflict)
-  let forestValidated = true
-  try { validateSyncedWorkspaceGraph(final.documents.map(document => ({ documentId: document.id,
-    blocks: Array.from(physicalMembers('document', document.id), block => block.block) })), wires) }
-  catch (error) { if (!(error instanceof SyncedValidationError)) throw error; forestValidated = false; conflict('canonical3-final-forest', null, [], { code: error.code }) }
-  validateOrdinaryDestinations(ordinary.projections, final, conflict)
-  validateOrdinaryConsumers(before, final, wires, bindingProjections, conflict)
-  const projectedBudgets = measureNativeHostBudgets(final, tables, physicalMembers, wires)
-  const body = { kind: 'root-restore-canonical-reference-candidate' as const, version: 3 as const,
-    baseIdentityAllocationHash: allocation.baseIdentityAllocationHash, derivedReferenceAllocationHash: allocation.derivedReferenceAllocationHash,
-    sourceMaterialHash: ordinary.sourceMaterialHash, currentMaterialHash: ordinary.currentMaterialHash,
-    ordinaryNavigationRewriteHash: ordinary.navigationRewriteHash, tables, canonicalEdits: edits, originProjections, bindingProjections,
-    ...(selectedPending ? { pendingLocalBody: selectedPending.proof } : {}),
-    activeGroupWires: wires, inactiveGroups: inactive, projectedBudgets, finalSyntaxIndexHash: final.indexHash,
-    materialization: { reservationRows: allocation.materialization.reservationRows, ledgerOverlay,
-      lifecycleIntents: allocation.materialization.lifecycleIntents, actualStageLedgerWritten: false as const, actualLifecycleRowsReady: false as const },
-    conflicts: [...ordinary.conflicts, ...conflicts], candidateConflictFree: ordinary.conflicts.length === 0 && conflicts.length === 0,
-    canonicalParserClosureValidated: true as const, canonicalWireShapeValidated: true as const, finalForestValidated: forestValidated,
-    typedTargetOverlayChecked: true as const, typedTargetOverlayValid: conflicts.length === 0, finalOrdinaryScopesReparsed: true as const,
-    rendererBindingPropagationImplemented: false as const, portableAssetProjectionBudgetValidated: false as const,
-    actualStageBudgetValidated: false as const,
-    inactiveMaterializationComplete: inactive.every(item => item.side === 'current'), templateNavigationRewritten: false as const,
-    referenceRewriteComplete: false as const, semanticValidationComplete: false as const, acceptedCoverage: false as const, effective: false as const, permit: false as const }
-  assertMerge3JsonBudget(body)
-  const canonicalCandidateHash = hashBoundedCapsuleJson(body, CAPSULE2_RAW_MAX_JSON_BYTES, 'knowbook.restore.canonical3.candidate.v1\0')
-  if (canonicalCandidateHash === null) return graph3Conflict('canonical3-candidate-json-budget', null)
-  const candidate = freezeCapsuleValue({ ...body, canonicalCandidateHash })
-  return Object.freeze({ candidate, ordinaryEdits: ordinary.edits, physicalBlocks: final.physicalBlocks })
+    const ledgerOverlay = buildLedgerOverlay(data, final, allocation, conflict)
+    validateTypedTargets(data, final, wires, ledgerOverlay, allocation, bindingProjections, conflict)
+    let forestValidated = true
+    try { validateSyncedWorkspaceGraph(final.documents.map(document => ({ documentId: document.id,
+      blocks: Array.from(physicalMembers('document', document.id), block => block.block) })), wires) }
+    catch (error) { if (!(error instanceof SyncedValidationError)) throw error; forestValidated = false; conflict('canonical3-final-forest', null, [], { code: error.code }) }
+    validateOrdinaryDestinations(ordinary.projections, final, conflict)
+    validateOrdinaryConsumers(before, final, wires, bindingProjections, conflict)
+    const projectedBudgets = measureNativeHostBudgets(final, tables, physicalMembers, wires)
+    const body = { kind: 'root-restore-canonical-reference-candidate' as const, version: 3 as const,
+      baseIdentityAllocationHash: allocation.baseIdentityAllocationHash, derivedReferenceAllocationHash: allocation.derivedReferenceAllocationHash,
+      sourceMaterialHash: ordinary.sourceMaterialHash, currentMaterialHash: ordinary.currentMaterialHash,
+      ordinaryNavigationRewriteHash: ordinary.navigationRewriteHash, tables, canonicalEdits: edits, originProjections, bindingProjections,
+      ...(pendingProof ? { pendingLocalBody: pendingProof } : {}),
+      activeGroupWires: wires, inactiveGroups: inactive, projectedBudgets, finalSyntaxIndexHash: final.indexHash,
+      materialization: { reservationRows: allocation.materialization.reservationRows, ledgerOverlay,
+        lifecycleIntents: allocation.materialization.lifecycleIntents, actualStageLedgerWritten: false as const, actualLifecycleRowsReady: false as const },
+      conflicts: [...ordinary.conflicts, ...conflicts], candidateConflictFree: ordinary.conflicts.length === 0 && conflicts.length === 0,
+      canonicalParserClosureValidated: true as const, canonicalWireShapeValidated: true as const, finalForestValidated: forestValidated,
+      typedTargetOverlayChecked: true as const, typedTargetOverlayValid: conflicts.length === 0, finalOrdinaryScopesReparsed: true as const,
+      rendererBindingPropagationImplemented: false as const, portableAssetProjectionBudgetValidated: false as const,
+      actualStageBudgetValidated: false as const,
+      inactiveMaterializationComplete: inactive.every(item => item.side === 'current'), templateNavigationRewritten: false as const,
+      referenceRewriteComplete: false as const, semanticValidationComplete: false as const, acceptedCoverage: false as const, effective: false as const, permit: false as const }
+    assertMerge3JsonBudget(body)
+    const canonicalCandidateHash = hashBoundedCapsuleJson(body, CAPSULE2_RAW_MAX_JSON_BYTES, 'knowbook.restore.canonical3.candidate.v1\0')
+    if (canonicalCandidateHash === null) return graph3Conflict('canonical3-candidate-json-budget', null)
+    const candidate = freezeCapsuleValue({ ...body, canonicalCandidateHash })
+    return Object.freeze({ candidate, ordinaryEdits: ordinary.edits, physicalBlocks: final.physicalBlocks })
+  })
 }
 
 type Ledger = { id: string; last_owner_kind: 'document' | 'group' | 'reserved'; last_owner_id: string; state: 'live' | 'retained'; created_at: string | null }
 type Conflict = (code: string, side: Side | null, rowKeys: readonly string[], detail: unknown) => void
-function buildLedgerOverlay(data: Graph3Inputs, final: Navigation3FinalIndex, allocation: Allocation, conflict: Conflict) {
+function buildLedgerOverlay(data: Graph3Inputs, final: Pick<Navigation3FinalIndex, 'physicalBlocks'>, allocation: Allocation, conflict: Conflict) {
   const physical = new Map(final.physicalBlocks.map(block => [block.id, block])), rows = new Map<string, Ledger>()
   const raw = data.inputs.current.source.sourceContent, table = originalTable(raw, 'block_identities')
   for (const row of table.rows) {
@@ -406,7 +419,7 @@ function buildLedgerOverlay(data: Graph3Inputs, final: Navigation3FinalIndex, al
   }
   return [...rows.values()]
 }
-function validateTypedTargets(data: Graph3Inputs, final: Navigation3FinalIndex, wires: readonly SyncedGroupWire[], ledger: readonly Ledger[], allocation: Allocation,
+function validateTypedTargets(data: Graph3Inputs, final: StoredNavigation3Index, wires: readonly SyncedGroupWire[], ledger: readonly Ledger[], allocation: Allocation,
   projections: readonly { side: Side; binding: SyncedLinkBinding; rowKey: string; proofKind: string }[], conflict: Conflict) {
   const ids = new Map(ledger.map(row => [row.id, row])), docs = new Map(final.documents.map(document => [document.id, document]))
   const blocks = new Map(final.physicalBlocks.map(block => [block.id, block]))
@@ -452,7 +465,7 @@ function validateTypedTargets(data: Graph3Inputs, final: Navigation3FinalIndex, 
  * source occurrence cannot claim an existing target merely by taking its slug.
  * This first draft reports a conflict on a lost/renamed bound slug instead of
  * fabricating a missing-heading sentinel or retargeting the old binding. */
-function validateCurrentHeadingSemantics(data: Graph3Inputs, final: Navigation3FinalIndex,
+function validateCurrentHeadingSemantics(data: Graph3Inputs, final: StoredNavigation3Index,
   projections: readonly { side: Side; binding: SyncedLinkBinding; rowKey: string; proofKind: string }[], conflict: Conflict) {
   const affected = projections.filter(item => item.side === 'current' && item.proofKind === 'current-domain-preserved' && item.binding.target.kind === 'heading')
   if (!affected.length) return
@@ -524,15 +537,20 @@ function validateCurrentHeadingSemantics(data: Graph3Inputs, final: Navigation3F
   }
 }
 
-function validateOrdinaryDestinations(projections: ReturnType<typeof deriveRootRestoreNavigationRewrite3>['projections'], final: Navigation3FinalIndex, conflict: Conflict) {
-  const destinations = new Map(final.scopes.flatMap(scope => scope.destinations.filter(link => link.location.groupId === null)
-    .map(link => [keyOf(link.key), { scope, link }] as const)))
+function validateOrdinaryDestinations(projections: ReturnType<typeof deriveRootRestoreNavigationRewrite3>['projections'], final: StoredNavigation3Index, conflict: Conflict) {
+  const wanted = new Set(projections.map(projection => keyOf(projection.after)))
+  const destinations = new Map<string, { documentId: string; url: string; wiki: boolean }>()
+  if (wanted.size) for (const scope of final.scopes()) for (const link of scope.destinations) {
+    if (link.location.groupId !== null) continue
+    const key = keyOf(link.key)
+    if (wanted.has(key)) destinations.set(key, { documentId: scope.finalDocumentId, url: link.url, wiki: link.key.syntax === 'wiki' })
+  }
   for (const projection of projections) {
     const observed = destinations.get(keyOf(projection.after))
     if (!observed) { conflict('canonical3-ordinary-final-range-lost', projection.side, [projection.rowKey], projection.after); continue }
     const target = projection.expectedTarget
     if (projection.actualTarget === null && target === null) continue // actual external/image source
-    const actual = resolveFinalNavigation3(final, observed.scope.finalDocumentId, observed.link.url, observed.link.key.syntax === 'wiki')
+    const actual = resolveFinalNavigation3(final, observed.documentId, observed.url, observed.wiki)
     const matches = target !== null && target.kind === actual.kind && 'documentId' in actual && actual.documentId === target.documentId
       && (target.kind !== 'block' || actual.kind === 'block' && actual.blockId === target.blockId)
       && (target.kind !== 'heading' || actual.kind === 'heading' && actual.headingKey === target.headingKey)
@@ -541,13 +559,12 @@ function validateOrdinaryDestinations(projections: ReturnType<typeof deriveRootR
     else if (!target && live) conflict('canonical3-final-ordinary-unresolved-became-live', projection.side, [projection.rowKey], actual)
   }
 }
-function validateOrdinaryConsumers(before: Navigation3FinalIndex, final: Navigation3FinalIndex, wires: readonly SyncedGroupWire[],
+function validateOrdinaryConsumers(before: StoredNavigation3Index, final: StoredNavigation3Index, wires: readonly SyncedGroupWire[],
   projections: readonly { side: Side; binding: SyncedLinkBinding; rowKey: string; proofKind: string }[], conflict: Conflict) {
-  const oldScopes = new Map(before.scopes.map(scope => [scope.scopeId, scope]))
   const bindingByKey = new Map(projections.map(item => [keyOf(item.binding), item]))
   const originPaths = new Map(wires.map(wire => [wire.id, wire.origin.pathAtCreation]))
-  for (const scope of final.scopes) {
-    const prior = oldScopes.get(scope.scopeId)
+  for (const scope of final.scopes()) {
+    const prior = before.scope(scope.scopeId)
     if (!prior) return graph3Conflict('canonical3-final-scope-added', scope.scopeId)
     const byOccurrence = new Map(scope.blocks.map(block => [block.occurrenceKey, block]))
     const expected = captureSyncedCreateSourceFacts(prior.blocks.map(block => ({ ...block.block,
@@ -620,7 +637,7 @@ function assertFinalStorageBudget(tables: readonly Navigation3Table[]) {
 /** Root-native measurement only. The SQL INT64 sort value is counted as its
  * exact decimal token, without rounding it into a fabricated public wire. The
  * later asset stage must check its actual rewritten portable bytes again. */
-function measureNativeHostBudgets(final: Navigation3FinalIndex, tables: readonly Navigation3Table[],
+function measureNativeHostBudgets(final: Pick<Navigation3FinalIndex, 'documents'>, tables: readonly Navigation3Table[],
   physicalMembers: ReturnType<typeof indexFinalMembers>, wires: readonly SyncedGroupWire[]) {
   const documents = new Map<string, Entry>(), groups = new Map(wires.map(wire => [wire.id, wire]))
   for (const entry of projectEntries(tables, { documents: ['id', 'parent_id', 'sort_order'] })) documents.set(string(entry.value.id), entry)

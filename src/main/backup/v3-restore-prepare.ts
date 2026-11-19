@@ -17,7 +17,8 @@ import { captureBoundOriginalInputsFromReferences } from '../database/restore-kn
 import { requiredReferenceRoots } from '../database/restore-knowledge-reference-context-model'
 import { withPreparedRootKnowledgeInputs5, type captureRootKnowledgeConservationPlanFromCertifiedSources3 } from '../database/restore-knowledge-root3-read'
 import { withPreparedRootRestoreIdentityInputs5, type prepareRootRestoreIdentityPlan3, type PreparedRootIdentityInputs5 } from '../database/restore-knowledge-identity3-read'
-import { prepareRootRestoreReferencePlan3, withPreparedRootRestoreReferenceInputs5, type Reference3Value } from '../database/restore-knowledge-reference3-read'
+import { prepareRootRestoreReferencePlan3, readRootRestoreStageInputs5, withPreparedRootRestoreReferenceInputs5,
+  type Reference3Value } from '../database/restore-knowledge-reference3-read'
 import type { Reference3Choices } from '../database/restore-knowledge-reference3-model'
 import { restoreSqliteFilename } from '../database/restore-safety-sqlite-path'
 import { readInheritedInitialIncomingTombstones } from '../database/synced-initial-incoming-read'
@@ -37,7 +38,8 @@ import { prepareBackupV3RestoreSqlStage } from './v3-restore-sql-stage'
 import { readBackupV3PublicationEdgeFromSealedSql, readPortableBackupV3PublicationEdge } from './v3-publication-lineage'
 import { readV3SourceOwnedMissingGroups } from './v3-restore-source-ownership'
 import { hasNoV3RetirementDrafts, hasNoV3RetirementReferenceDependencies, hasNoV3RetirementSqlDependencies,
-  plainV3RetirementGroup } from './v3-restore-source-dependencies'
+  hasNoV3RetirementHistoricalReferences, plainV3RetirementGroup } from './v3-restore-source-dependencies'
+import type { Graph3Inputs } from '../database/restore-knowledge-graph3-data'
 import { readV3RestoreSourceTombstones } from './v3-restore-source-tombstone'
 import { normalizeWebDavConfig } from '../sync/webdav-client'
 import { v3SourceGroupRetirementHash, type V3SourceGroupRetirement } from '../database/v3-source-group-retirement'
@@ -154,7 +156,8 @@ function previewResolvedReference({ candidate }: Reference3Value) {
 }
 
 async function inspectSourceOwnership(input: BackupV3RestorePreparation, current: OwnedRawCapsuleOriginal,
-  prior: readonly RestoreKnowledgePriorInstall[], reference: Reference3Value) {
+  prior: readonly RestoreKnowledgePriorInstall[], reference: Reference3Value,
+  readOriginals: () => Promise<Graph3Inputs['inputs']>) {
   const { profileRoot, operationId, source, retirementCredentials } = input
   if (!prior.length) return { retained: [] }
   const db = new Database(restoreSqliteFilename(readOwnedRawCapsuleOriginal(current).databasePath), { readonly: true, fileMustExist: true })
@@ -174,6 +177,10 @@ async function inspectSourceOwnership(input: BackupV3RestorePreparation, current
       || !hasNoV3RetirementReferenceDependencies(reference.candidate, localWires)
       || !db.transaction(() => hasNoV3RetirementSqlDependencies(db, localWires))()
       || !await hasNoV3RetirementDrafts(profileRoot)) return { retained }
+    const originals = await readOriginals()
+    const wires = missing.flatMap(group => [group.wire, group.sourceWire])
+    if (!hasNoV3RetirementHistoricalReferences(originals.current, wires, new Set(localWires.map(group => group.id)))
+      || !hasNoV3RetirementHistoricalReferences(originals.source, wires)) return { retained }
     const settings = db.prepare('SELECT value FROM app_settings WHERE key=?').pluck()
     const rawConfig = settings.get('sync.webdav.config'), protectedPassword = settings.get('sync.webdav.password')
     if (typeof rawConfig !== 'string' || typeof protectedPassword !== 'string'
@@ -219,7 +226,8 @@ export async function prepareBackupV3RestoreCandidate(input: BackupV3RestorePrep
       withPreparedRootRestoreReferenceInputs5(plan.identity.plan, input.choices, identityScope, async (reference, stageScope) => {
         assertBackupV3RestoreSourceCurrent(source)
         const disposition = previewResolvedReference(reference.value)
-        const { retained, retirement } = await inspectSourceOwnership(input, currentOriginal, plan.prior, reference.value)
+        const { retained, retirement } = await inspectSourceOwnership(input, currentOriginal, plan.prior, reference.value,
+          async () => (await readRootRestoreStageInputs5(reference.plan, stageScope)).actual.data.inputs)
         const preview = Object.freeze({ ...disposition,
           ...(retirement ? { groups: { ...disposition.groups, retained: disposition.groups.retained - retirement.records.length } } : {}),
           ...(retained.length ? { sourceOwnedMissingGroups: retained } : {}),

@@ -8,11 +8,12 @@ import { recoverControlledDatabaseRestore, restoreControlledBackupV3 } from '../
 import { KnowbookStore } from '../src/main/database/store'
 import { runProtocol5WebDav } from '../src/main/sync/protocol5-service'
 import { prepareProtocol5RestoreRejoin } from '../src/main/sync/protocol5-restore-rejoin-read'
+import { INITIAL_PUBLICATION_RECEIPT_KIND } from '../src/main/database/synced-initial-publication-receipt'
 import { exchangeStateKey, exchangeTargetFingerprint } from '../src/main/sync/synced-exchange-model'
 import { runtime } from './helpers/synced-exchange-fixture'
 import { withIncomingFixture } from './helpers/synced-initial-incoming-fixture'
 
-test('an original publication alone cannot authorize WebDAV rejoin after restoring V3', () => withIncomingFixture(async fixture => {
+test('an original publication without its accepted remote version cannot authorize WebDAV rejoin after restoring V3', () => withIncomingFixture(async fixture => {
   const { A, targetConfig, server } = fixture
   const donorRoot = join(fixture.folder, 'published-only-donor'), archive = join(fixture.folder, 'before-exchange')
   await mkdir(donorRoot)
@@ -24,6 +25,9 @@ test('an original publication alone cannot authorize WebDAV rejoin after restori
   try {
     await runProtocol5WebDav(publisher, A.root, targetConfig, runtime)
     assert.equal(publisher.getSettingPublic(exchangeStateKey(exchangeTargetFingerprint(targetConfig))), null)
+    // Retain the original attempt, group members and spool with the shape of a publication made before accepted ETags were saved.
+    assert.equal(publisher.getUnsafeDatabaseHandle().prepare("DELETE FROM synced_operations WHERE json_extract(result_json,'$.kind')=?")
+      .run(INITIAL_PUBLICATION_RECEIPT_KIND).changes, 1)
   } finally { publisher.destroy() }
   const legacy = { readCurrentIdentities: async () => [], recoverLegacy: async () => { throw new Error('Unexpected legacy recovery') } }
   await restoreControlledBackupV3({ userDataRoot: A.root, backupDirectory: archive, stopProcesses: async () => [] }, legacy)

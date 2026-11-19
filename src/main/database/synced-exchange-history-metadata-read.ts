@@ -13,6 +13,7 @@ import { assertSyncedExchangeHostCutRecords } from './synced-exchange-host-cut'
 import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-read'
 import { knowledgePreviewKey, validateKnowledgePreviewIndex } from './synced-exchange-knowledge-read'
 import { exchangeRejoinBaseline, exchangeRejoinKey, exchangeRejoinPrefix, readExchangeRejoinSupport, validateExchangeRejoin } from './synced-exchange-rejoin-model'
+import { initialRejoinKey, initialRejoinPrefix, readInitialRejoinSupport, validateInitialRejoin } from './synced-exchange-rejoin-model'
 import { deletionChoicePreviewKey, validateDeletionChoicePreviewIndex } from './synced-exchange-deletion-choice-read'
 import { decodeOrdinaryPublicationAttempt, ordinaryPublicationAttemptKey, ordinaryPublicationAttemptPrefix } from './synced-ordinary-publication-attempt'
 import { assertHistoricalEvidenceOwned, historicalEvidenceInvalid, historicalFact, historicalHash, historicalMetadataLocator,
@@ -93,6 +94,22 @@ export function assertRawSyncedExchangeHistoricalMetadataOwned(db: Database.Data
       if (row.key !== exchangeRejoinKey(value.targetFingerprint, value.restoreOperationId) || row.value !== publicationJson(value)
         || row.updated_at !== value.confirmedAt) return historicalEvidenceInvalid('恢复续接原行 key/hash/时间不闭合。')
       rejoins.push({ row, value })
+    } else if (row.key.startsWith(initialRejoinPrefix)) {
+      const value = validateInitialRejoin(raw)
+      if (row.key !== initialRejoinKey(value.targetFingerprint, value.restoreOperationId) || row.value !== publicationJson(value)
+        || row.updated_at !== value.confirmedAt || settings.has(exchangeRejoinKey(value.targetFingerprint, value.restoreOperationId)))
+        return historicalEvidenceInvalid('首接收续接原行 key/hash/时间不闭合。')
+      const support = readInitialRejoinSupport(db, value)
+      let baseline: RawHistoricalEvidenceLocator[] = []
+      if (support.kind === 'receive') {
+        const row = settings.get(support.baselineKey)
+        if (!row) return historicalEvidenceInvalid('首接收续接缺少原基线 metadata。')
+        baseline = [historicalMetadataLocator(row)]
+      }
+      const coverage = support.requirement.supports
+      facts.push(historicalFact('initial-rejoin', 1, historicalMetadataLocator(row), [...baseline,
+        operationSupport(support.operationId), coverage.coverage, coverage.link, coverage.receipt, coverage.anchor,
+        ...(coverage.boundary ? [coverage.boundary] : []), ...(coverage.epoch ? [coverage.epoch] : [])]))
     } else if (row.key.startsWith(prefix + 'exchange-job.v1.')) {
       const job = validateExchangeJob(raw), key = exchangeJobKey(job.request.operationId, job.attemptId)
       if (row.key !== key || row.updated_at !== job.preparedAt || row.value !== publicationJson(job)) return historicalEvidenceInvalid('原immutable job/key/bytes/时点损坏。')

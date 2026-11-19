@@ -5,7 +5,7 @@ import { CAPSULE2_RAW_MAX_JSON_BYTES, hashValidatedCapsule2RawSqlTable, type Cap
   type Capsule2RawSqlRow, type Capsule2RawSqlTable } from './restore-knowledge-capsule2-raw-model'
 import { findGraph3OriginalRow, graph3Conflict, graph3Text, graph3Value } from './restore-knowledge-graph3-data'
 import type { MergedRow3 } from './restore-knowledge-merge3-storage'
-import { buildMerge3NavigationFinalIndex3, type Navigation3Table } from './restore-knowledge-navigation3-merge-context'
+import { withStoredMerge3NavigationFinalIndex3, type Navigation3Table } from './restore-knowledge-navigation3-merge-context'
 import { applyNavigation3TextEdits, createNavigation3RangeProjection } from './restore-knowledge-navigation3-rewrite-cells'
 import { toReference3GraphInputs } from './restore-knowledge-reference3-model'
 import { bindRootRestoreBaseAssetBlobs5, type VerifiedBackupV3Asset5 } from './restore-knowledge-selected-native-assets5'
@@ -141,7 +141,8 @@ function originalDocuments(sources: Sources) {
 export function observeRootRestoreFinalAssetClosure5(physical: Physical, stage: Assets) {
   const { value: sql } = physical, { sources, value: staged } = stage, { captured } = sources
   const { data, allocation, candidate } = captured.actual
-  const index = buildMerge3NavigationFinalIndex3(toReference3GraphInputs(data, allocation), sql.tables)
+  const index = withStoredMerge3NavigationFinalIndex3(toReference3GraphInputs(data, allocation), sql.tables,
+    ({ indexHash, physicalBlocks }) => ({ indexHash, physicalBlocks }))
   if (sql.finalSyntaxIndexHash !== index.indexHash || sql.checkedCanonicalCandidateHash !== candidate.checkedCanonicalCandidateHash)
     return fail('最终 SQL 与同次封存候选不同')
   const rows = new Map(sql.tables.flatMap(table => table.rows.map(row => [row.key, row] as const)))

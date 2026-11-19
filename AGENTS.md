@@ -26,6 +26,7 @@
 - 本地修改、调试代码时，优先只运行与改动相关的测试文件或用例；不要一开始或每次修改后直接运行全量测试。
 - 代码改动完成后的最终验证至少运行：`npm run typecheck && npm run test`。
 - 测试不得弹出原生窗口或抢占用户前台应用的焦点。Electron E2E 使用 `e2e-tests/helpers/electron.ts` 的默认后台模式（`KNOWBOOK_E2E_BACKGROUND=1` + 独立用户数据目录）；原生文件选择、确认弹窗和外部应用操作须使用测试夹具，不得自行移除后台限制。
+- 查看 GitHub CI 状态及日志时，优先用已登录的 GitHub CLI。用 `gh run list --commit <完整提交 SHA>` 定位本次运行，用 `gh run view <运行 ID> --log-failed` 读取失败日志，用 `gh run watch <运行 ID> --exit-status` 等待结束。若 `gh` 未加入 `PATH`，先查找本机已有的安装或便携版，使用其绝对路径。禁止使用匿名 GitHub API 查询 CI 状态或日志。
 
 ## Test Artifact Cleanup
 - 本地测试、构建和 CI 排查生成的日志、下载的临时压缩包，优先放在 `.tmp/<任务名>/` 或 `test-results/<任务名>/`，避免散落在项目根目录。

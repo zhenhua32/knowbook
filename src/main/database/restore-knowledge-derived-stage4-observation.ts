@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { capsuleJson } from './restore-knowledge-capsule-model'
 import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
 import { graph3Text, type Graph3Inputs } from './restore-knowledge-graph3-data'
-import { buildMerge3NavigationFinalIndex3 } from './restore-knowledge-navigation3-merge-context'
+import { withStoredMerge3NavigationFinalIndex3, type Navigation3FinalIndex } from './restore-knowledge-navigation3-merge-context'
 import { createNavigation3RangeProjection } from './restore-knowledge-navigation3-rewrite-cells'
 import { toReference3GraphInputs } from './restore-knowledge-reference3-model'
 import { readRootRestoreReferenceGraphInputs3, type RootRestoreReferencePlan3 } from './restore-knowledge-reference3-read'
@@ -16,8 +16,7 @@ import { canonicalSearchOccurrencesSql, occurrenceFromCanonicalSearchRow,
 
 type Physical = Awaited<ReturnType<typeof reopenRootRestorePhysicalStage3>>
 type AliasSql = Awaited<ReturnType<typeof readRootRestoreSqlAssetAliasDerivationSource5>>
-type SyntaxIndex = ReturnType<typeof buildMerge3NavigationFinalIndex3>
-type FinalScope = SyntaxIndex['scopes'][number]
+type FinalScope = Navigation3FinalIndex['scopes'][number]
 export type DerivedRoutePlan4 = Awaited<ReturnType<typeof deriveStage4Routes>>
 const fail = (message: string): never => { throw new Error('恢复派生路由与搜索：' + message) }
 const routeKey = (path: string, blockId: string) => capsuleJson([path, blockId])
@@ -29,12 +28,13 @@ export async function deriveStage4Routes(reference: RootRestoreReferencePlan3, p
   const original = await readRootRestoreReferenceGraphInputs3(reference)
   if (original.candidate.checkedCanonicalCandidateHash !== physical.value.checkedCanonicalCandidateHash)
     return fail('路由原件属于另一候选')
-  const index = buildMerge3NavigationFinalIndex3(toReference3GraphInputs(original.data, original.allocation), physical.value.tables)
-  if (index.indexHash !== physical.value.finalSyntaxIndexHash) return fail('重建的原导航索引与物理暂存不同')
-  return routesFromIndex(index, original.data.inputs.current.source.sourceContent)
+  return withStoredMerge3NavigationFinalIndex3(toReference3GraphInputs(original.data, original.allocation), physical.value.tables, index => {
+    if (index.indexHash !== physical.value.finalSyntaxIndexHash) return fail('重建的原导航索引与物理暂存不同')
+    return routesFromIndex(index, original.data.inputs.current.source.sourceContent)
+  })
 }
 
-function routesFromIndex(index: SyntaxIndex, current: Graph3Inputs['inputs']['current']['source']['sourceContent']) {
+function routesFromIndex(index: Pick<Navigation3FinalIndex, 'physicalBlocks' | 'routes'>, current: Graph3Inputs['inputs']['current']['source']['sourceContent']) {
   const blocks = new Map(index.physicalBlocks.map(block => [block.id, block]))
   const routes = new Map<string, { path: string; blockId: string; documentId?: string; createdAt?: string; currentRowId?: string }>()
   for (const route of index.routes) {
@@ -67,12 +67,6 @@ function routesFromIndex(index: SyntaxIndex, current: Graph3Inputs['inputs']['cu
  * Prove that exact address edits preserve other scoped navigation. */
 export function deriveStage4AliasNavigation(source: AliasSql) {
   const graph = toReference3GraphInputs(source.data, source.allocation)
-  const before = buildMerge3NavigationFinalIndex3(graph, source.physical.tables)
-  if (before.indexHash !== source.physical.finalSyntaxIndexHash) return fail('原导航索引与物理暂存不同')
-  const after = buildMerge3NavigationFinalIndex3(graph, source.tables)
-  const headings = (value: SyntaxIndex) => value.headingNamespaces.map(({ document, headings }) => [document.id, headings])
-  if (!same(headings(before), headings(after)) || !same(before.routes, after.routes) || before.scopes.length !== after.scopes.length)
-    return fail('地址改写改变标题或原路由')
   const key = (cell: Pick<FinalScope['blocks'][number]['cell'], 'table' | 'targetRowId' | 'column'>) =>
     capsuleJson([cell.table, cell.targetRowId, cell.column])
   const destinationKey = (from: number, to: number, raw: string) => capsuleJson([from, to, raw])
@@ -109,10 +103,23 @@ export function deriveStage4AliasNavigation(source: AliasSql) {
       destinations, definitions: value.definitions.map(range),
       effectiveDefinitions: value.effectiveDefinitions.map(({ key, definition }) => ({ key, definition: range(definition) })), uses: value.uses }
   }
-  for (const [index, item] of before.scopes.entries()) {
-    if (!same(scope(item, true), scope(after.scopes[index], false))) return fail('地址改写改变实际导航或有效定义')
-  }
-  return { routes: routesFromIndex(after, source.data.inputs.current.source.sourceContent), syntaxIndexHash: after.indexHash }
+  return withStoredMerge3NavigationFinalIndex3(graph, source.physical.tables, before => {
+    if (before.indexHash !== source.physical.finalSyntaxIndexHash) return fail('原导航索引与物理暂存不同')
+    return withStoredMerge3NavigationFinalIndex3(graph, source.tables, after => {
+      const headings = (value: Pick<Navigation3FinalIndex, 'headingNamespaces'>) => value.headingNamespaces.map(({ document, headings }) => [document.id, headings])
+      if (!same(headings(before), headings(after)) || !same(before.routes, after.routes) || before.scopeCount !== after.scopeCount)
+        return fail('地址改写改变标题或原路由')
+      const actual = after.scopes()
+      try {
+        for (const item of before.scopes()) {
+          const next = actual.next()
+          if (next.done || !same(scope(item, true), scope(next.value, false))) return fail('地址改写改变实际导航或有效定义')
+        }
+        if (!actual.next().done) return fail('地址改写改变实际导航范围')
+      } finally { actual.return?.() }
+      return { routes: routesFromIndex(after, source.data.inputs.current.source.sourceContent), syntaxIndexHash: after.indexHash }
+    })
+  })
 }
 
 function actualRoutes(db: Database.Database, plan: DerivedRoutePlan4) {

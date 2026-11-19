@@ -235,17 +235,24 @@ test('a delayed paired-history acknowledgement cannot replace a newer local draf
   const read = backend.api.getDocumentBlockMoveHistory, gate = deferred()
   backend.api.getDocumentBlockMoveHistory = async id => { const entry = await read(id); await gate.promise; return entry }
   await withEditor(backend, async api => {
+    await waitForRenderer(() => backend.calls.histories.includes('source'), 'The paired history read must be waiting for its reply')
+    assert.equal(api.current().canUndo, false)
     await act(async () => {
       api.current().updateDraftBlock(0, { content: 'Typed while the paired history was loading' })
-      api.current().checkpointDraft()
       gate.resolve()
     })
     assert.equal(api.current().draftBlocks[0].content, 'Typed while the paired history was loading')
+    await act(async () => api.current().checkpointDraft())
+    assert.equal(api.current().canUndo, true)
     await act(async () => api.current().undoEdit())
     assert.deepEqual(ids(api.current()), ['stay'])
     assert.equal(api.current().draftBlocks[0].content, backend.afterSource.blocks[0].content)
     assert.equal(api.current().canUndo, false)
+    assert.equal(api.current().canRedo, true)
     assert.equal(backend.calls.undos.length, 0)
+    await act(async () => api.current().redoEdit())
+    assert.equal(api.current().draftBlocks[0].content, 'Typed while the paired history was loading')
+    assert.equal(backend.calls.redos.length, 0)
   })
 })
 

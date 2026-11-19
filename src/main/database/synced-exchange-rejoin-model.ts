@@ -9,8 +9,14 @@ import { restorePaths } from './restore-safety-files'
 import { assertInstalledRestoreRuntimeCoverage, attachInstalledRestoreRuntime, readInstalledRestoreRuntime,
   readLiveInstalledRestoreRuntime } from './restore-knowledge-runtime-authority'
 import { readRejoinPublicationSeed } from './synced-exchange-rejoin-publication'
+import { readInitialIncomingBaseline } from './synced-initial-incoming-read'
+import { initialIncomingBaselineKey, validateInitialIncomingReceipt } from '../sync/synced-initial-incoming-model'
+import { requireStrongEtag } from '../sync/webdav-client'
+import { observationDatabasePath } from './synced-remote-observation-pending'
+import { INITIAL_PUBLICATION_RECEIPT_KIND, readInitialPublicationReceipt } from './synced-initial-publication-receipt'
 
 export const exchangeRejoinPrefix = 'sync.webdav.protocol5.exchange-rejoin.v1.'
+export const initialRejoinPrefix = 'sync.webdav.protocol5.initial-rejoin.v1.'
 const digest = (value: unknown) => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value) ? value : invalid()
 const uuid = (value: unknown) => isSyncedUuid(value) ? value : invalid()
 const text = (value: unknown) => typeof value === 'string' && value.length > 0 ? value : invalid()
@@ -21,11 +27,17 @@ export function exchangeRejoinKey(targetFingerprint: string, operationId: string
   return exchangeRejoinPrefix + digest(targetFingerprint) + '.' + uuid(operationId)
 }
 
+export function initialRejoinKey(targetFingerprint: string, operationId: string) {
+  return initialRejoinPrefix + digest(targetFingerprint) + '.' + uuid(operationId)
+}
+
 export function exchangeRejoinFile(root: string, operationId: string, bridgeHash: string) {
   return join(restorePaths(root, uuid(operationId)).recovery, 'webdav-rejoin-' + digest(bridgeHash) + '.json')
 }
 
-export function exchangeRejoinPin(proof: ExchangeRejoin) {
+type RejoinProof = ExchangeRejoin | InitialRejoin
+
+export function exchangeRejoinPin(proof: RejoinProof) {
   return { kind: 'synced-exchange-rejoin-pin', version: 1, restoreOperationId: proof.restoreOperationId,
     targetFingerprint: proof.targetFingerprint, originalRowsHash: proof.oldRowsHash, intentHash: proof.intentHash, proofHash: proof.proofHash,
     bridgeHash: publicationHash(publicationJson(proof)) }
@@ -170,10 +182,113 @@ export function readExchangeRejoinSql(db: Database.Database, targetFingerprint: 
   return row && { ...row, ...readExchangeRejoinSupport(db, row.value) }
 }
 
-export function assertExchangeRejoinPins(root: string, records: Iterable<{ value: ExchangeRejoin; hash: string }>) {
+export function assertExchangeRejoinPins(root: string, records: Iterable<{ value: RejoinProof; hash: string }>) {
   for (const { value, hash } of records) {
     if (readSmallPin(exchangeRejoinFile(root, value.restoreOperationId, hash)) !== publicationJson(exchangeRejoinPin(value))) return invalid()
   }
+}
+
+function initialRoute(raw: string) {
+  const route = parseExchangeStored(raw)
+  assertSyncedShape(route, ['workspace', 'lastSyncAt', 'pending'])
+  assertSyncedShape(route.workspace, ['workspaceScope', 'recoveryEpoch'])
+  if (route.pending !== null) return invalid()
+  return { workspaceScope: uuid(route.workspace.workspaceScope), recoveryEpoch: uuid(route.workspace.recoveryEpoch), lastSyncAt: time(route.lastSyncAt) }
+}
+
+function time(value: unknown) {
+  const result = text(value)
+  if (!Number.isFinite(Date.parse(result))) return invalid()
+  return result
+}
+
+export function validateInitialRejoin(value: unknown) {
+  assertSyncedShape(value, ['kind', 'version', 'restoreOperationId', 'targetFingerprint', 'source', 'databasePath',
+    'intentHash', 'proofHash', 'oldRouteRaw', 'oldRouteUpdatedAt', 'oldRowsHash', 'acceptedHead', 'observedHead', 'newEpoch', 'confirmedAt'])
+  if (value.kind !== 'synced-initial-restore-rejoin' || value.version !== 1) return invalid()
+  assertSyncedShape(value.source, ['kind', 'targetFingerprint'])
+  const { kind } = value.source
+  if (kind !== 'receive' && kind !== 'publish') return invalid()
+  const oldRouteRaw = text(value.oldRouteRaw), newEpoch = uuid(value.newEpoch)
+  if (initialRoute(oldRouteRaw).recoveryEpoch === newEpoch) return invalid()
+  const acceptedHead = head(value.acceptedHead), observedHead = head(value.observedHead)
+  requireStrongEtag(acceptedHead.etag); requireStrongEtag(observedHead.etag)
+  if (acceptedHead.hash === observedHead.hash && acceptedHead.etag !== observedHead.etag) return invalid()
+  return { kind: value.kind, version: value.version, restoreOperationId: uuid(value.restoreOperationId), targetFingerprint: digest(value.targetFingerprint),
+    source: { kind, targetFingerprint: digest(value.source.targetFingerprint) }, databasePath: text(value.databasePath), intentHash: digest(value.intentHash),
+    proofHash: digest(value.proofHash), oldRouteRaw, oldRouteUpdatedAt: time(value.oldRouteUpdatedAt), oldRowsHash: digest(value.oldRowsHash),
+    acceptedHead, observedHead, newEpoch, confirmedAt: time(value.confirmedAt) }
+}
+type InitialRejoin = ReturnType<typeof validateInitialRejoin>
+
+/** Obtain the first real WebDAV operation and its exact accepted head. */
+export function readInitialRejoinEvidence(db: Database.Database, source: Pick<InitialRejoin,
+  'databasePath' | 'source' | 'oldRouteRaw' | 'oldRouteUpdatedAt'>) {
+  if (!db.open || !db.inTransaction) return invalid()
+  const route = initialRoute(source.oldRouteRaw)
+  const routeRow = { value: source.oldRouteRaw, updated_at: source.oldRouteUpdatedAt }
+  if (source.source.kind === 'publish') {
+    const rows = db.prepare(`SELECT client_operation_id FROM synced_operations WHERE created_at=?
+      AND json_extract(result_json,'$.kind')=? AND json_extract(result_json,'$.targetFingerprint')=? LIMIT 2`).pluck()
+      .all(route.lastSyncAt, INITIAL_PUBLICATION_RECEIPT_KIND, source.source.targetFingerprint) as string[]
+    if (!rows.length) return null
+    if (rows.length !== 1) return invalid()
+    const exact = readInitialPublicationReceipt(db, rows[0])
+    if (!exact || exact.receipt.databasePath !== source.databasePath || exact.receipt.workspaceScope !== route.workspaceScope
+      || exact.receipt.recoveryEpoch !== route.recoveryEpoch) return invalid()
+    const { receipt, row, publication } = exact
+    return { kind: 'publish' as const, receipt, publication, operationId: receipt.operationId, workspaceScope: receipt.workspaceScope,
+      recoveryEpoch: receipt.recoveryEpoch, remoteWorkspaceId: receipt.workspaceScope, portableDigest: receipt.portableDigest,
+      acceptedHead: { hash: receipt.manifestHash, etag: receipt.manifestEtag },
+      oldRowsHash: publicationHash(publicationJson({ routeRow, receipt: row, publication: publication.hash })) }
+  }
+  const saved = readInitialIncomingBaseline(db, { databasePath: source.databasePath, targetFingerprint: source.source.targetFingerprint })
+  if (!saved) return null
+  const initial = saved.value, { result, provenance } = initial
+  if (initial.lastReceivedAt !== route.lastSyncAt || result.workspaceScope !== route.workspaceScope || result.recoveryEpoch !== route.recoveryEpoch
+    || saved.raw !== publicationJson(initial) || !initial.manifest.history) return invalid()
+  const receipt = db.prepare('SELECT request_hash,result_json,created_at FROM synced_operations WHERE client_operation_id=?')
+    .get(result.operationId) as { request_hash: string; result_json: string; created_at: string } | undefined
+  if (!receipt || receipt.result_json !== publicationJson(validateInitialIncomingReceipt(parseExchangeStored(receipt.result_json)))) return invalid()
+  const oldRowsHash = publicationHash(publicationJson({ routeRow, initial: saved.raw, receipt }))
+  return { kind: 'receive' as const, initial, oldRowsHash, operationId: result.operationId, workspaceScope: result.workspaceScope,
+    recoveryEpoch: result.recoveryEpoch, remoteWorkspaceId: result.remoteWorkspaceId, portableDigest: provenance.portableDigest,
+    acceptedHead: { hash: result.manifestHash, etag: provenance.manifestEtag }, baselineKey: initialIncomingBaselineKey(source.source.targetFingerprint) }
+}
+
+export function readInitialRejoinSupport(db: Database.Database, value: InitialRejoin) {
+  const exact = readInitialRejoinEvidence(db, value)
+  const requirements = readRawPriorKnowledgeCoverageOwned(db), requirement = requirements.entries.find(entry => entry.operationId === value.restoreOperationId)
+  if (!exact || exact.oldRowsHash !== value.oldRowsHash || !same(exact.acceptedHead, value.acceptedHead) || !requirement
+    || requirement.cut.kind !== 'synced-recovery-epoch-cut' || requirement.cut.workspaceScope !== exact.workspaceScope
+    || requirement.cut.beforeEpoch !== exact.recoveryEpoch || requirement.cut.afterEpoch !== value.newEpoch
+    || !requirement.supports.boundary) return invalid()
+  const retained = db.prepare(`SELECT 1 FROM app_settings, json_each(app_settings.value,'$.retainedOperations') AS operation
+    WHERE app_settings.key=? AND json_extract(operation.value,'$.operationId')=?`).get(requirement.supports.boundary.key[0], exact.operationId)
+  if (!retained) return invalid()
+  return { ...exact, requirement, requirements }
+}
+
+export function readInitialRejoinSql(db: Database.Database, targetFingerprint: string, operationId: string) {
+  const key = initialRejoinKey(targetFingerprint, operationId)
+  const row = db.prepare('SELECT value,updated_at FROM app_settings WHERE key=?').get(key) as { value: string; updated_at: string } | undefined
+  if (!row) return null
+  const value = validateInitialRejoin(parseExchangeStored(row.value))
+  if (row.value !== publicationJson(value) || row.updated_at !== value.confirmedAt || key !== initialRejoinKey(value.targetFingerprint, value.restoreOperationId))
+    return invalid()
+  return { value, ...readInitialRejoinSupport(db, value), hash: publicationHash(row.value) }
+}
+
+export function readActiveInitialRejoin(db: Database.Database, database: string, targetFingerprint: string) {
+  if (!db.inTransaction) return invalid()
+  const installed = readLiveInstalledRestoreRuntime(db, database)
+  if (!installed?.operationId) return null
+  const selected = readInitialRejoinSql(db, targetFingerprint, installed.operationId)
+  if (!selected) return null
+  if (selected.value.databasePath !== observationDatabasePath(database)) return invalid()
+  const root = assertRuntimeRejoin(db, installed, selected, selected.workspaceScope)
+  assertExchangeRejoinPins(root, [selected])
+  return selected
 }
 
 export function readActiveExchangeRejoin(db: Database.Database, database: string, targetFingerprint: string) {
@@ -194,18 +309,24 @@ function readRuntimeExchangeRejoin(db: Database.Database, targetFingerprint: str
   if (!installed?.operationId) return null
   const selected = readExchangeRejoinSql(db, targetFingerprint, installed.operationId)
   if (!selected) return null
-  const { value, old } = selected, root = dirname(dirname(installed.path)), paths = restorePaths(root, installed.operationId)
+  const root = assertRuntimeRejoin(db, installed, selected, selected.old.workspaceScope)
+  assertExchangeRejoinPins(root, [selected, ...selected.ancestors])
+  return selected
+}
+
+function assertRuntimeRejoin(db: Database.Database, installed: NonNullable<ReturnType<typeof readInstalledRestoreRuntime>>,
+  selected: { value: RejoinProof; requirements: ReturnType<typeof readRawPriorKnowledgeCoverageOwned> }, workspaceScope: string) {
+  const { value } = selected, root = dirname(dirname(installed.path)), paths = restorePaths(root, value.restoreOperationId)
   assertInstalledRestoreRuntimeCoverage(db, installed, selected.requirements)
   if (value.intentHash !== installed.intentHash || value.proofHash !== installed.installationProofHash
-    || value.newEpoch !== installed.recoveryEpoch || old.workspaceScope !== installed.workspaceScope
+    || value.newEpoch !== installed.recoveryEpoch || workspaceScope !== installed.workspaceScope
     || lstatSync(paths.journal, { throwIfNoEntry: false })) return invalid()
   const fence = readSmallPin(paths.fence)
   const fenceValue = parseExchangeStored(fence)
   assertSyncedShape(fenceValue, ['kind', 'version', 'operationId', 'intentHash', 'parentFenceHash', 'phase'])
   if (fence !== publicationJson(fenceValue) || fenceValue.kind !== 'controlled-joint-restore-fence' || fenceValue.version !== 2
     || fenceValue.phase !== 'installed' || fenceValue.operationId !== installed.operationId || fenceValue.intentHash !== installed.intentHash) return invalid()
-  assertExchangeRejoinPins(root, [selected, ...selected.ancestors])
-  return selected
+  return root
 }
 
 export function exactExchangeRejoinRow(db: Database.Database, targetFingerprint: string) {

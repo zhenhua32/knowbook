@@ -35,7 +35,7 @@ import { assertSyncedLifecycleCoverage, readSyncedGroupLifecycles, syncedLifecyc
 import { assertSyncedStoredBindings } from './synced-stored-binding-read'
 import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-read'
 import { assertRawCapsule2CatalogOwned } from './restore-knowledge-capsule2-catalog-read'
-import { buildMerge3NavigationFinalIndex3, type Navigation3Table } from './restore-knowledge-navigation3-merge-context'
+import { withStoredMerge3NavigationFinalIndex3, type Navigation3Table } from './restore-knowledge-navigation3-merge-context'
 import { toReference3GraphInputs } from './restore-knowledge-reference3-model'
 import { searchIndexSchema, databaseEntityConstraintSchema, documentStatisticsSchema } from './schema'
 import { publicationCompare, publicationHash, publicationJson } from '../sync/synced-publication-model'
@@ -301,8 +301,8 @@ function planSql(actual: Actual, preparedAt: string, cutContext: { stageId: stri
     scope:'incoming-staging-and-complete-current-retained-cut',preCutStageExecutionHash,preCutPhysical12TablesHash,
     physical12TablesHash,retainedCutHash:retainedCut.cutHash,currentExecutionBoundariesPreserved:false,
     workspaceEpochAndDocumentCasAndHostCutPending:false,finalCurrentRetainedCutComplete:true})
-  const expectedSyntaxIndexHash = canonical ? buildMerge3NavigationFinalIndex3(toReference3GraphInputs(actual.data, actual.allocation),
-    canonical.tables).indexHash : actual.candidate.finalSyntaxIndexHash
+  const expectedSyntaxIndexHash = canonical ? withStoredMerge3NavigationFinalIndex3(toReference3GraphInputs(actual.data, actual.allocation),
+    canonical.tables, ({ indexHash }) => indexHash) : actual.candidate.finalSyntaxIndexHash
   return { tables:retainedCut.tables,preCutTables:tables,retainedCut,retainedCutRowId,expectedWires,expectedSyntaxIndexHash,
     canonicalAssets: canonical?.facts,
     ledger: { ...oldLedger, rows: ledger }, ledgerAdded, lifecycleAdded, markerRowId,
@@ -590,7 +590,8 @@ function observeSql(db:Database.Database,actual:Actual,plan:Planned,marker:RootR
       return { ...row, cells: actualRow.cells }
     }) }
   })
-  const final=buildMerge3NavigationFinalIndex3(toReference3GraphInputs(actual.data,actual.allocation),actualTables)
+  const final=withStoredMerge3NavigationFinalIndex3(toReference3GraphInputs(actual.data,actual.allocation),actualTables,
+    ({indexHash,physicalBlocks,documents})=>({indexHash,physicalBlocks,documents}))
   if(final.indexHash!==plan.expectedSyntaxIndexHash)return fail('实际final index与candidate不同')
   const sortedPhysical=[...final.physicalBlocks], order=new Map<string,bigint>()
   for (const name of ['blocks', 'synced_group_blocks']) {

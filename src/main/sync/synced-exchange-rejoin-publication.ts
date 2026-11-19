@@ -1,5 +1,6 @@
 import type { WebDavSyncConfig } from '../../shared/webdav-sync'
 import type { readRejoinPublicationSeed } from '../database/synced-exchange-rejoin-publication'
+import { initialPublicationSeed, type InitialPublicationReceipt } from '../database/synced-initial-publication-receipt'
 import { observationDatabasePath } from '../database/synced-remote-observation-pending'
 import type { AnyExchangeState } from './synced-exchange-model'
 import { initialIncomingPortableDigest } from './synced-initial-incoming-model'
@@ -10,6 +11,12 @@ import type { WebDavClient } from './webdav-client'
 import { readFixedConfirmedPublicationSeed } from './synced-publication'
 
 const fail = (): never => publicationInvalid('恢复续接缺准确原发布根、对象或已确认组。')
+
+export function readInitialPublicationRejoinSnapshot(client: WebDavClient, target: WebDavSyncConfig, head: SyncedInitialManifest5,
+  { receipt, publication }: { receipt: InitialPublicationReceipt; publication: ReturnType<typeof readRejoinPublicationSeed> }, root: string) {
+  return readRejoinedPublicationSnapshot(client, target, head, { databasePath: receipt.databasePath, workspaceScope: receipt.workspaceScope,
+    recoveryEpoch: receipt.recoveryEpoch, remoteWorkspaceId: receipt.workspaceScope, source: initialPublicationSeed(receipt) }, publication, root)
+}
 
 /** Match the exact installed SQL publication to the original descriptor and
  * remote immutable root. Local group hashes remain pinned by the descriptor. */

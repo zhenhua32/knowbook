@@ -114,6 +114,12 @@ if (!input) void withIncomingFixture(async fixture => {
       assert.ok(localGroupIds.every(id => !addedGroups.some(group => group.groupId === id)), 'V3 reassigns the direct source group identities')
       const rejoin = await prepareProtocol5RestoreRejoin(db, B.root, targetConfig, runtime)
       await confirmProtocol5RestoreRejoin(db, B.root, targetConfig, runtime, rejoin.owner)
+      const unrelated = reopened.createDocument(null)
+      reopened.updateDocument(unrelated, { title: 'Independent history [draft]', summary: '[reference](Never found.md)',
+        blocks: [freshBlock(randomUUID(), 'Keep [[another page|unrelated link]]')] })
+      reopened.documentRecovery.checkpoint(unrelated, 'edit', true)
+      reopened.saveDocumentTemplate({ name: 'Independent template', title: 'Independent template',
+        summary: '[documentation](https://example.test)', blocks: [freshBlock(randomUUID(), 'Keep this template')] })
     } finally { reopened.destroy() }
 
     const bytes = server.files.get(headPath)!, headHash = publicationHash(bytes)
@@ -145,6 +151,11 @@ if (!input) void withIncomingFixture(async fixture => {
       const db = cold.getUnsafeDatabaseHandle()
       assert.deepEqual([...db.transaction(() => readV3SourceGroupRetirementsOwned(db))().keys()], localGroupIds)
       assert.ok(db.prepare('SELECT 1 FROM synced_group_blocks WHERE group_id=?').get(retainedId))
+      const template = cold.listDocumentTemplates().find(template => template.name === 'Independent template')
+      assert.ok(template)
+      const existsInLedger = db.prepare('SELECT 1 FROM block_identities WHERE id=?')
+      assert.ok(template.blocks.every(block => !existsInLedger.get(block.id)))
+      assert.ok(db.prepare("SELECT 1 FROM document_history WHERE title='Independent history [draft]'").get())
       for (const localGroupId of localGroupIds) {
         assert.equal(db.prepare('SELECT 1 FROM synced_group_blocks WHERE group_id=?').get(localGroupId), undefined)
         assert.ok(db.prepare('SELECT 1 FROM block_identities WHERE last_owner_id=? AND state=?').get(localGroupId, 'retained'))
@@ -161,6 +172,7 @@ if (!input) void withIncomingFixture(async fixture => {
         const key = 'group:' + group.groupId
         assert.equal(written.entries[key], deletionEntries[key], 'The next genuine exchange keeps each exact source tombstone')
       }
+      assert.ok(template.blocks.every(block => !existsInLedger.get(block.id)), 'Confirmation and sync must not reserve draft-local IDs')
     } finally { cold.destroy() }
   } finally { source.destroy() }
 }, { orphan: true }).catch(error => {

@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import Database from 'better-sqlite3'
-import { readInitialIncomingWorkspace } from '../src/main/database/synced-initial-incoming-read'
+import { readInitialIncomingLocal, readInitialIncomingWorkspace, readSyncedExchangeIncomingLocal } from '../src/main/database/synced-initial-incoming-read'
 import { readRawInitialIncomingWorkspaceOwned } from '../src/main/database/synced-initial-incoming-raw-read'
 import { prepareDurableSqlCapsuleOriginal } from '../src/main/database/restore-knowledge-capsule-files'
 import { certifyDurableSqlCapsuleOriginal, diagnoseCertifiedDurableSqlCapsule,
@@ -84,7 +84,7 @@ test('ordinary controlled restore accepts a real current template without ledger
   assert.deepEqual(readFileSync(f.backup), f.sourceBytes)
 }))
 
-test('a real unregistered ordinary template remains raw SQL evidence while the public incoming reader retains its original ledger rejection', () => withControlledRestore(async f => {
+test('a real ordinary template stays outside the ledger during workspace and exchange reads, while first receive still protects its scope', () => withControlledRestore(async f => {
   const template = saveUnregisteredOrdinaryTemplate(f.current)
   const before = {
     schema: f.db.prepare('SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name').all(),
@@ -97,11 +97,27 @@ test('a real unregistered ordinary template remains raw SQL evidence while the p
     assert.ok(raw.historyBlocks.has(id), 'Raw evidence retains the actual template name in its complete historical inventory')
     assert.equal(raw.identities.has(id), false, 'Raw evidence does not turn a template name into a retained identity')
   }
-  assert.throws(() => f.db.transaction(() => readInitialIncomingWorkspace(f.db))(), /本机历史块缺少原保留 ledger/)
+  const request = { method: 'receiveInitialSyncedSnapshot' as const, operationId: randomUUID(),
+    databasePath: f.database, targetFingerprint: '0'.repeat(64) }
+  f.db.transaction(() => {
+    const workspace = readInitialIncomingWorkspace(f.db), exchange = readSyncedExchangeIncomingLocal(f.db, request)
+    for (const id of template.ids) {
+      assert.ok(workspace.historyBlocks.has(id) && exchange.historyBlocks.has(id))
+      assert.equal(workspace.identities.has(id) || exchange.identities.has(id), false)
+    }
+    assert.throws(() => readInitialIncomingLocal(f.db, request), /本机历史块缺少原保留 ledger/)
+  })()
   assertTemplateFacts(f.db, template)
   assert.deepEqual(f.db.prepare('SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name').all(), before.schema)
   assert.deepEqual(f.db.prepare('SELECT * FROM block_identities ORDER BY id').all(), before.identities)
   assert.deepEqual(f.db.prepare('SELECT total_changes() AS count').get(), before.changes)
+  const historyId = randomUUID()
+  f.db.prepare('INSERT INTO document_history VALUES (?,?,?,?,?,?,?)').run(historyId, f.id, 'Historical draft',
+    'Historical draft', new Date().toISOString(), 'edit', JSON.stringify({ blocks: [{ id: template.ids[0] }] }))
+  try {
+    assert.throws(() => f.db.transaction(() => readInitialIncomingWorkspace(f.db))(), /本机历史块缺少原保留 ledger/)
+    assert.throws(() => f.db.transaction(() => readSyncedExchangeIncomingLocal(f.db, request))(), /本机历史块缺少原保留 ledger/)
+  } finally { f.db.prepare('DELETE FROM document_history WHERE id=?').run(historyId) }
 
   const originalCurrent = f.sealCurrent(), profileRoot = realpathSync.native(f.profile), sourceDirectory = realpathSync.native(dirname(f.database))
   const inventory = await restoreInventory(sourceDirectory)

@@ -21,10 +21,11 @@ import { decodePublicationJson, frozenPublicationFacts, protocol5HistoryTarget, 
   PUBLICATION_RECORD_MAX_BYTES, validateInitialManifest5, type SyncedInitialManifest5 } from './synced-publication-model'
 import { fetchProtocol5RemoteClosure, initialPublicationTargetFingerprint, type SyncedPublicationRuntime } from './synced-publication'
 import { readRejoinPublicationSeed } from '../database/synced-exchange-rejoin-publication'
-import { readRejoinedPublicationSnapshot } from './synced-exchange-rejoin-publication'
+import { readInitialPublicationRejoinSnapshot, readRejoinedPublicationSnapshot } from './synced-exchange-rejoin-publication'
 import { normalizeWebDavConfig, WebDavClient } from './webdav-client'
-import { assertExchangeRejoinPins, exchangeRejoinFile, exchangeRejoinKey, exchangeRejoinPin, exactExchangeRejoinRow,
-  readActiveExchangeRejoin, readExchangeRejoinSql, validateExchangeRejoin } from '../database/synced-exchange-rejoin-model'
+import { assertExchangeRejoinPins, exchangeRejoinFile, exchangeRejoinKey, exchangeRejoinPin, exactExchangeRejoinRow, initialRejoinKey,
+  readActiveExchangeRejoin, readActiveInitialRejoin, readExchangeRejoinSql, readInitialRejoinEvidence,
+  readInitialRejoinSql, validateExchangeRejoin, validateInitialRejoin } from '../database/synced-exchange-rejoin-model'
 
 function fail(reason: string): never { throw new Error('WebDAV 恢复续接预检失败：' + reason) }
 const same = (left: unknown, right: unknown) => publicationJson(left) === publicationJson(right)
@@ -36,7 +37,21 @@ function originalRouteState(db: Database.Database, request: Request, target: Web
   const route = decodeProtocol5Route(routeRow?.value ?? null, target)
   if (!route || route.pending || !route.lastSyncAt || !routeRow) return fail('缺原已结算且没有待办的同目标路由')
   const savedState = exactExchangeRejoinRow(db, request.targetFingerprint)
-  if (!savedState) return fail('缺原已结算的交换状态')
+  if (!savedState) {
+    if (db.prepare(`SELECT 1 FROM synced_operations WHERE json_extract(result_json,'$.kind')='synced-exchange-operation'
+      AND json_extract(result_json,'$.request.targetFingerprint')=? LIMIT 1`).get(request.targetFingerprint))
+      return fail('已有该目标的交换回执，但原交换状态缺失')
+    const original = { databasePath: request.databasePath, oldRouteRaw: routeRow.value, oldRouteUpdatedAt: routeRow.updated_at }
+    const incoming = { kind: 'receive' as const, targetFingerprint: initialIncomingTargetFingerprint(target) }
+    const outgoing = { kind: 'publish' as const, targetFingerprint: initialPublicationTargetFingerprint(target) }
+    const received = readInitialRejoinEvidence(db, { ...original, source: incoming })
+    const published = readInitialRejoinEvidence(db, { ...original, source: outgoing })
+    if (received && published) return fail('首同步路由对应多个真实接受凭据')
+    const exact = received ?? published
+    if (!exact) return fail('缺原已结算的交换状态或真实首同步回执')
+    return { kind: 'initial' as const, route, routeRow, exact, oldRowsHash: exact.oldRowsHash, databasePath: request.databasePath,
+      source: received ? incoming : outgoing }
+  }
   const stored = validateAnyExchangeState(parseExchangeStored(savedState.value))
   const stateScope = { workspaceScope: stored.workspaceScope, recoveryEpoch: stored.recoveryEpoch }
   let predecessor: NonNullable<ReturnType<typeof readExchangeRejoinSql>> | undefined
@@ -76,7 +91,7 @@ function originalRouteState(db: Database.Database, request: Request, target: Web
     if (!row) return fail('缺原接收或交换回执字节')
     return { operationId, hash: publicationHash(publicationJson(row)) }
   })
-  return { route, routeRow, state: state.value, rawState: state.raw, latest, acceptedEtag, initial: initial?.value, publication, receiptPins, predecessor,
+  return { kind: 'exchange' as const, route, routeRow, state: state.value, rawState: state.raw, latest, acceptedEtag, initial: initial?.value, publication, receiptPins, predecessor,
     oldRowsHash: publicationHash(publicationJson({ routeRow, state: state.raw, ...(initial ? { initial: initial.raw } : { publication: publication!.hash }), receiptPins,
       ...(predecessor ? { predecessor: { operationId: predecessor.value.restoreOperationId, hash: predecessor.hash } } : {}) })) }
 }
@@ -102,8 +117,11 @@ async function readOriginalB(client: WebDavClient, old: ReturnType<typeof origin
   }
   const checked = validateSyncedProtocol5Snapshot(manifest, initialRecords)
   const dependencies = new Map(deriveSyncedExchangeDependencyFacts(checked).map(item => [item.key, item]))
-  if (initialIncomingPortableDigest(checked.manifest.entries, checked.manifest.syncedInstances) !== old.state.source.portableDigest)
+  const seedDigest = old.kind === 'initial' ? old.exact.portableDigest : old.state.source.portableDigest
+  if (initialIncomingPortableDigest(checked.manifest.entries, checked.manifest.syncedInstances) !== seedDigest)
     return fail('原接收种子的完整图摘要不同')
+  if (old.kind === 'initial') return checked.records.map(item => ({ key: item.key, hash: item.hash,
+    acceptedOperationId: old.exact.operationId, dependencySignature: dependencies.get(item.key)!.dependencySignature }))
   const inherited = new Map(initialIncomingTombstoneFacts(old.initial ?? null).map(item => [item.key, item]))
   const baseline = []
   for (const row of old.state.baseline) {
@@ -149,7 +167,7 @@ async function inspectProtocol5RestoreRejoin(db: Database.Database, userDataRoot
     if (old.route.workspace.workspaceScope !== coverage.target.workspaceScope
       || old.route.workspace.recoveryEpoch !== coverage.cut.beforeEpoch || old.route.workspace.recoveryEpoch === coverage.target.recoveryEpoch)
       return fail('原路由并非本次恢复之前的源世代')
-    if (old.predecessor) assertExchangeRejoinPins(root, [old.predecessor, ...old.predecessor.ancestors])
+    if (old.kind === 'exchange' && old.predecessor) assertExchangeRejoinPins(root, [old.predecessor, ...old.predecessor.ancestors])
     return { old, localFingerprint: local.fingerprint }
   })
   const before = readLocal()
@@ -159,10 +177,12 @@ async function inspectProtocol5RestoreRejoin(db: Database.Database, userDataRoot
   const got = await fetchProtocol5RemoteClosure(client)
   if (got.status !== 'ready') return fail('原目标缺完整 Protocol 5 远端')
   const { remote } = got, head = remote.facts.manifest
-  if (head.workspaceId !== old.state.remoteWorkspaceId || !head.history)
+  const originalWorkspaceId = old.kind === 'initial' ? old.exact.remoteWorkspaceId : old.state.remoteWorkspaceId
+  if (head.workspaceId !== originalWorkspaceId || !head.history)
     return fail('远端工作区或原历史链不同')
 
-  const originalManifestHash = old.latest.provenance.afterManifestHash, originalEtag = old.acceptedEtag
+  const { hash: originalManifestHash, etag: originalEtag } = old.kind === 'initial' ? old.exact.acceptedHead
+    : { hash: old.latest.provenance.afterManifestHash, etag: old.acceptedEtag }
   const manifestHash = publicationHash(remote.manifest)
   let anchor: SyncedInitialManifest5 = head
   if (manifestHash !== originalManifestHash) {
@@ -171,14 +191,18 @@ async function inspectProtocol5RestoreRejoin(db: Database.Database, userDataRoot
     anchor = validateInitialManifest5(decodePublicationJson(found.bytes))
   } else if (remote.manifestEtag !== originalEtag) return fail('同一远端 head 的 ETag 已变化')
   await assertProtocol5ManifestLineage(client, target, head, originalManifestHash)
-  if (old.predecessor) {
+  if (old.kind === 'exchange' && old.predecessor) {
     const priorHead = old.predecessor.value.observedHead
     if (manifestHash === priorHead.hash && remote.manifestEtag !== priorHead.etag) return fail('前次续接观察版本的 ETag 已变化')
     await assertProtocol5ManifestLineage(client, target, head, priorHead.hash)
   }
-  await assertProtocol5ManifestLineage(client, target, anchor, old.state.source.manifestHash)
-  const seedManifest = old.initial?.manifest ?? (await readRejoinedPublicationSnapshot(client, target, anchor, old.state, old.publication!, root)).manifest
-  if (!seedManifest.history || !old.initial && seedManifest.history.previousHash !== null || seedManifest.history.targetFingerprint !== protocol5HistoryTarget(target))
+  const seedHash = old.kind === 'initial' ? old.exact.acceptedHead.hash : old.state.source.manifestHash
+  await assertProtocol5ManifestLineage(client, target, anchor, seedHash)
+  const seedManifest = old.kind === 'initial' ? old.exact.kind === 'receive' ? old.exact.initial.manifest
+    : (await readInitialPublicationRejoinSnapshot(client, target, anchor, old.exact, root)).manifest
+    : old.initial?.manifest ?? (await readRejoinedPublicationSnapshot(client, target, anchor, old.state, old.publication!, root)).manifest
+  const receiving = old.kind === 'initial' ? old.exact.kind === 'receive' : !!old.initial
+  if (!seedManifest.history || !receiving && seedManifest.history.previousHash !== null || seedManifest.history.targetFingerprint !== protocol5HistoryTarget(target))
     return fail('原发布或接收种子不是准确历史根')
   const baseline = await readOriginalB(client, old, seedManifest)
   const tail = await client.getVersioned('manifest.json', PUBLICATION_RECORD_MAX_BYTES)
@@ -193,7 +217,8 @@ async function inspectProtocol5RestoreRejoin(db: Database.Database, userDataRoot
   const observation = frozenPublicationFacts({ kind: 'protocol5-restore-rejoin-observation' as const, operationId: intent.operationId,
     targetFingerprint: request.targetFingerprint, remoteWorkspaceId: head.workspaceId,
     originalManifestHash, originalEtag, manifestHash, etag: remote.manifestEtag,
-    originalRecoveryEpoch: old.state.recoveryEpoch, installedRecoveryEpoch: installed.recoveryEpoch,
+    originalRecoveryEpoch: old.kind === 'initial' ? old.exact.recoveryEpoch : old.state.recoveryEpoch,
+    installedRecoveryEpoch: installed.recoveryEpoch,
     oldRowsHash: old.oldRowsHash, baseline, executionAuthorized: false as const })
   return { observation, installed, intentHash: active.fence.intentHash, old, localFingerprint: before.localFingerprint,
     async assertObservedHead() {
@@ -231,14 +256,19 @@ export async function confirmProtocol5RestoreRejoin(db: Database.Database, root:
   if (previewDigest(read) !== prior.digest) return fail('原恢复续接预案已变化，请重新读取')
   const { observation, installed, old, intentHash } = read
   const confirmedAt = new Date().toISOString()
-  const proof = validateExchangeRejoin({ kind: 'synced-exchange-restore-rejoin', version: old.predecessor ? 3 : old.publication ? 2 : 1,
+  const common = {
     restoreOperationId: observation.operationId, targetFingerprint: observation.targetFingerprint, intentHash,
     proofHash: installed.installationProofHash, oldRouteRaw: old.routeRow.value, oldRouteUpdatedAt: old.routeRow.updated_at,
-    oldStateRaw: old.rawState, oldRowsHash: old.oldRowsHash, receiptPins: old.receiptPins,
+    oldRowsHash: old.oldRowsHash,
     acceptedHead: { hash: observation.originalManifestHash, etag: observation.originalEtag },
-    observedHead: { hash: observation.manifestHash, etag: observation.etag }, newEpoch: observation.installedRecoveryEpoch, confirmedAt,
-    ...(old.predecessor ? { predecessor: { operationId: old.predecessor.value.restoreOperationId, hash: old.predecessor.hash } } : {}),
-    ...(old.publication ? { publicationSeed: { targetFingerprint: old.publication.exposure.target_fingerprint, rowHash: old.publication.hash } } : {}) })
+    observedHead: { hash: observation.manifestHash, etag: observation.etag }, newEpoch: observation.installedRecoveryEpoch, confirmedAt
+  }
+  const proof = old.kind === 'initial'
+    ? validateInitialRejoin({ ...common, kind: 'synced-initial-restore-rejoin', version: 1, databasePath: old.databasePath, source: old.source })
+    : validateExchangeRejoin({ ...common, kind: 'synced-exchange-restore-rejoin', version: old.predecessor ? 3 : old.publication ? 2 : 1,
+      oldStateRaw: old.rawState, receiptPins: old.receiptPins,
+      ...(old.predecessor ? { predecessor: { operationId: old.predecessor.value.restoreOperationId, hash: old.predecessor.hash } } : {}),
+      ...(old.publication ? { publicationSeed: { targetFingerprint: old.publication.exposure.target_fingerprint, rowHash: old.publication.hash } } : {}) })
   const pin = exchangeRejoinPin(proof), canonicalRoot = await canonicalRestoreRoot(root)
   const receiptFile = exchangeRejoinFile(canonicalRoot, proof.restoreOperationId, pin.bridgeHash)
   if (!await restoreExists(receiptFile)) {
@@ -250,14 +280,17 @@ export async function confirmProtocol5RestoreRejoin(db: Database.Database, root:
   db.transaction(() => {
     read.assertLocal()
     const current = exactExchangeRejoinRow(db, proof.targetFingerprint)
-    if (current?.value !== old.rawState || current.updated_at !== old.state.lastSyncAt
-      || readExchangeRejoinSql(db, proof.targetFingerprint, proof.restoreOperationId)) return fail('原路由或基线已续接或变化')
-    db.prepare('INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,?)')
-      .run(exchangeRejoinKey(proof.targetFingerprint, proof.restoreOperationId), data, confirmedAt)
+    const initialOnly = proof.kind === 'synced-initial-restore-rejoin'
+    if ((old.kind === 'initial' ? !!current : current?.value !== old.rawState || current.updated_at !== old.state.lastSyncAt)
+      || readExchangeRejoinSql(db, proof.targetFingerprint, proof.restoreOperationId)
+      || readInitialRejoinSql(db, proof.targetFingerprint, proof.restoreOperationId)) return fail('原路由或基线已续接或变化')
+    const proofKey = initialOnly ? initialRejoinKey : exchangeRejoinKey
+    db.prepare('INSERT INTO app_settings(key,value,updated_at) VALUES(?,?,?)').run(proofKey(proof.targetFingerprint, proof.restoreOperationId), data, confirmedAt)
     const route = { ...old.route, workspace: { workspaceScope: installed.workspaceScope, recoveryEpoch: installed.recoveryEpoch } }
     if (db.prepare('UPDATE app_settings SET value=?,updated_at=? WHERE key=? AND value=? AND updated_at=?')
       .run(JSON.stringify(route), confirmedAt, routeKey, old.routeRow.value, old.routeRow.updated_at).changes !== 1) return fail('恢复续接原路由变化')
-    if (readActiveExchangeRejoin(db, db.name, proof.targetFingerprint)?.hash !== publicationHash(data))
+    const readProof = initialOnly ? readActiveInitialRejoin : readActiveExchangeRejoin
+    if (readProof(db, db.name, proof.targetFingerprint)?.hash !== publicationHash(data))
       return fail('恢复续接没有持久读回原凭据')
   }).immediate()
   return Object.freeze({ operationId: observation.operationId, bridgeHash: publicationHash(data) })

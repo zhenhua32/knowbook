@@ -341,7 +341,7 @@ export async function runProtocol5WebDav(
     if (!prepared) throw new Error('首次发布的原准备记录不可用。')
     const published = await publishInitialSyncedPublication(db, result.prepared, runtime)
     if (published.status !== 'confirmed') throw new Error('首次发布未确认，原发布任务和远端资料保留。')
-    persist(null, new Date().toISOString())
+    persist(null, published.acceptedAt ?? new Date().toISOString())
     return { uploaded: published.replayed ? 0 : prepared.descriptor.objects.length, downloaded: 0, message: '工作区首次发布完成。' }
   } finally {
     disposePreparedSyncedPublication(result.prepared)

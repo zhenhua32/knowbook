@@ -40,6 +40,7 @@ import { AttachmentStore } from '../attachments'
 import { readManagedAssetSource } from '../managed-asset-source'
 import { WebDavClient, WebDavHttpError, normalizeWebDavConfig } from './webdav-client'
 import { bindSyncedPublicationCapture, captureSyncedPublicationSnapshot, claimSyncedPublication, confirmSyncedPublication,
+  readConfirmedSyncedPublicationAcceptedAt,
   currentSyncedPublicationMatches, readSyncedPublicationAttempt, readSyncedPublicationCapture, recoverSyncedPublicationClaim,
   syncedPublicationRequestHash, type SyncedPublicationClaim, type SyncedPublicationLocalSnapshot } from '../database/synced-publication'
 import { readOrdinaryPublicationAttempts } from '../database/synced-ordinary-publication-attempt'
@@ -56,7 +57,7 @@ export interface SyncedPublicationRuntime { password: string; signal?: AbortSign
 export type SyncedPublicationPreparedResult = { status: 'prepared'; prepared: PreparedSyncedPublication }
 export type SyncedPublicationPrepareResult = SyncedPublicationPreparedResult | { status: 'unsupported'; reason: 'schema-27-required' | 'no-active-groups' }
 export interface SyncedPublicationIdentity { attemptId: string; publicationHash: string }
-export type SyncedPublicationConfirmed = SyncedPublicationIdentity & { status: 'confirmed'; replayed: boolean }
+export type SyncedPublicationConfirmed = SyncedPublicationIdentity & { status: 'confirmed'; replayed: boolean; acceptedAt?: string }
 export type SyncedPublicationConflict = SyncedPublicationIdentity & { status: 'conflict' }
 export type SyncedPublicationStale = SyncedPublicationIdentity & { status: 'stale' }
 export type SyncedPublicationMissing = SyncedPublicationIdentity & { status: 'missing' }
@@ -359,9 +360,15 @@ function matches(data: Prepared, spool: LoadedSpool, remote: Remote): boolean {
 async function query(data: Prepared, spool: LoadedSpool, client: WebDavClient): Promise<SyncedPublicationConfirmed | SyncedPublicationConflict | SyncedPublicationMissing> {
   const result = await readPublishedSnapshot(client, undefined, data.target)
   if (result.status === 'missing') return { status: 'missing', ...identity(data) }
-  if (result.status !== 'ready' || !matches(data, spool, remotes.get(result.plan)!)) return { status: 'conflict', ...identity(data) }
-  const confirmed = confirmSyncedPublication(data.db, data.claim)
-  return { status: 'confirmed', ...identity(data), replayed: confirmed.replayed }
+  if (result.status !== 'ready') return { status: 'conflict', ...identity(data) }
+  const remote = remotes.get(result.plan)!
+  if (!matches(data, spool, remote)) return { status: 'conflict', ...identity(data) }
+  const manifest = remote.facts.manifest
+  const confirmed = confirmSyncedPublication(data.db, data.claim, manifest.history ? {
+    databasePath: observationDatabasePath(data.paths.databasePath), manifestHash: publicationHash(remote.manifest), manifestEtag: remote.manifestEtag,
+    portableDigest: initialIncomingPortableDigest(manifest.entries, manifest.syncedInstances)
+  } : undefined)
+  return { status: 'confirmed', ...identity(data), replayed: confirmed.replayed, ...(confirmed.acceptedAt ? { acceptedAt: confirmed.acceptedAt } : {}) }
 }
 export async function queryInitialSyncedPublication(db: Database.Database, prepared: PreparedSyncedPublication, options: SyncedPublicationRuntime): Promise<SyncedPublicationConfirmed | SyncedPublicationConflict | SyncedPublicationMissing> {
   return publicBoundary(async () => {
@@ -391,7 +398,11 @@ export async function publishInitialSyncedPublication(db: Database.Database, pre
     try {
       const credentials = runtime(options), spool = await loadSpool(data.paths); originalSpool(data, spool)
       const prior = readSyncedPublicationAttempt(db, data.claim)
-      if (prior === 'confirmed') return { status: 'confirmed', ...identity(data), replayed: true }
+      const replay = () => {
+        const acceptedAt = readConfirmedSyncedPublicationAcceptedAt(db, data.claim)
+        return { status: 'confirmed' as const, ...identity(data), replayed: true, ...(acceptedAt ? { acceptedAt } : {}) }
+      }
+      if (prior === 'confirmed') return replay()
       const client = new WebDavClient(data.target, credentials.password, credentials.signal)
       const remote = await network(() => client.getVersioned('manifest.json', PUBLICATION_RECORD_MAX_BYTES))
       if (remote) {
@@ -404,7 +415,7 @@ export async function publishInitialSyncedPublication(db: Database.Database, pre
       if (!await verifyCurrentAssets(data, spool)) return { status: 'stale', ...identity(data) }
       const claimed = claimSyncedPublication(db, data.claim)
       if (claimed === 'stale') return { status: 'stale', ...identity(data) }
-      if (claimed === 'confirmed') return { status: 'confirmed', ...identity(data), replayed: true }
+      if (claimed === 'confirmed') return replay()
       // All content HEAD/PUT requests, cached paths and later temporary Manifest PUT are after committed all-member possible.
       for (const [index, asset] of data.state.descriptor.assets.entries()) {
         client.transferProgress('uploading', index, data.state.descriptor.assets.length, asset.names[0])

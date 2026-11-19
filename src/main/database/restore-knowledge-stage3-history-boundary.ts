@@ -191,7 +191,7 @@ function observe(db: Database.Database, { copy, retainedCut, value, stageManifes
   const currentHistory = { documents: oldDocuments, hosts: oldHosts, hostCuts, groups: oldGroups, instances: oldInstances,
     retainedOperations, retainedPins }
   const hasStructuralHistory = Boolean(originalHosts.size || hostCuts.length || originalGroups.size || originalInstances.size)
-  const operationOnly = !hasStructuralHistory && operations.some(row => isRetainedProtocol5Operation(row, allocation.workspace.workspaceScope))
+  const operationOnly = !hasStructuralHistory && operations.some(row => isRetainedProtocol5Operation(db, row, allocation.workspace.workspaceScope))
   const canRepresentCurrent = !uncovered.some(row => row.removed.length && (row.family !== 'instances' || !allowInstanceRemoval))
     && !scopeChanged.length && !changedGroupDispositions.length
     && Boolean(oldHosts.length || hostCuts.length || oldGroups.length || oldInstances.length || operationOnly)

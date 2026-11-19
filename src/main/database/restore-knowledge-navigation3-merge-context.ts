@@ -1,3 +1,4 @@
+import Database from 'better-sqlite3'
 import type { SyncedStableBlockDraft } from '../../shared/synced-blocks'
 import type { Graph3Inputs } from './restore-knowledge-graph3-data'
 import type { Capsule2Encoding, Capsule2RawSqlRow, Capsule2RawSqlTable } from './restore-knowledge-capsule2-raw-model'
@@ -13,7 +14,7 @@ import { parseSyncedBlockPayload, SYNCED_MAX_BLOCKS, SYNCED_MAX_DEPTH, validateS
 import { parseStrictJson } from '../../shared/strictJson'
 import { capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { capsuleJsonStringBytes, hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
-import { CAPSULE2_RAW_MAX_ROWS, CAPSULE2_RAW_MAX_VALUE_BYTES } from './restore-knowledge-capsule2-raw-model'
+import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_RAW_MAX_ROWS, CAPSULE2_RAW_MAX_VALUE_BYTES } from './restore-knowledge-capsule2-raw-model'
 import { findGraph3OriginalRow, graph3Conflict, graph3Key, graph3Text, graph3Value } from './restore-knowledge-graph3-data'
 import { assertMerge3JsonBudget } from './restore-knowledge-merge3-storage'
 import { captureSyncedCreateSourceFacts } from './synced-host-create-plan'
@@ -248,7 +249,7 @@ function captureGrammar(blocks: readonly SyncedStableBlockDraft[]) {
 /** Final syntax only. Stale wire bindings are deliberately NOT validated or
  * replaced by an empty binding wire. Physical forests, registry mirrors and
  * every expanded occurrence are checked directly; no live authority is minted. */
-export function buildMerge3NavigationFinalIndex3(data: Graph3Inputs, tables: readonly Navigation3Table[]): Navigation3FinalIndex {
+function projectFinalNavigation(data: Graph3Inputs, tables: readonly Navigation3Table[], acceptScope: (scope: Navigation3FinalScope) => void) {
   const access = originalAccess(data), byTable = finalEntries(tables)
   const assignments = new Map<string, typeof data.value.assignments>()
   for (const item of data.value.assignments) { const key = graph3Key(item.kind, item.sourceId), values = assignments.get(key) ?? []; values.push(item); assignments.set(key, values) }
@@ -315,7 +316,7 @@ export function buildMerge3NavigationFinalIndex3(data: Graph3Inputs, tables: rea
     groupMaximum.set(id, items.reduce((max, item) => Math.max(max, item.block.depth), 0))
   }
   const instances = new Map((byTable.get('synced_instances') ?? []).map(entry => [text(entry.value.instance_id), entry]))
-  const usedInstances = new Set<string>(), scopes: Navigation3FinalScope[] = [], headingNamespaces: Navigation3FinalIndex['headingNamespaces'][number][] = []
+  const usedInstances = new Set<string>(), headingNamespaces: Navigation3FinalIndex['headingNamespaces'][number][] = []
   let expandedJsonBytes = 0, expandedMinimumBytes = 0
   const expandedBudget = 128 * 1024 * 1024
   const minimumByGroup = new Map([...groupRows].map(([id, items]) => [id, items.reduce((bytes, item) => bytes + capsuleJsonStringBytes(item.block.content, expandedBudget) * 2, 0)]))
@@ -358,7 +359,7 @@ export function buildMerge3NavigationFinalIndex3(data: Graph3Inputs, tables: rea
       checked: false, depth: 0, parentBlockId: null }, location: summaryLocation, cell: cell(docEntry, 'summary') }]
     for (const [field, blocks] of [['body', expanded], ['summary', summary]] as const) {
       const parsed = captureGrammar(blocks.map(item => item.block)), locations = new Map(blocks.map(item => [item.occurrenceKey, item]))
-      scopes.push({ scopeId: graph3Key(field, document.id), field, finalDocumentId: document.id, document, path: document.path, title: document.title, blocks,
+      acceptScope({ scopeId: graph3Key(field, document.id), field, finalDocumentId: document.id, document, path: document.path, title: document.title, blocks,
         destinations: parsed.links.map(link => { const owner = locations.get(link.key.blockId)!; return { ...link, location: owner.location, cell: owner.cell, finalOccurrenceKey: owner.occurrenceKey } }),
         definitions: parsed.definitions, effectiveDefinitions: parsed.effectiveDefinitions, uses: parsed.uses, units: parsed.units })
     }
@@ -384,10 +385,53 @@ export function buildMerge3NavigationFinalIndex3(data: Graph3Inputs, tables: rea
           encoding: data.inputs[side].source.sourceContent.encoding, sourceRowId: route.sourceRowId, cells: route.cells }) })
     }
   }
-  const body = { kind: 'restore-navigation3-final-syntax-index' as const, version: 1 as const, documents, physicalBlocks, headingNamespaces, scopes, routes,
+  return { kind: 'restore-navigation3-final-syntax-index' as const, version: 1 as const, documents, physicalBlocks, headingNamespaces, routes,
     bindingsValidated: false as const, permit: false as const }
+}
+
+export function buildMerge3NavigationFinalIndex3(data: Graph3Inputs, tables: readonly Navigation3Table[]): Navigation3FinalIndex {
+  const scopes: Navigation3FinalScope[] = []
+  const body = { ...projectFinalNavigation(data, tables, scope => { scopes.push(scope) }), scopes }
   assertMerge3JsonBudget(body)
   return freezeCapsuleValue({ ...body, indexHash: hash('knowbook.restore.navigation3.final-index.v1', body) })
+}
+
+export type StoredNavigation3Index = Omit<Navigation3FinalIndex, 'scopes'> & {
+  readonly scopeCount: number
+  scopes(): IterableIterator<Navigation3FinalScope>
+  scope(scopeId: string): Navigation3FinalScope | undefined
+}
+
+/** Use one document scope at a time while carrying the exact same index hash. */
+export function withStoredMerge3NavigationFinalIndex3<T>(data: Graph3Inputs, tables: readonly Navigation3Table[],
+  read: (index: StoredNavigation3Index) => T): T {
+  const db = new Database(':memory:')
+  try {
+    db.pragma('temp_store=FILE')
+    if (db.pragma('temp_store', { simple: true }) !== 1) return graph3Conflict('navigation-scope-file-unavailable', null)
+    db.pragma('temp.cache_size=-2048')
+    db.exec('CREATE TEMP TABLE navigation_scopes (ordinal INTEGER PRIMARY KEY, scope_id TEXT NOT NULL UNIQUE, encoded TEXT NOT NULL)')
+    const insert = db.prepare('INSERT INTO temp.navigation_scopes(ordinal,scope_id,encoded) VALUES(?,?,?)')
+    const rows = db.prepare('SELECT encoded FROM temp.navigation_scopes ORDER BY ordinal').pluck()
+    const byId = db.prepare('SELECT encoded FROM temp.navigation_scopes WHERE scope_id=?').pluck()
+    let scopeCount = 0, encodedBytes = 0
+    const metadata = db.transaction(() => projectFinalNavigation(data, tables, scope => {
+      const encoded = capsuleJson(scope)
+      encodedBytes += Buffer.byteLength(encoded) + (scopeCount ? 1 : 0)
+      if (encodedBytes > CAPSULE2_RAW_MAX_JSON_BYTES) return graph3Conflict('navigation-merge-hash-budget', null)
+      insert.run(scopeCount++, scope.scopeId, encoded)
+    }))()
+    assertMerge3JsonBudget(metadata)
+    const indexHash = hashBoundedCapsuleJson({ ...metadata, scopes: [] }, CAPSULE2_RAW_MAX_JSON_BYTES,
+      'knowbook.restore.navigation3.final-index.v1\0', { field: 'scopes', encodedItems: rows.iterate() as IterableIterator<string> })
+    if (!indexHash) return graph3Conflict('navigation-merge-hash-budget', null)
+    return read(Object.freeze({ ...freezeCapsuleValue(metadata), scopeCount, indexHash,
+      *scopes() { for (const encoded of rows.iterate() as IterableIterator<string>) yield JSON.parse(encoded) as Navigation3FinalScope },
+      scope(scopeId: string) {
+        const encoded = byId.get(scopeId)
+        return typeof encoded === 'string' ? JSON.parse(encoded) as Navigation3FinalScope : undefined
+      } }))
+  } finally { db.close() }
 }
 
 export function parseMerge3NavigationScopes3(data: Graph3Inputs, tables: readonly Navigation3Table[]): readonly Navigation3FinalScope[] {
@@ -531,9 +575,10 @@ export function deriveRootRestoreNavigationMergeContext3(data: Graph3Inputs,
 }
 
 type Resolver = (documentId: string, url: string, wiki: boolean) => Navigation3MappedTarget
-const resolvers = new WeakMap<Navigation3FinalIndex, Resolver>()
+type ResolutionIndex = Pick<Navigation3FinalIndex, 'documents' | 'physicalBlocks' | 'headingNamespaces' | 'routes'>
+const resolvers = new WeakMap<ResolutionIndex, Resolver>()
 /** Indexes only this pure result. No K/SQL/certification cache or authority. */
-export function createFinalNavigation3Resolver(index: Navigation3FinalIndex): Resolver {
+export function createFinalNavigation3Resolver(index: ResolutionIndex): Resolver {
   const byId = new Map(index.documents.map(document => [document.id, document]))
   const byPath = new Map<string, Navigation3FinalDocument[]>(), byAsciiPath = new Map<string, Navigation3FinalDocument[]>(), byTitle = new Map<string, Navigation3FinalDocument[]>()
   for (const document of index.documents) for (const [lookup, key] of [[byPath, document.path], [byAsciiPath, ascii(document.path)], [byTitle, ascii(document.title)]] as const) {
@@ -613,7 +658,7 @@ export function createFinalNavigation3Resolver(index: Navigation3FinalIndex): Re
     } catch (error) { if (error instanceof Ambiguous) return unresolved(error.message); throw error }
   }
 }
-export function resolveFinalNavigation3(index: Navigation3FinalIndex, documentId: string, url: string, wiki: boolean): Navigation3MappedTarget {
+export function resolveFinalNavigation3(index: ResolutionIndex, documentId: string, url: string, wiki: boolean): Navigation3MappedTarget {
   let resolver = resolvers.get(index)
   if (!resolver) { resolver = createFinalNavigation3Resolver(index); resolvers.set(index, resolver) }
   return resolver(documentId, url, wiki)

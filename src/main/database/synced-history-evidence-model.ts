@@ -3,8 +3,8 @@
 const formats = {
   'group-ack': [null], 'host-ack': [1, 2], 'host-create-ack': [1], 'host-detach-ack': [1], 'initial-incoming': [1],
   'exchange-receipt': [1, 2, 3, 4, 5, 6, 7], 'remote-observation': [1],
-  'logical-deletion-proof': [1, 2], 'recovery-epoch': [1], 'initial-baseline': [1], 'ordinary-publication': [1],
-  'exchange-state': [1, 2], 'exchange-rejoin': [1, 2, 3], 'exchange-job': [1, 2, 3, 4, 5, 6, 7], 'exchange-job-head': [1],
+  'logical-deletion-proof': [1, 2], 'recovery-epoch': [1], 'initial-baseline': [1], 'ordinary-publication': [1], 'initial-publication-receipt': [1],
+  'exchange-state': [1, 2], 'exchange-rejoin': [1, 2, 3], 'initial-rejoin': [1], 'exchange-job': [1, 2, 3, 4, 5, 6, 7], 'exchange-job-head': [1],
   'exchange-job-phase': [1, 2], 'conflict-preview': [1, 2], 'both-preview': [1, 2],
   'deletion-preview': [1], 'exchange-history-index': [1], 'exchange-history-row': [1],
   'exchange-host-cut': [1], 'backup-v3': [1], 'recovery-boundary': [1], 'member-exposure': [null],

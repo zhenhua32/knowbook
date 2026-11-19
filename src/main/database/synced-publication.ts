@@ -8,6 +8,7 @@ import { assertRawSyncedPublicationSqlStructureOwned } from './synced-publicatio
 import { readRawSyncedPersistentPublicationSnapshotOwned, type SyncedPublicationLocalSnapshot } from './synced-publication-raw-read'
 import { confirmOrdinaryPublicationAttempt, insertOrdinaryPublicationAttempt, readOrdinaryPublicationAttempt,
   type SyncedPublicationAttemptRow } from './synced-ordinary-publication-attempt'
+import { INITIAL_PUBLICATION_RECEIPT_KIND, readInitialPublicationReceipt, validateInitialPublicationReceipt } from './synced-initial-publication-receipt'
 export type { SyncedPublicationLocalSnapshot } from './synced-publication-raw-read'
 
 export interface SyncedPublicationCapture { readonly kind: 'synced-publication-capture' }
@@ -178,18 +179,34 @@ export function currentSyncedPublicationMatches(db: Database.Database, claim: Sy
     return snapshot.localFingerprint === saved.descriptor.localFingerprint
   })())
 }
-export function confirmSyncedPublication(db: Database.Database, claim: SyncedPublicationClaim): { replayed: boolean } {
+export function confirmSyncedPublication(db: Database.Database, claim: SyncedPublicationClaim,
+  readback?: { databasePath: string; manifestHash: string; manifestEtag: string; portableDigest: string }) {
   outer(db)
   return database(() => db.transaction(() => {
     const saved = current(db, claim); assertSyncedLifecycleCoverage(db)
     const row = attempt(db, saved)
     if (!row) return unavailable('确认没有原 possible attempt。')
-    if (row.state === 'confirmed') return { replayed: true }
+    if (row.state === 'confirmed') return { replayed: true, acceptedAt: readInitialPublicationReceipt(db, saved.attemptId)?.receipt.acceptedAt }
+    if (readback && readback.manifestHash !== saved.descriptor.manifest.hash) return publicationInvalid('首发确认并非原远端清单。')
     const now = new Date(Math.max(Date.now(), Date.parse(row.created_at))).toISOString()
     const confirmed = saved.descriptor.members.length
       ? db.prepare("UPDATE synced_exposure_attempts SET state='confirmed',confirmed_at=? WHERE id=? AND state='possible'").run(now, saved.attemptId).changes === 1
       : confirmOrdinaryPublicationAttempt(db, row, now)
     if (!confirmed || attempt(db, saved)?.state !== 'confirmed') return publicationInvalid('原确认事务未准确闭合。')
-    return { replayed: false }
+    if (!readback) return { replayed: false }
+    const receipt = validateInitialPublicationReceipt({ kind: INITIAL_PUBLICATION_RECEIPT_KIND, version: 1, operationId: saved.attemptId,
+      workspaceScope: saved.descriptor.workspaceScope, recoveryEpoch: saved.descriptor.recoveryEpoch, targetFingerprint: saved.descriptor.targetFingerprint,
+      requestHash: saved.requestHash, publicationHash: saved.publicationHash, acceptedAt: now, ...readback })
+    db.prepare('INSERT INTO synced_operations(client_operation_id,request_hash,result_json,created_at) VALUES(?,?,?,?)')
+      .run(saved.attemptId, saved.requestHash, publicationJson(receipt), now)
+    return { replayed: false, acceptedAt: now }
   }).immediate())
+}
+
+export function readConfirmedSyncedPublicationAcceptedAt(db: Database.Database, claim: SyncedPublicationClaim) {
+  outer(db)
+  return database(() => db.transaction(() => {
+    const saved = current(db, claim)
+    return attempt(db, saved)?.state === 'confirmed' ? readInitialPublicationReceipt(db, saved.attemptId)?.receipt.acceptedAt : undefined
+  })())
 }

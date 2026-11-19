@@ -30,7 +30,8 @@ export function capsuleJsonStringBytes(value: string, limit: number): number {
 /** Canonical bytes for privately built SQL packets. A complete encoded packet
  * is never needed for its byte budget or digest. JSON still orders array-index
  * object keys numerically after the canonical lexical property sort. */
-export function hashBoundedCapsuleJson(value: object, maxBytes: number, prefix = ''): string | null {
+export function hashBoundedCapsuleJson(value: object, maxBytes: number, prefix = '',
+  streamedArray?: { field: string; encodedItems: Iterable<string> }): string | null {
   const hash = createHash('sha256').update(prefix)
   let pending = '', bytes = 0
   const emit = (part: string) => {
@@ -78,13 +79,25 @@ export function hashBoundedCapsuleJson(value: object, maxBytes: number, prefix =
         const value = fields[key]
         if (value === undefined || typeof value === 'function' || typeof value === 'symbol') continue
         if (!first) emit(',')
-        writeString(key); emit(':'); write(value)
+        writeString(key); emit(':')
+        if (item === root && streamedArray?.field === key) {
+          emit('[')
+          let firstItem = true
+          for (const encoded of streamedArray.encodedItems) {
+            if (bytes > maxBytes) break
+            if (!firstItem) emit(',')
+            emit(encoded)
+            firstItem = false
+          }
+          emit(']')
+        } else write(value)
         first = false
       }
       emit('}')
     } else emit(JSON.stringify(item) ?? 'null')
   }
-  write(value)
+  const root = value
+  write(root)
   flush()
   return bytes <= maxBytes ? hash.digest('hex') : null
 }

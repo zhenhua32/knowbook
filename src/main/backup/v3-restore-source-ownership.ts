@@ -9,7 +9,7 @@ const same = (left: unknown, right: unknown) => capsuleJson(left) === capsuleJso
 const invalid = (condition: string): never => { throw new Error('Invalid installed V3 source group evidence: ' + condition) }
 
 /** Recover ownership from the original source and current SQL rows of an actual installation. */
-export async function readPriorV3SourceOwnedGroups(handle: RestoreKnowledgePriorInstall) {
+async function readPriorV3SourceOwnedGroups(handle: RestoreKnowledgePriorInstall) {
   const prior = readVerifiedRestoreKnowledgePriorInstall(handle)
   const reference = await prior.readReferenceInputs()
   const { allocation, candidate } = reference
@@ -68,17 +68,14 @@ export async function readPriorV3SourceOwnedGroups(handle: RestoreKnowledgePrior
       return invalid('a qualified source group does not match its installed allocation')
     claimed.add(slot.targetId)
     if (installed.row.replaces !== null || currentIds.has(slot.targetId)) continue
+    const sourceWire = { kind: 'synced-group' as const, id: sourceSnapshot.groupId, creationId: sourceSnapshot.creationId,
+      createdAt: sourceSnapshot.createdAt, origin: sourceSnapshot.origin, blocks: sourceSnapshot.blocks, bindings: sourceSnapshot.bindings }
     groups.push({ source: group.tuple, installed: { groupId: wire.id, creationId: wire.creationId, createdAt: wire.createdAt, origin: wire.origin },
-      sourceRef: original.ref, wire,
-      sourceWire: { kind: 'synced-group' as const, id: sourceSnapshot.groupId, creationId: sourceSnapshot.creationId,
-        createdAt: sourceSnapshot.createdAt, origin: sourceSnapshot.origin, blocks: sourceSnapshot.blocks, bindings: sourceSnapshot.bindings },
-      noHistoricalReferences: hasNoV3RetirementHistoricalReferences(source.source, slot.sourceId)
-        && hasNoV3RetirementHistoricalReferences(current.source, slot.targetId) })
+      sourceRef: original.ref, wire, sourceWire })
   }
   await reference.assertPlanManifests()
   await prior.assertOriginalProof()
-  return freezeCapsuleValue({ operationId: prior.requirement.operationId, sourceArchive: prior.sourceArchive, catalogId,
-    referenceManifestHash: reference.referenceManifestHash, groups })
+  return { sourceArchive: prior.sourceArchive, catalogId, groups: freezeCapsuleValue(groups), originals: { source, current } }
 }
 
 type Edge = { predecessor: { snapshotId: string; archiveHash: string; catalogId: string } }
@@ -94,20 +91,25 @@ export async function readV3SourceOwnedMissingGroups(edge: Edge, prior: readonly
   const original = await readPriorV3SourceOwnedGroups(originalArchives[0])
   if (original.catalogId !== edge.predecessor.catalogId) return []
   const current = new Map(reference.candidate.activeGroupWires.map(wire => [wire.id, wire]))
-  let otherHistoriesClear = true
+  const missing = original.groups.filter(group => !sourceGroupIds.has(group.source.groupId) && same(current.get(group.wire.id) ?? null, group.wire))
+  if (!missing.length) return []
+  const wires = missing.flatMap(group => [group.wire, group.sourceWire])
+  const sourceWires = missing.map(group => group.sourceWire), installedWires = missing.map(group => group.wire)
+  let historiesClear = hasNoV3RetirementHistoricalReferences(original.originals.source, sourceWires, new Set(sourceWires.map(group => group.id)))
+    && hasNoV3RetirementHistoricalReferences(original.originals.current, installedWires, new Set(installedWires.map(group => group.id)))
   for (const handle of prior) {
+    if (!historiesClear) break
     if (handle === originalArchives[0]) continue
     const { readReferenceInputs } = readVerifiedRestoreKnowledgePriorInstall(handle)
     const inputs = await readReferenceInputs()
-    if (!hasNoV3RetirementHistoricalReferences(inputs.data.inputs.source.source, '')
-      || !hasNoV3RetirementHistoricalReferences(inputs.data.inputs.current.source, '')) {
-      otherHistoriesClear = false
+    if (!hasNoV3RetirementHistoricalReferences(inputs.data.inputs.source, wires)
+      || !hasNoV3RetirementHistoricalReferences(inputs.data.inputs.current, wires)) {
+      historiesClear = false
       break
     }
     await inputs.assertPlanManifests()
   }
-  return original.groups.filter(group => !sourceGroupIds.has(group.source.groupId) && same(current.get(group.wire.id) ?? null, group.wire))
-    .map(group => ({ groupId: group.installed.groupId, createdAt: group.installed.createdAt,
+  return missing.map(group => ({ groupId: group.installed.groupId, createdAt: group.installed.createdAt,
       sourceGroupId: group.source.groupId, sourceCreationId: group.source.creationId, sourceSnapshotId: original.sourceArchive.snapshotId,
-      noHistoricalReferences: group.noHistoricalReferences && otherHistoriesClear, wire: group.wire, sourceWire: group.sourceWire }))
+      noHistoricalReferences: historiesClear, wire: group.wire, sourceWire: group.sourceWire }))
 }

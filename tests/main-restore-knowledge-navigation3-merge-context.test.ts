@@ -3,7 +3,8 @@ import test from 'node:test'
 import { capsule2ApplicationColumns, type Capsule2Encoding, type Capsule2RawSqlTable } from '../src/main/database/restore-knowledge-capsule2-raw-model'
 import { capsuleBytesHash, capsuleJson } from '../src/main/database/restore-knowledge-capsule-model'
 import { graph3Encode, graph3Key, graph3Text, type Graph3Inputs } from '../src/main/database/restore-knowledge-graph3-data'
-import { deriveRootRestoreNavigationMergeContext3, buildMerge3NavigationFinalIndex3, resolveFinalNavigation3 } from '../src/main/database/restore-knowledge-navigation3-merge-context'
+import { deriveRootRestoreNavigationMergeContext3, buildMerge3NavigationFinalIndex3, resolveFinalNavigation3,
+  withStoredMerge3NavigationFinalIndex3 } from '../src/main/database/restore-knowledge-navigation3-merge-context'
 import { finishMerge3Table, prepareMerge3Table, type Merge3Material } from '../src/main/database/restore-knowledge-merge3-storage'
 import type { deriveRootRestoreMergedContent3 } from '../src/main/database/restore-knowledge-merge3-model'
 import type { RawRestoreSqlCell } from '../src/main/database/restore-knowledge-sql-cell'
@@ -112,6 +113,18 @@ function fixture(repeated = false, originalAccess?: { source: Capsule2Encoding; 
   const merged = { tables, mergedContentHash: digest(50) } as unknown as ReturnType<typeof deriveRootRestoreMergedContent3>
   return { data, merged, first, second }
 }
+
+test('the SQLite scope index preserves the native navigation hash and yields every scope in original order', () => {
+  const { data, merged } = fixture(true)
+  const full = buildMerge3NavigationFinalIndex3(data, merged.tables)
+  withStoredMerge3NavigationFinalIndex3(data, merged.tables, ({ scopes, scope, scopeCount, ...metadata }) => {
+    assert.equal(scopeCount, full.scopes.length)
+    assert.deepEqual({ ...metadata, scopes: [...scopes()] }, full)
+    assert.deepEqual([...scopes()], full.scopes)
+    assert.deepEqual(scope(full.scopes[0].scopeId), full.scopes[0])
+    assert.equal(scope('unused'), undefined)
+  })
+})
 
 test('navigation merge context preserves source/current birth evidence and maps retained links before final path lookup', () => {
   const { data, merged } = fixture(), value = deriveRootRestoreNavigationMergeContext3(data, merged)

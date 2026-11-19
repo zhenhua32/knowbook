@@ -9,6 +9,7 @@ import { isSyncedUuid } from '../../shared/syncedBlockValidation'
 import { exchangeRequestHash, parseExchangeStored, validateExchangeReceipt } from '../sync/synced-exchange-model'
 import { initialIncomingRequestHash, validateInitialIncomingReceipt } from '../sync/synced-initial-incoming-model'
 import { publicationJson } from '../sync/synced-publication-model'
+import { INITIAL_PUBLICATION_RECEIPT_KIND, readInitialPublicationReceipt } from './synced-initial-publication-receipt'
 import { RECOVERY_BOUNDARY_PREFIX, RECOVERY_EPOCH_PREFIX, RECOVERY_BOUNDARY_CHANNEL,
   recoveryBoundaryInvalid, recoveryBoundaryJson, recoveryBoundaryKey, recoveryEpochMarkerId, recoveryBoundaryHash,
   recoveryEpochRequestHash, recoveryEpochTargetFingerprint, recoveryOperationRowHash, parseRecoveryBoundaryJson,
@@ -55,10 +56,12 @@ function freeze<T>(value: T): T {
 }
 
 /** Ordinary WebDAV workspaces can carry settled protocol-5 history with no groups, instances or host undo rows. */
-export function isRetainedProtocol5Operation(row: SyncedRecoveryOperationRow, workspaceScope: string): boolean {
+export function isRetainedProtocol5Operation(db: Database.Database, row: SyncedRecoveryOperationRow, workspaceScope: string): boolean {
   if (!isSyncedUuid(row.client_operation_id)) return false
   const value = parseExchangeStored(row.result_json)
   if (!value || typeof value !== 'object' || !('kind' in value)) return false
+  if (value.kind === INITIAL_PUBLICATION_RECEIPT_KIND)
+    return readInitialPublicationReceipt(db, row.client_operation_id)?.receipt.workspaceScope === workspaceScope
   const receipt = value.kind === 'synced-initial-incoming-operation' ? validateInitialIncomingReceipt(value)
     : value.kind === 'synced-exchange-operation' ? validateExchangeReceipt(value) : null
   if (!receipt) return false
@@ -128,7 +131,7 @@ export function assertSyncedRecoveryBoundaryRecords(db: Database.Database): Sync
         operationRows.set(retained.operationId, original)
       }
       if (recoveryOperationRowHash(original) !== retained.rowHash) return recoveryBoundaryInvalid('原operation ACK行被改写')
-      if (operationOnly && !protocol5History) protocol5History = isRetainedProtocol5Operation(original, boundary.workspaceScope)
+      if (operationOnly && !protocol5History) protocol5History = isRetainedProtocol5Operation(db, original, boundary.workspaceScope)
     }
     if (operationOnly && !protocol5History) return recoveryBoundaryInvalid('仅有操作回执的边界缺少原协议 5 收据')
     for (const pin of boundary.retainedPins) {

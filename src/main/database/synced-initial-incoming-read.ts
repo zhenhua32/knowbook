@@ -27,13 +27,15 @@ export function readInitialIncomingReceipt(db: Database.Database, request: Initi
     || row.created_at !== receipt.result.acceptedAt || publicationJson(receipt.request) !== publicationJson(request)) return publicationInvalid('incoming 原请求/回执损坏或 idempotency mismatch。')
   return receipt
 }
-export function readInitialIncomingBaseline(db: Database.Database, request: InitialIncomingRequest): { value: InitialIncomingBaseline; raw: string } | null {
+export function readInitialIncomingBaseline(db: Database.Database, request: Pick<InitialIncomingRequest, 'databasePath' | 'targetFingerprint'>
+  & Partial<Pick<InitialIncomingRequest, 'method' | 'operationId'>>): { value: InitialIncomingBaseline; raw: string } | null {
   const row = db.prepare('SELECT value,updated_at FROM app_settings WHERE key=?').get(initialIncomingBaselineKey(request.targetFingerprint)) as { value: unknown; updated_at: unknown } | undefined
   if (!row) return null
   if (typeof row.value !== 'string') return publicationInvalid('incoming 来源 baseline 不是原 JSON。')
   const value = validateInitialIncomingBaseline(json(row.value))
   if (value.databasePath !== request.databasePath || value.targetFingerprint !== request.targetFingerprint || row.updated_at !== value.lastReceivedAt) return publicationInvalid('incoming baseline 目标、路径或接受时间损坏。')
-  const original = readInitialIncomingReceipt(db, { ...request, operationId: value.result.operationId })
+  const original = readInitialIncomingReceipt(db, { method: 'receiveInitialSyncedSnapshot', databasePath: request.databasePath,
+    targetFingerprint: request.targetFingerprint, operationId: value.result.operationId })
   if (!original || publicationJson(original.result) !== publicationJson(value.result) || publicationJson(original.provenance) !== publicationJson(value.provenance)) return publicationInvalid('incoming baseline 缺原准确 receipt。')
   return { value, raw: row.value }
 }
@@ -57,11 +59,10 @@ export function readInheritedInitialIncomingTombstones(db: Database.Database) {
 /** Public callers retain the original admission before reading raw facts. */
 function captureInitialIncomingWorkspace(db: Database.Database) {
   assertSyncedPersistentPublicationReadAdmissionOwned(db)
-  const facts = readRawInitialIncomingWorkspaceOwned(db)
-  // Preserve the original incoming capability restriction. A raw historical
-  // template name is not a retained identity or an incoming ownership permit.
-  if (facts.unregisteredTemplateBlocks.size) return publicationInvalid('本机历史块缺少原保留 ledger；不会重新回填或抢占。')
-  return facts
+  // Saved template blocks are draft-local names. Instantiating a template
+  // allocates new physical block IDs. Keep their original rows in the
+  // fingerprint without manufacturing identity facts for them.
+  return readRawInitialIncomingWorkspaceOwned(db)
 }
 
 /** Request-free strict workspace read. No incoming baseline/receipt lookup or write authority. */
@@ -87,7 +88,21 @@ export function canJoinSyncedProtocol5Workspace(db: Database.Database): boolean 
 
 /** Caller owns a strict read/IMMEDIATE. This leaf reads authority; it never repairs, reserves or adopts. */
 export function readInitialIncomingLocal(db: Database.Database, request: InitialIncomingRequest): InitialIncomingLocal {
-  const { snapshot, identities, historyDocuments, historyBlocks, groupIds, rawIdentities, historyRows } = captureInitialIncomingWorkspace(db)
+  const facts = captureInitialIncomingWorkspace(db)
+  // Preserve the first-receive capability boundary. Draft-local names do not
+  // establish a pristine receiver or support any incoming reservation.
+  if (facts.unregisteredTemplateBlocks.size) return publicationInvalid('本机历史块缺少原保留 ledger；不会重新回填或抢占。')
+  return readIncomingLocal(db, request, facts)
+}
+
+/** An already bound exchange reads the same exact template rows and the
+ * original baseline without treating template names as ledger entries. */
+export function readSyncedExchangeIncomingLocal(db: Database.Database, request: InitialIncomingRequest): InitialIncomingLocal {
+  return readIncomingLocal(db, request, captureInitialIncomingWorkspace(db))
+}
+
+function readIncomingLocal(db: Database.Database, request: InitialIncomingRequest,
+  { snapshot, identities, historyDocuments, historyBlocks, groupIds, rawIdentities, historyRows }: ReturnType<typeof captureInitialIncomingWorkspace>): InitialIncomingLocal {
   const baseline = readInitialIncomingBaseline(db, request)
   return { snapshot, identities, historyDocuments, historyBlocks, groupIds, baseline: baseline?.value ?? null, baselineRaw: baseline?.raw ?? null,
     fingerprint: publicationHash(publicationJson({ snapshot: snapshot.localFingerprint, rawIdentities, historyRows, baseline: baseline?.raw ?? null })) }
