@@ -170,12 +170,12 @@ function readClosedSql(db: Database.Database, liveDatabase: string) {
   return { exchanges, exposures, publications, ordinaryPublications, previews }
 }
 
-async function originalSql(original: OwnedRawCapsuleOriginal) {
+async function originalSql(original: OwnedRawCapsuleOriginal, scratch: 'reopen' | 'fresh') {
   const owned = readOwnedRawCapsuleOriginal(original), operationId = basename(owned.recoveryDirectory)
   const paths = restorePaths(owned.profileRoot, operationId)
   if (owned.sealedDirectory !== paths.safety && owned.sealedDirectory !== owned.originalDirectory) return fail('要求同次固定 safety SQL 封存源')
   await assertRestoreInventory(paths.safety, [...owned.originalInventory])
-  const probe = await reopenPreparedRawCapsuleOriginal({ profileRoot: owned.profileRoot, operationId,
+  const probe = scratch === 'fresh' ? original : await reopenPreparedRawCapsuleOriginal({ profileRoot: owned.profileRoot, operationId,
     capsuleId: basename(owned.capsuleDirectory), expectedInventory: owned.originalInventory })
   await assertOwnedRawCapsuleScratchReady(probe)
   const db = new Database(restoreSqliteFilename(readOwnedRawCapsuleOriginal(probe).databasePath), { readonly: true, fileMustExist: true })
@@ -266,8 +266,12 @@ async function readExchangeSpool(fs: Awaited<ReturnType<typeof observeFiles>>, o
 
 /** Current-only read. The original safety capsule is genuine Main material.
  * This observes two fixed terminal spool domains and grants no installation. */
-export async function readV3SettledPrivateSyncOriginals(original: OwnedRawCapsuleOriginal) {
-  const { owned, operationId, paths, sql } = await originalSql(original)
+export function readV3SettledPrivateSyncOriginals(original: OwnedRawCapsuleOriginal) {
+  return observeV3SettledPrivateSyncOriginals(original, 'reopen')
+}
+
+async function observeV3SettledPrivateSyncOriginals(original: OwnedRawCapsuleOriginal, scratch: 'reopen' | 'fresh') {
+  const { owned, operationId, paths, sql } = await originalSql(original, scratch)
   const fs = await observeFiles(owned.profileRoot, paths.storage), roots = await fs.directory('')
   if (roots.some(name => name !== exchangeRoot && name !== publicationRoot && name !== incomingRoot && !previewDomains.some(({ root }) => root === name))) return fail('未知同步私有目录')
   if (roots.includes(incomingRoot)) {
@@ -371,6 +375,7 @@ export async function assertV3SettledPrivateSyncOriginals(profileRoot: string, o
   originalInventory: readonly DurableSqlCapsuleFile[], locator: V3SettledPrivateSyncLocator) {
   const { capsuleId, observationHash } = validateV3SettledPrivateSyncLocator(locator)
   const original = await reopenPreparedRawCapsuleOriginal({ profileRoot, operationId, capsuleId, expectedInventory: originalInventory })
-  const actual = await readV3SettledPrivateSyncOriginals(original)
+  // This reopen already owns an independent, unused SQLite scratch copy.
+  const actual = await observeV3SettledPrivateSyncOriginals(original, 'fresh')
   if (actual.observationHash !== observationHash) return fail('真实私有同步原件与本次已封存观察不同')
 }

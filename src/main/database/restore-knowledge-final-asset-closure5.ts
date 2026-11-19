@@ -5,7 +5,7 @@ import { CAPSULE2_RAW_MAX_JSON_BYTES, hashValidatedCapsule2RawSqlTable, type Cap
   type Capsule2RawSqlRow, type Capsule2RawSqlTable } from './restore-knowledge-capsule2-raw-model'
 import { findGraph3OriginalRow, graph3Conflict, graph3Text, graph3Value } from './restore-knowledge-graph3-data'
 import type { MergedRow3 } from './restore-knowledge-merge3-storage'
-import { withStoredMerge3NavigationFinalIndex3, type Navigation3Table } from './restore-knowledge-navigation3-merge-context'
+import { withStoredMerge3NavigationFinalIndex3, type Navigation3Table, type StoredNavigation3Index } from './restore-knowledge-navigation3-merge-context'
 import { applyNavigation3TextEdits, createNavigation3RangeProjection } from './restore-knowledge-navigation3-rewrite-cells'
 import { toReference3GraphInputs } from './restore-knowledge-reference3-model'
 import { bindRootRestoreBaseAssetBlobs5, type VerifiedBackupV3Asset5 } from './restore-knowledge-selected-native-assets5'
@@ -139,12 +139,16 @@ function originalDocuments(sources: Sources) {
 /** All inputs come from fixed, reauthenticated Main readers. This pure report
  * owns no filesystem, caller DTO, staging registry, or installation path. */
 export function observeRootRestoreFinalAssetClosure5(physical: Physical, stage: Assets) {
+  const { data, allocation, candidate } = stage.sources.captured.actual, sql = physical.value
+  return withStoredMerge3NavigationFinalIndex3(toReference3GraphInputs(data, allocation), sql.tables, index => {
+    if (sql.finalSyntaxIndexHash !== index.indexHash || sql.checkedCanonicalCandidateHash !== candidate.checkedCanonicalCandidateHash)
+      return fail('最终 SQL 与同次封存候选不同')
+    return observeFinalAssetScopes(physical, stage, index)
+  })
+}
+
+function observeFinalAssetScopes(physical: Physical, stage: Assets, index: Pick<StoredNavigation3Index, 'physicalLocations' | 'physicalBlock'>) {
   const { value: sql } = physical, { sources, value: staged } = stage, { captured } = sources
-  const { data, allocation, candidate } = captured.actual
-  const index = withStoredMerge3NavigationFinalIndex3(toReference3GraphInputs(data, allocation), sql.tables,
-    ({ indexHash, physicalBlocks }) => ({ indexHash, physicalBlocks }))
-  if (sql.finalSyntaxIndexHash !== index.indexHash || sql.checkedCanonicalCandidateHash !== candidate.checkedCanonicalCandidateHash)
-    return fail('最终 SQL 与同次封存候选不同')
   const rows = new Map(sql.tables.flatMap(table => table.rows.map(row => [row.key, row] as const)))
   const table = (name: string) => sql.tables.find(value => value.name === name) ?? fail('缺最终表 ' + name)
   const stagedRows = new Map<string, Array<Proof>>()
@@ -198,30 +202,31 @@ export function observeRootRestoreFinalAssetClosure5(physical: Physical, stage: 
         header && !tokens ? () => original(header, row, 'content', range, destination, text(table('blocks'), row, 'content')) : undefined)
     }
   }
-  const byDocument = new Map<string, typeof index.physicalBlocks[number][]>(), byGroup = new Map<string, typeof index.physicalBlocks[number][]>()
+  type Location = typeof index.physicalLocations[number]
+  const byDocument = new Map<string, Location[]>(), byGroup = new Map<string, Location[]>()
   const order = new Map<string, bigint>()
   for (const name of ['blocks', 'synced_group_blocks']) {
     const blockTable = table(name), column = blockTable.columns.indexOf('sort_order')
     for (const row of blockTable.rows) { const value = row.cells[column]; if (value?.[0] !== 'integer') return fail('缺实际正文排序'); order.set(row.key, BigInt(value[1])) }
   }
-  for (const block of index.physicalBlocks) {
+  for (const block of index.physicalLocations) {
     const map = block.groupId === null ? byDocument : byGroup, id = block.groupId ?? block.documentId!
     const list = map.get(id) ?? []; list.push(block); map.set(id, list)
   }
-  const ordered = (items: typeof index.physicalBlocks) => [...items].sort((left, right) => {
+  const readOrderedBlocks = (items: readonly Location[]) => [...items].sort((left, right) => {
     const a = order.get(left.rowKey)!, b = order.get(right.rowKey)!
     return a < b ? -1 : a > b ? 1 : left.id < right.id ? -1 : left.id > right.id ? 1 : 0
-  })
+  }).map(location => index.physicalBlock(location.id) ?? fail('缺最终正文行'))
   const documents = table('documents')
   for (const row of documents.rows) {
     const id = text(documents, row, 'id'), summary = text(documents, row, 'summary'), scope = ['documents', id]
     for (const destination of summaryAssets(summary)) finalCell(scope, destination, row, 'summary', destination, undefined,
       () => original(row, row, 'summary', destination, destination, summary))
-    const blocks = ordered(byDocument.get(id) ?? []), lookup = by(blocks, block => block.id)
+    const blocks = readOrderedBlocks(byDocument.get(id) ?? []), lookup = by(blocks, block => block.id)
     finalBody(scope, blocks.map(block => block.block), blockId => rows.get(lookup.get(blockId)?.rowKey ?? ''), row)
   }
   for (const [groupId, values] of byGroup) {
-    const blocks = ordered(values), lookup = by(blocks, block => block.id)
+    const blocks = readOrderedBlocks(values), lookup = by(blocks, block => block.id)
     finalBody(['synced_groups', groupId], blocks.map(block => block.block), blockId => rows.get(lookup.get(blockId)?.rowKey ?? ''))
   }
   const templates = table('document_templates')

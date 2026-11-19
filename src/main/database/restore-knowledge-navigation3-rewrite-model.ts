@@ -43,9 +43,10 @@ function rewriteOrdinaryNavigation(data: Graph3Inputs, merged: ReturnType<typeof
   const editsByRange = new Map<string, Edit>()
   const finalDocuments = new Map(context.final.documents.map(document => [document.id, document]))
   const selectedText = new Map(context.final.documents.map(document => [graph3Key('documents', document.rowKey, 'summary'), document.summary]))
-  for (const block of context.final.physicalBlocks) {
+  const selectedBlocks = new Map<string, string>()
+  for (const block of context.final.physicalLocations) {
     const table = block.groupId === null ? 'blocks' : 'synced_group_blocks'
-    selectedText.set(graph3Key(table, block.rowKey, 'content'), block.block.content)
+    selectedBlocks.set(graph3Key(table, block.rowKey, 'content'), block.id)
   }
   const conflict = (code: string, scope: Navigation3ContextScope, rowKeys: readonly string[], detail: unknown) =>
     conflicts.push({ code, side: scope.side, scopeId: scope.scopeId, rowKeys, detail })
@@ -65,9 +66,9 @@ function rewriteOrdinaryNavigation(data: Graph3Inputs, merged: ReturnType<typeof
         || !old.cell || !same(old.cell.sourceRef, cell.sourceRef)) return graph3Conflict('navigation-original-cell-provenance', link.key)
       // Upstream structure changes may change a synced ref payload, but never
       // ordinary destinations or canonical text before this explicit transform.
-      const text = selectedText.get(key)
+      const previous = cells.get(key), blockId = selectedBlocks.get(key)
+      const text = previous?.text ?? selectedText.get(key) ?? (blockId === undefined ? undefined : context.final.physicalBlock(blockId)?.block.content)
       if (text !== cell.text || old.block.content !== text) return graph3Conflict('navigation-original-cell-already-rewritten', cell.rowKey)
-      const previous = cells.get(key)
       if (previous && (previous.targetRowId !== cell.targetRowId || previous.encoding !== cell.encoding || !same(previous.sourceRef, cell.sourceRef)))
         return graph3Conflict('navigation-conflicting-cell-occurrences', cell.rowKey)
       if (!previous) cells.set(key, { ...cell, text })

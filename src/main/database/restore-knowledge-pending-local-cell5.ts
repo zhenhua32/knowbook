@@ -66,7 +66,7 @@ export function withSelectedPendingLocalBody5<Selection>(data: Graph3Inputs, ord
   type NavigationRow = Navigation3FinalIndex['headingNamespaces'][number] | Navigation3FinalIndex['routes'][number]
   return withStoredRestoreScopes((append: (id: string, row: NavigationRow) => void) =>
     withStoredMerge3NavigationFinalIndex3(data, ordinary.tables, prior => {
-      const physical = prior.physicalBlocks.find(block => block.rowKey === target.key)
+      const physical = prior.physicalLocations.find(block => block.rowKey === target.key)
       const document = physical && prior.documents.find(row => row.id === physical.documentId)
       const originalDocument = graph3Rows(data.inputs.source.source.sourceContent, 'documents').find(row => row.value.id === selected.documentId)
       if (!physical || physical.groupId !== null || physical.birth !== selected.blockBirth || !document || document.birth !== selected.documentBirth

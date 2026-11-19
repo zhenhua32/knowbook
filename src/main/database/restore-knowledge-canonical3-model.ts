@@ -101,7 +101,7 @@ function stageCanonicalCellPatches(db: Database.Database) {
   }
 }
 
-function indexFinalMembers(db: Database.Database, final: Pick<Navigation3FinalIndex, 'physicalBlocks'>, tables: readonly Navigation3Table[]) {
+function indexFinalMembers(db: Database.Database, final: Pick<StoredNavigation3Index, 'physicalLocations' | 'physicalBlock'>, tables: readonly Navigation3Table[]) {
   db.exec(`CREATE TEMP TABLE canonical_final_members (kind TEXT NOT NULL, owner BLOB NOT NULL, sort_order INTEGER NOT NULL,
     ordinal INTEGER NOT NULL, PRIMARY KEY(kind,owner,sort_order,ordinal)) WITHOUT ROWID`)
   const insert = db.prepare('INSERT INTO canonical_final_members(kind,owner,sort_order,ordinal) VALUES (?,?,?,?)')
@@ -111,18 +111,21 @@ function indexFinalMembers(db: Database.Database, final: Pick<Navigation3FinalIn
       if (table.name !== 'blocks' && table.name !== 'synced_group_blocks') continue
       const kind = table.name === 'blocks' ? 'document' : 'group', sortColumn = table.columns.indexOf('sort_order')
       for (const row of table.rows) {
-        const block = final.physicalBlocks[ordinal], cell = row.cells[sortColumn]
+        const block = final.physicalLocations[ordinal], cell = row.cells[sortColumn]
         if (!block || block.rowKey !== row.key) return graph3Conflict('canonical3-physical-row-order', row.key)
         if (cell?.[0] !== 'integer') return graph3Conflict('canonical3-order-storage', null)
         const owner = string(kind === 'document' ? block.documentId : block.groupId)
         insert.run(kind, ownerKey(owner), BigInt(cell[1]), ordinal++)
       }
     }
-    if (ordinal !== final.physicalBlocks.length) return graph3Conflict('canonical3-physical-row-order', null)
+    if (ordinal !== final.physicalLocations.length) return graph3Conflict('canonical3-physical-row-order', null)
   })()
   const select = db.prepare('SELECT ordinal FROM canonical_final_members WHERE kind=? AND owner=? ORDER BY sort_order,ordinal').pluck()
   return function* members(kind: 'document' | 'group', owner: string) {
-    for (const ordinal of select.iterate(kind, ownerKey(owner)) as IterableIterator<number>) yield final.physicalBlocks[ordinal]
+    for (const ordinal of select.iterate(kind, ownerKey(owner)) as IterableIterator<number>) {
+      const { id, rowKey } = final.physicalLocations[ordinal]
+      yield final.physicalBlock(id) ?? graph3Conflict('canonical3-physical-row-order', rowKey)
+    }
   }
 }
 
@@ -193,7 +196,7 @@ function deriveWithCanonicalIndexes(db: Database.Database, data: Graph3Inputs, a
 }
 
 function rewriteCanonicalGroups(db: Database.Database, data: Graph3Inputs, allocation: Allocation, ordinaryTables: readonly Navigation3Table[],
-  before: Pick<StoredNavigation3Index, 'documents' | 'physicalBlocks'>) {
+  before: Pick<StoredNavigation3Index, 'documents' | 'physicalLocations'>) {
   const originals = (side: Side) => {
     const raw = data.inputs[side].source.sourceContent
     return { raw, groups: originalTable(raw, 'synced_groups'), blocks: originalTable(raw, 'synced_group_blocks') }
@@ -228,7 +231,7 @@ function rewriteCanonicalGroups(db: Database.Database, data: Graph3Inputs, alloc
   const inactive: Array<{ side: Side; sourceGroupId: string; targetGroupId: string; rowKey: string }> = []
   const currentDocs = new Map(data.inputs.current.source.physical.documents.map(document => [document.documentId, document]))
   const finalDocs = new Map(before.documents.map(document => [document.id, document]))
-  const finalPhysical = new Map(before.physicalBlocks.map(block => [block.id, block]))
+  const finalBlockHosts = new Map(before.physicalLocations.map(block => [block.id, block.documentId]))
 
   for (const entry of projectEntries(ordinaryTables, selectedGroupColumns)) {
     const ref = entry.row.sourceRef, side = ref.side, { raw, groups, blocks } = original[side]
@@ -298,7 +301,7 @@ function rewriteCanonicalGroups(db: Database.Database, data: Graph3Inputs, alloc
       } else if (side === 'current' && target.proofKind === 'current-domain-preserved') {
         if (!same(target.target, binding.target)) return graph3Conflict('canonical3-current-target-reinterpreted', binding)
         const targetDocId = binding.target.kind === 'document' ? binding.target.id : binding.target.kind === 'heading' ? binding.target.documentId
-          : binding.target.kind === 'block' ? finalPhysical.get(binding.target.id)?.documentId : null
+          : binding.target.kind === 'block' ? finalBlockHosts.get(binding.target.id) : null
         const old = targetDocId ? currentDocs.get(targetDocId) : undefined, final = targetDocId ? finalDocs.get(targetDocId) : undefined
         if (old && final && old.createdAt === final.birth && old.path !== final.path) {
           const desired = binding.target.kind === 'document' ? { kind: 'document' as const, documentId: final.id, documentPath: final.path }
@@ -397,14 +400,14 @@ function finalizeCanonicalCandidate(db: Database.Database, data: Graph3Inputs, a
     const canonicalCandidateHash = hashBoundedCapsuleJson(body, CAPSULE2_RAW_MAX_JSON_BYTES, 'knowbook.restore.canonical3.candidate.v1\0')
     if (canonicalCandidateHash === null) return graph3Conflict('canonical3-candidate-json-budget', null)
     const candidate = freezeCapsuleValue({ ...body, canonicalCandidateHash })
-    return Object.freeze({ candidate, ordinaryEdits: ordinary.edits, physicalBlocks: final.physicalBlocks })
+    return Object.freeze({ candidate, ordinaryEdits: ordinary.edits, physicalLocations: final.physicalLocations })
   })
 }
 
 type Ledger = { id: string; last_owner_kind: 'document' | 'group' | 'reserved'; last_owner_id: string; state: 'live' | 'retained'; created_at: string | null }
 type Conflict = (code: string, side: Side | null, rowKeys: readonly string[], detail: unknown) => void
-function buildLedgerOverlay(data: Graph3Inputs, final: Pick<Navigation3FinalIndex, 'physicalBlocks'>, allocation: Allocation, conflict: Conflict) {
-  const physical = new Map(final.physicalBlocks.map(block => [block.id, block])), rows = new Map<string, Ledger>()
+function buildLedgerOverlay(data: Graph3Inputs, final: Pick<StoredNavigation3Index, 'physicalLocations'>, allocation: Allocation, conflict: Conflict) {
+  const physical = new Set(final.physicalLocations.map(block => block.id)), rows = new Map<string, Ledger>()
   const raw = data.inputs.current.source.sourceContent, table = originalTable(raw, 'block_identities')
   for (const row of table.rows) {
     const id = string(originalValue(raw, table, row, 'id')), birth = originalValue(raw, table, row, 'created_at')
@@ -412,7 +415,7 @@ function buildLedgerOverlay(data: Graph3Inputs, final: Pick<Navigation3FinalInde
       last_owner_id: string(originalValue(raw, table, row, 'last_owner_id')),
       state: physical.has(id) ? 'live' : 'retained', created_at: birth === null ? null : string(birth) })
   }
-  for (const block of final.physicalBlocks) {
+  for (const block of final.physicalLocations) {
     const old = rows.get(block.id), kind = block.documentId === null ? 'group' as const : 'document' as const, owner = block.documentId ?? block.groupId!
     if (old && (old.created_at !== block.birth || old.last_owner_kind !== kind || old.last_owner_id !== owner))
       conflict('canonical3-physical-ledger-transition-not-proved', block.sourceRef.side, [block.rowKey], { old, block: block.id, owner, birth: block.birth })
@@ -436,7 +439,7 @@ function buildLedgerOverlay(data: Graph3Inputs, final: Pick<Navigation3FinalInde
 function validateTypedTargets(data: Graph3Inputs, final: StoredNavigation3Index, wires: readonly SyncedGroupWire[], ledger: readonly Ledger[], allocation: Allocation,
   projections: readonly { side: Side; groupId: string; original: SyncedLinkBinding; binding: SyncedLinkBinding; rowKey: string; proofKind: string }[], conflict: Conflict) {
   const ids = new Map(ledger.map(row => [row.id, row])), docs = new Map(final.documents.map(document => [document.id, document]))
-  const blocks = new Map(final.physicalBlocks.map(block => [block.id, block]))
+  const blocks = new Map(final.physicalLocations.map(block => [block.id, block]))
   const provedTargets = new Map(allocation.bindingTargets.filter(item => item.proofKind === 'proved-same-source-group-block')
     .map(item => [keyOf(item.key), item]))
   const currentDocs = new Map(data.inputs.current.source.physical.documents.map(document => [document.documentId, document]))
@@ -508,7 +511,6 @@ function validateCurrentHeadingSemantics(data: Graph3Inputs, final: StoredNaviga
       counts.set(heading.blockId, (counts.get(heading.blockId) ?? 0) + 1) }
     return [namespace.document.id, { bySlug, counts }] as const
   }))
-  const finalBlocks = new Map(final.physicalBlocks.map(block => [block.id, block]))
   type OldLocation = { blockId: string; instanceId: string | null; blockBirth: string | null; instanceBirth: string | null; type: string; content: string }
   type OldHeading = ReturnType<typeof getMarkdownHeadingTargets>[number]
   type OldNamespace = { bySlug: Map<string, OldHeading>; counts: Map<string | null, number>; locations: Map<string, OldLocation> }
@@ -551,7 +553,7 @@ function validateCurrentHeadingSemantics(data: Graph3Inputs, final: StoredNaviga
     }
     if (previous.blockId === null) continue
     const original = old!.locations.get(previous.blockId)!, actual = next.location
-    const finalBlock = finalBlocks.get(original.blockId)
+    const finalBlock = final.physicalBlock(original.blockId)
     const unchangedText = finalBlock?.block.type === original.type && finalBlock.block.content === original.content
     const individualHeading = /^heading-[1-6]$/.test(original.type) && !!finalBlock && /^heading-[1-6]$/.test(finalBlock.block.type)
       && old!.counts.get(previous.blockId) === 1 && finalHeadingIndexes.get(target.documentId)?.counts.get(next.blockId) === 1

@@ -8,6 +8,7 @@ import { CAPSULE_V3_ASSET_MAX_FILE_BYTES } from './restore-knowledge-capsule-v3-
 import { durableSqlDagHash, durableSqlDagUuid } from './restore-knowledge-dag-model'
 import { graph3Rows, graph3Text } from './restore-knowledge-graph3-data'
 import { assertMerge3JsonBudget, type Merge3OriginalRowRef, type MergedRow3 } from './restore-knowledge-merge3-storage'
+import { createNavigation3DocumentBlockReader } from './restore-knowledge-navigation3-merge-context'
 import { applyNavigation3TextEdits, createNavigation3RangeProjection } from './restore-knowledge-navigation3-rewrite-cells'
 import { syncOriginCatalogAncestors } from './restore-knowledge-origin-bundle-files'
 import { assertOriginalFrameDirectory, writeOriginalFrameDirectory, type OriginalFrameCopy } from './restore-knowledge-original-frame-files'
@@ -59,14 +60,9 @@ function selectAssets(actual: Actual, format: Format) {
   const blocks = candidate.tables.find(table => table.name === 'blocks') ?? fail('候选缺实际 blocks 表')
   const address = (row: MergedRow3) => capsuleJson([row.sourceRef.side, row.sourceRef.sourceRowId])
   const selectedRows = by(documents.rows, address), selectedBlocks = by(blocks.rows, address)
-  const finalDocuments = new Map<string, Array<Actual['captured']['cells']['physicalBlocks'][number]>>()
+  const readFinalDocumentBlocks = createNavigation3DocumentBlockReader(blocks, actual.captured.cells.physicalLocations)
   const finalBody = new Map<string, ReturnType<typeof projectWorkingAssetBodyCells5>>()
-  const finalBlocks = by(actual.captured.cells.physicalBlocks, row => row.rowKey), finalRows = by(blocks.rows, row => row.key)
-  const sortOrder = blocks.columns.indexOf('sort_order')
-  for (const physical of actual.captured.cells.physicalBlocks) if (physical.documentId !== null) {
-    const list = finalDocuments.get(physical.documentId) ?? []
-    list.push(physical); finalDocuments.set(physical.documentId, list)
-  }
+  const finalBlocks = by(actual.captured.cells.physicalLocations, row => row.rowKey)
   const editGroups = new Map<string, Array<Actual['captured']['cells']['ordinaryEdits'][number]>>()
   for (const edit of actual.captured.cells.ordinaryEdits) {
     const list = editGroups.get(edit.rowKey) ?? []
@@ -204,15 +200,7 @@ function selectAssets(actual: Actual, format: Format) {
         if (matched.length !== 1) continue
         let projectedFinal = finalBody.get(finalBlock.documentId)
         if (!projectedFinal) {
-          const order = (key: string) => {
-            const cell = finalRows.get(key)?.cells[sortOrder]
-            return cell?.[0] === 'integer' ? BigInt(cell[1]) : fail('候选缺原生正文排序')
-          }
-          const body = [...(finalDocuments.get(finalBlock.documentId) ?? [])].sort((a, b) => {
-            const x = order(a.rowKey), y = order(b.rowKey)
-            return x < y ? -1 : x > y ? 1 : compare(a.id, b.id)
-          })
-          projectedFinal = projectWorkingAssetBodyCells5(body.map(item => item.block), 'base')
+          projectedFinal = projectWorkingAssetBodyCells5(readFinalDocumentBlocks(finalBlock.documentId), 'base')
           finalBody.set(finalBlock.documentId, projectedFinal)
         }
         const finalOccurrence = projectedFinal.byCellPosition.get(workingAssetCellPosition5(finalBlock.id, { ...final, uri: destination.uri }))

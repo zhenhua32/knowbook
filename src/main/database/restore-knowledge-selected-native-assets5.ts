@@ -10,6 +10,7 @@ import { logicalFileAsset } from './restore-knowledge-assets5-working-portable-d
 import { transformCanonical3Cell, type Canonical3TextEdit } from './restore-knowledge-canonical3-cells'
 import { graph3Rows, graph3Text } from './restore-knowledge-graph3-data'
 import type { Merge3OriginalRowRef, MergedRow3 } from './restore-knowledge-merge3-storage'
+import { createNavigation3DocumentBlockReader } from './restore-knowledge-navigation3-merge-context'
 import { applyNavigation3TextEdits, createNavigation3RangeProjection } from './restore-knowledge-navigation3-rewrite-cells'
 import { mixedOriginCapsulePath } from './restore-knowledge-mixed-origin-bundle-model'
 import type { OriginalFrameCopy } from './restore-knowledge-original-frame-files'
@@ -143,25 +144,12 @@ function selectBackupV3DocumentAssets(actual: Actual, side: 'source' | 'current'
     const list = editGroups.get(edit.rowKey) ?? []
     list.push(edit); editGroups.set(edit.rowKey, list)
   }
-  const rowsByKey = mapBy(blocks.rows, row => row.key)
-  const physicalByDocument = new Map<string, (typeof actual.captured.cells.physicalBlocks)[number][]>()
-  for (const item of actual.captured.cells.physicalBlocks) if (item.documentId !== null) {
-    const list = physicalByDocument.get(item.documentId) ?? []
-    list.push(item); physicalByDocument.set(item.documentId, list)
-  }
+  const readFinalDocumentBlocks = createNavigation3DocumentBlockReader(blocks, actual.captured.cells.physicalLocations)
   const finalBodies = new Map<string, ReturnType<typeof projectWorkingAssetBodyCells5>>()
-  const order = (key: string) => {
-    const cell = rowsByKey.get(key)?.cells[blocks.columns.indexOf('sort_order')]
-    return cell?.[0] === 'integer' ? BigInt(cell[1]) : fail('最终正文缺实际排序')
-  }
   const finalBody = (documentId: string) => {
     let body = finalBodies.get(documentId)
     if (!body) {
-      const physical = [...(physicalByDocument.get(documentId) ?? [])].sort((left, right) => {
-        const a = order(left.rowKey), b = order(right.rowKey)
-        return a < b ? -1 : a > b ? 1 : left.id < right.id ? -1 : left.id > right.id ? 1 : 0
-      })
-      body = projectWorkingAssetBodyCells5(physical.map(item => item.block), 'base')
+      body = projectWorkingAssetBodyCells5(readFinalDocumentBlocks(documentId), 'base')
       finalBodies.set(documentId, body)
     }
     return body

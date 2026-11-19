@@ -14,7 +14,7 @@ import { canBlockNestUnder } from '../../shared/blockTypes'
 import { parseSyncedBlockPayload, SYNCED_MAX_BLOCKS, SYNCED_MAX_DEPTH, validateSyncedCanonicalEdit, validateSyncedHostForest } from '../../shared/syncedBlockValidation'
 import { parseStrictJson } from '../../shared/strictJson'
 import { capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
-import { capsuleJsonStringBytes, hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
+import { capsuleJsonStoredArray, capsuleJsonStringBytes, hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_RAW_MAX_ROWS, CAPSULE2_RAW_MAX_VALUE_BYTES } from './restore-knowledge-capsule2-raw-model'
 import { findGraph3OriginalRow, graph3Conflict, graph3Key, graph3Text, graph3Value } from './restore-knowledge-graph3-data'
 import { assertMerge3JsonBudget } from './restore-knowledge-merge3-storage'
@@ -45,6 +45,7 @@ export interface Navigation3FinalBlock {
   readonly block: SyncedStableBlockDraft; readonly sourceRef: Merge3OriginalRowRef; readonly replaces: Merge3OriginalRowRef | null
   readonly rowKey: string; readonly targetRowId: string
 }
+type Navigation3PhysicalLocation = Omit<Navigation3FinalBlock, 'block'>
 export interface Navigation3FinalDocument {
   readonly id: string; readonly birth: string; readonly path: string; readonly title: string; readonly summary: string
   readonly sourceRef: Merge3OriginalRowRef; readonly replaces: Merge3OriginalRowRef | null; readonly rowKey: string; readonly targetRowId: string
@@ -178,6 +179,7 @@ function finalEntries(tables: readonly Navigation3Table[]): Map<Navigation3Table
     const items: FinalEntry[] = [], targetRows = new Set<string>()
     entries.set(table.name, items)
     const columns = table.columns.map(column => finalFields[table.name]?.includes(column) ? column : null)
+    const contentColumn = columns.lastIndexOf('content')
     for (const row of table.rows) {
       if (++rows > CAPSULE2_RAW_MAX_ROWS || row.cells.length !== table.columns.length) return graph3Conflict('navigation-final-row-budget-or-width', table.name)
       if (targetRows.has(row.targetRowId)) return graph3Conflict('navigation-final-rowid-duplicate', graph3Key(table.name, row.targetRowId))
@@ -188,25 +190,56 @@ function finalEntries(tables: readonly Navigation3Table[]): Map<Navigation3Table
         const bytes = cell[0] === 'text' || cell[0] === 'blob' ? cell[1].length / 4 * 3 - (cell[1].endsWith('==') ? 2 : cell[1].endsWith('=') ? 1 : 0) : 8
         valueBytes += bytes
         if (!Number.isSafeInteger(valueBytes) || valueBytes > CAPSULE2_RAW_MAX_VALUE_BYTES) return graph3Conflict('navigation-final-value-budget', null)
+        if (index === contentColumn) continue // The selected block content is decoded when its physical row is written.
         const decoded = graph3Value(cell, table.encoding)
-        if (column !== null) value[column] = decoded
+        if (column !== null && column !== 'content') value[column] = decoded
       }
       if (finalFields[table.name]) items.push({ table, row, value })
     }
   }
   return entries
 }
-function blockSyntax(value: Values): SyncedStableBlockDraft {
+function blockSyntax({ table, row, value }: FinalEntry): SyncedStableBlockDraft {
+  const column = table.columns.lastIndexOf('content')
+  const content = column < 0 ? undefined : graph3Value(row.cells[column], table.encoding)
   const json = (value: unknown) => { const raw = text(value); return parseStrictJson(raw, { maxBytes: Math.max(1, Buffer.byteLength(raw)), maxDepth: 32 }) }
-  return { id: text(value.id), type: text(value.type), content: text(value.content), checked: value.checked === 1n,
+  return { id: text(value.id), type: text(value.type), content: text(content), checked: value.checked === 1n,
     depth: integer(value.depth), parentBlockId: value.parent_block_id === null ? null : text(value.parent_block_id),
     ...(value.tags_json === null ? {} : { tags: json(value.tags_json) as string[] }), ...(value.language === null ? {} : { language: text(value.language) }),
     ...(value.list_start === null ? {} : { listStart: integer(value.list_start) }), ...(value.markdown_format_json === null ? {} : { markdownFormat: json(value.markdown_format_json) as NonNullable<SyncedStableBlockDraft['markdownFormat']> }),
     ...(value.highlight === null ? {} : { highlight: text(value.highlight) }) }
 }
-function cell(entry: FinalEntry, column: 'content' | 'summary'): Navigation3Cell {
+
+/** Decode one document from the same checked candidate rows after the
+ * temporary navigation index has closed. */
+export function createNavigation3DocumentBlockReader(table: Navigation3Table, locations: StoredNavigation3Index['physicalLocations']) {
+  if (table.name !== 'blocks') return graph3Conflict('navigation-final-document-block-table', table.name)
+  const rows = new Map(table.rows.map(row => [row.key, row]))
+  const columns = table.columns.flatMap((key, index) => key !== 'content' && finalFields.blocks!.includes(key) ? [{ key, index }] : [])
+  const sortColumn = table.columns.indexOf('sort_order')
+  const owners = new Map<string, Navigation3PhysicalLocation[]>()
+  for (const location of locations) if (location.documentId !== null) {
+    const list = owners.get(location.documentId) ?? []
+    list.push(location); owners.set(location.documentId, list)
+  }
+  return (documentId: string) => (owners.get(documentId) ?? []).map(location => {
+    const row = rows.get(location.rowKey), sort = row?.cells[sortColumn]
+    if (!row || row.targetRowId !== location.targetRowId || row.sourceRef !== location.sourceRef && !same(row.sourceRef, location.sourceRef)
+      || row.replaces !== location.replaces && !same(row.replaces, location.replaces) || sort?.[0] !== 'integer')
+      return graph3Conflict('navigation-final-document-block-row', location.rowKey)
+    return { row, location, order: BigInt(sort[1]) }
+  }).sort((left, right) => left.order < right.order ? -1 : left.order > right.order ? 1
+    : left.location.id < right.location.id ? -1 : left.location.id > right.location.id ? 1 : 0).map(({ row, location }) => {
+    const value = Object.fromEntries(columns.map(({ key, index }) => [key, graph3Value(row.cells[index], table.encoding)]))
+    if (value.id !== location.id || value.document_id !== documentId || value.created_at !== location.birth)
+      return graph3Conflict('navigation-final-document-block-owner', location.rowKey)
+    return blockSyntax({ table, row, value })
+  })
+}
+
+function cell(entry: FinalEntry, column: 'content' | 'summary', content: string): Navigation3Cell {
   return { table: entry.table.name as Navigation3Cell['table'], rowKey: entry.row.key, targetRowId: entry.row.targetRowId,
-    column, sourceRef: entry.row.sourceRef, encoding: entry.table.encoding, text: text(entry.value[column]) }
+    column, sourceRef: entry.row.sourceRef, encoding: entry.table.encoding, text: content }
 }
 function captureGrammar(blocks: readonly SyncedStableBlockDraft[]) {
   const facts = captureSyncedCreateSourceFacts(blocks)
@@ -231,7 +264,9 @@ function captureGrammar(blocks: readonly SyncedStableBlockDraft[]) {
 /** Final syntax only. Stale wire bindings are deliberately NOT validated or
  * replaced by an empty binding wire. Physical forests, registry mirrors and
  * every expanded occurrence are checked directly; no live authority is minted. */
-function projectFinalNavigation(data: Graph3Inputs, tables: readonly Navigation3Table[], acceptScope: (scope: Navigation3FinalScope) => void) {
+function projectFinalNavigation(data: Graph3Inputs, tables: readonly Navigation3Table[],
+  blocks: { append(block: Navigation3FinalBlock): void; read(id: string): Navigation3FinalBlock },
+  acceptScope: (scope: Navigation3FinalScope) => void) {
   const access = originalAccess(data), byTable = finalEntries(tables)
   const assignments = new Map<string, typeof data.value.assignments>()
   for (const item of data.value.assignments) { const key = graph3Key(item.kind, item.sourceId), values = assignments.get(key) ?? []; values.push(item); assignments.set(key, values) }
@@ -242,7 +277,7 @@ function projectFinalNavigation(data: Graph3Inputs, tables: readonly Navigation3
     if (slots.length !== 1) return graph3Conflict('navigation-final-source-allocation', { kind, id: original.id })
     return slots[0].targetId
   }
-  const documents: Navigation3FinalDocument[] = [], physicalBlocks: Navigation3FinalBlock[] = []
+  const documents: Navigation3FinalDocument[] = [], physicalLocations: Navigation3PhysicalLocation[] = []
   const documentEntries = new Map<string, FinalEntry>(), blockEntries = new Map<string, FinalEntry>(), groupEntries = new Map<string, FinalEntry>()
   for (const [table, entries] of byTable) if (table !== 'synced_instances') for (const entry of entries) {
     const name = entry.table.name, kind = name === 'documents' ? 'document' : name === 'synced_groups' ? 'group' : 'block'
@@ -267,56 +302,62 @@ function projectFinalNavigation(data: Graph3Inputs, tables: readonly Navigation3
     else {
       if (blockEntries.has(id)) return graph3Conflict('navigation-final-global-block-owner', id)
       blockEntries.set(id, entry)
-      physicalBlocks.push({ id, birth: text(entry.value.created_at), documentId: name === 'blocks' ? text(entry.value.document_id) : null,
-        groupId: name === 'synced_group_blocks' ? text(entry.value.group_id) : null, block: blockSyntax(entry.value),
-        sourceRef: entry.row.sourceRef, replaces: entry.row.replaces, rowKey: entry.row.key, targetRowId: entry.row.targetRowId })
+      const location = { id, birth: text(entry.value.created_at), documentId: name === 'blocks' ? text(entry.value.document_id) : null,
+        groupId: name === 'synced_group_blocks' ? text(entry.value.group_id) : null,
+        sourceRef: entry.row.sourceRef, replaces: entry.row.replaces, rowKey: entry.row.key, targetRowId: entry.row.targetRowId }
+      blocks.append({ ...location, block: blockSyntax(entry) })
+      physicalLocations.push(location)
     }
   }
-  const hostRows = new Map<string, Navigation3FinalBlock[]>(), groupRows = new Map<string, Navigation3FinalBlock[]>()
-  for (const block of physicalBlocks) {
+  const hostRows = new Map<string, Navigation3PhysicalLocation[]>(), groupRows = new Map<string, Navigation3PhysicalLocation[]>()
+  for (const block of physicalLocations) {
     const index = block.documentId === null ? groupRows : hostRows, owner = block.documentId ?? block.groupId!
     if (!(block.documentId === null ? groupEntries : documentEntries).has(owner)) return graph3Conflict('navigation-final-block-owner-missing', owner)
     const values = index.get(owner) ?? []; values.push(block); index.set(owner, values)
   }
-  const order = (items: Navigation3FinalBlock[]) => {
+  const order = (items: Navigation3PhysicalLocation[]) => {
     items.sort((a, b) => integer(blockEntries.get(a.id)!.value.sort_order) - integer(blockEntries.get(b.id)!.value.sort_order))
     if (items.some((item, index) => integer(blockEntries.get(item.id)!.value.sort_order) < 0 || index > 0
       && blockEntries.get(item.id)!.value.sort_order === blockEntries.get(items[index - 1].id)!.value.sort_order)) return graph3Conflict('navigation-final-forest-order', null)
     return items
   }
-  for (const items of hostRows.values()) { order(items); validateSyncedHostForest(items.map(item => item.block)) }
-  const activeGroups = new Set<string>(), groupMaximum = new Map<string, number>()
+  const readMembers = (items: readonly Navigation3PhysicalLocation[]) => items.map(item => blocks.read(item.id))
+  for (const items of hostRows.values()) order(items)
+  const activeGroups = new Set<string>(), groupMaximum = new Map<string, number>(), minimumByGroup = new Map<string, number>()
+  const expandedBudget = 128 * 1024 * 1024
   const physicalGroupStates = new Map((['source', 'current'] as const).map(side => [side,
     new Map(data.inputs[side].source.physical.groups.map(group => [group.groupId, group]))] as const))
   for (const [id, entry] of groupEntries) {
     const original = access.checkedValues(entry.row.sourceRef, ['id'])
     const fact = physicalGroupStates.get(entry.row.sourceRef.side)!.get(text(original.id))
     if (!fact) return graph3Conflict('navigation-final-group-state-source', id)
-    const items = order(groupRows.get(id) ?? [])
+    const items = readMembers(order(groupRows.get(id) ?? []))
     if (fact.snapshot === null) { if (items.length) return graph3Conflict('navigation-final-inactive-canonical', id); continue }
     validateSyncedCanonicalEdit(items.map(item => item.block)); activeGroups.add(id)
     groupMaximum.set(id, items.reduce((max, item) => Math.max(max, item.block.depth), 0))
+    minimumByGroup.set(id, items.reduce((bytes, item) => bytes + capsuleJsonStringBytes(item.block.content, expandedBudget) * 2, 0))
   }
   const instances = new Map((byTable.get('synced_instances') ?? []).map(entry => [text(entry.value.instance_id), entry]))
   const usedInstances = new Set<string>(), headingNamespaces: Navigation3FinalIndex['headingNamespaces'][number][] = []
   let expandedJsonBytes = 0, expandedMinimumBytes = 0
-  const expandedBudget = 128 * 1024 * 1024
-  const minimumByGroup = new Map([...groupRows].map(([id, items]) => [id, items.reduce((bytes, item) => bytes + capsuleJsonStringBytes(item.block.content, expandedBudget) * 2, 0)]))
   for (const document of documents) {
-    const hosts = hostRows.get(document.id) ?? [], wrapperCount = hosts.reduce((count, item) => count + (item.block.type === 'synced-block'
+    const hosts = readMembers(hostRows.get(document.id) ?? [])
+    validateSyncedHostForest(hosts.map(item => item.block))
+    const wrapperCount = hosts.reduce((count, item) => count + (item.block.type === 'synced-block'
       ? (groupRows.get(parseSyncedBlockPayload(item.block.content).groupId)?.length ?? 0) : 1), 0)
     if (wrapperCount > SYNCED_MAX_BLOCKS) return graph3Conflict('navigation-final-expanded-host-budget', document.id)
     for (const item of hosts) expandedMinimumBytes += item.block.type === 'synced-block' ? minimumByGroup.get(parseSyncedBlockPayload(item.block.content).groupId) ?? 0
       : capsuleJsonStringBytes(item.block.content, expandedBudget) * 2
     if (expandedMinimumBytes > expandedBudget) return graph3Conflict('navigation-final-expanded-json-budget', null)
     const expanded: Navigation3FinalScope['blocks'][number][] = []
+    const expandedGroups = new Map<string, Navigation3FinalBlock[]>()
     const add = (item: Navigation3FinalBlock, instance: Navigation3FinalBlock | null, depth: number, parent: string | null) => {
       const key = graph3Key(instance?.id ?? null, item.id), original = blockEntries.get(item.id)!
       const location: Navigation3FinalLocation = { table: original.table.name as 'blocks' | 'synced_group_blocks', sourceRowId: item.sourceRef.sourceRowId,
         column: 'content', blockId: item.id, groupId: item.groupId, instanceId: instance?.id ?? null,
         blockBirth: item.birth, instanceBirth: instance?.birth ?? null, sourceRef: item.sourceRef }
       const block = { ...item.block, id: key, depth, parentBlockId: parent }
-      const value = { occurrenceKey: key, finalOccurrenceKey: key, block, location, cell: cell(original, 'content') }
+      const value = { occurrenceKey: key, finalOccurrenceKey: key, block, location, cell: cell(original, 'content', item.block.content) }
       expandedJsonBytes += Buffer.byteLength(capsuleJson(value))
       if (expandedJsonBytes > expandedBudget) return graph3Conflict('navigation-final-expanded-json-budget', null)
       expanded.push(value)
@@ -328,7 +369,9 @@ function projectFinalNavigation(data: Graph3Inputs, tables: readonly Navigation3
         || registry.value.parent_block_id !== host.block.parentBlockId || registry.value.depth !== BigInt(host.block.depth) || !activeGroups.has(groupId))
         return graph3Conflict('navigation-final-instance-mirror-or-inactive', host.id)
       usedInstances.add(host.id)
-      const group = groupRows.get(groupId)!, parent = host.block.parentBlockId === null ? null : blockEntries.get(host.block.parentBlockId)
+      let group = expandedGroups.get(groupId)
+      if (!group) { group = readMembers(groupRows.get(groupId) ?? []); expandedGroups.set(groupId, group) }
+      const parent = host.block.parentBlockId === null ? null : blockEntries.get(host.block.parentBlockId)
       if (host.block.depth + groupMaximum.get(groupId)! > SYNCED_MAX_DEPTH || parent && group.some(item => item.block.depth === 0 && !canBlockNestUnder(text(parent.value.type), item.block.type)))
         return graph3Conflict('navigation-final-canonical-projection', host.id)
       for (const child of group) add(child, host, host.block.depth + child.block.depth, child.block.parentBlockId === null
@@ -338,7 +381,7 @@ function projectFinalNavigation(data: Graph3Inputs, tables: readonly Navigation3
     const summaryLocation: Navigation3FinalLocation = { table: 'documents', sourceRowId: document.sourceRef.sourceRowId, column: 'summary', blockId: null,
       groupId: null, instanceId: null, blockBirth: null, instanceBirth: null, sourceRef: document.sourceRef }
     const summary = [{ occurrenceKey: summaryKey, finalOccurrenceKey: summaryKey, block: { id: summaryKey, type: 'paragraph', content: document.summary,
-      checked: false, depth: 0, parentBlockId: null }, location: summaryLocation, cell: cell(docEntry, 'summary') }]
+      checked: false, depth: 0, parentBlockId: null }, location: summaryLocation, cell: cell(docEntry, 'summary', document.summary) }]
     for (const [field, blocks] of [['body', expanded], ['summary', summary]] as const) {
       const parsed = captureGrammar(blocks.map(item => item.block)), locations = new Map(blocks.map(item => [item.occurrenceKey, item]))
       acceptScope({ scopeId: graph3Key(field, document.id), field, finalDocumentId: document.id, document, path: document.path, title: document.title, blocks,
@@ -351,7 +394,7 @@ function projectFinalNavigation(data: Graph3Inputs, tables: readonly Navigation3
   }
   if (instances.size !== usedInstances.size) return graph3Conflict('navigation-final-registry-without-leaf', null)
   const routes: Navigation3FinalIndex['routes'][number][] = []
-  const finalBlocks = new Map(physicalBlocks.filter(block => block.documentId !== null).map(block => [block.id, block]))
+  const finalBlocks = new Map(physicalLocations.filter(block => block.documentId !== null).map(block => [block.id, block]))
   for (const side of ['source', 'current'] as const) {
     const routeTable = access.table(side, 'document_block_routes')
     for (const route of routeTable.rows) {
@@ -367,20 +410,24 @@ function projectFinalNavigation(data: Graph3Inputs, tables: readonly Navigation3
           encoding: data.inputs[side].source.sourceContent.encoding, sourceRowId: route.sourceRowId, cells: route.cells }) })
     }
   }
-  return { kind: 'restore-navigation3-final-syntax-index' as const, version: 1 as const, documents, physicalBlocks, headingNamespaces, routes,
+  return { kind: 'restore-navigation3-final-syntax-index' as const, version: 1 as const, documents, physicalLocations, headingNamespaces, routes,
     bindingsValidated: false as const, permit: false as const }
 }
 
 export function buildMerge3NavigationFinalIndex3(data: Graph3Inputs, tables: readonly Navigation3Table[]): Navigation3FinalIndex {
-  const scopes: Navigation3FinalScope[] = []
-  const body = { ...projectFinalNavigation(data, tables, scope => { scopes.push(scope) }), scopes }
+  const scopes: Navigation3FinalScope[] = [], blocks = new Map<string, Navigation3FinalBlock>()
+  const { physicalLocations: _locations, ...metadata } = projectFinalNavigation(data, tables,
+    { append: block => { blocks.set(block.id, block) }, read: id => blocks.get(id)! }, scope => { scopes.push(scope) })
+  const body = { ...metadata, physicalBlocks: [...blocks.values()], scopes }
   assertMerge3JsonBudget(body)
   return freezeCapsuleValue({ ...body, indexHash: hash('knowbook.restore.navigation3.final-index.v1', body) })
 }
 
 export type StoredNavigation3Index = Omit<Navigation3FinalIndex, 'scopes'> & {
+  readonly physicalLocations: readonly Navigation3PhysicalLocation[]
   readonly scopeCount: number
   readonly hashInput: Navigation3FinalIndex
+  physicalBlock(id: string): Navigation3FinalBlock | undefined
   scopes(): IterableIterator<Navigation3FinalScope>
   scope(scopeId: string): Navigation3FinalScope | undefined
 }
@@ -388,15 +435,29 @@ export type StoredNavigation3Index = Omit<Navigation3FinalIndex, 'scopes'> & {
 /** Use one document scope at a time while carrying the exact same index hash. */
 export function withStoredMerge3NavigationFinalIndex3<T>(data: Graph3Inputs, tables: readonly Navigation3Table[],
   read: (index: StoredNavigation3Index) => T): T {
+  type StoredRow = Navigation3FinalBlock | Navigation3FinalScope
   return withStoredRestoreScopes(
-    (append: (key: string, scope: Navigation3FinalScope) => void) => projectFinalNavigation(data, tables, scope => append(scope.scopeId, scope)),
-    (metadata, store) => {
+    (append: (key: string, row: StoredRow) => void, store) => projectFinalNavigation(data, tables, {
+      append: block => append('block:' + block.id, block),
+      read: id => (store.byId('block:' + id) as Navigation3FinalBlock | undefined) ?? graph3Conflict('navigation-final-stored-block-missing', id)
+    }, scope => append('scope:' + scope.scopeId, scope)),
+    ({ physicalLocations, ...metadata }, store) => {
       assertMerge3JsonBudget(metadata)
-      const hashBody = { ...metadata, scopes: store.hashInput }
+      const locations = freezeCapsuleValue(physicalLocations), blockCount = locations.length
+      const blockRows = () => store.iterateEncoded(0, blockCount), scopeRows = () => store.iterateEncoded(blockCount)
+      const hashBody = { ...metadata, physicalBlocks: capsuleJsonStoredArray<Navigation3FinalBlock>(blockRows),
+        scopes: capsuleJsonStoredArray<Navigation3FinalScope>(scopeRows) }
       const indexHash = hashBoundedCapsuleJson(hashBody, CAPSULE2_RAW_MAX_JSON_BYTES, 'knowbook.restore.navigation3.final-index.v1\0')
       if (!indexHash) return graph3Conflict('navigation-merge-hash-budget', null)
       const hashInput = freezeCapsuleValue({ ...hashBody, indexHash })
-      return read(Object.freeze({ ...metadata, scopeCount: store.count, indexHash, hashInput, scopes: store.iterate, scope: store.byId }))
+      let physicalBlocks: readonly Navigation3FinalBlock[] | undefined
+      return read(Object.freeze({ ...metadata, physicalLocations: locations, scopeCount: store.count - blockCount, indexHash, hashInput,
+        physicalBlock: (id: string) => freezeCapsuleValue(store.byId('block:' + id) as Navigation3FinalBlock | undefined),
+        get physicalBlocks() {
+          return physicalBlocks ??= freezeCapsuleValue(Array.from(blockRows(), encoded => JSON.parse(encoded) as Navigation3FinalBlock))
+        },
+        *scopes() { for (const encoded of scopeRows()) yield JSON.parse(encoded) as Navigation3FinalScope },
+        scope: (id: string) => store.byId('scope:' + id) as Navigation3FinalScope | undefined }))
     })
 }
 
@@ -454,22 +515,29 @@ type OriginNavigationView = {
 }
 
 function projectNavigationMergeScopes(data: Graph3Inputs, merged: ReturnType<typeof deriveRootRestoreMergedContent3>,
-  originals: Record<Side, OriginNavigationView>, final: Omit<Navigation3FinalIndex, 'scopes'>,
+  originals: Record<Side, OriginNavigationView>, final: Omit<Navigation3FinalIndex, 'scopes'> | StoredNavigation3Index,
   findFinalScope: (id: string) => Navigation3FinalScope | undefined, acceptScope: (scope: Navigation3ContextScope) => void) {
   const access = originalAccess(data)
-  const documents = new Map(final.documents.map(document => [document.id, document])), physical = new Map(final.physicalBlocks.map(block => [block.id, block]))
-  const selectedCells = new Map<string, Navigation3Cell>()
+  const stored = 'physicalLocations' in final ? final : null
+  const documents = new Map(final.documents.map(document => [document.id, document]))
+  const physical = new Map<string, Navigation3PhysicalLocation | Navigation3FinalBlock>(
+    (stored?.physicalLocations ?? final.physicalBlocks).map(block => [block.id, block]))
+  const readBlock = (id: string) => {
+    const item = physical.get(id)
+    return item && 'block' in item ? item.block : stored?.physicalBlock(id)?.block
+  }
+  const selectedCells = new Map<string, { id: string; address: Omit<Navigation3Cell, 'text'> }>()
   const encodings = new Map(merged.tables.map(table => [table.name, table.encoding]))
-  const addSelectedCell = (row: Navigation3FinalDocument | Navigation3FinalBlock, table: Navigation3Cell['table'],
-    column: Navigation3Cell['column'], content: string) => {
+  const addSelectedCell = (row: Navigation3FinalDocument | Navigation3PhysicalLocation, table: Navigation3Cell['table'],
+    column: Navigation3Cell['column']) => {
     access.assertRef(row.sourceRef)
     const key = graph3Key(refKey(row.sourceRef), column), encoding = encodings.get(table)
     if (!encoding) return graph3Conflict('navigation-selected-cell-missing-table', table)
     if (selectedCells.has(key)) return graph3Conflict('navigation-selected-cell-duplicate-origin', key)
-    selectedCells.set(key, { table, rowKey: row.rowKey, targetRowId: row.targetRowId, column, sourceRef: row.sourceRef, encoding, text: content })
+    selectedCells.set(key, { id: row.id, address: { table, rowKey: row.rowKey, targetRowId: row.targetRowId, column, sourceRef: row.sourceRef, encoding } })
   }
-  for (const document of final.documents) addSelectedCell(document, 'documents', 'summary', document.summary)
-  for (const block of final.physicalBlocks) addSelectedCell(block, block.groupId === null ? 'blocks' : 'synced_group_blocks', 'content', block.block.content)
+  for (const document of final.documents) addSelectedCell(document, 'documents', 'summary')
+  for (const block of physical.values()) addSelectedCell(block, block.groupId === null ? 'blocks' : 'synced_group_blocks', 'content')
   function evidence(side: Side, kind: 'document' | 'block', identity: OriginalIdentity) {
     let table: 'documents' | 'blocks' | 'synced_group_blocks' = 'documents'
     if (kind === 'block') table = identity.ownerKind === 'group' ? 'synced_group_blocks' : 'blocks'
@@ -477,10 +545,10 @@ function projectNavigationMergeScopes(data: Graph3Inputs, merged: ReturnType<typ
     if (access.value(side, original.table, original.row, 'created_at') !== identity.birth) return graph3Conflict('navigation-baseline-identity-birth', identity)
     return access.ref(side, table, original.row.sourceRowId)
   }
-  const projected = new Map<string, Navigation3FinalDocument | Navigation3FinalBlock | null>()
+  const projected = new Map<string, Navigation3FinalDocument | Navigation3PhysicalLocation | null>()
   function project(side: Side, kind: 'document', identity: OriginalIdentity): Navigation3FinalDocument | null
-  function project(side: Side, kind: 'block', identity: OriginalIdentity): Navigation3FinalBlock | null
-  function project(side: Side, kind: 'document' | 'block', identity: OriginalIdentity): Navigation3FinalDocument | Navigation3FinalBlock | null {
+  function project(side: Side, kind: 'block', identity: OriginalIdentity): Navigation3PhysicalLocation | null
+  function project(side: Side, kind: 'document' | 'block', identity: OriginalIdentity): Navigation3FinalDocument | Navigation3PhysicalLocation | null {
     const key = graph3Key(side, kind, identity), cached = projected.get(key)
     if (cached !== undefined) return cached
     const ref = evidence(side, kind, identity), target = (kind === 'document' ? documents : physical).get(identity.targetId)
@@ -535,7 +603,7 @@ function projectNavigationMergeScopes(data: Graph3Inputs, merged: ReturnType<typ
         const before = originals[side].headingNamespace(old.document.id)?.headings.filter(heading => heading.blockId === oldWrapper) ?? []
         const oldBlock = access.identity(side, originalRef.table as 'blocks' | 'synced_group_blocks', location.blockId!)
         if (/^heading-[1-6]$/.test(text(access.value(side, oldBlock.table, oldBlock.row, 'type')))
-          && /^heading-[1-6]$/.test(block.block.type) && before.length === 1 && candidates.length === 1)
+          && /^heading-[1-6]$/.test(readBlock(block.id)?.type ?? '') && before.length === 1 && candidates.length === 1)
           mapping.set(before[0].key, candidates[0])
         else {
           const left = new Map<string, typeof before>(), right = new Map<string, typeof candidates>()
@@ -557,9 +625,18 @@ function projectNavigationMergeScopes(data: Graph3Inputs, merged: ReturnType<typ
     const document = project(side, 'document', scope.document), finalDocumentId = document?.id ?? null
     const finalScope = document ? findFinalScope(graph3Key(scope.field, document.id)) : undefined
     const occurrences = new Map(finalScope?.blocks.map(block => [block.occurrenceKey, block]))
+    const scopedCells = new Map<string, Navigation3Cell>()
     const blocks = scope.blocks.map(entry => {
       const location = entry.location, ref = access.ref(side, location.table, location.sourceRowId)
-      const cell = selectedCells.get(graph3Key(refKey(ref), location.column)) ?? null
+      const key = graph3Key(refKey(ref), location.column), selected = selectedCells.get(key)
+      let cell = scopedCells.get(key) ?? null
+      if (!cell && selected) {
+        const { id, address } = selected
+        const content = address.column === 'summary' ? documents.get(id)?.summary : readBlock(id)?.content
+        if (content === undefined) return graph3Conflict('navigation-selected-cell-missing-row', address.rowKey)
+        cell = { ...address, text: content }
+        scopedCells.set(key, cell)
+      }
       let finalOccurrenceKey: string | null = null
       if (cell && document) {
         if (scope.field === 'summary') finalOccurrenceKey = finalScope?.blocks[0]?.occurrenceKey ?? null
@@ -582,7 +659,8 @@ function projectNavigationMergeScopes(data: Graph3Inputs, merged: ReturnType<typ
 }
 
 type Resolver = (documentId: string, url: string, wiki: boolean) => Navigation3MappedTarget
-type ResolutionIndex = Pick<Navigation3FinalIndex, 'documents' | 'physicalBlocks' | 'headingNamespaces' | 'routes'>
+type ResolutionIndex = Pick<Navigation3FinalIndex, 'documents' | 'physicalBlocks' | 'headingNamespaces' | 'routes'> &
+  Partial<Pick<StoredNavigation3Index, 'physicalLocations'>>
 const resolvers = new WeakMap<ResolutionIndex, Resolver>()
 /** Indexes only this pure result. No K/SQL/certification cache or authority. */
 export function createFinalNavigation3Resolver(index: ResolutionIndex): Resolver {
@@ -591,7 +669,8 @@ export function createFinalNavigation3Resolver(index: ResolutionIndex): Resolver
   for (const document of index.documents) for (const [lookup, key] of [[byPath, document.path], [byAsciiPath, ascii(document.path)], [byTitle, ascii(document.title)]] as const) {
     const values = lookup.get(key) ?? []; values.push(document); lookup.set(key, values)
   }
-  const blocks = new Map(index.physicalBlocks.filter(block => block.documentId !== null).map(block => [block.id, block]))
+  const blockHosts = new Map<string, string>()
+  for (const block of index.physicalLocations ?? index.physicalBlocks) if (block.documentId !== null) blockHosts.set(block.id, block.documentId)
   const routes = new Map<string, Navigation3FinalIndex['routes'][number][]>()
   for (const route of index.routes) { const key = graph3Key(route.path, route.blockId), values = routes.get(key) ?? []; values.push(route); routes.set(key, values) }
   const headingIndexes = new Map(index.headingNamespaces.map(namespace => {
@@ -607,17 +686,16 @@ export function createFinalNavigation3Resolver(index: ResolutionIndex): Resolver
     return values[0]
   }
   const blockAt = (path: string, fragment: string, localDocumentId?: string): Navigation3FinalTarget | null => {
-    const id = fragment.startsWith('^') ? fragment.slice(1) : fragment, block = blocks.get(id)
-    if (!block) return null
-    const document = byId.get(block.documentId!)
+    const id = fragment.startsWith('^') ? fragment.slice(1) : fragment, host = blockHosts.get(id)
+    if (host === undefined) return null
+    const document = byId.get(host)
     if (!document) return null
     const route = routes.has(graph3Key(path, id))
     if (localDocumentId !== undefined && document.id !== localDocumentId && !route || document.path !== path && !route) return null
-    return { kind: 'block', documentId: document.id, documentPath: document.path, blockId: block.id }
+    return { kind: 'block', documentId: document.id, documentPath: document.path, blockId: id }
   }
   const bareWikiBlock = (document: Navigation3FinalDocument, token: string): Navigation3FinalTarget | null => {
-    const block = blocks.get(token)
-    if (block?.documentId === document.id) return { kind: 'block', documentId: document.id, documentPath: document.path, blockId: block.id }
+    if (blockHosts.get(token) === document.id) return { kind: 'block', documentId: document.id, documentPath: document.path, blockId: token }
     const id = token.startsWith('^') ? token.slice(1) : token
     return routes.has(graph3Key(document.path, id)) ? blockAt(document.path, token) : null
   }

@@ -5,7 +5,7 @@ import { capsuleBytesHash, capsuleJson } from '../src/main/database/restore-know
 import { markdownOriginalOffsetLookup } from '../src/shared/markdownNativeText'
 import { deriveStage4AliasNavigation } from '../src/main/database/restore-knowledge-derived-stage4-observation'
 import { graph3Encode, graph3Key, graph3Text, type Graph3Inputs } from '../src/main/database/restore-knowledge-graph3-data'
-import { deriveRootRestoreNavigationMergeContext3, buildMerge3NavigationFinalIndex3, resolveFinalNavigation3,
+import { createNavigation3DocumentBlockReader, deriveRootRestoreNavigationMergeContext3, buildMerge3NavigationFinalIndex3, resolveFinalNavigation3,
   withStoredMerge3NavigationFinalIndex3, withStoredRootRestoreNavigationMergeContext3 } from '../src/main/database/restore-knowledge-navigation3-merge-context'
 import { finishMerge3Table, prepareMerge3Table, type Merge3Material } from '../src/main/database/restore-knowledge-merge3-storage'
 import type { deriveRootRestoreMergedContent3 } from '../src/main/database/restore-knowledge-merge3-model'
@@ -120,13 +120,24 @@ function fixture(repeated = false, originalAccess?: { source: Capsule2Encoding; 
 test('the SQLite scope index preserves the native navigation hash and yields every scope in original order', () => {
   const { data, merged } = fixture(true)
   const full = buildMerge3NavigationFinalIndex3(data, merged.tables)
-  withStoredMerge3NavigationFinalIndex3(data, merged.tables, ({ scopes, scope, scopeCount, hashInput: _hashInput, ...metadata }) => {
+  const locations = withStoredMerge3NavigationFinalIndex3(data, merged.tables, ({ scopes, scope, scopeCount, hashInput: _hashInput, physicalLocations, physicalBlock, ...metadata }) => {
     assert.equal(scopeCount, full.scopes.length)
+    assert.deepEqual(physicalLocations, full.physicalBlocks.map(({ block: _body, ...location }) => location))
+    for (const block of full.physicalBlocks) assert.deepEqual(physicalBlock(block.id), block)
+    assert.equal(physicalBlock('unused'), undefined)
     assert.deepEqual({ ...metadata, scopes: [...scopes()] }, full)
     assert.deepEqual([...scopes()], full.scopes)
     assert.deepEqual(scope(full.scopes[0].scopeId), full.scopes[0])
     assert.equal(scope('unused'), undefined)
+    return physicalLocations
   })
+  const table = merged.tables.find(item => item.name === 'blocks')!
+  const read = createNavigation3DocumentBlockReader({ ...table, rows: [...table.rows].reverse() }, locations)
+  for (const document of full.documents) assert.deepEqual(read(document.id),
+    full.physicalBlocks.filter(block => block.documentId === document.id).map(block => block.block))
+  const wrongOwner = createNavigation3DocumentBlockReader({ ...table, rows: table.rows.map(row => ({ ...row,
+    cells: row.cells.map((cell, index) => table.columns[index] === 'document_id' ? graph3Encode('wrong', table.encoding) : cell) })) }, locations)
+  assert.throws(() => wrongOwner('d'), /navigation-final-document-block-owner/)
 })
 
 test('attachment alias navigation compares projected ranges and preserves the exact rewritten index and routes', () => {

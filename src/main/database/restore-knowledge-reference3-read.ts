@@ -182,13 +182,13 @@ async function prepareReference3(identity: RootRestoreIdentityPlan3, inputChoice
     seed: randomBytes(32).toString('hex'), preparedAt: new Date().toISOString() }
   const planId = randomUUID(), allocation = deriveRootRestoreReferenceAllocation3(data, kernel, choices)
   if (allocation.purposes.some(purpose => purpose.targetId === planId)) return invalid('引用plan locator与新分配身份碰撞')
-  const { candidate, ordinaryEdits, physicalBlocks } = checkedCandidateWithCells(data, allocation, choices)
+  const { candidate, ordinaryEdits, physicalLocations } = checkedCandidateWithCells(data, allocation, choices)
   const value: Reference3Value = Object.freeze({ allocation, candidate })
   const prepared = await persistReference3(identity, base, planId, data, kernel, choices, value)
   if (scope) await readPreparedRootRestoreIdentityInputs5(identity, scope)
   const actual = Object.freeze({ data, allocation, candidate, value, kernel, choices, referencePlanId: planId,
     referenceManifestHash: prepared.manifestHash })
-  return { prepared, captured: captured && Object.freeze({ ...captured, actual, cells: Object.freeze({ ordinaryEdits, physicalBlocks }) }) }
+  return { prepared, captured: captured && Object.freeze({ ...captured, actual, cells: Object.freeze({ ordinaryEdits, physicalLocations }) }) }
 }
 
 /** Share only the newly persisted ordinary plan and the original SQL read
@@ -403,7 +403,7 @@ async function reconstructWithOriginals(saved: Saved, before: Manifest, base: Ba
   const original = checkedCandidateWithCells(data, allocation, before.choices)
   const pending = before.version === 2 ? { choice: before.pendingSelection, baseCandidateHash: before.pendingBaseCandidateHash } : undefined
   if (pending && original.candidate.checkedCanonicalCandidateHash !== pending.baseCandidateHash) return invalid('pending基准候选变化')
-  const { candidate, ordinaryEdits, physicalBlocks } = pending
+  const { candidate, ordinaryEdits, physicalLocations } = pending
     ? checkedPendingCandidateWithCells(captured, data, allocation, before.choices, original.candidate, pending.choice) : original
   const actual = manifestBody(base, saved.planId, data, before.kernel, before.choices, allocation, candidate, pending)
   if (!same(actual, before)) return invalid('完整原件、base allocation或引用派生不等于持久清单')
@@ -415,7 +415,7 @@ async function reconstructWithOriginals(saved: Saved, before: Manifest, base: Ba
   const result = Object.freeze({ data, allocation, candidate, value, kernel: before.kernel, choices: before.choices,
     referencePlanId: saved.planId, referenceManifestHash: saved.manifestHash })
   return Object.freeze({ actual: result, pair: captured.pair, original: captured.original, working: captured.working,
-    cells: Object.freeze({ ordinaryEdits, physicalBlocks }) })
+    cells: Object.freeze({ ordinaryEdits, physicalLocations }) })
 }
 
 /** Checked preview bound to a genuine reference's originals and kernel. It
@@ -457,7 +457,7 @@ async function preparePendingReference(plan: RootRestoreReferencePlan3, locator:
   const before = await readManifest(saved), base = await readBaseLocation(saved)
   const captured = await reconstructWithOriginals(saved, before, base, identityScope)
   const { data, allocation, kernel, choices, candidate: original } = captured.actual
-  const { candidate, ordinaryEdits, physicalBlocks } = checkedPendingCandidateWithCells(captured, data, allocation, choices, original, choice)
+  const { candidate, ordinaryEdits, physicalLocations } = checkedPendingCandidateWithCells(captured, data, allocation, choices, original, choice)
   const planId = randomUUID()
   if (allocation.purposes.some(purpose => purpose.targetId === planId)) return invalid('引用plan locator与新分配身份碰撞')
   await readBaseLocation(saved)
@@ -467,5 +467,5 @@ async function preparePendingReference(plan: RootRestoreReferencePlan3, locator:
     { choice, baseCandidateHash: original.checkedCanonicalCandidateHash })
   const actual = Object.freeze({ data, allocation, candidate, value, kernel, choices, referencePlanId: prepared.planId,
     referenceManifestHash: prepared.manifestHash })
-  return { prepared, identity: saved.identity, captured: Object.freeze({ ...captured, actual, cells: Object.freeze({ ordinaryEdits, physicalBlocks }) }) }
+  return { prepared, identity: saved.identity, captured: Object.freeze({ ...captured, actual, cells: Object.freeze({ ordinaryEdits, physicalLocations }) }) }
 }

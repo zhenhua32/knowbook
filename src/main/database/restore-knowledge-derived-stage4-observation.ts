@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { capsuleJson } from './restore-knowledge-capsule-model'
 import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
 import { graph3Text, type Graph3Inputs } from './restore-knowledge-graph3-data'
-import { withStoredMerge3NavigationFinalIndex3, type Navigation3FinalIndex } from './restore-knowledge-navigation3-merge-context'
+import { withStoredMerge3NavigationFinalIndex3, type Navigation3FinalIndex, type StoredNavigation3Index } from './restore-knowledge-navigation3-merge-context'
 import { createNavigation3RangeProjection } from './restore-knowledge-navigation3-rewrite-cells'
 import { toReference3GraphInputs } from './restore-knowledge-reference3-model'
 import { readRootRestoreReferenceGraphInputs3, type RootRestoreReferencePlan3 } from './restore-knowledge-reference3-read'
@@ -35,8 +35,8 @@ export async function deriveStage4Routes(reference: RootRestoreReferencePlan3, p
   })
 }
 
-function routesFromIndex(index: Pick<Navigation3FinalIndex, 'physicalBlocks' | 'routes'>, current: Graph3Inputs['inputs']['current']['source']['sourceContent']) {
-  const blocks = new Map(index.physicalBlocks.map(block => [block.id, block]))
+function routesFromIndex(index: Pick<StoredNavigation3Index, 'physicalLocations' | 'routes'>, current: Graph3Inputs['inputs']['current']['source']['sourceContent']) {
+  const blocks = new Map(index.physicalLocations.map(block => [block.id, block]))
   const routes = new Map<string, { path: string; blockId: string; documentId?: string; createdAt?: string; currentRowId?: string }>()
   for (const route of index.routes) {
     const block = blocks.get(route.blockId), key = routeKey(route.path, route.blockId)
