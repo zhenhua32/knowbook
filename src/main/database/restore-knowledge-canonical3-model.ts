@@ -20,13 +20,15 @@ import { deriveRootRestoreReferenceAllocation3, toReference3GraphInputs } from '
 import { collectSyncedBindingOccurrences } from '../sync/synced-binding-occurrences'
 import { captureSyncedCreateSourceFacts } from './synced-host-create-plan'
 import { transformCanonical3Cell, rewriteCanonical3OriginJson, type Canonical3TextEdit } from './restore-knowledge-canonical3-cells'
-import { applySelectedPendingLocalBody5 } from './restore-knowledge-pending-local-cell5'
+import { withSelectedPendingLocalBody5 } from './restore-knowledge-pending-local-cell5'
 import type { SelectedPendingLocalBody5 } from './restore-knowledge-pending-local-selection5'
+import { withStoredRestoreScopes } from './restore-knowledge-stored-scopes'
 
 type Allocation = ReturnType<typeof deriveRootRestoreReferenceAllocation3>
 type Side = 'source' | 'current'
 type Entry = { table: Navigation3Table; row: MergedRow3; ordinal: number; value: Record<string, unknown> }
 type FinalScope = Navigation3FinalIndex['scopes'][number]
+type PriorOccurrence = { occurrenceKey: string; block: Omit<FinalScope['blocks'][number]['block'], 'content'> }
 export interface Canonical3Conflict { readonly code: string; readonly side: Side | null; readonly rowKeys: readonly string[]; readonly detail: unknown }
 const same = (a: unknown, b: unknown) => capsuleJson(a) === capsuleJson(b)
 const keyOf = (key: SyncedBindingKey) => graph3Key(key.blockId, key.from, key.to, key.raw, key.syntax)
@@ -175,16 +177,23 @@ function deriveWithCanonicalIndexes(db: Database.Database, data: Graph3Inputs, a
   choices?: RootRestoreMergedContentChoices3, pending?: SelectedPendingLocalBody5) {
   const derived = toReference3GraphInputs(data, allocation)
   const ordinary = deriveRootRestoreNavigationRewrite3(derived, choices)
-  const selectedPending = pending && withStoredMerge3NavigationFinalIndex3(derived, ordinary.tables,
-    prior => applySelectedPendingLocalBody5(derived, ordinary, prior, pending))
-  const ordinaryTables = selectedPending?.tables ?? ordinary.tables
-  return withStoredMerge3NavigationFinalIndex3(derived, ordinaryTables, before =>
-    deriveCanonicalFromOrdinary(db, data, allocation, derived, ordinary, ordinaryTables, selectedPending?.proof, before))
+  // Keep the original occurrence structure for the final grammar check. The
+  // check uses rewritten content, so the original physical index can close first.
+  return withStoredRestoreScopes((append: (id: string, blocks: PriorOccurrence[]) => void) => {
+    const project = (before: StoredNavigation3Index, ordinaryTables: readonly Navigation3Table[]) => {
+      const rewrite = rewriteCanonicalGroups(db, data, allocation, ordinaryTables, before)
+      for (const scope of before.scopes()) {
+        append(scope.scopeId, scope.blocks.map(({ occurrenceKey, block: { content: _content, ...block } }) => ({ occurrenceKey, block })))
+      }
+      return rewrite
+    }
+    if (pending) return withSelectedPendingLocalBody5(derived, ordinary, pending, project)
+    return { selection: withStoredMerge3NavigationFinalIndex3(derived, ordinary.tables, index => project(index, ordinary.tables)), proof: undefined }
+  }, ({ selection, proof }, prior) => finalizeCanonicalCandidate(db, data, allocation, derived, ordinary, selection, proof, prior.byId))
 }
 
-function deriveCanonicalFromOrdinary(db: Database.Database, data: Graph3Inputs, allocation: Allocation, derived: Graph3Inputs,
-  ordinary: ReturnType<typeof deriveRootRestoreNavigationRewrite3>, ordinaryTables: readonly Navigation3Table[],
-  pendingProof: ReturnType<typeof applySelectedPendingLocalBody5>['proof'] | undefined, before: StoredNavigation3Index) {
+function rewriteCanonicalGroups(db: Database.Database, data: Graph3Inputs, allocation: Allocation, ordinaryTables: readonly Navigation3Table[],
+  before: Pick<StoredNavigation3Index, 'documents' | 'physicalBlocks'>) {
   const originals = (side: Side) => {
     const raw = data.inputs[side].source.sourceContent
     return { raw, groups: originalTable(raw, 'synced_groups'), blocks: originalTable(raw, 'synced_group_blocks') }
@@ -331,6 +340,15 @@ function deriveCanonicalFromOrdinary(db: Database.Database, data: Graph3Inputs, 
   }
   const tables = ordinaryTables.map(changes.apply)
   assertFinalStorageBudget(tables)
+  return { tables, active, conflicts, edits, bindingProjections, originProjections, inactive }
+}
+
+function finalizeCanonicalCandidate(db: Database.Database, data: Graph3Inputs, allocation: Allocation, derived: Graph3Inputs,
+  ordinary: ReturnType<typeof deriveRootRestoreNavigationRewrite3>, rewrite: ReturnType<typeof rewriteCanonicalGroups>,
+  pendingProof: ReturnType<typeof withSelectedPendingLocalBody5>['proof'] | undefined,
+  priorScope: (scopeId: string) => readonly PriorOccurrence[] | undefined) {
+  const { tables, active, conflicts, edits, bindingProjections, originProjections, inactive } = rewrite
+  const conflict: Conflict = (code, side, rowKeys, detail) => { conflicts.push({ code, side, rowKeys, detail }) }
   return withStoredMerge3NavigationFinalIndex3(derived, tables, final => {
     const physicalMembers = indexFinalMembers(db, final, tables)
     const afterGroups = new Map<string, Entry>()
@@ -358,7 +376,7 @@ function deriveCanonicalFromOrdinary(db: Database.Database, data: Graph3Inputs, 
       blocks: Array.from(physicalMembers('document', document.id), block => block.block) })), wires) }
     catch (error) { if (!(error instanceof SyncedValidationError)) throw error; forestValidated = false; conflict('canonical3-final-forest', null, [], { code: error.code }) }
     validateOrdinaryDestinations(ordinary.projections, final, conflict)
-    validateOrdinaryConsumers(before, final, wires, bindingProjections, conflict)
+    validateOrdinaryConsumers(priorScope, final, wires, bindingProjections, conflict)
     const projectedBudgets = measureNativeHostBudgets(final, tables, physicalMembers, wires)
     const body = { kind: 'root-restore-canonical-reference-candidate' as const, version: 3 as const,
       baseIdentityAllocationHash: allocation.baseIdentityAllocationHash, derivedReferenceAllocationHash: allocation.derivedReferenceAllocationHash,
@@ -565,15 +583,16 @@ function validateOrdinaryDestinations(projections: ReturnType<typeof deriveRootR
     else if (!target && live) conflict('canonical3-final-ordinary-unresolved-became-live', projection.side, [projection.rowKey], actual)
   }
 }
-function validateOrdinaryConsumers(before: StoredNavigation3Index, final: StoredNavigation3Index, wires: readonly SyncedGroupWire[],
+function validateOrdinaryConsumers(priorScope: (scopeId: string) => readonly PriorOccurrence[] | undefined,
+  final: StoredNavigation3Index, wires: readonly SyncedGroupWire[],
   projections: readonly { side: Side; binding: SyncedLinkBinding; rowKey: string; proofKind: string }[], conflict: Conflict) {
   const bindingByKey = new Map(projections.map(item => [keyOf(item.binding), item]))
   const originPaths = new Map(wires.map(wire => [wire.id, wire.origin.pathAtCreation]))
   for (const scope of final.scopes()) {
-    const prior = before.scope(scope.scopeId)
+    const prior = priorScope(scope.scopeId)
     if (!prior) return graph3Conflict('canonical3-final-scope-added', scope.scopeId)
     const byOccurrence = new Map(scope.blocks.map(block => [block.occurrenceKey, block]))
-    const expected = captureSyncedCreateSourceFacts(prior.blocks.map(block => ({ ...block.block,
+    const expected = captureSyncedCreateSourceFacts(prior.map(block => ({ ...block.block,
       content: byOccurrence.get(block.occurrenceKey)?.block.content ?? graph3Conflict('canonical3-final-occurrence-lost', block.occurrenceKey) })))
     const uses = new Map(scope.uses.map(use => [use.blockId, use.definitions]))
     const unitGroups = new Map<string, FinalScope['units'][number][]>(), expectedGroups = new Map<string, typeof expected.units>()

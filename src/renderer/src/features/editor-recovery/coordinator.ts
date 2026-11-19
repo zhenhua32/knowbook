@@ -1,7 +1,7 @@
 import type { EditorRecoveryDraftInput, EditorRecoveryExpected, EditorRecoveryOpened, EditorRecoveryPending, OpenEditorRecoveryDraftInput,
   EditorRecoveryReceipt, EditorRecoveryWorking, PreparedEditorRecoveryCrossMove } from '@shared/editor-recovery-drafts'
 import { validateEditorRecoveryDraftInput } from '@shared/editor-recovery-drafts'
-import { canonicalSyncedPortableJson } from '@shared/syncedBlockPortable'
+import { canonicalSyncedPortableJson, sameHostContent } from '@shared/syncedBlockPortable'
 import { syncedCanonicalEdits, validateSyncedGroupSnapshot } from '@shared/syncedBlockValidation'
 import { readRecoverySources, recoveryData, subscribeRecoverySources, type RecoverySourceAddress } from './sourceSnapshots'
 
@@ -18,6 +18,11 @@ type Entry = { identity: object; address: RecoverySourceAddress; opening: () => 
   read: () => RecoveryContent | null; retained: RecoveryContent | null; detached: boolean;
   generation: number; fingerprint: string | null; head: EditorRecoveryExpected | null }
 type Capture = { entry: Entry; draft: EditorRecoveryDraftInput; fingerprint: string; unedited: boolean }
+function sameRecoveryWorking(left: EditorRecoveryWorking, right: EditorRecoveryWorking): boolean {
+  return left.kind === 'host' && right.kind === 'host'
+    ? sameHostContent(left, right)
+    : canonicalSyncedPortableJson(left) === canonicalSyncedPortableJson(right)
+}
 async function requestHash(value: string): Promise<string> {
   const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))
   return Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, '0')).join('')
@@ -86,7 +91,7 @@ export class EditorRecoveryCoordinator {
     const draft = validateEditorRecoveryDraftInput({ ...body, draftSessionId: opened.draftSessionId, generation,
       expectedPreviousGeneration: generation === entry.generation ? Math.max(0, generation - 1) : entry.generation })
     return { entry, draft, fingerprint, unedited: !authoredWork && !entry.head && !draft.sources.length && !draft.pending.length
-      && !draft.composing && !draft.importing && canonicalSyncedPortableJson(draft.working) === canonicalSyncedPortableJson(opened.base.persistedWorking) }
+      && !draft.composing && !draft.importing && sameRecoveryWorking(draft.working, opened.base.persistedWorking) }
   }
   private committed(captures: Awaited<ReturnType<EditorRecoveryCoordinator['capture']>>[], receipt: EditorRecoveryReceipt): void {
     const dormant = receipt.purpose === 'close' ? [...this.parked] : []
@@ -262,7 +267,7 @@ export class EditorRecoveryCoordinator {
       const before = await previous.opening()
       const refreshPins = input.source && content.working.kind === 'host' && content.working.blocks.some(block => block.type === 'synced-block')
       if (!refreshPins && before.base.owner.kind === 'host' && before.base.owner.updatedAt === input.expectedUpdatedAt
-        && canonicalSyncedPortableJson(content.working) === canonicalSyncedPortableJson(before.base.persistedWorking)) return before
+        && sameRecoveryWorking(content.working, before.base.persistedWorking)) return before
       const captured = await this.capture(previous)
       if (!captured.unedited && captured.fingerprint !== previous.fingerprint) await this.write([captured], { purpose: 'background' })
       const opening = recoveryOpening(input), oldIdentity = Object.freeze({}), replacement: Entry = {

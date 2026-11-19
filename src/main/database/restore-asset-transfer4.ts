@@ -15,6 +15,8 @@ import { parseRestoreJson, restoreHash, restoreJson, restoreUuid } from './resto
 interface FileFact { readonly hash: string; readonly bytes: number; readonly logicalName: string }
 interface Identity { readonly dev: string; readonly ino: string }
 type Entry = FileFact & { readonly action: 'keep' | 'link'; readonly identity: Identity }
+type TransferState = 'keep' | 'absent' | 'published'
+type ExpectedTransferState = 'pristine' | 'published'
 interface Manifest {
   readonly kind: 'controlled-restore-asset-transfer'; readonly version: 4
   readonly operationId: string; readonly transferId: string; readonly entries: readonly Entry[]
@@ -115,7 +117,7 @@ async function readState(saved: Saved) {
   await assertNames(directory, root, ['manifest.json', 'payloads'])
   await assertNames(join(directory, 'payloads'), root,
     manifest.entries.flatMap((file, index) => file.action === 'link' ? [index + '.bin'] : []))
-  const actual: Array<'keep' | 'absent' | 'published'> = []
+  const actual: TransferState[] = []
   for (const [index, file] of manifest.entries.entries()) {
     const target = destination(root, file)
     await assertRestorePath(target, root)
@@ -207,20 +209,22 @@ function checkedTransfer(source: string, operationId: string, transferId: string
   if (manifest.operationId !== operationId || manifest.transferId !== transferId || manifestHash !== hash(expectedManifestHash)
     || archived && source !== canonical)
     return fail('原附件转移清单与已记录凭据不同')
-  return manifest
+  return { manifest, canonical }
 }
 
-async function readSavedTransfer(profileRoot: string, operationId: string, transferId: string, expectedManifestHash: string): Promise<Saved> {
+async function readSavedTransfer(profileRoot: string, operationId: string, transferId: string, expectedManifestHash: string,
+  requireCanonical = false): Promise<Saved> {
   const root = await canonicalRestoreRoot(profileRoot), directory = join(collection(root, operationId), restoreUuid(transferId))
   const source = await readCapsule2AssetManifest(join(directory, 'manifest.json'), root, maxManifestBytes)
-  const manifest = checkedTransfer(source, operationId, transferId, expectedManifestHash)
+  const { manifest, canonical } = checkedTransfer(source, operationId, transferId, expectedManifestHash)
+  if (requireCanonical && source !== canonical) return fail('原附件转移清单已变化')
   return { root, directory, manifest, manifestHash: expectedManifestHash }
 }
 
 /** These are canonical archived facts. A foreign transfer manifest cannot
  * authorize a file read, link, rollback or installation. */
 export function readArchivedTransferFacts4(text: string, locator: { operationId: string; transferId: string; manifestHash: string }) {
-  return checkedTransfer(text, locator.operationId, locator.transferId, locator.manifestHash, true).entries
+  return checkedTransfer(text, locator.operationId, locator.transferId, locator.manifestHash, true).manifest.entries
 }
 
 export async function readPinnedTransferManifestBytes4(profileRoot: string, locator: { operationId: string; transferId: string; manifestHash: string }) {
@@ -266,8 +270,19 @@ async function authenticated(transfer: RestoreAssetTransfer4) {
 
 /** A reopened transfer may describe a partial publication. These assertions
  * let the outer journal distinguish its own pre-move and commit phases. */
-export async function assertRestoreAssetTransferState4(transfer: RestoreAssetTransfer4, expected: 'pristine' | 'published') {
+export async function assertRestoreAssetTransferState4(transfer: RestoreAssetTransfer4, expected: ExpectedTransferState) {
   const { states } = await authenticated(transfer)
+  assertTransferState(states, expected)
+}
+
+/** Open the exact stored transfer and check the current journal phase in one read. */
+export async function assertReopenedRestoreAssetTransferState4(profileRoot: string, operationId: string, transferId: string,
+  expectedManifestHash: string, expected: ExpectedTransferState) {
+  const saved = await readSavedTransfer(profileRoot, operationId, transferId, expectedManifestHash, true)
+  assertTransferState(await readState(saved), expected)
+}
+
+function assertTransferState(states: readonly TransferState[], expected: ExpectedTransferState) {
   if (states.includes(expected === 'pristine' ? 'published' : 'absent'))
     return fail('附件转移状态与联合恢复阶段不同')
 }

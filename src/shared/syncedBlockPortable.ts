@@ -82,6 +82,14 @@ export function canonicalSyncedPortableJson(value: unknown): string {
     ? Object.fromEntries(Object.entries(item).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)) : item)
 }
 
+type HostContentWithTags = { title: string; summary: string; blocks: readonly { tags?: readonly string[] }[] }
+
+/** Physical storage represents omitted tags as an empty list. */
+export function sameHostContent(left: HostContentWithTags, right: HostContentWithTags): boolean {
+  const physical = (content: HostContentWithTags) => ({ ...content, blocks: content.blocks.map(block => ({ ...block, tags: block.tags ?? [] })) })
+  return canonicalSyncedPortableJson(physical(left)) === canonicalSyncedPortableJson(physical(right))
+}
+
 type ContentEdit = { from: number; to: number; text: string }
 type RewrittenText = { text: string; edits: ContentEdit[] }
 export type SyncedAssetMapper = (uri: string) => string

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { SyncedOriginV1, SyncedStructureInput } from '../../shared/synced-blocks'
-import { canonicalSyncedPortableJson } from '../../shared/syncedBlockPortable'
+import { canonicalSyncedPortableJson, sameHostContent } from '../../shared/syncedBlockPortable'
 import { validateSyncedStructureInput } from '../../shared/syncedBlockInputs'
 import { assertSyncedShape, syncedPlainRecord, isSyncedBlockId, isSyncedUuid, parseSyncedBlockPayload, validateSyncedHostForest, validateSyncedOrigin } from '../../shared/syncedBlockValidation'
 import type { SyncedHostHistoryBranchRow } from './synced-host-history-branch'
@@ -66,12 +66,7 @@ export function hostJournalKind(row: Readonly<SyncedHostHistoryBranchRow>): 'hos
   // to the decoder. A legacy bare create is recognized but never reinterpreted.
   return syncedPlainRecord(action) && action.kind === 'host-command' ? 'host-command' : 'host-final'
 }
-/** Storage has one explicit empty-tag representation; no authored text or
- * nonempty metadata is changed by this comparison. Hashes retain the exact DTO. */
-export function sameHostContent(left: HostContent, right: HostContent): boolean {
-  const physical = (content: HostContent) => ({ ...content, blocks: content.blocks.map(block => ({ ...block, tags: block.tags ?? [] })) })
-  return hostEqual(physical(left), physical(right))
-}
+export { sameHostContent }
 const matchingHosts = (left: readonly HostSide[], right: readonly HostSide[]) => {
   const ids = new Set(right.map(item => item.documentId))
   return left.length === right.length && left.every(item => ids.has(item.documentId))

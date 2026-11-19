@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { constants, fstatSync, lstatSync, readdirSync, realpathSync, type BigIntStats } from 'node:fs'
 import { lstat, open, readdir, rename, unlink } from 'node:fs/promises'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
-import { assertRestoreAssetTransferState4, publishRestoreAssetTransfer4, reopenRestoreAssetTransfer4,
+import { assertReopenedRestoreAssetTransferState4, assertRestoreAssetTransferState4, publishRestoreAssetTransfer4, reopenRestoreAssetTransfer4,
   rollbackRestoreAssetTransfer4 } from './restore-asset-transfer4'
 import { capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { RESTORE_FENCE, assertRestorePath, canonicalRestoreRoot, isSameRestoreOpenFileIdentity, readRestoreText, restoreExists, restorePaths,
@@ -247,7 +247,7 @@ async function assertPristine(intent: JointRestoreIntent4, p: Paths) {
     || archive.inventory.some(file => file.present) || await restoreExists(p.candidateDisplaced)) return fail('旧 SQL 身份变化或归档已有占用')
   await assertClosedStage(p)
   assertMatches(await readFile(p.stage, 'knowbook.db', p.root, intent.candidateInventory[0]), intent.candidateInventory[0], intent.candidateIdentity)
-  await assertRestoreAssetTransferState4(await openTransfer(intent), 'pristine')
+  await assertTransferPhase(intent, 'pristine')
 }
 
 export async function prepareJointRestoreIntent4(input: { profileRoot: string; operationId: string; current: Inventory;
@@ -270,6 +270,10 @@ export async function prepareJointRestoreIntent4(input: { profileRoot: string; o
 
 const openTransfer = async (intent: JointRestoreIntent4) =>
   (await reopenRestoreAssetTransfer4(intent.profileRoot, intent.operationId, intent.assetTransferId, intent.assetManifestHash)).transfer
+
+function assertTransferPhase(intent: JointRestoreIntent4, expected: 'pristine' | 'published') {
+  return assertReopenedRestoreAssetTransferState4(intent.profileRoot, intent.operationId, intent.assetTransferId, intent.assetManifestHash, expected)
+}
 
 async function pinParent(intent: JointRestoreIntent4, p: Paths) {
   const present = await restoreExists(p.fence)
@@ -439,10 +443,10 @@ async function recover(root: string, checks: JointRestoreChecks4): Promise<Resul
     || fence.phase === 'installed' && journal.phase !== 'installed') return fail('联合 intent、fence、journal 阶段不闭合')
   if (journal.phase === 'installed') {
     await assertMoved(intent, p)
-    await assertRestoreAssetTransferState4(await openTransfer(intent), 'published')
+    await assertTransferPhase(intent, 'published')
     await checks.assertInstalled(intent, 'committing')
     return withMovedSqlWitness(intent, p, async assertSql => {
-      await assertRestoreAssetTransferState4(await openTransfer(intent), 'published')
+      await assertTransferPhase(intent, 'published')
       return finish(intent, p, fence, journal, 'installed', assertSql)
     })
   }
@@ -457,7 +461,7 @@ async function recover(root: string, checks: JointRestoreChecks4): Promise<Resul
   if (journal.phase === 'moving') await writeRestoreJson(p.journal, rolling, root)
   await rollbackRestoreAssetTransfer4(transfer)
   await rollbackSql(intent, p)
-  await assertRestoreAssetTransferState4(await openTransfer(intent), 'pristine')
+  await assertTransferPhase(intent, 'pristine')
   return finish(intent, p, fence, rolling, 'rolled-back')
 }
 

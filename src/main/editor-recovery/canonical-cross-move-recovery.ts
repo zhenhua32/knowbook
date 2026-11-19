@@ -10,40 +10,46 @@ import { readHistoricalExactRows, type HistoricalOperationRow } from '../databas
 import { readStrictHostDocument } from '../database/synced-host-document-read'
 import { isHostMoveInput } from '../database/synced-host-move-plan'
 import { isHostMoveBatchInput } from '../database/synced-host-cross-move-batch-plan'
-import { readCanonicalBatchCrossMoveOriginalOwned, readCanonicalBatchMoveSelection, readCanonicalCrossMoveOriginal4Owned,
+import { readCanonicalBatchCrossMoveOriginalOwned, readCanonicalBatchMoveReferences, readCanonicalCrossMoveOriginal4Owned,
   readCanonicalLinkedCrossMoveOriginalOwned } from './canonical-cross-move-original4'
 import { attestEditorRecoveryPendingOwned, readEditorRecoveryPendingRequest } from './pending-original'
 
-export function readCanonicalCrossMoveRequest(base: EditorRecoveryBase, draft: EditorRecoveryDraftInput) {
+export function readCanonicalCrossMoveRequests(base: EditorRecoveryBase, draft: EditorRecoveryDraftInput) {
   const [pending] = draft.pending
   if (base.owner.kind !== 'host' || draft.pending.length !== 1 || pending.method !== 'applySyncedHostStructure'
-    || draft.composing || draft.importing || draft.sources.length) return undefined
+    || draft.composing || draft.importing || draft.sources.length) return []
   const input = readEditorRecoveryPendingRequest(pending)
-  if (!('mode' in input) || input.hostsWorkingBefore.length < 2) return undefined
-  const command = isHostMoveBatchInput(input) ? { kind: 'batch' as const, input, selected: readCanonicalBatchMoveSelection(input) }
-    : isHostMoveInput(input) ? { kind: 'single' as const, input, selected: input.action } : undefined
-  if (!command?.selected) return undefined
-  if (command.kind === 'batch' && (draft.replayJson !== undefined || draft.canonicalReadOwnerId !== undefined)) return undefined
-  const { selection, target } = command.selected, { selectedRootIds } = selection
+  if (!('mode' in input) || input.hostsWorkingBefore.length < 2) return []
+  const commands = isHostMoveBatchInput(input) ? (readCanonicalBatchMoveReferences(input) ?? [])
+    .map(selected => ({ kind: 'batch' as const, input, selected }))
+    : isHostMoveInput(input) ? [{ kind: 'single' as const, input, selected: input.action }] : []
   const initiatorId = base.owner.documentId
-  if (command.kind === 'batch' && selectedRootIds.length !== 1 || selection.documentId === target.documentId) return undefined
-  const movePages = new Set(command.kind === 'batch' ? command.input.action.moves.flatMap(move => [move.selection.documentId, move.target.documentId])
-    : [selection.documentId, target.documentId])
-  if (command.kind === 'batch' ? !command.input.action.moves.some(move => move.selection.documentId === initiatorId)
-    : selection.documentId !== initiatorId) return undefined
   const initiator = input.hostsWorkingBefore.find(host => host.documentId === initiatorId)
-  const source = input.hostsWorkingBefore.find(host => host.documentId === selection.documentId)
-  if (!source || initiator?.expectedPersistedUpdatedAt !== base.owner.updatedAt
-    || !input.hostsWorkingBefore.some(host => host.documentId === target.documentId)) return undefined
-  const block = readProtectedCrossMoveReference(source.workingBefore.blocks, selectedRootIds)
-  if (!block || (selectedRootIds.length !== 1 || block.id !== selectedRootIds[0]) && input.hostsWorkingBefore.length !== 2) return undefined
-  const { groupId } = parseSyncedBlockPayload(block.content)
-  const binding = input.expectedInstances.find(instance => instance.instanceId === block.id && instance.hostDocumentId === selection.documentId)
-  const guard = input.groups.find(group => group.groupId === groupId)
-  if (!binding || !guard) return undefined
-  const dependencyDocumentIds = input.hostsWorkingBefore.filter(host => !movePages.has(host.documentId))
-    .map(host => host.documentId).sort()
-  return { ...command, pending, groupId, binding, guard, selectedRootIds, targetDocumentId: target.documentId, dependencyDocumentIds }
+  if (initiator?.expectedPersistedUpdatedAt !== base.owner.updatedAt) return []
+  return commands.flatMap(command => {
+    const { selection, target } = command.selected, { selectedRootIds } = selection
+    if (selection.documentId === target.documentId || (command.kind === 'batch'
+      ? draft.replayJson !== undefined || draft.canonicalReadOwnerId !== undefined
+        || !command.input.action.moves.some(move => move.selection.documentId === initiatorId)
+      : selection.documentId !== initiatorId)) return []
+    const source = input.hostsWorkingBefore.find(host => host.documentId === selection.documentId)
+    if (!source || !input.hostsWorkingBefore.some(host => host.documentId === target.documentId)) return []
+    const block = readProtectedCrossMoveReference(source.workingBefore.blocks, selectedRootIds)
+    if (!block || (selectedRootIds.length !== 1 || block.id !== selectedRootIds[0]) && input.hostsWorkingBefore.length !== 2) return []
+    const { groupId } = parseSyncedBlockPayload(block.content)
+    const binding = input.expectedInstances.find(instance => instance.instanceId === block.id && instance.hostDocumentId === selection.documentId)
+    const guard = input.groups.find(group => group.groupId === groupId)
+    if (!binding || !guard) return []
+    const movePages = new Set(command.kind === 'batch' ? command.input.action.moves.flatMap(move => [move.selection.documentId, move.target.documentId])
+      : [selection.documentId, target.documentId])
+    const dependencyDocumentIds = input.hostsWorkingBefore.filter(host => !movePages.has(host.documentId))
+      .map(host => host.documentId).sort()
+    return [{ ...command, pending, groupId, binding, guard, selectedRootIds, targetDocumentId: target.documentId, dependencyDocumentIds }]
+  })
+}
+
+export function readCanonicalCrossMoveRequest(base: EditorRecoveryBase, draft: EditorRecoveryDraftInput, groupId: string) {
+  return readCanonicalCrossMoveRequests(base, draft).find(move => move.groupId === groupId)
 }
 
 function originalBaseline(db: Database.Database, group: EditorRecoveryRecord) {
@@ -115,11 +121,11 @@ export function readCanonicalCrossMoveRecoveryOwned(db: Database.Database, host:
 }
 
 function readCanonicalCrossMoveEvidenceOwned(db: Database.Database, host: EditorRecoveryRecord, group: EditorRecoveryRecord) {
-  const link = host.crossMoveGroupHead, hostOwner = host.base.owner
-  if (!db.inTransaction || !link || hostOwner.kind !== 'host' || group.recordId !== link.recordId
+  const link = host.crossMoveGroupHead, hostOwner = host.base.owner, groupOwner = group.base.owner
+  if (!db.inTransaction || !link || hostOwner.kind !== 'host' || groupOwner.kind !== 'group' || group.recordId !== link.recordId
     || group.draft.draftSessionId !== link.draftSessionId || group.draft.generation !== link.generation
     || host.base.workspaceScope !== group.base.workspaceScope || host.base.recoveryEpoch !== group.base.recoveryEpoch) return undefined
-  const move = readCanonicalCrossMoveRequest(host.base, host.draft), original = originalBaseline(db, group)
+  const move = readCanonicalCrossMoveRequest(host.base, host.draft, groupOwner.groupId), original = originalBaseline(db, group)
   if (!move || !original) return undefined
   const [attested] = attestEditorRecoveryPendingOwned(db, host)
   if (attested?.status !== 'committed-attested') return undefined

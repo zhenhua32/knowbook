@@ -73,9 +73,9 @@ export function readCanonicalLinkedCrossMoveOriginalOwned(db: Database.Database,
   return readCanonicalCrossMoveOriginalOwned(db, input, true)
 }
 
-/** A batch can carry a single direct reference and an independent ordinary
- * root. The actual persisted transfer set is checked by the journal reader. */
-export function readCanonicalBatchMoveSelection(input: HostMoveBatchInput) {
+/** Only direct selected references can be the owner of the protected draft.
+ * The original journal also checks the complete set of physical transfers. */
+export function readCanonicalBatchMoveReferences(input: HostMoveBatchInput) {
   const moves = input.action.moves
   if (moves.length !== 2 || moves[0].selection.documentId === moves[1].selection.documentId
     || moves.some(({ selection, target }) => selection.selectedRootIds.length !== 1 || target.parentBlockId !== null || target.depth !== 0)) return undefined
@@ -87,10 +87,10 @@ export function readCanonicalBatchMoveSelection(input: HostMoveBatchInput) {
     if (!leaf) return undefined
     if (leaf.type === 'synced-block') {
       if (leaf.parentBlockId !== null || leaf.depth !== 0) return undefined
-      references.push(move)
+      references.push({ ...move, instanceId: leaf.id, groupId: parseSyncedBlockPayload(leaf.content).groupId })
     }
   }
-  return references.length === 1 ? references[0] : undefined
+  return references.length && new Set(references.map(reference => reference.groupId)).size === references.length ? references : undefined
 }
 
 export function readCanonicalBatchCrossMoveJournal(row: Readonly<SyncedHostHistoryBranchRow>) {
@@ -98,15 +98,18 @@ export function readCanonicalBatchCrossMoveJournal(row: Readonly<SyncedHostHisto
   const version = syncedPlainRecord(wire) ? wire.version : undefined
   if (version !== 8 && version !== 12) throw new CrossMoveJournalError()
   const original = (version === 8 ? decodeCrossHostJournal8 : decodeCrossHostJournal12)(row)
-  const selected = readCanonicalBatchMoveSelection(original.input)
-  if (!selected) throw new CrossMoveJournalError()
-  const [instanceId] = selected.selection.selectedRootIds
+  const references = readCanonicalBatchMoveReferences(original.input)
+  if (!references) throw new CrossMoveJournalError()
   const transfers = new Map(original.crossMove.transfers.map(move => [move.blockId, move]))
-  const protectedTransfer = transfers.get(instanceId)
-  const references = original.persisted.flatMap(page => page.content.blocks.filter(block => block.type === 'synced-block' && transfers.has(block.id)))
-  if (references.length !== 1 || references[0].id !== instanceId || references[0].parentBlockId !== null || references[0].depth !== 0
-    || protectedTransfer?.from !== selected.selection.documentId || protectedTransfer.to !== selected.target.documentId) throw new CrossMoveJournalError()
-  return { original, version, selected }
+  const leaves = new Map(original.persisted.flatMap(page => page.content.blocks.filter(block => block.type === 'synced-block' && transfers.has(block.id))
+    .map(leaf => [leaf.id, { leaf, documentId: page.documentId }] as const)))
+  if (leaves.size !== references.length || references.some(({ instanceId, groupId, selection, target }) => {
+    const persisted = leaves.get(instanceId), transfer = transfers.get(instanceId)
+    return !persisted || persisted.documentId !== selection.documentId || persisted.leaf.parentBlockId !== null || persisted.leaf.depth !== 0
+      || parseSyncedBlockPayload(persisted.leaf.content).groupId !== groupId
+      || transfer?.from !== selection.documentId || transfer.to !== target.documentId
+  })) throw new CrossMoveJournalError()
+  return { original, version, references }
 }
 
 function sameCapturedHost(value: EditorRecoveryWorking, content: HostContent): boolean {
@@ -198,8 +201,7 @@ function readCanonicalCrossMoveOriginalOwned(db: Database.Database, input: unkno
   if (!operation || operation.client_operation_id !== operationId || operation.request_hash !== requestHash
     || Date.parse(point.capturedAt) > Date.parse(operation.created_at)) return fail()
   const receipt = decodeMainHostOperationWithHeadingBirthOwned2(db, operation)
-  if ('createdLifecycle' in receipt || !receipt.historyToken || receipt.operationId !== operationId
-    || receipt.affectedInstanceIds.length !== 1) return fail()
+  if ('createdLifecycle' in receipt || !receipt.historyToken || receipt.operationId !== operationId) return fail()
   const [row] = readHistoricalTextRows<SyncedHostHistoryBranchRow>(db, 'synced_host_history', journalFields, 'id=?', [receipt.historyToken])
   if (!row || row.id !== receipt.historyToken || row.created_at !== operation.created_at
     || readSyncedRecoveryHostCut(db, row.id) || readSyncedExchangeHostCut(db, row.id)) return fail()
@@ -209,13 +211,17 @@ function readCanonicalCrossMoveOriginalOwned(db: Database.Database, input: unkno
   const original = batch?.original ?? single
   if (!original) return fail()
   const initiatingPage = batchHost && batch && readCanonicalBatchInitiatingHost(batch.original, batchHost)
-  if (batch && (!initiatingPage || batch.selected.selection.selectedRootIds[0] !== movedReferenceId)) return fail()
+  const groupId = source.wire.id
+  const affected = new Set(receipt.affectedInstanceIds)
+  const batchSelection = batch?.references.find(reference => reference.instanceId === movedReferenceId && reference.groupId === groupId)
+  if (batch ? !initiatingPage || !batchSelection || affected.size !== batch.references.length || batch.references.some(ref => !affected.has(ref.instanceId))
+    || receipt.groups.length !== original.groups.length || original.groups.some(group => !receipt.groups.some(record => record.groupId === group.groupId))
+    : affected.size !== 1 || movedReferenceId !== undefined && !affected.has(movedReferenceId)) return fail()
   if (original.input.clientOperationId !== operationId || requestHash !== hostHash({ method: 'applySyncedHostCommand', input: original.input })
     || !crossMoveReceiptMatches(receipt, original, row.id) || !matchesCrossMovePlaceholder(db, original, true)
-    || movedReferenceId !== undefined && receipt.affectedInstanceIds[0] !== movedReferenceId
     || movedReferenceId !== undefined && single && !matchesCanonicalV4CrossMoveForest(single, movedReferenceId)) return fail()
 
-  const groupId = source.wire.id, instanceId = receipt.affectedInstanceIds[0]
+  const instanceId = batchSelection?.instanceId ?? receipt.affectedInstanceIds[0]
   const dependency = original.groups.find(group => group.groupId === groupId)
   const guard = original.input.groups.find(group => group.groupId === groupId)
   const transfer = original.crossMove.transfers.find(move => move.blockId === instanceId)
@@ -265,10 +271,28 @@ function readCanonicalCrossMoveOriginalOwned(db: Database.Database, input: unkno
       }
       assertNoOutsideCrossMoveLinks(db, page.path, batch.original.crossMove.transfers, participants)
     }
+    for (const reference of batch.references) {
+      if (reference.instanceId === instanceId) continue
+      const { groupId, instanceId: id, selection, target } = reference
+      const guard = original.input.groups.find(item => item.groupId === groupId)
+      const binding = original.input.expectedInstances.find(item => item.instanceId === id)
+      const stamp = original.groups.find(item => item.groupId === groupId)
+      const recorded = receipt.groups.find(item => item.groupId === groupId)
+      const [current] = getSyncedGroupSnapshots(db, { groupIds: [groupId] }).items
+      const nextBinding = recorded?.instances.find(item => item.instanceId === id)
+      const leaf = currentHosts.get(target.documentId)?.content.blocks.find(block => block.id === id)
+      if (!guard || !binding || !stamp || !recorded || current?.status !== 'ready' || !hostEqual(current.snapshot, recorded)
+        || recorded.creationId !== stamp.creationId || recorded.createdAt !== stamp.createdAt || !hostEqual(recorded.origin, stamp.origin)
+        || recorded.revision !== guard.expectedRevision || recorded.topologyRevision === guard.expectedTopologyRevision
+        || binding.hostDocumentId !== selection.documentId || !nextBinding || nextBinding.hostDocumentId !== target.documentId
+        || nextBinding.bindingVersion === binding.bindingVersion || nextBinding.parentBlockId !== null || nextBinding.parentType !== null || nextBinding.depth !== 0
+        || leaf?.type !== 'synced-block' || leaf.parentBlockId !== null || leaf.depth !== 0 || parseSyncedBlockPayload(leaf.content).groupId !== groupId) return fail()
+    }
   }
   const stationaryPages = batch?.original.persisted ?? (linked?.version === 11 ? linked.dependents : [])
   if (stationaryPages.length) {
-    const stationary = stationaryPages.flatMap(page => page.content.blocks.filter(block => block.type === 'synced-block' && block.id !== instanceId)
+    const movedGroups = new Set(batch?.references.map(reference => reference.groupId))
+    const stationary = stationaryPages.flatMap(page => page.content.blocks.filter(block => block.type === 'synced-block' && !affected.has(block.id))
       .map(block => ({ page, block, groupId: parseSyncedBlockPayload(block.content).groupId })))
     const ids = [...new Set(stationary.map(item => item.groupId))]
     const currentGroups = getSyncedGroupSnapshots(db, { groupIds: ids }).items
@@ -279,13 +303,20 @@ function readCanonicalCrossMoveOriginalOwned(db: Database.Database, input: unkno
     const instanceGuards = new Map(original.input.expectedInstances.map(guard => [guard.instanceId, guard]))
     const identities = new BlockIdentityRepository(db)
     for (const { page, block, groupId: stationaryGroupId } of stationary) {
-      const group = actual.get(stationaryGroupId), stamp = incarnation.get(stationaryGroupId), expectedGroup = groupGuards.get(stationaryGroupId)
+      const group = actual.get(stationaryGroupId), originalGroup = recorded.get(stationaryGroupId)
+      const stamp = incarnation.get(stationaryGroupId), expectedGroup = groupGuards.get(stationaryGroupId)
       const guard = instanceGuards.get(block.id), binding = group?.instances.find(item => item.instanceId === block.id)
       const birth = page.births.find(item => item.blockId === block.id)?.createdAt
       const physical = identities.get(block.id), parentType = page.content.blocks.find(item => item.id === block.parentBlockId)?.type ?? null
-      if (!group || !stamp || !expectedGroup || !birth || !guard || !binding || stationaryGroupId === groupId
-        || !hostEqual(group, recorded.get(stationaryGroupId)) || group.creationId !== stamp.creationId || group.createdAt !== stamp.createdAt
-        || !hostEqual(group.origin, stamp.origin) || group.revision !== expectedGroup.expectedRevision || group.topologyRevision !== expectedGroup.expectedTopologyRevision
+      // A wholly stationary group can save its own body after the move. For
+      // the additional moved group, the batch already checked its exact ACK.
+      if (!group || !originalGroup || !stamp || !expectedGroup || !birth || !guard || !binding || stationaryGroupId === groupId
+        || originalGroup.creationId !== stamp.creationId || originalGroup.createdAt !== stamp.createdAt || !hostEqual(originalGroup.origin, stamp.origin)
+        || originalGroup.revision !== expectedGroup.expectedRevision
+        || !movedGroups.has(stationaryGroupId) && originalGroup.topologyRevision !== expectedGroup.expectedTopologyRevision
+        || group.creationId !== originalGroup.creationId || group.createdAt !== originalGroup.createdAt || !hostEqual(group.origin, originalGroup.origin)
+        || group.topologyRevision !== originalGroup.topologyRevision || !hostEqual(group.instances, originalGroup.instances)
+        || group.revision === originalGroup.revision && !hostEqual(group, originalGroup)
         || guard.hostDocumentId !== page.documentId || binding.hostDocumentId !== page.documentId || binding.bindingVersion !== guard.bindingVersion
         || binding.parentBlockId !== block.parentBlockId || binding.depth !== block.depth || binding.parentType !== parentType
         || currentHosts.get(page.documentId)?.births.get(block.id) !== birth

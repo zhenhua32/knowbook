@@ -803,11 +803,17 @@ class InlineRuntime {
         || prior && (prior.opening.hostSession !== opening.hostSession || prior.key !== key || !same(prior.opening, opening))) return false
       if (!prior) {
         if (!canSubmit()) return false
+        const movingGroupIds = new Set<string>()
         if ('selection' in input && peers.length === 1) {
           protection = this.protectCrossMoveDraft(opening, source, input.selection, peers[0].id)
         } else if ('action' in input && input.action.moves.length === 2 && input.action.moves.every(move => move.selection.selectedRootIds.length === 1)) {
           const currentMove = input.action.moves.find(move => move.selection.documentId === source.id)
           if (currentMove) protection = this.protectCrossMoveDraft(opening, source, currentMove.selection.selectedRootIds, currentMove.target.documentId, true)
+          for (const move of input.action.moves) {
+            const side = input.hostsWorkingBefore.find(item => item.documentId === move.selection.documentId)
+            const leaf = side?.workingBefore.blocks.find(block => block.id === move.selection.selectedRootIds[0])
+            if (leaf?.type === 'synced-block') movingGroupIds.add(parseSyncedBlockPayload(leaf.content).groupId)
+          }
         }
         const pages = [source, ...peers]
         this.observeRecoveryHost()
@@ -822,7 +828,7 @@ class InlineRuntime {
           for (const ref of persisted) ids.add(ref.groupId)
           if (protection) for (const id of ids) {
             const group = this.workspace.getGroup(id)
-            if (!group || id === protection.groupId || stationary.has(id) || clean(group.getSnapshot())) continue
+            if (!group || id === protection.groupId || movingGroupIds.has(id) || stationary.has(id) || clean(group.getSnapshot())) continue
             const retained = this.holdStationaryCrossMoveDraft(opening, group)
             if (retained) stationary.set(id, retained)
           }

@@ -7,7 +7,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import test from 'node:test'
-import { publishRestoreAssetTransfer4, prepareRestoreAssetTransfer4, reopenRestoreAssetTransfer4,
+import { assertReopenedRestoreAssetTransferState4, publishRestoreAssetTransfer4, prepareRestoreAssetTransfer4, reopenRestoreAssetTransfer4,
   rollbackRestoreAssetTransfer4 } from '../src/main/database/restore-asset-transfer4'
 import { restoreExists } from '../src/main/database/restore-safety-files'
 
@@ -36,6 +36,12 @@ test('real asset transfer recovers a process interrupted after one exclusive lin
     const original = await lstat(targets[0], { bigint: true })
     const prepared = await prepareRestoreAssetTransfer4(root, operation, entries)
     const reopened = () => reopenRestoreAssetTransfer4(root, operation, prepared.transferId, prepared.manifestHash)
+    const manifestPath = join(dirname(sourceRoot), 'asset-transfer-v4', prepared.transferId, 'manifest.json')
+    const manifest = await readFile(manifestPath, 'utf8')
+    await writeFile(manifestPath, manifest + '\n')
+    await assert.rejects(assertReopenedRestoreAssetTransferState4(root, operation, prepared.transferId, prepared.manifestHash, 'pristine'), /不是原canonical JSON/)
+    await writeFile(manifestPath, manifest)
+    await assertReopenedRestoreAssetTransferState4(root, operation, prepared.transferId, prepared.manifestHash, 'pristine')
     assert.deepEqual(await Promise.all(targets.map(restoreExists)), [true, false, false])
     const child = fileURLToPath(new URL('./helpers/restore-asset-transfer-crash.mjs', import.meta.url))
     await assert.rejects(run(process.execPath, ['--import', 'tsx', child, root, operation, prepared.transferId, prepared.manifestHash],
@@ -43,6 +49,7 @@ test('real asset transfer recovers a process interrupted after one exclusive lin
     assert.equal((await Promise.all(targets.slice(1).map(restoreExists))).filter(Boolean).length, 1)
     await assert.rejects(reopenRestoreAssetTransfer4(root, operation, prepared.transferId, '0'.repeat(64)), /凭据/)
     await publishRestoreAssetTransfer4((await reopened()).transfer)
+    await assertReopenedRestoreAssetTransferState4(root, operation, prepared.transferId, prepared.manifestHash, 'published')
     assert.equal((await lstat(targets[2])).size, entries[2].bytes)
     assert.deepEqual(await readFile(targets[1]), small)
     assert.equal((await lstat(targets[0], { bigint: true })).ino, original.ino)

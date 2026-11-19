@@ -27,7 +27,7 @@ import { EditorRecoveryDraftStore } from './draft-store'
 import { readHostRecoverySource } from '../../shared/editor-recovery-source'
 import { attestEditorRecoveryPendingOwned } from './pending-original'
 import { canCaptureCanonicalCrossMoveGroupOwned, prepareCanonicalCrossMoveTransferOwned, readCanonicalCrossMoveRecoveryOwned,
-  readCanonicalCrossMoveRequest } from './canonical-cross-move-recovery'
+  readCanonicalCrossMoveRequest, readCanonicalCrossMoveRequests } from './canonical-cross-move-recovery'
 import { captureHostSourcePinsOwned } from './host-source-pins'
 import type { CrossMoveDraftCheck } from '../database/synced-cross-move-draft-guard'
 import { validateSyncedRestoreHostInput, validateSyncedStructureInput } from '../../shared/syncedBlockInputs'
@@ -240,8 +240,8 @@ export class EditorRecoveryDraftService {
     const db = this.store.getUnsafeDatabaseHandle()
     if (db.inTransaction) return undefined
     try {
-      const host = this.side.readBase(hostOwner.base), move = readCanonicalCrossMoveRequest(host, draft)
-      if (!move) return undefined
+      const host = this.side.readBase(hostOwner.base), moves = readCanonicalCrossMoveRequests(host, draft)
+      if (!moves.length) return undefined
       return db.transaction(() => {
         const boundary = this.workspaceOwned()
         if (host.workspaceScope !== boundary.workspaceScope || host.recoveryEpoch !== boundary.recoveryEpoch) return undefined
@@ -249,7 +249,9 @@ export class EditorRecoveryDraftService {
         for (const [draftSessionId, groupOwner] of this.live) {
           if (groupOwner.sender !== hostOwner.sender || groupOwner.frame !== hostOwner.frame || !groupOwner.groupSessionId) continue
           const head = this.side.head(draftSessionId), capture = batch.find(item => item.draftSessionId === draftSessionId)
-          if (!head || capture && capture.generation !== head.expected.generation
+          const owner = head?.record.base.owner
+          const move = owner?.kind === 'group' ? moves.find(item => item.groupId === owner.groupId) : undefined
+          if (!head || !move || capture && capture.generation !== head.expected.generation
             || !canCaptureCanonicalCrossMoveGroupOwned(db, host, move, head.record)) continue
           matching.push({ draftSessionId, ...head.expected })
         }
@@ -572,8 +574,8 @@ export class EditorRecoveryDraftService {
     dispatch: (input: SyncedEditingRequest<'applySyncedHostStructure'>) => SyncedEditingResult<'applySyncedHostStructure'>): ApplyEditorRecoveryCrossMoveResult {
     const frame = this.frame(event), { sessionId, hostHead } = validateApplyEditorRecoveryCrossMoveInput(value)
     const host = this.side.read(hostHead), group = this.side.readCurrentCrossMoveGroup(hostHead)
-    if (!group) return { status: 'rejected' }
-    const move = readCanonicalCrossMoveRequest(host.base, host.draft)
+    if (!group || group.base.owner.kind !== 'group') return { status: 'rejected' }
+    const move = readCanonicalCrossMoveRequest(host.base, host.draft, group.base.owner.groupId)
     if (!move) return { status: 'rejected' }
     const hostId = host.draft.draftSessionId, groupId = group.draft.draftSessionId
     const prior = this.completedCrossMoves.get(hostId), db = this.store.getUnsafeDatabaseHandle()
@@ -602,7 +604,8 @@ export class EditorRecoveryDraftService {
           const single = move.kind === 'single' ? linked?.original ?? decodeCrossHostJournal4(captureCrossHostJournal4(db, move.input, now)) : undefined
           const original = batch?.original ?? single
           if (!original || !hostEqual(original.crossMove.outsideIncoming, dependencyIds)) return false
-          if (batch && !readCanonicalBatchInitiatingHost(batch.original, host)) return false
+          if (batch && (!readCanonicalBatchInitiatingHost(batch.original, host) || !batch.references.some(reference =>
+            reference.instanceId === move.binding.instanceId && reference.groupId === move.groupId))) return false
           const v4 = !linked && single
           const stationary = single ? readCanonicalStationaryInstances(single, move.groupId, move.binding.instanceId) : undefined
           if ((v4 && !matchesCanonicalV4CrossMoveForest(v4, move.binding.instanceId)) || (single && !stationary)) return false

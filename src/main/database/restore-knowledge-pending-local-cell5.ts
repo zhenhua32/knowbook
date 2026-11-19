@@ -1,9 +1,10 @@
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { graph3Conflict, graph3Encode, graph3Key, graph3Rows, type Graph3Inputs } from './restore-knowledge-graph3-data'
-import { withStoredMerge3NavigationFinalIndex3, type Navigation3FinalScope, type Navigation3Table,
-  type StoredNavigation3Index } from './restore-knowledge-navigation3-merge-context'
+import { withStoredMerge3NavigationFinalIndex3, type Navigation3FinalIndex, type Navigation3FinalScope,
+  type Navigation3Table, type StoredNavigation3Index } from './restore-knowledge-navigation3-merge-context'
 import type { deriveRootRestoreNavigationRewrite3 } from './restore-knowledge-navigation3-rewrite-model'
 import type { SelectedPendingLocalBody5 } from './restore-knowledge-pending-local-selection5'
+import { withStoredRestoreScopes } from './restore-knowledge-stored-scopes'
 import { projectWorkingAssetBodyCells5, workingAssetCellPosition5 } from './restore-knowledge-working-asset-cells5'
 
 type Ordinary = ReturnType<typeof deriveRootRestoreNavigationRewrite3>
@@ -12,15 +13,15 @@ const fail = (reason: string): never => graph3Conflict('pending-local-cell-' + r
 const hash = (domain: string, value: unknown) => capsuleBytesHash(domain + '\0' + capsuleJson(value))
 export const pendingLocalCellTextHash5 = (text: string) => hash('knowbook.restore.pending-local-cell-text.v1', text)
 const assetRange = (value: { from: number; to: number; raw: string }, uri: string) => graph3Key(value.from, value.to, value.raw, uri)
+const linkKey = ({ key, url, image, grammar, location }: Navigation3FinalScope['destinations'][number]) => graph3Key(key, url, image, grammar, location)
+type PriorNavigation = Pick<Navigation3FinalScope, 'effectiveDefinitions' | 'uses'> & { readonly linkKeys: ReadonlySet<string> }
 
-function assertNavigationClosure5(previous: Navigation3FinalScope, next: Navigation3FinalScope, occurrence: string,
+function assertNavigationClosure5(previous: PriorNavigation, next: Navigation3FinalScope, occurrence: string,
   selected: SelectedPendingLocalBody5) {
-  const linkKey = ({ key, url, image, grammar, location }: Navigation3FinalScope['destinations'][number]) =>
-    graph3Key(key, url, image, grammar, location)
-  const previousLinks = new Set(previous.destinations.map(linkKey)), nextLinks = new Set(next.destinations.map(linkKey))
-  if ([...previousLinks].some(key => !nextLinks.has(key))) return fail('navigation-would-change')
+  const nextLinks = new Set(next.destinations.map(linkKey))
+  for (const key of previous.linkKeys) if (!nextLinks.has(key)) return fail('navigation-would-change')
   const assets = new Set(selected.assets.map(asset => assetRange(asset, asset.uri)))
-  for (const link of next.destinations) if (!previousLinks.has(linkKey(link))) {
+  for (const link of next.destinations) if (!previous.linkKeys.has(linkKey(link))) {
     if (link.finalOccurrenceKey !== occurrence || !assets.has(assetRange(link.key, link.url))) return fail('new-navigation-destination')
   }
 
@@ -53,7 +54,8 @@ function assertNavigationClosure5(previous: Navigation3FinalScope, next: Navigat
 
 /** The sourceRef is copied from the existing checked business row. This
  * function only substitutes its content cell after validating exact identity. */
-export function applySelectedPendingLocalBody5(data: Graph3Inputs, ordinary: Ordinary, prior: StoredNavigation3Index, selected: SelectedPendingLocalBody5) {
+export function withSelectedPendingLocalBody5<Selection>(data: Graph3Inputs, ordinary: Ordinary, selected: SelectedPendingLocalBody5,
+  read: (index: StoredNavigation3Index, tables: readonly Navigation3Table[]) => Selection) {
   const blocks = ordinary.tables.find(table => table.name === 'blocks') ?? fail('missing-business-table')
   const column = blocks.columns.indexOf('content')
   const rows = blocks.rows.filter(row => row.sourceRef.side === 'source' && row.sourceRef.sourceRowId === selected.sourceRowId)
@@ -61,39 +63,55 @@ export function applySelectedPendingLocalBody5(data: Graph3Inputs, ordinary: Ord
   if (rows.length !== 1 || !target || column < 0 || target.sourceRef.table !== 'blocks'
     || target.sourceRef.materialHash !== selected.sourceMaterialHash || !same(target.cells[column], graph3Encode(selected.before, blocks.encoding))
     || ordinary.edits.some(edit => edit.table === 'blocks' && edit.rowKey === target.key)) return fail('selected-row')
-  const source = data.inputs.source.source.sourceContent
-  const physical = prior.physicalBlocks.find(block => block.rowKey === target.key)
-  const document = physical && prior.documents.find(row => row.id === physical.documentId)
-  const originalDocument = graph3Rows(source, 'documents').find(row => row.value.id === selected.documentId)
-  if (!physical || physical.groupId !== null || physical.birth !== selected.blockBirth || !document || document.birth !== selected.documentBirth
-    || !originalDocument || document.sourceRef.side !== 'source' || document.sourceRef.materialHash !== selected.sourceMaterialHash
-    || document.sourceRef.sourceRowId !== originalDocument.original.sourceRowId) return fail('selected-identity')
+  type NavigationRow = Navigation3FinalIndex['headingNamespaces'][number] | Navigation3FinalIndex['routes'][number]
+  return withStoredRestoreScopes((append: (id: string, row: NavigationRow) => void) =>
+    withStoredMerge3NavigationFinalIndex3(data, ordinary.tables, prior => {
+      const physical = prior.physicalBlocks.find(block => block.rowKey === target.key)
+      const document = physical && prior.documents.find(row => row.id === physical.documentId)
+      const originalDocument = graph3Rows(data.inputs.source.source.sourceContent, 'documents').find(row => row.value.id === selected.documentId)
+      if (!physical || physical.groupId !== null || physical.birth !== selected.blockBirth || !document || document.birth !== selected.documentBirth
+        || !originalDocument || document.sourceRef.side !== 'source' || document.sourceRef.materialHash !== selected.sourceMaterialHash
+        || document.sourceRef.sourceRowId !== originalDocument.original.sourceRowId) return fail('selected-identity')
 
-  const tables = ordinary.tables.map(table => table === blocks ? { ...table, rows: table.rows.map(row => row === target ? {
-    ...row, cells: row.cells.map((cell, index) => index === column ? graph3Encode(selected.after, table.encoding) : cell)
-  } : row) } : table)
-  return withStoredMerge3NavigationFinalIndex3(data, tables, final => {
-    const scopeId = graph3Key('body', document.id)
-    const previousScope = prior.scope(scopeId), nextScope = final.scope(scopeId)
-    const occurrence = nextScope?.blocks.find(block => block.cell.rowKey === target.key)?.occurrenceKey
-    if (!previousScope || !nextScope || !occurrence || !same(prior.headingNamespaces, final.headingNamespaces) || !same(prior.routes, final.routes))
-      return fail('final-heading-or-route')
-    assertNavigationClosure5(previousScope, nextScope, occurrence, selected)
+      const scopeId = graph3Key('body', document.id), scope = prior.scope(scopeId)
+      const navigation = scope && { linkKeys: new Set(scope.destinations.map(linkKey)), effectiveDefinitions: scope.effectiveDefinitions, uses: scope.uses }
+      for (const [ordinal, row] of prior.headingNamespaces.entries()) append(`heading:${ordinal}`, row)
+      for (const [ordinal, row] of prior.routes.entries()) append(`route:${ordinal}`, row)
+      return { blockId: physical.id, blockBirth: physical.birth, documentId: document.id, scopeId, navigation,
+        indexHash: prior.indexHash, headings: prior.headingNamespaces.length, routes: prior.routes.length }
+    }), (prior, evidence) => {
+    const tables = ordinary.tables.map(table => table === blocks ? { ...table, rows: table.rows.map(row => row === target ? {
+      ...row, cells: row.cells.map((cell, index) => index === column ? graph3Encode(selected.after, table.encoding) : cell)
+    } : row) } : table)
+    return withStoredMerge3NavigationFinalIndex3(data, tables, final => {
+      const nextScope = final.scope(prior.scopeId), occurrence = nextScope?.blocks.find(block => block.cell.rowKey === target.key)?.occurrenceKey
+      if (!prior.navigation || !nextScope || !occurrence || prior.headings !== final.headingNamespaces.length || prior.routes !== final.routes.length)
+        return fail('final-heading-or-route')
+      const rows = evidence.iterateEncoded()
+      try {
+        for (const expected of [final.headingNamespaces, final.routes]) for (const item of expected) {
+          const next = rows.next()
+          if (next.done || next.value !== capsuleJson(item)) return fail('final-heading-or-route')
+        }
+        if (!rows.next().done) return fail('final-heading-or-route')
+      } finally { rows.return?.() }
+      assertNavigationClosure5(prior.navigation, nextScope, occurrence, selected)
 
-    const body = { kind: 'pending-working-content' as const, version: 1 as const,
-      choiceHash: hash('knowbook.restore.pending-local-choice.v1', selected.locator), sourceRef: target.sourceRef,
-      targetRowId: target.targetRowId, column: 'content' as const, blockId: physical.id, documentId: document.id,
-      originalBlockId: selected.blockId, originalDocumentId: selected.documentId, scopeSource: selected.scopeSource,
-      contextHash: selected.locator.contextHash, resultHash: selected.locator.localFinalHash, blockBirth: physical.birth,
-      beforeHash: pendingLocalCellTextHash5(selected.before), afterHash: pendingLocalCellTextHash5(selected.after),
-      assets: selected.assets, beforeSyntaxHash: prior.indexHash, afterSyntaxHash: final.indexHash }
-    const proof = freezeCapsuleValue({ ...body, proofHash: hash('knowbook.restore.pending-local-cell-proof.v1', body) })
-    return { tables, proof }
+      const body = { kind: 'pending-working-content' as const, version: 1 as const,
+        choiceHash: hash('knowbook.restore.pending-local-choice.v1', selected.locator), sourceRef: target.sourceRef,
+        targetRowId: target.targetRowId, column: 'content' as const, blockId: prior.blockId, documentId: prior.documentId,
+        originalBlockId: selected.blockId, originalDocumentId: selected.documentId, scopeSource: selected.scopeSource,
+        contextHash: selected.locator.contextHash, resultHash: selected.locator.localFinalHash, blockBirth: prior.blockBirth,
+        beforeHash: pendingLocalCellTextHash5(selected.before), afterHash: pendingLocalCellTextHash5(selected.after),
+        assets: selected.assets, beforeSyntaxHash: prior.indexHash, afterSyntaxHash: final.indexHash }
+      const proof = freezeCapsuleValue({ ...body, proofHash: hash('knowbook.restore.pending-local-cell-proof.v1', body) })
+      return { selection: read(final, tables), proof }
+    })
   })
 }
 
 export function assertPendingLocalCandidateCellOnly5(previous: readonly Navigation3Table[], next: readonly Navigation3Table[],
-  proof: ReturnType<typeof applySelectedPendingLocalBody5>['proof']) {
+  proof: ReturnType<typeof withSelectedPendingLocalBody5>['proof']) {
   if (previous.length !== 12 || next.length !== previous.length) return fail('business-table-closure')
   let changed = false
   for (const [tableIndex, oldTable] of previous.entries()) {

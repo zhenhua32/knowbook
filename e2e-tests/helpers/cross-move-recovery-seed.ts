@@ -9,7 +9,7 @@ import { EditorRecoveryDraftStore } from '../../src/main/editor-recovery/draft-s
 import type { EditorRecoveryDraftInput } from '../../src/shared/editor-recovery-drafts'
 import { syncedCanonicalEdits } from '../../src/shared/syncedBlockValidation'
 import { addV3CrossMoveDependency, addV3OrdinaryListBranch, addV3SameGroupReference, createV3Fixture, keepOnlyV3SourceReference,
-  randomUUID, request } from '../../tests/helpers/synced-backup-v3-fixture'
+  applySyncedHostCommand, createRequest, created, randomUUID, request } from '../../tests/helpers/synced-backup-v3-fixture'
 import { seedHotNestedCrossMove } from '../../tests/helpers/hot-nested-cross-move-fixture'
 
 let nextContentsId = 21
@@ -38,6 +38,7 @@ if (['hot-before-move', 'hot-empty-before-move', 'hot-wiki-before-move', 'hot-v7
   'hot-v10-before-move', 'hot-v11-before-move', 'hot-nested-before-move', 'hot-list-parent-before-move', 'hot-list-parent-target-peer-before-move',
   'hot-list-parent-source-peer-before-move', 'hot-mixed-target-peer-before-move',
   'hot-shared-target-before-move', 'hot-shared-source-before-move', 'hot-batch-before-move', 'hot-mixed-root-pair-before-move',
+  'hot-batch-saved-reference-before-move', 'hot-batch-stationary-saved-before-move',
   'hot-shared-wiki-before-move', 'hot-shared-markdown-before-move', 'hot-shared-multiple-dependencies-before-move',
   'hot-mixed-forest-before-move'].includes(mode)) {
   try {
@@ -48,7 +49,10 @@ if (['hot-before-move', 'hot-empty-before-move', 'hot-wiki-before-move', 'hot-v7
       ? seedHotNestedCrossMove(f, 0, listParent ? 'single-reference' : undefined) : undefined
     const sharedWiki = mode === 'hot-shared-wiki-before-move', sharedMarkdown = mode === 'hot-shared-markdown-before-move'
     const sharedMultiple = mode === 'hot-shared-multiple-dependencies-before-move'
-    const dependencies = mode === 'hot-wiki-before-move' || mode === 'hot-batch-before-move' || sharedWiki ? [addV3CrossMoveDependency(f)]
+    const savedBatchReference = mode === 'hot-batch-saved-reference-before-move'
+    const stationaryBatchDraft = mode === 'hot-batch-stationary-saved-before-move'
+    const batch = mode === 'hot-batch-before-move' || savedBatchReference || stationaryBatchDraft
+    const dependencies = mode === 'hot-wiki-before-move' || batch || sharedWiki ? [addV3CrossMoveDependency(f)]
       : mode === 'hot-v7-before-move' || sharedMarkdown ? [addV3CrossMoveDependency(f, 'markdown', { title: 'V7 Markdown dependency' })]
       : mode === 'hot-v9-before-move' ? [addV3CrossMoveDependency(f, 'wiki', { title: 'V9 outside Wiki' }),
         addV3CrossMoveDependency(f, 'markdown', { title: 'V9 outside Markdown' })]
@@ -60,15 +64,29 @@ if (['hot-before-move', 'hot-empty-before-move', 'hot-wiki-before-move', 'hot-v7
     const sharedTargetId = sharedSourceId && !listSourcePeer || mode === 'hot-shared-target-before-move' || mode === 'hot-list-parent-target-peer-before-move'
       || mode === 'hot-mixed-target-peer-before-move'
       ? addV3SameGroupReference(f, f.targetId) : undefined
-    const stagedSource = mode === 'hot-batch-before-move'
+    const stagedSource: { documentId: string; title: string; blockId: string; savedGroupId?: string } | undefined = batch
       ? { documentId: f.store.createDocument(null), title: 'Independent move source', blockId: randomUUID() } : undefined
     if (stagedSource) f.store.updateDocument(stagedSource.documentId, { title: stagedSource.title, summary: '', blocks: [
       { id: stagedSource.blockId, type: 'paragraph', content: 'The staged ordinary block', depth: 0, parentBlockId: null, checked: false }
     ] })
+    if (stagedSource && savedBatchReference) {
+      const command = createRequest(f.db, { documentId: stagedSource.documentId, selectedRootIds: [stagedSource.blockId] })
+      created(applySyncedHostCommand(f.db, command))
+      stagedSource.blockId = command.action.instanceId
+      stagedSource.savedGroupId = command.action.groupId
+    }
+    const independent = stationaryBatchDraft ? (() => {
+      const input = createRequest(f.db, { documentId: f.hostId, selectedRootIds: [f.hostBodyId] })
+      const result = created(applySyncedHostCommand(f.db, input))
+      const group = result.groups.find(item => item.groupId === input.action.groupId)
+      assert.ok(group)
+      const { id: blockId, content: text } = group.blocks[0]
+      return { instanceId: input.action.instanceId, groupId: input.action.groupId, blockId, text }
+    })() : undefined
     const ordinaryBranch = mode === 'hot-mixed-forest-before-move' ? addV3OrdinaryListBranch(f) : undefined
     writeFileSync(join(f.userDataRoot, 'cross-move-recovery-seed.json'), JSON.stringify({
       groupId: f.groupId, instanceId: f.instanceId, sourceId: f.hostId, targetId: f.targetId, raw: f.raw,
-      primaryId: f.created.groups[0].blocks[0].id, dependencies, placement, sharedSourceId, sharedTargetId, stagedSource,
+      primaryId: f.created.groups[0].blocks[0].id, dependencies, placement, sharedSourceId, sharedTargetId, stagedSource, independent,
       ordinaryRootId: ordinaryBranch || mode === 'hot-mixed-root-pair-before-move' || mode === 'hot-mixed-target-peer-before-move' ? f.hostBodyId : undefined, ordinaryBranch
     }))
   } finally { f.close() }

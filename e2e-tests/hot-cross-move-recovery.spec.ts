@@ -7,14 +7,15 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { expect, test, type JSHandle } from '@playwright/test'
 import type { IpcMainInvokeEvent } from 'electron'
-import type { ApplyEditorRecoveryCrossMoveInput, ApplyEditorRecoveryCrossMoveResult, EditorRecoveryCandidate } from '../src/shared/editor-recovery-drafts'
+import type { ApplyEditorRecoveryCrossMoveInput, ApplyEditorRecoveryCrossMoveResult, EditorRecoveryCandidate, EditorRecoveryExpected,
+  EditorRecoveryReceipt, WriteEditorRecoveryDraftsInput } from '../src/shared/editor-recovery-drafts'
 import type { SyncedEditingRequest } from '../src/shared/synced-editing-session'
 import { closeElectronApp, evaluateInFreshElectronMain, hasBuiltElectronApp, launchElectronApp, relaunchElectronApp, uiText } from './helpers/electron'
-import { appendCanonicalText, inlineInstance, setInlineReading } from './helpers/canonical-inline'
+import { appendCanonicalText, expectCanonicalRow, inlineInstance, setInlineReading } from './helpers/canonical-inline'
 
 test.skip(!hasBuiltElectronApp(), 'The current local Electron bundle must be built')
 type Probe = { moves: ApplyEditorRecoveryCrossMoveResult[]; requests: ApplyEditorRecoveryCrossMoveInput[]; groupWrites: number; methods: string[];
-  errors: string[]; hostCapture: Array<{ linked: boolean; updatedAt: unknown; pending: string | undefined }> }
+  errors: string[]; stationaryDraftsAtMove: EditorRecoveryExpected[]; hostCapture: Array<{ linked: boolean; updatedAt: unknown; pending: string | undefined }> }
 const scenarios = [
   ['hot-before-move', '', false, 0],
   ['hot-empty-before-move', ' after emptying and restarting the source', true, 0],
@@ -30,6 +31,8 @@ const scenarios = [
   ['hot-shared-target-before-move', ' into a page already sharing the same body', false, 0],
   ['hot-shared-source-before-move', ' while the source still displays another reference to the same body', false, 0],
   ['hot-batch-before-move', ' in a batch with a staged ordinary source and a live shared draft', false, 1],
+  ['hot-batch-saved-reference-before-move', ' in a batch with a saved reference and a live shared draft', false, 1],
+  ['hot-batch-stationary-saved-before-move', ' in a batch when an independent draft is saved first', false, 1],
   ['hot-mixed-root-pair-before-move', ' with an ordinary root from the same source', true, 0],
   ['hot-mixed-target-peer-before-move', ' with mixed roots entering a page already sharing the same body', true, 0],
   ['hot-shared-wiki-before-move', ' with a shared reference in both hosts and a Wiki dependency', false, 1],
@@ -48,18 +51,19 @@ for (const [mode, name, emptiesSource, dependencyCount] of scenarios) test(`Move
     sharedSourceId?: string; sharedTargetId?: string; ordinaryRootId?: string
     ordinaryBranch?: { root: string; inner: string; leaf: string }
     placement?: { sourceParentId: string; targetParentId: string; targetDepth: number; forest?: { childId: string; outsideId: string } }
-    stagedSource?: { documentId: string; title: string; blockId: string }
+    stagedSource?: { documentId: string; title: string; blockId: string; savedGroupId?: string }
+    independent?: { groupId: string; instanceId: string; blockId: string; text: string }
     dependencies: Array<{ documentId: string; title: string; before: string; after: string; stationary?: { instanceId: string; groupId: string } }>
   }
   const [dependency] = seed.dependencies
   const stationaryPage = seed.dependencies.find(peer => peer.stationary)
-  const placement = seed.placement, forest = placement?.forest, staged = seed.stagedSource
+  const placement = seed.placement, forest = placement?.forest, staged = seed.stagedSource, independent = seed.independent
   expect(seed.dependencies).toHaveLength(dependencyCount)
   let context = await launchElectronApp({}, { userDataRoot: profile, editorMode: 'markdown' })
   let { app, page } = context
   let passed = false
   const registerProbe = () =>
-    evaluateInFreshElectronMain(app, ({ app, ipcMain }, profile) => {
+    evaluateInFreshElectronMain(app, ({ app, ipcMain }, { profile, independentBlockId }) => {
       if (process.env.KNOWBOOK_E2E_BACKGROUND !== '1' || app.getPath('userData') !== profile) throw new Error('The actual background profile is required')
       const protectedChannel = 'knowbook:apply-editor-recovery-cross-move', sessionChannel = 'knowbook:invoke-synced-editing-session'
       const handlers = (ipcMain as unknown as { _invokeHandlers: Map<string, unknown> })._invokeHandlers
@@ -67,8 +71,22 @@ for (const [mode, name, emptiesSource, dependencyCount] of scenarios) test(`Move
       const invoke = handlers.get(sessionChannel) as (event: IpcMainInvokeEvent, input: SyncedEditingRequest) => unknown
       const journal = handlers.get('knowbook:read-editor-recovery-draft') as (event: IpcMainInvokeEvent, input: ApplyEditorRecoveryCrossMoveInput['hostHead']) => EditorRecoveryCandidate
       if (!move || !invoke) throw new Error('The actual protected Main handlers are required')
-      const probe: Probe = { moves: [], requests: [], groupWrites: 0, methods: [], errors: [], hostCapture: [] }
+      const probe: Probe = { moves: [], requests: [], groupWrites: 0, methods: [], errors: [], hostCapture: [], stationaryDraftsAtMove: [] }
       ;(globalThis as typeof globalThis & { hotMoveProbe: Probe }).hotMoveProbe = probe
+      let stationaryDraft: EditorRecoveryExpected | undefined
+      if (independentBlockId) {
+        const writeChannel = 'knowbook:write-editor-recovery-drafts'
+        const write = handlers.get(writeChannel) as (event: IpcMainInvokeEvent, input: WriteEditorRecoveryDraftsInput) => EditorRecoveryReceipt
+        if (!write) throw new Error('The actual draft writer is required')
+        ipcMain.removeHandler(writeChannel)
+        ipcMain.handle(writeChannel, (event, input: WriteEditorRecoveryDraftsInput) => {
+          const receipt = write(event, input)
+          const draft = input.records.find(record => record.working.kind === 'group' && record.working.blocks.some(block => block.id === independentBlockId))
+          const head = draft && receipt.records.find(record => record.draftSessionId === draft.draftSessionId && record.generation === draft.generation)
+          if (head) stationaryDraft = { recordId: head.recordId, generation: head.generation, hash: head.hash }
+          return receipt
+        })
+      }
       ipcMain.removeHandler(sessionChannel)
       ipcMain.handle(sessionChannel, (event, input: SyncedEditingRequest) => {
         probe.methods.push(input.method)
@@ -78,6 +96,10 @@ for (const [mode, name, emptiesSource, dependencyCount] of scenarios) test(`Move
       ipcMain.removeHandler(protectedChannel)
       ipcMain.handle(protectedChannel, async (event, input: ApplyEditorRecoveryCrossMoveInput) => {
         probe.requests.push(input)
+        if (independentBlockId) {
+          if (!stationaryDraft) throw new Error('The independent dirty group was not durably checkpointed before moving')
+          probe.stationaryDraftsAtMove.push(stationaryDraft)
+        }
         const { record } = journal(event, input.hostHead)
         probe.hostCapture.push({ linked: !!record.crossMoveGroupHead, pending: record.draft.pending[0]?.inputJson,
           updatedAt: record.base.owner.kind === 'host' ? record.base.owner.updatedAt : null })
@@ -88,7 +110,7 @@ for (const [mode, name, emptiesSource, dependencyCount] of scenarios) test(`Move
         if (probe.moves.length === 1 && result.status === 'moved') throw new Error('Test discarded actual committed move reply')
         return result
       })
-    }, profile)
+    }, { profile, independentBlockId: independent?.blockId })
   try {
     await registerProbe()
     const probe = () => evaluateInFreshElectronMain(app, () => (globalThis as typeof globalThis & { hotMoveProbe: Probe }).hotMoveProbe)
@@ -119,10 +141,11 @@ for (const [mode, name, emptiesSource, dependencyCount] of scenarios) test(`Move
       await dialog.locator(`input[value="${seed.targetId}"]`).check()
       return dialog
     }
-    const savedGroup = (hostDocumentId: string, instanceId = seed.instanceId) => page.evaluate(async ({ hostDocumentId, instanceId, groupId }) => {
+    const savedGroup = (hostDocumentId: string, instanceId = seed.instanceId, groupId = seed.groupId) => page.evaluate(async ({ hostDocumentId, instanceId, groupId }) => {
       const actual = await window.knowbook.resolveSyncedInlineInstance({ hostDocumentId, instanceId, groupId })
       return actual.status === 'ready' ? actual.snapshot : null
-    }, { hostDocumentId, instanceId, groupId: seed.groupId })
+    }, { hostDocumentId, instanceId, groupId })
+    const independentGroup = () => independent && savedGroup(seed.sourceId, independent.instanceId, independent.groupId)
     const rows = (documentId: string) => page.evaluate(async id => (await window.knowbook.getDocumentDetail(id))?.blocks ?? [], documentId)
     const sourceRows = () => rows(seed.sourceId)
     const originalMixedRows = seed.ordinaryRootId ? await sourceRows() : []
@@ -153,6 +176,8 @@ for (const [mode, name, emptiesSource, dependencyCount] of scenarios) test(`Move
     const stationary = () => stationaryPage?.stationary ? page.evaluate(input => window.knowbook.resolveSyncedInlineInstance(input),
       { hostDocumentId: stationaryPage.documentId, ...stationaryPage.stationary }) : undefined
     const ordinaryBefore = staged && await rows(staged.documentId)
+    const savedBefore = staged?.savedGroupId && await savedGroup(staged.documentId, staged.blockId, staged.savedGroupId)
+    const otherSavedGroup = () => staged?.savedGroupId ? savedGroup(seed.targetId, staged.blockId, staged.savedGroupId) : null
     if (staged) {
       await open(staged.title)
       const dialog = await chooseMoveTarget(staged.blockId)
@@ -175,6 +200,12 @@ for (const [mode, name, emptiesSource, dependencyCount] of scenarios) test(`Move
     if (seed.sharedTargetId) expect(sharedTarget).toMatchObject({ hostDocumentId: seed.targetId, instanceId: seed.sharedTargetId })
     const initialStationary = await stationary()
     if (stationaryPage) expect(initialStationary?.status).toBe('ready')
+    const independentBefore = await independentGroup()
+    if (mode === 'hot-batch-stationary-saved-before-move' && (!independent || !independentBefore))
+      throw new Error('The batch source must contain the independent group')
+    if (independent) expect(independentBefore?.blocks[0].content).toBe(independent.text)
+    const independentSuffix = ' kept local before restoring the moved draft'
+    let independentSaved = independentBefore
     let resume: JSHandle<() => void> | undefined = await page.evaluateHandle(() => {
       const original = window.setTimeout.bind(window)
       const held = new Set<number>()
@@ -196,7 +227,9 @@ for (const [mode, name, emptiesSource, dependencyCount] of scenarios) test(`Move
       await expect(body).toContainText('hot W')
       await expect(body).not.toContainText('hot Redo')
       if (sharedSource) await expect(inlineInstance(page, sharedSource.instanceId)).toContainText('hot W')
+      if (independent) await appendCanonicalText(page, independent.instanceId, independent.blockId, independent.text, independentSuffix)
       expect(await savedGroup(seed.sourceId)).toEqual(initial)
+      if (independent) expect(await independentGroup()).toEqual(independentBefore)
       const selectedId = forest ? placement!.sourceParentId : seed.instanceId
       const dialog = await chooseMoveTarget(selectedId, seed.ordinaryRootId, originalMovedIds)
       if (placement) {
@@ -226,7 +259,17 @@ for (const [mode, name, emptiesSource, dependencyCount] of scenarios) test(`Move
           { selection: { documentId: seed.sourceId, selectedRootIds: [seed.instanceId] } }
         ] })
         expect(movedOrdinary).toEqual([expect.objectContaining({ type: 'paragraph', content: '' })])
-        expect((await rows(seed.targetId)).find(block => block.id === staged.blockId)).toMatchObject({ content: 'The staged ordinary block' })
+        const moved = (await rows(seed.targetId)).find(block => block.id === staged.blockId)
+        if (staged.savedGroupId) {
+          expect(moved).toMatchObject({ type: 'synced-block' })
+          expect(savedBefore).toBeTruthy()
+          const after = await otherSavedGroup()
+          expect(after?.blocks).toEqual(savedBefore && savedBefore.blocks)
+          expect(after?.revision).toBe(savedBefore && savedBefore.revision)
+          expect(after?.instances).toEqual([expect.objectContaining({ instanceId: staged.blockId, hostDocumentId: seed.targetId })])
+          const applied = settled.moves[0]
+          expect(applied.status === 'moved' && [...applied.result.affectedInstanceIds].sort()).toEqual([staged.blockId, seed.instanceId].sort())
+        } else expect(moved).toMatchObject({ content: 'The staged ordinary block' })
       }
       expect(settled.moves[0].status).toBe('moved')
       expect(settled.moves[0]).toEqual(settled.moves[1])
@@ -240,6 +283,21 @@ for (const [mode, name, emptiesSource, dependencyCount] of scenarios) test(`Move
       expect(await savedGroup(seed.sourceId)).toBeNull()
       const targetGroup = await savedGroup(seed.targetId)
       expect(targetGroup?.revision).toBe(initial?.revision)
+      if (independent) {
+        expect(settled.stationaryDraftsAtMove).toHaveLength(2)
+        expect(settled.stationaryDraftsAtMove[0]).toEqual(settled.stationaryDraftsAtMove[1])
+        const expected = independent.text + independentSuffix
+        const draft = await page.evaluate(head => window.knowbook.readEditorRecoveryDraft(head), settled.stationaryDraftsAtMove[0])
+        expect(draft.record.draft.working).toMatchObject({ kind: 'group', blocks: [expect.objectContaining({ id: independent.blockId, content: expected })] })
+        expect(await independentGroup()).toEqual(independentBefore)
+        const retained = inlineInstance(page, independent.instanceId)
+        await expectCanonicalRow(retained, independent.blockId, expected)
+        await retained.getByRole('button', { name: uiText('Save / retry', '保存／重试'), exact: true }).click()
+        await expect.poll(async () => (await independentGroup())?.blocks[0].content).toBe(expected)
+        independentSaved = await independentGroup()
+        expect(independentSaved?.instances).toEqual(independentBefore?.instances)
+        expect(independentSaved?.revision).not.toBe(independentBefore?.revision)
+      }
       if (sharedTarget) expect(targetGroup?.instances.find(item => item.instanceId === sharedTarget.instanceId)).toEqual(sharedTarget)
       if (sharedSource) {
         const survivor = inlineInstance(page, sharedSource.instanceId), survivorBody = survivor.locator('.ProseMirror[contenteditable="true"]')
@@ -280,6 +338,7 @@ for (const [mode, name, emptiesSource, dependencyCount] of scenarios) test(`Move
         if (forest) await expectForest('target')
         for (const peer of seed.dependencies) expect(await dependencyLink(peer.documentId)).toBe(peer.after)
         expect(await stationary()).toEqual(initialStationary)
+        if (independent) expect(await independentGroup()).toEqual(independentSaved)
       }
       await open('V3 Target')
       const movedOccurrence = inlineInstance(page, seed.instanceId), movedBody = movedOccurrence.locator('.ProseMirror[contenteditable="true"]')
@@ -293,7 +352,7 @@ for (const [mode, name, emptiesSource, dependencyCount] of scenarios) test(`Move
       await page.getByRole('button', { name: /检查保留的编辑草稿|Review retained editor drafts/ }).click()
       const panel = page.getByRole('dialog', { name: uiText('Retained editor drafts', '保留的编辑草稿'), exact: true })
       const sourceCards = panel.getByRole('button', { name: /V3 Host/ })
-      if (sharedSource) {
+      if (sharedSource || independent) {
         const address = settled.requests[0].hostHead
         const listed = await page.evaluate(() => window.knowbook.listEditorRecoveryDrafts({ limit: 20 }))
         const cards = listed.records.filter(item => item.displayTitle === 'V3 Host')
@@ -311,6 +370,10 @@ for (const [mode, name, emptiesSource, dependencyCount] of scenarios) test(`Move
       await panel.getByRole('button', { name: uiText('Restore', '恢复'), exact: true }).click()
       await expect(panel).toHaveCount(0)
       await expect(movedBody).toContainText('hot W')
+      if (savedBefore && staged) {
+        expect((await otherSavedGroup())?.blocks).toEqual(savedBefore.blocks)
+        await expect(inlineInstance(page, staged.blockId)).toContainText('The staged ordinary block')
+      }
       if (sharedSource) await expect(movedBody).not.toContainText('survivor local W')
       await movedOccurrence.getByRole('button', { name: uiText('Redo', '重做'), exact: true }).click()
       await expect(movedBody).toContainText('hot Redo')
@@ -330,6 +393,7 @@ for (const [mode, name, emptiesSource, dependencyCount] of scenarios) test(`Move
         if (staged) {
           await expect.poll(() => rows(staged.documentId)).toEqual(ordinaryBefore)
           expect((await rows(seed.targetId)).some(block => block.id === staged.blockId)).toBe(false)
+          if (independent) expect(await independentGroup()).toEqual(independentSaved)
         }
         if (placeholder) await expect.poll(async () => (await sourceRows()).map(row => row.id)).toEqual(originalMovedIds)
         if (seed.ordinaryRootId) await expectedMixedRows(seed.sourceId)
@@ -346,6 +410,7 @@ for (const [mode, name, emptiesSource, dependencyCount] of scenarios) test(`Move
         if (staged) {
           await expect.poll(() => rows(staged.documentId)).toEqual(movedOrdinary)
           expect((await rows(seed.targetId)).some(block => block.id === staged.blockId)).toBe(true)
+          if (independent) expect(await independentGroup()).toEqual(independentSaved)
         }
         if (placeholder) await expect.poll(sourceRows).toEqual([placeholder])
         if (seed.ordinaryRootId) await expectedMixedRows(seed.targetId)
