@@ -10,7 +10,7 @@ import { readRootKnowledgeConservationContent3, readRootKnowledgeConservationCon
   type ReopenedRootKnowledgeInputs5, type PreparedRootKnowledgeInputs5,
   type RootKnowledgeConservationPlan3 } from './restore-knowledge-root3-read'
 import { deriveRootRestoreIdentityPlan3, identity3Invalid, type Identity3Kernel, type Identity3Inputs } from './restore-knowledge-identity3-model'
-import { deriveExactV3RepeatProof, type ExactV3RepeatProof } from './restore-knowledge-v3-repeat-proof'
+import { deriveExactV3RepeatProof, projectV3RepeatReference5, type ExactV3RepeatProof } from './restore-knowledge-v3-repeat-proof'
 import type { RestoreKnowledgePriorInstall } from './restore-knowledge-install-proof'
 
 export interface RootRestoreIdentityPlan3 { readonly kind: 'main-root-restore-identity-plan' }
@@ -78,11 +78,12 @@ async function readExactV3Repeat(location: Location, inputs: Identity3Inputs, in
     if (actual.sourceArchive.snapshotId !== archive.backupV3.snapshotId) continue
     if (actual.sourceArchive.inventoryHash !== archive.backupV3.inventoryHash)
       return identity3Invalid('同一 V3 snapshotId 的已安装清单哈希不同')
-    const reference = await actual.readReferenceInputs()
-    const proof = deriveExactV3RepeatProof(inputs, reference, entry)
-    if (!proof) return identity3Invalid('已安装凭据与真实 V3 原件不一致')
-    return { proof, prior, sourceMaterialHash: inputs.source.materialHash, currentMaterialHash: inputs.current.materialHash,
-      assertPlanManifests: reference.assertPlanManifests }
+    return actual.withReferenceOriginalRows(projectV3RepeatReference5, async reference => {
+      const proof = deriveExactV3RepeatProof(inputs, reference, entry)
+      if (!proof) return identity3Invalid('已安装凭据与真实 V3 原件不一致')
+      return { proof, prior, sourceMaterialHash: inputs.source.materialHash, currentMaterialHash: inputs.current.materialHash,
+        assertPlanManifests: reference.assertPlanManifests }
+    })
   }
 }
 async function assertOwnedRepeat(saved: Saved, inputs: Identity3Inputs, manifest: Manifest) {

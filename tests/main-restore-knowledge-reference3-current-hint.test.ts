@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { graph3Text } from '../src/main/database/restore-knowledge-graph3-data'
+import { withStoredRestoreAllocationValues } from '../src/main/database/restore-knowledge-allocation-values'
 import { prepareRootRestoreIdentityPlan3 } from '../src/main/database/restore-knowledge-identity3-read'
 import { prepareRootRestoreReferencePlan3 } from '../src/main/database/restore-knowledge-reference3-read'
 import { resolveMarkdownDocumentPath } from '../src/shared/markdownLinks'
@@ -17,6 +18,21 @@ function rows(value: Value, name: string) {
       : cell[0] === 'integer' ? BigInt(cell[1]) : cell[0] === 'real-ieee754-le' ? Buffer.from(cell[1], 'hex').readDoubleLE() : Buffer.from(cell[1], 'base64')]
   })) as Record<string, unknown> }))
 }
+
+test('restore allocation uses exact original string membership and separates block, guard and time evidence', () => {
+  const evidence = ['A\u0000值', 'a\u0000值', '\ud800', '\ufffd']
+  withStoredRestoreAllocationValues(values => {
+    for (const text of evidence) assert.equal(values.add('identity', text), true)
+    for (const text of evidence) assert.equal(values.add('identity', text), false)
+    assert.equal(values.has('identity', 'A'), false)
+    assert.equal(values.has('current-physical-block', evidence[0]), false)
+    assert.equal(values.add('current-physical-block', evidence[0]), true)
+    assert.equal(values.has('document-time', evidence[0]), false)
+    assert.equal(values.add('document-time', evidence[0]), true)
+    assert.equal(values.has('document-time', evidence[0]), true)
+  })
+  withStoredRestoreAllocationValues(values => assert.equal(values.has('identity', evidence[0]), false))
+})
 
 test('a retained current canonical definition keeps its actual live same-birth target despite a stale missing hint', () =>
   withReference3CurrentHintFixture(async f => {

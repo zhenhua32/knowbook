@@ -21,6 +21,7 @@ import { assertMerge3JsonBudget } from './restore-knowledge-merge3-storage'
 import { deriveSelectedPendingLocalBody5, parsePendingLocalComponentLocator5,
   type PendingLocalComponentLocator5, type SelectedPendingLocalBody5 } from './restore-knowledge-pending-local-selection5'
 import { assertPendingLocalCandidateCellOnly5 } from './restore-knowledge-pending-local-cell5'
+import { withReferenceOriginalRows5, type ReferenceOriginalRows5 } from './restore-knowledge-reference-original-rows5'
 
 export interface RootRestoreReferencePlan3 { readonly kind: 'main-root-restore-reference-plan' }
 type BaseLocation = Awaited<ReturnType<typeof readRootRestoreIdentityPlanLocation3>>
@@ -302,7 +303,7 @@ function reopenedReference(saved: Saved, value: Reference3Value) {
 
 /** Read a single cold Reference3 against both pinned plans and the complete
  * original package. The caller separately authenticates the installed pin. */
-export async function readRootRestoreReferenceFromQualified5(
+async function readRootRestoreReferenceFromQualified5(
   qualified: Parameters<typeof withReopenedRootKnowledgeConservationInputs5>[0],
   identity: Parameters<typeof withReopenedRootRestoreIdentityInputs5>[2],
   reference: Parameters<typeof reopenRootRestoreReferencePlan3>[1]): Promise<ColdRootRestoreReferenceInputs5> {
@@ -315,6 +316,23 @@ export async function readRootRestoreReferenceFromQualified5(
         await readBaseLocation(saved)
       } })
     }))
+}
+
+/** Historical consumers work with the rows of this exact checked invocation.
+ * Only their selected projection leaves the cold Reference3 producer. */
+export async function withRootRestoreReferenceOriginalRowsFromQualified5<Projection, Result>(
+  qualified: Parameters<typeof readRootRestoreReferenceFromQualified5>[0],
+  identity: Parameters<typeof readRootRestoreReferenceFromQualified5>[1],
+  reference: Parameters<typeof readRootRestoreReferenceFromQualified5>[2],
+  project: (checked: ColdRootRestoreReferenceInputs5,
+    rows: Readonly<{ source: ReferenceOriginalRows5; current: ReferenceOriginalRows5 }>) => Projection,
+  read: (projection: Projection) => Promise<Result>) {
+  return withReferenceOriginalRows5(async store => {
+    const checked = await readRootRestoreReferenceFromQualified5(qualified, identity, reference)
+    const { source, current } = checked.data.inputs
+    return project(checked, Object.freeze({ source: store('source', source.source.sourceContent),
+      current: store('current', current.source.sourceContent) }))
+  }, read)
 }
 
 /** Reopen an explicit pending selection from the actual qualified mount and

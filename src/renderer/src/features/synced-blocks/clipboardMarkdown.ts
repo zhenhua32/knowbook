@@ -5,9 +5,9 @@ import { markdownEngine, type MarkdownEnvironment, type MarkdownToken } from '@s
 import { collectDocumentMarkdownLinks } from '@shared/markdownLinkMaintenance'
 import { escapeMarkdownDestination, parseLocalMarkdownUrl } from '@shared/markdownLinks'
 import { parseWikiReference } from '@shared/markdownWiki'
-import type { SyncedGroupWire, SyncedStableBlockDraft } from '@shared/synced-blocks'
+import type { SyncedCanonicalEdit, SyncedGroupWire, SyncedStableBlockDraft } from '@shared/synced-blocks'
 import { expandSyncedGraphDocument, validateSyncedWorkspaceGraph } from '@shared/syncedBlockGraph'
-import { syncedCanonicalEdits } from '@shared/syncedBlockValidation'
+import { syncedCanonicalEdits, validatePersistedHostForest, validateSyncedCanonicalEdit } from '@shared/syncedBlockValidation'
 
 type Edit = { blockIndex: number; start: number; end: number; replacement: string }
 type Labels = { reference: Map<string, string>; note: Map<string, string> }
@@ -101,15 +101,26 @@ export function assertClipboardIndependentlySerializable(complete: DocumentBlock
 
 /** A public Markdown projection is independent per occurrence. The compact
  * internal clipboard keeps the original shared groups and their link bindings. */
-export function renderPublicSyncedClipboard(documentId: string, blocks: SyncedStableBlockDraft[], wires: SyncedGroupWire[]): string {
+export function renderPublicSyncedClipboard(documentId: string, blocks: SyncedStableBlockDraft[], wires: SyncedGroupWire[],
+  working?: ReadonlyMap<string, readonly SyncedCanonicalEdit[]>): string {
   const graph = validateSyncedWorkspaceGraph([{ documentId, blocks }], wires)
+  const bodies = graph.groups.map(wire => ({ id: wire.id, blocks: working?.has(wire.id)
+    ? validateSyncedCanonicalEdit(working.get(wire.id)) : syncedCanonicalEdits(wire.blocks) }))
+  if (working) {
+    const claimed = new Set<string>()
+    for (const { id, blocks } of bodies) for (const block of blocks) {
+      const known = graph.owners.get(block.id)
+      if (claimed.has(block.id) || (known && (known.kind !== 'group' || known.id !== id))) throw unsupported()
+      claimed.add(block.id)
+    }
+  }
   const original = definitions(serialize(blocks)), expectedRef = new Map(orderedEntries(original.reference)), expectedNotes = [...original.note]
   const expectedConsumers = [...original.consumers]
   const byOccurrence = new Map<string, ReturnType<typeof syncedCanonicalEdits>>()
   const reserved = new Set([...expectedRef.keys(), ...expectedNotes])
-  const groups = new Map(wires.map(wire => [wire.id, wire]))
-  const groupDefinitions = new Map(wires.map(wire => [wire.id, definitions(serialize(syncedCanonicalEdits(wire.blocks)))]))
-  for (const owners of [blocks, ...wires.map(wire => wire.blocks)]) for (const { content } of owners) {
+  const groups = new Map(bodies.map(body => [body.id, body.blocks]))
+  const groupDefinitions = new Map(bodies.map(body => [body.id, definitions(serialize(body.blocks))]))
+  for (const owners of [blocks, ...bodies.map(body => body.blocks)]) for (const { content } of owners) {
     for (const match of content.matchAll(/knowbook-copy-[0-9]+/gi)) reserved.add(match[0].toLowerCase())
   }
   let ordinal = 0
@@ -119,7 +130,7 @@ export function renderPublicSyncedClipboard(documentId: string, blocks: SyncedSt
     reserved.add(name); return name
   }
   for (const [groupId, occurrences] of graph.occurrences) {
-    const body = syncedCanonicalEdits(groups.get(groupId)!.blocks), facts = groupDefinitions.get(groupId)!
+    const body = groups.get(groupId)!, facts = groupDefinitions.get(groupId)!
     for (const occurrence of occurrences) {
       const names: Labels = { reference: new Map(), note: new Map() }
       for (const label of Object.keys(facts.reference)) names.reference.set(label, nextName())
@@ -145,11 +156,11 @@ export function renderPublicSyncedClipboard(documentId: string, blocks: SyncedSt
   }
   const scopeBlock = new Map<string, DocumentBlockDraft>([...byOccurrence].flatMap(([instance, body]) => body.map(block => [JSON.stringify([instance, block.id]), block])))
   const id = (instanceId: string | null, blockId: string) => JSON.stringify([instanceId, blockId])
-  const expanded = Array.from(expandSyncedGraphDocument(graph, documentId), ({ block, depth, parent, instanceId }) => ({
+  const expanded = Array.from(expandSyncedGraphDocument({ documents: graph.documents, groups: bodies }, documentId), ({ block, depth, parent, instanceId }) => ({
     ...(instanceId ? scopeBlock.get(id(instanceId, block.id))! : block), id: id(instanceId, block.id), depth,
     parentBlockId: parent ? id(parent.instanceId, parent.blockId) : null
   }))
-  const markdown = serialize(expanded), actual = definitions(markdown)
+  const markdown = serialize(working ? validatePersistedHostForest(expanded) : expanded), actual = definitions(markdown)
   const signatures = (reference: Definitions['reference'], note: string[], consumers: string[]) => JSON.stringify([orderedEntries(reference), note.sort(), consumers.sort()])
   if (signatures(actual.reference, actual.note, actual.consumers) !== signatures(Object.fromEntries(expectedRef), expectedNotes, expectedConsumers)) throw unsupported()
   return markdown

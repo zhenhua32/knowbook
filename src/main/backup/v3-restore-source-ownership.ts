@@ -1,50 +1,81 @@
 import { capsuleJson, freezeCapsuleValue } from '../database/restore-knowledge-capsule-model'
+import { root3SupplementOriginalRowHash3 } from '../database/restore-knowledge-assets3-context'
 import { graph3Value } from '../database/restore-knowledge-graph3-data'
 import { readVerifiedRestoreKnowledgePriorInstall, type RestoreKnowledgePriorInstall } from '../database/restore-knowledge-install-proof'
-import { merge3RowValues, prepareMerge3Table } from '../database/restore-knowledge-merge3-storage'
-import type { Reference3Value } from '../database/restore-knowledge-reference3-read'
+import type { ColdRootRestoreReferenceInputs5, Reference3Value } from '../database/restore-knowledge-reference3-read'
+import type { ReferenceOriginalRows5 } from '../database/restore-knowledge-reference-original-rows5'
+import type { SyncedGroupWire } from '../../shared/synced-blocks'
 import { hasNoV3RetirementHistoricalReferences } from './v3-restore-source-dependencies'
 
 const same = (left: unknown, right: unknown) => capsuleJson(left) === capsuleJson(right)
 const invalid = (condition: string): never => { throw new Error('Invalid installed V3 source group evidence: ' + condition) }
 
-/** Recover ownership from the original source and current SQL rows of an actual installation. */
-async function readPriorV3SourceOwnedGroups(handle: RestoreKnowledgePriorInstall) {
-  const prior = readVerifiedRestoreKnowledgePriorInstall(handle)
-  const reference = await prior.readReferenceInputs()
-  const { allocation, candidate } = reference
+type Edge = { predecessor: { snapshotId: string; archiveHash: string; catalogId: string } }
+type Original = Parameters<typeof hasNoV3RetirementHistoricalReferences>[0]
+
+function projectHistoricalOriginals(reference: ColdRootRestoreReferenceInputs5,
+  rows: Readonly<{ source: ReferenceOriginalRows5; current: ReferenceOriginalRows5 }>) {
   const { source, current } = reference.data.inputs
-  const archive = source.assetArchive
-  if (!candidate.candidateConflictFree || !candidate.finalForestValidated || candidate.pendingLocalBody)
+  const selected = (packet: typeof source, sourceContent: ReferenceOriginalRows5): Original => ({
+    source: { sourceContent, physical: packet.source.physical }, knowledge: packet.knowledge })
+  return { source: selected(source, rows.source), current: selected(current, rows.current), assertPlanManifests: reference.assertPlanManifests }
+}
+
+function projectSourceOwnedReference(reference: ColdRootRestoreReferenceInputs5,
+  rows: Parameters<typeof projectHistoricalOriginals>[1]) {
+  const { source } = reference.data.inputs, { candidate } = reference
+  const backup = source.assetArchive.version === 6 ? source.assetArchive.backupV3 : undefined
+  const archive = backup && { snapshotId: backup.snapshotId, inventoryHash: backup.inventoryHash }
+  return { originals: projectHistoricalOriginals(reference, rows), rows, allocation: reference.allocation, archive,
+    sourceMaterialHash: source.materialHash, sourceGroupFacts: source.knowledge.groups,
+    allowed: candidate.candidateConflictFree && candidate.finalForestValidated && !candidate.pendingLocalBody,
+    installedTable: candidate.tables.find(table => table.name === 'synced_groups'), installedWires: candidate.activeGroupWires }
+}
+
+/** Recover ownership and scan dependencies while the old originals are still
+ * open. No previous raw SQL payload survives into the next historical read. */
+async function readPriorV3SourceOwnedGroups(handle: RestoreKnowledgePriorInstall, edge: Edge,
+  current: ReadonlyMap<string, SyncedGroupWire>, sourceGroupIds: ReadonlySet<string>) {
+  const prior = readVerifiedRestoreKnowledgePriorInstall(handle)
+  return prior.withReferenceOriginalRows(projectSourceOwnedReference, async reference => {
+    const groups = readSourceOwnedGroups(prior.sourceArchive, reference)
+    await reference.originals.assertPlanManifests()
+    await prior.assertOriginalProof()
+    const missing = groups.catalogId === edge.predecessor.catalogId
+      ? groups.values.filter(group => !sourceGroupIds.has(group.source.groupId) && same(current.get(group.wire.id) ?? null, group.wire)) : []
+    if (!missing.length) return { groups: missing, historiesClear: true }
+    const sourceWires = missing.map(group => group.sourceWire), installedWires = missing.map(group => group.wire)
+    const historiesClear = hasNoV3RetirementHistoricalReferences(reference.originals.source, sourceWires, new Set(sourceWires.map(group => group.id)))
+      && hasNoV3RetirementHistoricalReferences(reference.originals.current, installedWires, new Set(installedWires.map(group => group.id)))
+    return { groups: freezeCapsuleValue(missing), historiesClear }
+  })
+}
+
+function readSourceOwnedGroups(sourceArchive: { snapshotId: string; inventoryHash: string },
+  reference: ReturnType<typeof projectSourceOwnedReference>) {
+  const { allocation, archive, installedTable } = reference
+  if (!reference.allowed)
     return invalid('the installed plan is outside the checked source-only scope')
-  if (archive.version !== 6 || !same({ snapshotId: archive.backupV3.snapshotId, inventoryHash: archive.backupV3.inventoryHash }, prior.sourceArchive))
+  if (!archive || !same({ snapshotId: archive.snapshotId, inventoryHash: archive.inventoryHash }, sourceArchive))
     return invalid('the source archive belongs to another installed plan')
 
-  const sourceContent = source.source.sourceContent, currentContent = current.source.sourceContent
+  const sourceContent = reference.rows.source, currentContent = reference.rows.current
   const settings = sourceContent.tables.find(table => table.name === 'app_settings')
   if (!settings) return invalid('the original source catalog settings are missing')
   const keyColumn = settings.columns.indexOf('key'), valueColumn = settings.columns.indexOf('value')
   if (keyColumn < 0 || valueColumn < 0) return invalid('the original catalog settings are incomplete')
-  const catalog = settings.rows.find(row => graph3Value(row.cells[keyColumn], sourceContent.encoding) === 'database.defaultId')
-  const catalogId = catalog && graph3Value(catalog.cells[valueColumn], sourceContent.encoding)
+  let catalogId: unknown
+  for (const row of settings.rows) if (graph3Value(row.cells[keyColumn], sourceContent.encoding) === 'database.defaultId') {
+    catalogId = graph3Value(row.cells[valueColumn], sourceContent.encoding)
+    break
+  }
   if (typeof catalogId !== 'string') return invalid('the original source catalog identity is missing')
   const sourceTable = sourceContent.tables.find(table => table.name === 'synced_groups')
   const currentTable = currentContent.tables.find(table => table.name === 'synced_groups')
-  const installedTable = candidate.tables.find(table => table.name === 'synced_groups')
   if (!sourceTable || !currentTable || !installedTable) return invalid('an original or installed group table is missing')
-  const originalGroups = prepareMerge3Table({ sourceOriginal: sourceTable, sourceCandidate: sourceTable,
-    currentOriginal: currentTable, sourceEncoding: sourceContent.encoding, currentEncoding: currentContent.encoding,
-    source: { payload: allocation.sourcePayload, witness: allocation.sourceWitness, materialHash: source.materialHash },
-    current: { payload: allocation.currentPayload, witness: allocation.currentWitness, materialHash: current.materialHash }
-  })
-  const originalsById = new Map(originalGroups.sourceRows.map(row => {
-    const fields = merge3RowValues(originalGroups, row)
-    return [fields.id, { ref: row.ref, fields }] as const
-  }))
-  const currentIds = new Set(originalGroups.currentRows.map(row => merge3RowValues(originalGroups, row).id))
-  const sourceGroupFacts = new Map(source.knowledge.groups.map(group => [group.tuple.groupId, group]))
-  const sourceActive = new Map(source.source.physical.groups.flatMap(group => group.snapshot ? [[group.groupId, group.snapshot] as const] : []))
-  const installedWires = new Map(candidate.activeGroupWires.map(wire => [wire.id, wire]))
+  const sourceGroupFacts = new Map(reference.sourceGroupFacts.map(group => [group.tuple.groupId, group]))
+  const sourceActive = new Map(reference.originals.source.source.physical.groups.flatMap(group => group.snapshot ? [[group.groupId, group.snapshot] as const] : []))
+  const installedWires = new Map(reference.installedWires.map(wire => [wire.id, wire]))
   const installedIds = new Map(installedTable.rows.map(row => {
     const fields = Object.fromEntries(installedTable.columns.map((column, index) => [column, graph3Value(row.cells[index], installedTable.encoding)]))
     return [fields.id, { row, fields }] as const
@@ -55,30 +86,31 @@ async function readPriorV3SourceOwnedGroups(handle: RestoreKnowledgePriorInstall
     if (slot.kind !== 'group' || !slot.physical || slot.ambiguous) continue
     const sourceSnapshot = sourceActive.get(slot.sourceId)
     if (!sourceSnapshot) continue
-    const group = sourceGroupFacts.get(slot.sourceId), original = originalsById.get(slot.sourceId)
+    const group = sourceGroupFacts.get(slot.sourceId), original = sourceTable.byId(slot.sourceId)
     const installed = installedIds.get(slot.targetId), wire = installedWires.get(slot.targetId)
-    if (!group || !original || !installed || !wire || slot.targetCreationId === null || claimed.has(slot.targetId)
+    if (!original) return invalid('a qualified source group does not match its installed allocation')
+    const get = (column: string) => graph3Value(original.cells[sourceTable.columns.indexOf(column)], sourceContent.encoding)
+    const originalRef = { side: 'source' as const, table: 'synced_groups' as const, sourceRowId: original.sourceRowId,
+      payload: allocation.sourcePayload, witness: allocation.sourceWitness, materialHash: reference.sourceMaterialHash,
+      originalRowHash: root3SupplementOriginalRowHash3(sourceContent, { original, table: sourceTable }) }
+    if (!group || !installed || !wire || slot.targetCreationId === null || claimed.has(slot.targetId)
       || group.tuple.createdAt !== slot.birth || group.comparisonKey !== slot.incarnation
-      || original.fields.creation_id !== group.tuple.creationId || original.fields.created_at !== group.tuple.createdAt
-      || original.fields.origin_json !== group.originalOriginJson
+      || get('creation_id') !== group.tuple.creationId || get('created_at') !== group.tuple.createdAt
+      || get('origin_json') !== group.originalOriginJson
       || wire.creationId !== slot.targetCreationId || wire.createdAt !== group.tuple.createdAt
       || installed.fields.creation_id !== wire.creationId || installed.fields.created_at !== wire.createdAt
       || typeof installed.fields.origin_json !== 'string' || !same(JSON.parse(installed.fields.origin_json), wire.origin)
-      || installed.row.sourceRef.side !== 'source' || !same(installed.row.sourceRef, original.ref))
+      || installed.row.sourceRef.side !== 'source' || !same(installed.row.sourceRef, originalRef))
       return invalid('a qualified source group does not match its installed allocation')
     claimed.add(slot.targetId)
-    if (installed.row.replaces !== null || currentIds.has(slot.targetId)) continue
+    if (installed.row.replaces !== null || currentTable.byId(slot.targetId)) continue
     const sourceWire = { kind: 'synced-group' as const, id: sourceSnapshot.groupId, creationId: sourceSnapshot.creationId,
       createdAt: sourceSnapshot.createdAt, origin: sourceSnapshot.origin, blocks: sourceSnapshot.blocks, bindings: sourceSnapshot.bindings }
     groups.push({ source: group.tuple, installed: { groupId: wire.id, creationId: wire.creationId, createdAt: wire.createdAt, origin: wire.origin },
-      sourceRef: original.ref, wire, sourceWire })
+      wire, sourceWire })
   }
-  await reference.assertPlanManifests()
-  await prior.assertOriginalProof()
-  return { sourceArchive: prior.sourceArchive, catalogId, groups: freezeCapsuleValue(groups), originals: { source, current } }
+  return { catalogId, values: groups }
 }
-
-type Edge = { predecessor: { snapshotId: string; archiveHash: string; catalogId: string } }
 
 /** A matched group is a possible subject of a separate dependency and deletion proof. */
 export async function readV3SourceOwnedMissingGroups(edge: Edge, prior: readonly RestoreKnowledgePriorInstall[],
@@ -88,28 +120,24 @@ export async function readV3SourceOwnedMissingGroups(edge: Edge, prior: readonly
     return sourceArchive.snapshotId === edge.predecessor.snapshotId && sourceArchive.inventoryHash === edge.predecessor.archiveHash
   })
   if (originalArchives.length !== 1) return []
-  const original = await readPriorV3SourceOwnedGroups(originalArchives[0])
-  if (original.catalogId !== edge.predecessor.catalogId) return []
   const current = new Map(reference.candidate.activeGroupWires.map(wire => [wire.id, wire]))
-  const missing = original.groups.filter(group => !sourceGroupIds.has(group.source.groupId) && same(current.get(group.wire.id) ?? null, group.wire))
+  const original = await readPriorV3SourceOwnedGroups(originalArchives[0], edge, current, sourceGroupIds)
+  const missing = original.groups
   if (!missing.length) return []
   const wires = missing.flatMap(group => [group.wire, group.sourceWire])
-  const sourceWires = missing.map(group => group.sourceWire), installedWires = missing.map(group => group.wire)
-  let historiesClear = hasNoV3RetirementHistoricalReferences(original.originals.source, sourceWires, new Set(sourceWires.map(group => group.id)))
-    && hasNoV3RetirementHistoricalReferences(original.originals.current, installedWires, new Set(installedWires.map(group => group.id)))
+  let historiesClear = original.historiesClear
   for (const handle of prior) {
     if (!historiesClear) break
     if (handle === originalArchives[0]) continue
-    const { readReferenceInputs } = readVerifiedRestoreKnowledgePriorInstall(handle)
-    const inputs = await readReferenceInputs()
-    if (!hasNoV3RetirementHistoricalReferences(inputs.data.inputs.source, wires)
-      || !hasNoV3RetirementHistoricalReferences(inputs.data.inputs.current, wires)) {
-      historiesClear = false
-      break
-    }
-    await inputs.assertPlanManifests()
+    const installed = readVerifiedRestoreKnowledgePriorInstall(handle)
+    historiesClear = await installed.withReferenceOriginalRows(projectHistoricalOriginals, async originals => {
+      if (!hasNoV3RetirementHistoricalReferences(originals.source, wires)
+        || !hasNoV3RetirementHistoricalReferences(originals.current, wires)) return false
+      await originals.assertPlanManifests()
+      return true
+    })
   }
   return missing.map(group => ({ groupId: group.installed.groupId, createdAt: group.installed.createdAt,
-      sourceGroupId: group.source.groupId, sourceCreationId: group.source.creationId, sourceSnapshotId: original.sourceArchive.snapshotId,
+      sourceGroupId: group.source.groupId, sourceCreationId: group.source.creationId, sourceSnapshotId: edge.predecessor.snapshotId,
       noHistoricalReferences: historiesClear, wire: group.wire, sourceWire: group.sourceWire }))
 }

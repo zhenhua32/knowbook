@@ -6,6 +6,7 @@ import { selectRootRestoreContent3 } from './restore-knowledge-content3-model'
 import type { readRootKnowledgeConservationContent3 } from './restore-knowledge-root3-read'
 import type { KnowledgeOccupancy } from './restore-knowledge-payload-model'
 import type { ExactV3RepeatProof } from './restore-knowledge-v3-repeat-proof'
+import { withStoredRestoreAllocationValues, type StoredRestoreAllocationValues } from './restore-knowledge-allocation-values'
 
 export type Identity3Inputs = Awaited<ReturnType<typeof readRootKnowledgeConservationContent3>>
 export interface Identity3Kernel { readonly seed: string; readonly preparedAt: string }
@@ -85,6 +86,11 @@ function demands(input: Identity3Inputs): Demand[] {
  * Ancestor UUIDs are never interpreted as target-profile live occupants. */
 export function deriveRootRestoreIdentityPlan3(input: Identity3Inputs, kernel: Identity3Kernel, repeat?: ExactV3RepeatProof) {
   if (!/^[0-9a-f]{64}$/.test(kernel.seed) || !Number.isFinite(Date.parse(kernel.preparedAt)) || new Date(kernel.preparedAt).toISOString() !== kernel.preparedAt) return identity3Invalid('Main规划kernel无效')
+  return withStoredRestoreAllocationValues(values => deriveIdentityWithValues(input, kernel, repeat, values))
+}
+
+function deriveIdentityWithValues(input: Identity3Inputs, kernel: Identity3Kernel, repeat: ExactV3RepeatProof | undefined,
+  values: StoredRestoreAllocationValues) {
   const currentByGroup = new Map(input.current.knowledge.groups.map(group => [group.tuple.groupId, group.tuple]))
   const retired = new Set<string>()
   for (const group of input.current.source.physical.groups) {
@@ -125,16 +131,15 @@ export function deriveRootRestoreIdentityPlan3(input: Identity3Inputs, kernel: I
   }
   const currentPhysical = new Map([...currentOccupancy].map(([idKey, rows]) => [idKey, rows.filter(actualPhysical)]))
   const currentOnlyRestoreMap = new Set([...currentOccupancy].filter(([, rows]) => rows.every(row => row.kind === 'restore-map')).map(([idKey]) => idKey))
-  const forbiddenFresh = new Set<string>(), allGuards = new Set<string>(), retainedDocumentTimes = new Set<string>()
   let newestDocument = Date.parse(kernel.preparedAt)
   for (const payload of input.knowledge.constraints.payloads) {
     const projection = payload.input.knowledge.projection
     const decoder = new TextDecoder(projection.encoding.toLowerCase(), { fatal: true, ignoreBOM: true })
-    for (const item of projection.occupancy) forbiddenFresh.add(item.id)
-    if (projection.recoveryEpoch) allGuards.add(projection.recoveryEpoch)
-    for (const group of projection.groups) for (const value of [group.tuple.creationId, group.guards.revision, group.guards.topologyRevision, group.guards.historyCursor]) allGuards.add(value)
-    for (const instance of projection.instances) allGuards.add(instance.bindingVersion)
-    for (const state of projection.hostStates) allGuards.add(state.cursor)
+    for (const item of projection.occupancy) values.add('identity', item.id)
+    if (projection.recoveryEpoch) values.add('identity', projection.recoveryEpoch)
+    for (const group of projection.groups) for (const value of [group.tuple.creationId, group.guards.revision, group.guards.topologyRevision, group.guards.historyCursor]) values.add('identity', value)
+    for (const instance of projection.instances) values.add('identity', instance.bindingVersion)
+    for (const state of projection.hostStates) values.add('identity', state.cursor)
     for (const table of projection.originals) for (const row of table.rows) {
       for (let index = 0; index < row.cells.length; index++) {
         const cell = row.cells[index]
@@ -142,22 +147,20 @@ export function deriveRootRestoreIdentityPlan3(input: Identity3Inputs, kernel: I
         const text = decoder.decode(Buffer.from(cell[1], 'base64'))
         // Conservative exclusions only, never semantic identity discovery or
         // replay. This also blocks tokens embedded in retained journal JSON.
-        for (const match of text.matchAll(/[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}/gi)) allGuards.add(match[0].toLowerCase())
-        for (const match of text.matchAll(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z/g)) retainedDocumentTimes.add(match[0])
+        for (const match of text.matchAll(/[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}/gi)) values.add('identity', match[0].toLowerCase())
+        for (const match of text.matchAll(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z/g)) values.add('document-time', match[0])
         if (table.table === 'documents' && table.columns[index] === 'updated_at') {
           const date = Date.parse(text); if (Number.isFinite(date)) newestDocument = Math.max(newestDocument, date)
         }
       }
     }
   }
-  const generated = new Set<string>()
   const fresh = (purpose: string): string => {
     for (let attempt = 0; attempt < 64; attempt++) {
       const bytes = createHmac('sha256', Buffer.from(kernel.seed, 'hex')).update(key('knowbook.restore.identity3.uuid.v1', selected.selectionHash, purpose, attempt)).digest().subarray(0, 16)
       bytes[6] = (bytes[6] & 15) | 64; bytes[8] = (bytes[8] & 63) | 128
       const hex = bytes.toString('hex'), value = [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-')
-      if (forbiddenFresh.has(value) || allGuards.has(value) || generated.has(value)) continue
-      generated.add(value); return value
+      if (values.add('identity', value)) return value
     }
     return identity3Invalid('Main身份熵碰撞预算耗尽，不覆盖占用')
   }
@@ -228,7 +231,7 @@ export function deriveRootRestoreIdentityPlan3(input: Identity3Inputs, kernel: I
   if (installed.size) return identity3Invalid('已安装 V3 映射未能覆盖实际原需求')
   if (newestDocument >= 8_640_000_000_000_000) return identity3Invalid('无法在全部旧文档版本之后分配有限时间戳')
   let updatedAt = new Date(newestDocument + 1).toISOString()
-  while (retainedDocumentTimes.has(updatedAt)) {
+  while (values.has('document-time', updatedAt)) {
     newestDocument++
     if (newestDocument >= 8_640_000_000_000_000) return identity3Invalid('保留历史耗尽有限文档CAS时间域')
     updatedAt = new Date(newestDocument + 1).toISOString()

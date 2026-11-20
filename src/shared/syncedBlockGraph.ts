@@ -1,5 +1,5 @@
 import { canBlockNestUnder } from './blockTypes'
-import type { SyncedCanonicalWire, SyncedGroupWire, SyncedStableBlockDraft } from './synced-blocks'
+import type { SyncedCanonicalEdit, SyncedCanonicalWire, SyncedGroupWire, SyncedStableBlockDraft } from './synced-blocks'
 import { assertSyncedShape, isSyncedBlockId, parseSyncedBlockPayload, SYNCED_MAX_DEPTH, SyncedValidationError,
   validateSyncedGroupWire, validateSyncedHostForest } from './syncedBlockValidation'
 
@@ -73,8 +73,8 @@ export function validateSyncedWorkspaceGraph(documents: readonly SyncedGraphDocu
   return { documents: checkedDocuments, groups: checkedGroups, owners, occurrences }
 }
 
-export interface SyncedExpandedBlock {
-  block: SyncedStableBlockDraft | SyncedCanonicalWire
+export interface SyncedExpandedBlock<Canonical extends SyncedCanonicalEdit = SyncedCanonicalWire> {
+  block: SyncedStableBlockDraft | Canonical
   depth: number
   parent: { instanceId: string | null; blockId: string } | null
   instanceId: string | null
@@ -83,7 +83,9 @@ export interface SyncedExpandedBlock {
 /** Iterate every occurrence, keeping identity as a tuple instead of generating
  * persistent IDs or collapsing repeated references. Consumers choose their own
  * temporary identity mapping; this function never serializes hidden metadata. */
-export function* expandSyncedGraphDocument(graph: SyncedValidatedGraph, documentId: string): Generator<SyncedExpandedBlock> {
+export function* expandSyncedGraphDocument<Canonical extends SyncedCanonicalEdit = SyncedCanonicalWire>(
+  graph: { documents: SyncedGraphDocument[]; groups: readonly { id: string; blocks: readonly Canonical[] }[] },
+  documentId: string): Generator<SyncedExpandedBlock<Canonical>> {
   const host = graph.documents.find(document => document.documentId === documentId)
   if (!host) return fail('identity', '找不到候选宿主文档。')
   const groups = new Map(graph.groups.map(group => [group.id, group]))

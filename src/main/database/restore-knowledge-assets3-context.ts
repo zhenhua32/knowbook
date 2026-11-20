@@ -62,7 +62,8 @@ const parse = (value: Uint8Array) => M.parseExchangeStored(new TextDecoder('utf-
 export const root3SupplementSourceContentHash3 = (raw: Capsule2RawContent) =>
   hashValidatedCapsule2RawContent('knowbook.capsule2.workspace-history-source-content.v1', raw)
 export type OriginalRowPointer3 = Pick<ReturnType<typeof graph3Rows>[number], 'table' | 'original'>
-export function root3SupplementOriginalRowHash3(raw: Capsule2RawContent, row: OriginalRowPointer3) {
+export function root3SupplementOriginalRowHash3(raw: Pick<Capsule2RawContent, 'encoding'>,
+  row: Omit<OriginalRowPointer3, 'table'> & { table: Pick<OriginalRowPointer3['table'], 'name' | 'columns' | 'primaryKey'> }) {
   return capsuleBytesHash('knowbook.restore.merge3.original-row.v1\0' + capsuleJson({ table: row.table.name,
     columns: row.table.columns, primaryKey: row.table.primaryKey, encoding: raw.encoding,
     sourceRowId: row.original.sourceRowId, cells: row.original.cells }))

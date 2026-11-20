@@ -11,7 +11,7 @@ import type {
   HomeData
 } from '@shared/contracts'
 import type { UiText } from '../i18n'
-import { buildDocumentMarkdown, getDocumentMarkdownFileName, type DocumentMarkdownExport } from '../utils/documentMarkdown'
+import type { DocumentMarkdownExport, DraftMarkdownSource } from '../utils/documentMarkdown'
 
 type UseWorkspaceDocumentManagementParams = {
   catalogColumns: DocumentDatabaseColumn[]
@@ -23,7 +23,7 @@ type UseWorkspaceDocumentManagementParams = {
   ui: UiText
   onCancelPendingAutoSave: () => void
   onFlushPendingDocumentChanges: () => Promise<boolean>
-  getDraftMarkdownExport: (documentId: string) => DocumentMarkdownExport | null
+  getDraftMarkdownSource: (documentId: string) => DraftMarkdownSource | null
   onClearEditorSession: () => void
   onDetailLoadingChange: (loading: boolean) => void
   onHomeDataChange: (homeData: HomeData) => void
@@ -44,7 +44,7 @@ export function useWorkspaceDocumentManagement({
   ui,
   onCancelPendingAutoSave,
   onFlushPendingDocumentChanges,
-  getDraftMarkdownExport,
+  getDraftMarkdownSource,
   onClearEditorSession,
   onDetailLoadingChange,
   onHomeDataChange,
@@ -62,15 +62,14 @@ export function useWorkspaceDocumentManagement({
   selectedDocumentIdRef.current = selectedDocumentId
 
   const getMarkdownExport = useCallback(async (documentId: string): Promise<DocumentMarkdownExport> => {
-    const draft = getDraftMarkdownExport(documentId)
-    if (draft) return draft
-    const detail = await window.knowbook.getDocumentDetail(documentId)
+    const detail = getDraftMarkdownSource(documentId) ?? await window.knowbook.getDocumentDetail(documentId)
     if (!detail) {
       throw new Error(ui.documentNotFoundMessage)
     }
 
-    return { fileName: getDocumentMarkdownFileName(detail), markdown: buildDocumentMarkdown(detail) }
-  }, [getDraftMarkdownExport, ui.documentNotFoundMessage])
+    const { readDocumentMarkdownExport } = await import('../utils/documentMarkdown')
+    return readDocumentMarkdownExport(detail)
+  }, [getDraftMarkdownSource, ui.documentNotFoundMessage])
 
   const refreshSelectionAfterDocumentMutation = useCallback(async (refreshedHome: HomeData, deletedDocumentId?: string) => {
     if (selectedDocumentId && selectedDocumentId !== deletedDocumentId) {

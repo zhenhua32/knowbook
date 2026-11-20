@@ -299,6 +299,10 @@ class InlineRuntime {
     return this.recovery.checkpointFlushed(() => this.ownsClose(requestId) && this.sourceHasReported())
   }
   getSnapshot = () => this.ui
+  readMarkdownExportGroup(groupId: string) {
+    const group = this.workspace.getGroup(groupId)
+    return group && { state: group.getSnapshot(), bindingSteps: group.getMarkdownExportBindingSteps() }
+  }
   getReadyMoveHost = () => this.readyMoveHost
   retainedCrossMoveRevision = 0
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => this.listeners.delete(listener) }

@@ -127,7 +127,7 @@ test('document drag reveals the root destination, follows hovered targets and cl
       const workspace = useWorkspaceDocumentManagement({
         catalogColumns: [], catalogDocuments: [], documentIndex: [], moveTargetId: '', selectedDocument: null, selectedDocumentId: null,
         ui: getUiText('en-US'), onCancelPendingAutoSave: noop, onFlushPendingDocumentChanges: async () => true,
-        getDraftMarkdownExport: () => null, onClearEditorSession: noop, onDetailLoadingChange: noop, onHomeDataChange: noop,
+        getDraftMarkdownSource: () => null, onClearEditorSession: noop, onDetailLoadingChange: noop, onHomeDataChange: noop,
         onMessage: noop, onMoveTargetIdChange: noop, onSelectedDocumentChange: noop, onSelectedDocumentIdChange: noop, onUpdateDocumentDatabaseValue: async () => undefined
       })
       return <PageNavWithWorkspaceTree {...sidebarProps()} draggingDocumentId={workspace.draggingDocumentId} dragOverDocumentId={workspace.dragOverDocumentId}

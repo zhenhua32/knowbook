@@ -1,6 +1,7 @@
 import { TextDecoder } from 'node:util'
 import { capsuleJson } from './restore-knowledge-capsule-model'
-import type { Capsule2Encoding, Capsule2RawContent, Capsule2RawSqlRow, Capsule2RawSqlTable } from './restore-knowledge-capsule2-raw-model'
+import { scopedCapsule2TableRowLookup, type Capsule2Encoding, type Capsule2RawContent, type Capsule2RawSqlRow,
+  type Capsule2RawSqlTable } from './restore-knowledge-capsule2-raw-model'
 import type { RawRestoreSqlCell } from './restore-knowledge-sql-cell'
 import type { readRootRestoreIdentityGraphInputs3 } from './restore-knowledge-identity3-read'
 
@@ -35,6 +36,8 @@ export function graph3Rows(content: Pick<Capsule2RawContent,'tables' | 'encoding
 /** Capsule2 validates ascending signed SQLite rowids before graph planning. */
 export function findGraph3OriginalRow(table: Capsule2RawSqlTable, sourceRowId: string): Capsule2RawSqlRow | undefined {
   if (typeof sourceRowId !== 'string' || !/^(?:0|-?[1-9][0-9]{0,18})$/.test(sourceRowId)) return
+  const storedLookup = scopedCapsule2TableRowLookup(table)
+  if (storedLookup) return storedLookup(sourceRowId)
   const target = BigInt(sourceRowId)
   let start = 0, end = table.rows.length
   while (start < end) {

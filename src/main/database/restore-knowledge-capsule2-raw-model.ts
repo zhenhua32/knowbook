@@ -47,6 +47,37 @@ const hash = (domain: string, value: unknown): string => createHash('sha256').up
 type RawJsonWrite = (text: string) => void
 export type Capsule2RawStreamTable = Omit<Capsule2RawSqlTable, 'rows'> & { rows: Iterable<Capsule2RawSqlRow> }
 export type Capsule2RawContentStream = Omit<Capsule2RawContent, 'tables'> & { tables: readonly Capsule2RawStreamTable[] }
+type RawTableObserver = (table: Capsule2RawStreamTable) => { write?: RawJsonWrite; finish: (rows: number) => void }
+
+interface ScopedRawRows {
+  readonly count: number
+  readonly rows: Iterable<Capsule2RawSqlRow>
+  encoded(): IterableIterator<string>
+  byRowId(sourceRowId: string): Capsule2RawSqlRow | undefined
+}
+const scopedRawRows = new WeakMap<Capsule2RawStreamTable, ScopedRawRows>()
+
+/** Main's active original scope supplies the exact row preimage from its owned
+ * file. Attempts to pass this table to a data-only reader fail closed. */
+export function scopedCapsule2RawSqlTable(layout: Omit<Capsule2RawSqlTable, 'rows'>, stored: ScopedRawRows): Capsule2RawSqlTable {
+  const table: Capsule2RawSqlTable = Object.freeze({ ...layout, get rows(): readonly Capsule2RawSqlRow[] {
+    return capsule2RawInvalid('原表已经转入逐行读取范围：' + layout.name)
+  } })
+  scopedRawRows.set(table, stored)
+  return table
+}
+
+export function capsule2RawTableRows(table: Capsule2RawStreamTable): Iterable<Capsule2RawSqlRow> {
+  return scopedRawRows.get(table)?.rows ?? table.rows
+}
+
+export function capsule2RawTableRowCount(table: Capsule2RawSqlTable): number {
+  return scopedRawRows.get(table)?.count ?? table.rows.length
+}
+
+export function scopedCapsule2TableRowLookup(table: Capsule2RawSqlTable) {
+  return scopedRawRows.get(table)?.byRowId
+}
 
 const validatedContentCells = new WeakMap<readonly RawRestoreSqlCell[], Capsule2Encoding>()
 
@@ -72,25 +103,34 @@ function writeRawObject<T extends Capsule2RawContentStream | Capsule2RawStreamTa
   write('}')
 }
 
-function writeRawTable(table: Capsule2RawStreamTable, write: RawJsonWrite): void {
+function writeRawTable(table: Capsule2RawStreamTable, write: RawJsonWrite): number {
+  let rows = 0
   writeRawObject(table, 'rows', () => {
     write('[')
-    let first = true
-    for (const row of table.rows) {
-      if (!first) write(',')
-      first = false
-      write(capsuleJson(row))
+    const stored = scopedRawRows.get(table)
+    for (const encoded of stored ? stored.encoded() : encodeRawRows(table.rows)) {
+      if (rows) write(',')
+      write(encoded)
+      rows++
     }
     write(']')
   }, write)
+  return rows
 }
 
-function writeRawContent(value: Capsule2RawContentStream, write: RawJsonWrite): void {
+function* encodeRawRows(rows: Iterable<Capsule2RawSqlRow>) {
+  for (const row of rows) yield capsuleJson(row)
+}
+
+function writeRawContent(value: Capsule2RawContentStream, write: RawJsonWrite, observe?: RawTableObserver): void {
   writeRawObject(value, 'tables', () => {
     write('[')
     for (const [index, table] of value.tables.entries()) {
       if (index) write(',')
-      writeRawTable(table, write)
+      const observer = observe?.(table)
+      const tableWrite = observer?.write
+      const rows = writeRawTable(table, tableWrite ? text => { write(text); tableWrite(text) } : write)
+      observer?.finish(rows)
     }
     write(']')
   }, write)
@@ -118,7 +158,7 @@ export function hashValidatedCapsule2RawSqlTablePair(domain: string, table: Caps
   writeRawObject(table, 'rows', () => {
     write('[')
     let firstLeft = true, firstRight = true
-    for (const row of table.rows) {
+    for (const row of capsule2RawTableRows(table)) {
       const [keepLeft, keepRight] = include(row)
       if (!keepLeft && !keepRight) continue
       const projected = keepRight ? projectRight ? projectRight(row) : row : null
@@ -249,13 +289,13 @@ function assertRawTableNames(tableNames: readonly string[], derivedNames: readon
   if (capsuleJson(tableNames) !== capsuleJson(capsule2FixedDataTables(schemaVersion))) return capsule2RawInvalid('原表全集有未知/缺失/重复或未排序')
   if (capsuleJson(derivedNames) !== capsuleJson(capsule2DerivedFtsTables())) return capsule2RawInvalid('derived FTS原闭集未知/缺失/未排序')
 }
-function writeBoundedRawContent(content: Capsule2RawContentStream, write?: RawJsonWrite) {
+function writeBoundedRawContent(content: Capsule2RawContentStream, write?: RawJsonWrite, observe?: RawTableObserver) {
   let jsonBytes = 0
   writeRawContent(content, text => {
     jsonBytes += Buffer.byteLength(text)
     if (jsonBytes > CAPSULE2_RAW_MAX_JSON_BYTES) return capsule2RawInvalid('完整raw JSON超预算，不截断')
     write?.(text)
-  })
+  }, observe)
 }
 
 export function assertCapsule2RawContentStreamHeader(content: Capsule2RawContentStream): void {
@@ -269,6 +309,22 @@ export function hashCapsule2RawContentStream(domain: string, content: Capsule2Ra
   const digest = createHash('sha256').update(domain + '\0')
   writeBoundedRawContent(content, text => { digest.update(text) })
   return digest.digest('hex')
+}
+
+/** Bind the complete raw source and exact retained policy tables during one
+ * canonical pass over the native rows. Each table digest sees its own JSON. */
+export function summarizeCapsule2RawPolicyContent(content: Capsule2RawContentStream) {
+  assertCapsule2RawContentStreamHeader(content)
+  const complete = createHash('sha256').update('knowbook.capsule2.workspace-history-source-content.v1\0')
+  const tables: Array<{ name: string; role: Capsule2TableRole; rows: number; originalTableHash?: string }> = []
+  writeBoundedRawContent(content, text => { complete.update(text) }, ({ name, role }) => {
+    const digest = role === 'policy-unresolved' ? createHash('sha256').update('knowbook.capsule2.source-policy-original-table.v1\0') : undefined
+    return {
+      write: digest && (text => { digest.update(text) }),
+      finish: rows => { tables.push({ name, role, rows, originalTableHash: digest?.digest('hex') }) }
+    }
+  })
+  return { schemaVersion: content.schemaVersion, sourceContentHash: complete.digest('hex'), tables }
 }
 
 export function validateCapsule2RawContent(input: unknown): Capsule2RawContent {

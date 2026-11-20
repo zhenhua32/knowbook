@@ -4,7 +4,7 @@ import { collectDatabaseViewConfigFieldIds, mapDatabaseViewConfigFieldIds, mapDa
   parseDatabaseViewPayload, serializeDatabaseViewPayload } from '../../shared/databaseViewBlock'
 import { strictSavedViewConfig } from '../backup/v2-format'
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
-import { CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-model'
+import { CAPSULE2_RAW_MAX_JSON_BYTES, capsule2RawTableRows } from './restore-knowledge-capsule2-raw-model'
 import { graph3Conflict, graph3Key, graph3PatchTable, graph3Rows, graph3Text, type Graph3Inputs } from './restore-knowledge-graph3-data'
 
 type Kind = 'database' | 'column' | 'view' | 'entity' | 'document'
@@ -43,7 +43,7 @@ export function deriveRootRestoreDatabaseReferences3(data: Graph3Inputs) {
       for (const match of graph3Text(cell,projection.encoding).matchAll(/[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}/gi)) used.add(match[0].toLowerCase())
     }
   }
-  for (const content of [source,current]) for (const table of content.tables) for (const row of table.rows) for (const cell of row.cells) {
+  for (const content of [source,current]) for (const table of content.tables) for (const row of capsule2RawTableRows(table)) for (const cell of row.cells) {
     if (cell[0] !== 'text') continue
     for (const match of graph3Text(cell,content.encoding).matchAll(/[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}/gi)) used.add(match[0].toLowerCase())
   }

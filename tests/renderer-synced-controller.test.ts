@@ -8,6 +8,7 @@ import type {
   SyncedRestoreGroupInput, SyncedUpdateGroupInput
 } from '../src/shared/synced-blocks'
 import { getSyncedWorkspaceController, holdGroupForHostReorder } from '../src/renderer/src/features/synced-blocks/controller'
+import { bindingsForExport } from '../src/renderer/src/features/synced-blocks/documentMarkdownExport'
 import { syncedScopeDomKey, syncedSnapshotGuard, type SyncedGroupBinding, type SyncedGroupScope,
   type SyncedScopeBookmark } from '../src/renderer/src/features/synced-blocks/types'
 
@@ -148,11 +149,13 @@ function applyClaims(binding: SyncedGroupBinding, blocks: SyncedCanonicalEdit[],
 }
 
 test('coalesced link traces compose exact keys, mirror across instances and survive local Undo Redo before one submission', async () => {
-  const { api, first, second } = await setup(tracedApi()), original = first.getCurrent().working[0]
+  const { api, controller, first, second } = await setup(tracedApi()), original = first.getCurrent().working[0]
   const middle = paragraph('prefix ' + original.content), final = paragraph(middle.content + ' suffix')
   assert.equal(applyClaims(first, [middle], [{ kind: 'continue', source: linkKey(original), destination: linkKey(middle) }], 'trace-action'), true)
   assert.equal(second.getCurrent(), first.getCurrent())
   assert.equal(applyClaims(first, [final], [{ kind: 'continue', source: linkKey(middle), destination: linkKey(final) }], 'trace-action'), true)
+  const exported = bindingsForExport(first.getCurrent().snapshot, controller.getMarkdownExportBindingSteps())
+  assert.deepEqual([...exported], [[JSON.stringify(Object.values(linkKey(final))), first.getCurrent().snapshot.bindings[0]]])
   assert.equal(await second.undo(), true); assert.deepEqual(first.getCurrent().working, [original])
   assert.equal(await first.redo(), true); assert.deepEqual(second.getCurrent().working, [final])
   assert.equal(await first.flush(), true); assert.equal(api.updates.length, 1)
@@ -162,7 +165,7 @@ test('coalesced link traces compose exact keys, mirror across instances and surv
 
 test('same-text new-link intent and a coalesced return to original text remain dirty and submit their provenance', async () => {
   for (const returnToOriginal of [false, true]) {
-    const { api, first } = await setup(tracedApi()), original = first.getCurrent().working[0]
+    const { api, controller, first } = await setup(tracedApi()), original = first.getCurrent().working[0]
     let source = original
     if (returnToOriginal) {
       source = paragraph('prefix ' + original.content)
@@ -170,6 +173,7 @@ test('same-text new-link intent and a coalesced return to original text remain d
     }
     assert.equal(applyClaims(first, [original], [{ kind: 'new', destination: linkKey(original) }], 'replace-link'), true)
     assert.equal(first.getCurrent().dirty, true)
+    assert.equal(bindingsForExport(first.getCurrent().snapshot, controller.getMarkdownExportBindingSteps()).size, 0)
     assert.equal(await first.flush(), true)
     assert.deepEqual(api.updates[0].bindingClaims, [{ kind: 'new', destination: linkKey(original) }])
     assert.deepEqual(first.getCurrent().snapshot.bindings[0].target, { kind: 'document', id: 'new-target', state: 'live' })

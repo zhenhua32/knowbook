@@ -8,7 +8,7 @@ import { serializeMarkdownWithBlockRanges } from '../../shared/markdown'
 import { collectStoredMarkdownAssetDestinations } from '../../shared/syncedBlockPortable'
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-model'
-import { readRawCapsule2WorkspaceHistorySourceWithHeadingTitle3Owned } from './restore-knowledge-capsule2-workspace-history-read'
+import { readRawCapsule2WorkspaceHistoryEvidenceOwned, readRawCapsule2WorkspaceHistorySourceWithHeadingTitle3Owned } from './restore-knowledge-capsule2-workspace-history-read'
 import { decodeHostJournal, hostJournalKind, validateHostSides } from './synced-host-journal'
 import type { SyncedHostHistoryBranchRow } from './synced-host-history-branch'
 import { decodeSyncedOperationAck } from './synced-host-operation-receipt'
@@ -62,13 +62,18 @@ function* operationRows(db: Database.Database): IterableIterator<AssetOperationR
  * formats' explicit bodies are visited, never arbitrary JSON strings/paths.
  * Remaining policy and all file authority stay explicitly uncertified. */
 export function readRawCapsule2AssetReferencesOwned(db: Database.Database): RawCapsule2AssetReferences {
-  return readRawCapsule2AssetReferenceSourceOwned(db).assets
+  return observeAssetReferences(db, readRawCapsule2WorkspaceHistoryEvidenceOwned(db))
 }
 
 /** One fixed same-transaction source pipeline for the material owner; the
  * public raw observation above keeps its exact original DTO/hash domain. */
 export function readRawCapsule2AssetReferenceSourceOwned(db: Database.Database) {
-  const {source,headingTitleOriginals}=readRawCapsule2WorkspaceHistorySourceWithHeadingTitle3Owned(db), { history, physical } = source
+  const captured = readRawCapsule2WorkspaceHistorySourceWithHeadingTitle3Owned(db)
+  return Object.freeze({ ...captured.source, assets: observeAssetReferences(db, captured) })
+}
+
+function observeAssetReferences(db: Database.Database, captured: ReturnType<typeof readRawCapsule2WorkspaceHistoryEvidenceOwned>) {
+  const { source: { history, physical }, headingTitleOriginals } = captured
   const scopes: Scope[] = [], keys = new Set<string>()
   let bytes = 0
   const add = (source: string[], body: Body) => {
@@ -292,5 +297,5 @@ export function readRawCapsule2AssetReferenceSourceOwned(db: Database.Database) 
   const encoded = capsuleJson(value)
   if (Buffer.byteLength(encoded) > CAPSULE2_RAW_MAX_JSON_BYTES) return bad('完整观察超准备预算，不能截断')
   const assets: RawCapsule2AssetReferences = freezeCapsuleValue({ ...value, observationHash: capsuleBytesHash('knowbook.capsule2.known-markdown-asset-references.v3\0' + encoded) })
-  return Object.freeze({ ...source, assets })
+  return assets
 }

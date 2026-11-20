@@ -1,6 +1,7 @@
 import { freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
-import { CAPSULE2_RAW_MAX_JSON_BYTES, hashValidatedCapsule2RawSqlTable, type Capsule2RawSqlTable, type Capsule2TableRole } from './restore-knowledge-capsule2-raw-model'
+import { CAPSULE2_RAW_MAX_JSON_BYTES, capsule2RawTableRowCount, hashValidatedCapsule2RawSqlTable, type Capsule2RawSqlTable,
+  type Capsule2TableRole } from './restore-knowledge-capsule2-raw-model'
 import type { readRootKnowledgeConservationContent3 } from './restore-knowledge-root3-read'
 
 type Inputs = Awaited<ReturnType<typeof readRootKnowledgeConservationContent3>>
@@ -28,7 +29,7 @@ export function selectRootRestoreContent3(inputs: Inputs) {
     if (payloads.length !== 1 || payloads[0].input.knowledge.sourceMaterialHash !== packet.materialHash
       || payloads[0].input.knowledge.assetArchiveHash !== packet.assetArchiveHash) return content3Invalid('角色完整包与原域见证不一致')
     return packet.source.sourceContent.tables.map(table => ({ side, payload: payloads[0].key, table: table.name,
-      role: table.role, rows: table.rows.length, originalTableHash: tableHash(table),
+      role: table.role, rows: capsule2RawTableRowCount(table), originalTableHash: tableHash(table),
       action: side === 'current' && table.role === 'content' ? 'retain-current-for-conflict-check' as const : actions[table.role],
       selectedAsIncomingContent: side === 'source' && table.role === 'content' }))
   })

@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { observeRawCapsule2TablesOwned, readRawCapsule2ContentOwned } from '../src/main/database/restore-knowledge-capsule2-content-raw-read'
-import { capsule2RawContentHash, diagnoseCapsule2RawContent, hashValidatedCapsule2RawSqlTable, hashValidatedCapsule2RawSqlTablePair,
+import { capsule2RawContentHash, capsule2RawTableRows, capsule2RawTableRowCount, diagnoseCapsule2RawContent, hashValidatedCapsule2RawContent,
+  hashValidatedCapsule2RawSqlTable, hashValidatedCapsule2RawSqlTablePair,
   validateCapsule2RawContent } from '../src/main/database/restore-knowledge-capsule2-raw-model'
 import { readRawCapsule2ObserverOwned } from '../src/main/database/restore-knowledge-capsule2-observer-read'
-import { readRawCapsule2OrdinaryPolicySourceOwned } from '../src/main/database/restore-knowledge-capsule2-policy-source-read'
+import { readRawCapsule2OrdinaryPolicyEvidenceOwned, readRawCapsule2OrdinaryPolicySourceOwned } from '../src/main/database/restore-knowledge-capsule2-policy-source-read'
 import { capsuleBytesHash, capsuleJson } from '../src/main/database/restore-knowledge-capsule-model'
 import { root3SupplementSourceContentHash3 } from '../src/main/database/restore-knowledge-assets3-context'
+import { findGraph3OriginalRow } from '../src/main/database/restore-knowledge-graph3-data'
+import { scopeIncomingReferenceHistory5, withReferenceOriginalRows5 } from '../src/main/database/restore-knowledge-reference-original-rows5'
 import { readInitialIncomingWorkspace } from '../src/main/database/synced-initial-incoming-read'
 import { withV3Fixture } from './helpers/synced-backup-v3-fixture'
 import { decodedCapsule2Table, withCapsule2RawCopy, writeMixedOrdinary501 } from './helpers/capsule2-raw-fixture'
@@ -27,6 +30,9 @@ for (const encoding of ['UTF-8', 'UTF-16le', 'UTF-16be'] as const) test(`raw sou
       assert.equal(capsule2RawContentHash(raw), previous('knowbook.capsule2.raw-content.v1'))
       assert.equal(observer.rawContentHash, previous('knowbook.capsule2.observer-content.v1'))
       assert.equal(policy.sourceContentHash, previous('knowbook.capsule2.workspace-history-source-content.v1'))
+      const evidence = readRawCapsule2OrdinaryPolicyEvidenceOwned(db)
+      assert.deepEqual(evidence.policy, policy)
+      assert.equal('sourceContent' in evidence, false)
       assert.equal(root3SupplementSourceContentHash3(raw), policy.sourceContentHash)
       assert.throws(() => observeRawCapsule2TablesOwned(db, table => {
         table.rows[Symbol.iterator]().next()
@@ -83,18 +89,38 @@ test('capsule2 raw content preserves actual ordinary history rowid order and all
   const detail = f.store.getDocumentDetail(documentId); assert.ok(detail)
   f.store.updateDocument(documentId, { title, summary: 'A real later ordinary summary', blocks: detail.blocks })
   f.store.documentRecovery.checkpoint(documentId, 'edit', true)
+  const dropped = f.store.createDocument(null)
+  f.store.deleteDocument(dropped)
+  f.db.prepare('UPDATE document_history SET _rowid_=? WHERE _rowid_=(SELECT min(_rowid_) FROM document_history)').run(-(2n ** 63n))
   // Legal SQLite legacy storage shape, deliberately not claimed to have a
   // valid semantic owner. Raw preparation must retain it for the later owner.
   const insert = f.db.prepare('INSERT INTO document_database_values(document_id,column_id,value_text,updated_at,entity_id) VALUES(NULL,?,?,?,NULL)')
   insert.run(f.catalogColumn.id, 'legacy A', '2048-01-02T03:04:05.000Z')
   insert.run(f.catalogColumn.id, 'legacy B', '2048-01-02T03:04:05.000Z')
-  await withCapsule2RawCopy(f, db => {
+  await withCapsule2RawCopy(f, async db => {
     const raw = db.transaction(() => readRawCapsule2ContentOwned(db))(), history = raw.tables.find(table => table.name === 'document_history'); assert.ok(history)
     const actual = db.prepare('SELECT rowid FROM document_history ORDER BY rowid').safeIntegers(true).all() as Array<{ rowid: bigint }>
     assert.deepEqual(history.rows.map(row => row.sourceRowId), actual.map(row => row.rowid.toString()))
     const values = decodedCapsule2Table(raw, 'document_database_values').filter(row => row.document_id === null && row.entity_id === null)
     assert.deepEqual(values.map(row => row.value_text), ['legacy A', 'legacy B'])
     assert.equal(raw.state, 'raw-storage-only'); assert.equal(raw.semanticValidationComplete, false)
+    const domain = 'test.active-original'
+    const scoped = await withReferenceOriginalRows5(async store => scopeIncomingReferenceHistory5(raw, store), async parked => {
+      assert.equal(hashValidatedCapsule2RawContent(domain, parked), capsuleBytesHash(domain + '\0' + capsuleJson(raw)))
+      for (const name of ['document_history', 'document_trash']) {
+        const before = raw.tables.find(table => table.name === name)!, table = parked.tables.find(table => table.name === name)!
+        assert.ok(before.rows.length > 0)
+        assert.throws(() => table.rows, /逐行读取范围/)
+        assert.equal(capsule2RawTableRowCount(table), before.rows.length)
+        assert.deepEqual([...capsule2RawTableRows(table)], before.rows)
+        assert.equal(hashValidatedCapsule2RawSqlTable(domain, table), capsuleBytesHash(domain + '\0' + capsuleJson(before)))
+        for (const row of before.rows) assert.deepEqual(findGraph3OriginalRow(table, row.sourceRowId), row)
+        assert.equal(findGraph3OriginalRow(table, '9223372036854775808'), undefined)
+      }
+      return parked.tables.find(table => table.name === 'document_history')!
+    })
+    assert.throws(() => [...capsule2RawTableRows(scoped)], /读取范围已结束/)
+    assert.throws(() => findGraph3OriginalRow(scoped, '-9223372036854775808'), /读取范围已结束/)
   })
 }))
 

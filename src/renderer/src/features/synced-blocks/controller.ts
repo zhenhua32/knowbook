@@ -393,6 +393,7 @@ class GroupController implements SyncedGroupController {
   }
 
   getSnapshot = () => this.state
+  getMarkdownExportBindingSteps = () => this.frames.map(frame => frame.bindingClaims)
   subscribe = (notify: () => void) => { this.listeners.add(notify); return () => { this.listeners.delete(notify) } }
   private publish(patch: Partial<SyncedGroupDraftState> = {}) {
     const next = { ...this.state, ...patch }

@@ -5,7 +5,7 @@ import type { SyncedHostHistoryBranchRow } from './synced-host-history-branch'
 import { parseInitialIncomingStored } from '../sync/synced-initial-incoming-model'
 import { publicationHash, publicationInvalid, publicationJson } from '../sync/synced-publication-model'
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
-import { readRawCapsule2OrdinaryPolicySourceOwned } from './restore-knowledge-capsule2-policy-source-read'
+import { readRawCapsule2OrdinaryPolicyEvidenceOwned, readRawCapsule2OrdinaryPolicySourceOwned } from './restore-knowledge-capsule2-policy-source-read'
 import { readRawCapsule2HistoricalEvidenceSourceOwned } from './restore-knowledge-capsule2-history-read'
 import { CAPSULE2_READER, CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-model'
 
@@ -34,7 +34,7 @@ function json(source: string): unknown { return parseInitialIncomingStored(sourc
  * remain literal, including paths made by the old astral-prefix writer. Remaining source certifier seams
  * are still incomplete. */
 export function readRawCapsule2WorkspaceHistoryOwned(db: Database.Database): RawCapsule2WorkspaceHistoryObservation {
-  return readRawCapsule2WorkspaceHistorySourceOwned(db).history
+  return readRawCapsule2WorkspaceHistoryEvidenceOwned(db).source.history
 }
 
 /** Same fixed checks and history result, retaining the complete actual source
@@ -44,7 +44,16 @@ export function readRawCapsule2WorkspaceHistorySourceOwned(db: Database.Database
 }
 /** Fixed same-read handoff only; no serialized owner/map or caller skip. */
 export function readRawCapsule2WorkspaceHistorySourceWithHeadingTitle3Owned(db: Database.Database) {
-  const source = readRawCapsule2OrdinaryPolicySourceOwned(db)
+  return observeWorkspaceHistory(db, readRawCapsule2OrdinaryPolicySourceOwned(db))
+}
+
+/** The archive observer consumes the verified source evidence in this same transaction. */
+export function readRawCapsule2WorkspaceHistoryEvidenceOwned(db: Database.Database) {
+  return observeWorkspaceHistory(db, readRawCapsule2OrdinaryPolicyEvidenceOwned(db))
+}
+
+function observeWorkspaceHistory<Source extends ReturnType<typeof readRawCapsule2OrdinaryPolicyEvidenceOwned>>(
+  db: Database.Database, source: Source) {
   const { physical, policy } = source
   const sourceContentHash = policy.sourceContentHash
   const physicalObservationHash = capsuleBytesHash('knowbook.capsule2.workspace-history-physical-observation.v1\0' + capsuleJson(physical))

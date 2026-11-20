@@ -100,16 +100,15 @@ async function withPlanIdentityFromCurrent<T>(input: BackupV3RestorePreparation,
   } finally { currentDb.close() }
   const v3Sql = await prepareBackupV3RestoreSqlStage(source, profileRoot, operationId)
   const archive = await prepareCapsule2AssetArchiveFromVerifiedV3(v3Sql, source)
-  const incoming = await captureSealedCapsule2SourceFromArchive(archive)
-  const current = hasWorkingJobs
+  const { source: incoming } = await captureSealedCapsule2SourceFromArchive(archive)
+  const { source: current, value: { priorCoverageRequirements: requirements } } = hasWorkingJobs
     ? await captureSealedCapsule2SourceWithWorkingProvenance5(currentOriginal, installedAssets)
     : installedAssets
       ? await captureSealedCapsule2SourceFromArchive(await prepareCapsule2AssetArchiveWithInstalledV3(currentOriginal, installedAssets))
       : await captureSealedCapsule2SourceWithAssetProvenance3(currentOriginal)
-  const incomingCertificate = await certifyCapsule2Source(incoming.source)
+  const incomingCertificate = await certifyCapsule2Source(incoming)
   if (incomingCertificate.status !== 'certified-without-prior-coverage') throw new Error('The V3 source unexpectedly carries prior coverage.')
-  const currentCertificate = await certifyCapsule2Source(current.source)
-  const requirements = current.value.priorCoverageRequirements
+  const currentCertificate = await certifyCapsule2Source(current)
   const prior = requirements.entries.length ? await parents?.(requirements) ?? [] : []
   const originals = new Map(prior.map(handle => {
     const actual = readVerifiedRestoreKnowledgePriorInstall(handle)
@@ -118,7 +117,7 @@ async function withPlanIdentityFromCurrent<T>(input: BackupV3RestorePreparation,
   const references = requiredReferenceRoots(requirements)
   const currentInput = currentCertificate.status === 'certified-without-prior-coverage'
     ? currentCertificate.source
-    : (await captureBoundOriginalInputsFromReferences({ source: current.source, parents: references.map(reference => {
+    : (await captureBoundOriginalInputsFromReferences({ source: current, parents: references.map(reference => {
       const original = originals.get(reference.operationId)
       if (!original) throw new Error('The sealed current source is missing a verified installed original.')
       return original

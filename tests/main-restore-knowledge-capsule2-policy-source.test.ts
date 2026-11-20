@@ -3,7 +3,7 @@ import test from 'node:test'
 import { capsuleBytesHash, capsuleJson } from '../src/main/database/restore-knowledge-capsule-model'
 import { readRawCapsule2OrdinaryPolicySourceOwned, diagnoseRawCapsule2SourcePolicyOwned } from '../src/main/database/restore-knowledge-capsule2-policy-source-read'
 import { readRawCapsule2WorkspaceHistoryOwned } from '../src/main/database/restore-knowledge-capsule2-workspace-history-read'
-import { readRawCapsule2AssetReferencesOwned } from '../src/main/database/restore-knowledge-capsule2-assets-read'
+import { readRawCapsule2AssetReferencesOwned, readRawCapsule2AssetReferenceSourceOwned } from '../src/main/database/restore-knowledge-capsule2-assets-read'
 import { diagnoseCapsule2RawContent } from '../src/main/database/restore-knowledge-capsule2-raw-model'
 import { allTables, withV3Fixture, type V3Fixture } from './helpers/synced-backup-v3-fixture'
 import { seedPluginPolicy, pluginPolicyTables } from './helpers/capsule2-plugin-policy-fixture'
@@ -69,7 +69,9 @@ test('capsule2 source policy preserves opaque malformed preference and legacy ac
     assert.ok(policy.tables.filter(table => ['app_settings', 'workspace_events'].includes(table.table)).every(table => table.assetRule === 'opaque-values-not-paths-or-markdown'))
     assert.equal(policy.externalPaths, 'original-literals-only-no-follow')
     assert.equal(policy.managedFiles, 'requires-actual-main-managed-originals')
-    assert.equal(readRawCapsule2AssetReferencesOwned(db).scopes.some(scope => scope.destinations.some(item => item.uri.includes('/never/read/'))), false)
+    const references = readRawCapsule2AssetReferencesOwned(db)
+    assert.deepEqual(references, readRawCapsule2AssetReferenceSourceOwned(db).assets)
+    assert.equal(references.scopes.some(scope => scope.destinations.some(item => item.uri.includes('/never/read/'))), false)
   })())
 }))
 

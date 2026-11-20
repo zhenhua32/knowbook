@@ -1,7 +1,7 @@
 import type Database from 'better-sqlite3'
 import { STORED_PLUGIN_POLICY_TABLES } from '../plugin-platform/repository'
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
-import { readRawCapsule2ContentOwned } from './restore-knowledge-capsule2-content-raw-read'
+import { readRawCapsule2ContentOwned, readRawCapsule2PolicyContentOwned } from './restore-knowledge-capsule2-content-raw-read'
 import { readRawCapsule2PhysicalGraphOwned } from './restore-knowledge-capsule2-physical-raw-read'
 import { assertRawCapsule2OrdinaryHistoryOwned } from './restore-knowledge-capsule2-ordinary-history-read'
 import { assertRawCapsule2TemplatesOwned } from './restore-knowledge-capsule2-templates-read'
@@ -9,7 +9,7 @@ import { assertRawCapsule2MovesOwned } from './restore-knowledge-capsule2-moves-
 import { assertRawCapsule2AssistantHistoryOwned } from './restore-knowledge-capsule2-assistant-read'
 import { assertRawCapsule2PreferencesOwned } from './restore-knowledge-capsule2-preferences-read'
 import { assertRawCapsule2PluginPolicyOwned } from './restore-knowledge-capsule2-plugin-policy-read'
-import { CAPSULE2_READER, hashValidatedCapsule2RawContent, hashValidatedCapsule2RawSqlTable } from './restore-knowledge-capsule2-raw-model'
+import { CAPSULE2_READER, summarizeCapsule2RawPolicyContent } from './restore-knowledge-capsule2-raw-model'
 
 type Family = 'host-settings-and-reserved-metadata' | 'host-activity-text' | 'host-assistant-event-history' | 'plugin-retained-storage'
 type AssetRule = 'host-message-and-retained-stream-markdown' | 'opaque-values-not-paths-or-markdown'
@@ -43,6 +43,15 @@ export interface RawCapsule2SourcePolicy {
  * its source bytes as retained data cannot turn it into ordinary/empty K. */
 export function readRawCapsule2OrdinaryPolicySourceOwned(db: Database.Database) {
   const sourceContent = readRawCapsule2ContentOwned(db)
+  return Object.freeze({ sourceContent, ...observeOrdinaryPolicySource(db, summarizeCapsule2RawPolicyContent(sourceContent)) })
+}
+
+/** Fixed original selection preflight for consumers that only need evidence. */
+export function readRawCapsule2OrdinaryPolicyEvidenceOwned(db: Database.Database) {
+  return observeOrdinaryPolicySource(db, readRawCapsule2PolicyContentOwned(db))
+}
+
+function observeOrdinaryPolicySource(db: Database.Database, content: ReturnType<typeof readRawCapsule2PolicyContentOwned>) {
   const physical = readRawCapsule2PhysicalGraphOwned(db)
   assertRawCapsule2OrdinaryHistoryOwned(db)
   assertRawCapsule2TemplatesOwned(db)
@@ -50,36 +59,35 @@ export function readRawCapsule2OrdinaryPolicySourceOwned(db: Database.Database) 
   assertRawCapsule2AssistantHistoryOwned(db)
   assertRawCapsule2PreferencesOwned(db)
   assertRawCapsule2PluginPolicyOwned(db)
-  const sourceContentHash = hashValidatedCapsule2RawContent('knowbook.capsule2.workspace-history-source-content.v1', sourceContent)
+  const { sourceContentHash } = content
   const tables: Array<Policy & { table: string; rows: number; originalTableHash: string }> = [], seen = new Set<string>()
-  for (const table of sourceContent.tables) {
+  for (const table of content.tables) {
     if (table.role !== 'policy-unresolved') {
       if (policies.has(table.name)) return bad('已知policy family被降成另一raw角色')
       continue
     }
     const policy = policies.get(table.name)
-    if (!policy || seen.has(table.name)) return bad('完整来源含未分类/重复policy family')
+    if (!policy || !table.originalTableHash || seen.has(table.name)) return bad('完整来源含未分类/重复policy family')
     seen.add(table.name)
-    tables.push({ table: table.name, rows: table.rows.length, ...policy,
-      originalTableHash: hashValidatedCapsule2RawSqlTable('knowbook.capsule2.source-policy-original-table.v1', table) })
+    tables.push({ table: table.name, rows: table.rows, ...policy, originalTableHash: table.originalTableHash })
   }
   if (seen.size !== policies.size) return bad('完整policy family缺失，不能当作空集合')
   tables.sort((a, b) => a.table < b.table ? -1 : a.table > b.table ? 1 : 0)
   const body = { kind: 'capsule2-source-policy-dispositions' as const, version: 1 as const, forReader: CAPSULE2_READER,
-    state: 'retained-original-policy-only' as const, schemaVersion: sourceContent.schemaVersion, sourceContentHash, tables,
+    state: 'retained-original-policy-only' as const, schemaVersion: content.schemaVersion, sourceContentHash, tables,
     managedFiles: 'requires-actual-main-managed-originals' as const, externalPaths: 'original-literals-only-no-follow' as const,
     reservedMetadata: 'requires-observer2-total2-and-prior-root-interpretation' as const,
     certified: false as const, semanticValidationComplete: false as const, acceptedCoverage: false as const, effective: false as const,
     replayAllowed: false as const, executionAllowed: false as const, grantAuthority: false as const, permit: false as const }
   const policy: RawCapsule2SourcePolicy = freezeCapsuleValue({ ...body,
     observationHash: capsuleBytesHash('knowbook.capsule2.source-policy-dispositions.v1\0' + capsuleJson(body)) })
-  return Object.freeze({ sourceContent, physical, policy })
+  return Object.freeze({ physical, policy })
 }
 
 /** Only counts and disposition identifiers leave this diagnostic. Original
  * policy TEXT/JSON, credentials, commands and per-table byte hashes stay private. */
 export function diagnoseRawCapsule2SourcePolicyOwned(db: Database.Database) {
-  const { policy } = readRawCapsule2OrdinaryPolicySourceOwned(db)
+  const { policy } = readRawCapsule2OrdinaryPolicyEvidenceOwned(db)
   return freezeCapsuleValue({ kind: 'capsule2-source-policy-summary' as const, version: 1 as const,
     sourceContentHash: policy.sourceContentHash, observationHash: policy.observationHash,
     tables: policy.tables.map(({ table, family, rows, assetRule, executionRule }) => ({ table, family, rows, assetRule, executionRule })),

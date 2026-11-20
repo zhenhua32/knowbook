@@ -6,6 +6,7 @@ import type { CompleteOriginalPackage } from './restore-knowledge-original-input
 import { deriveRoot3KnowledgeConstraints, root3Invalid, type Root3KnowledgeConstraints } from './restore-knowledge-root3-model'
 import { freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { readRoot3OriginalReferenceResolutions } from './restore-knowledge-root3-contexts'
+import { scopeIncomingReferenceHistory5, withReferenceOriginalRows5 } from './restore-knowledge-reference-original-rows5'
 
 export interface RootKnowledgeConservationPlan3 { readonly kind: 'main-complete-qualified-knowledge-plan' }
 const plans = new WeakMap<RootKnowledgeConservationPlan3, { original: CompleteOriginalBundle; expectedHash: string }>()
@@ -56,17 +57,25 @@ const preparedInputs = new WeakMap<PreparedRootKnowledgeInputs5, { plan: RootKno
 export async function withPreparedRootKnowledgeInputs5<T>(
   input: Parameters<typeof captureQualifiedOriginalBundle>[0],
   run: (root: Awaited<ReturnType<typeof captureRootKnowledgeConservationPlanFromCertifiedSources3>>, scope: PreparedRootKnowledgeInputs5) => Promise<T>) {
-  const { pair, working, ...captured } = await captureQualifiedOriginalBundleWithInitialContent5(input)
-  const knowledge = await mintFromInitial(captured.bundle, captured.originalPackage)
-  const root = Object.freeze({ ...captured, knowledgePlan: knowledge.plan, knowledgeValue: knowledge.value })
-  const scope: PreparedRootKnowledgeInputs5 = Object.freeze({ kind: 'main-prepared-root-knowledge-inputs' })
-  const value = Object.freeze({ knowledge: knowledge.value, source: pair.source, current: pair.current })
-  preparedInputs.set(scope, { plan: root.knowledgePlan, data: Object.freeze({ value, pair, original: root.bundle, working }) })
-  try {
-    const result = await run(root, scope)
-    await readPreparedRootKnowledgeInputs5(root.knowledgePlan, scope)
-    return result
-  } finally { preparedInputs.delete(scope) }
+  return withReferenceOriginalRows5(async store => {
+    const { pair, working, ...captured } = await captureQualifiedOriginalBundleWithInitialContent5(input)
+    const knowledge = await mintFromInitial(captured.bundle, captured.originalPackage)
+    const root = Object.freeze({ ...captured, knowledgePlan: knowledge.plan, knowledgeValue: knowledge.value })
+    const source = pair.source.assetArchive.version === 6 ? Object.freeze({ ...pair.source,
+      source: Object.freeze({ ...pair.source.source, sourceContent: scopeIncomingReferenceHistory5(pair.source.source.sourceContent, store) })
+    }) : pair.source
+    const originals = Object.freeze({ originalPackage: pair.originalPackage, current: pair.current, source })
+    const value = Object.freeze({ knowledge: knowledge.value, source, current: pair.current })
+    return { root, data: Object.freeze({ value, pair: originals, original: root.bundle, working }) }
+  }, async ({ root, data }) => {
+    const scope: PreparedRootKnowledgeInputs5 = Object.freeze({ kind: 'main-prepared-root-knowledge-inputs' })
+    preparedInputs.set(scope, { plan: root.knowledgePlan, data })
+    try {
+      const result = await run(root, scope)
+      await readPreparedRootKnowledgeInputs5(root.knowledgePlan, scope)
+      return result
+    } finally { preparedInputs.delete(scope) }
+  })
 }
 
 export async function readPreparedRootKnowledgeInputs5(plan: RootKnowledgeConservationPlan3, scope: PreparedRootKnowledgeInputs5) {

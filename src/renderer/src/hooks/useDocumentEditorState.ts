@@ -5,7 +5,7 @@ import type { DocumentBlockDraft, DocumentDetail, HomeData } from '@shared/contr
 import type { BlockMoveCompletionContext, BlockMoveDestination } from '../utils/blockMoveActions'
 import type { UiText } from '../i18n'
 import { toDraftBlock } from '../utils/draftBlockShape'
-import { buildDraftMarkdownExport } from '../utils/documentMarkdown'
+import type { DraftMarkdownSource } from '../utils/documentMarkdown'
 import { normalizeDraftBlocks, validateBlockTreeStructure } from '../utils/draftTreeNormalization'
 import { prepareDraftBlockTypeChange } from '../utils/draftTreeTextEditing'
 import { getErrorMessage } from '../utils/errorMessage'
@@ -831,16 +831,22 @@ export function useDocumentEditorState({
     return [guard(setDraftTitle), guard(setDraftSummary)] as const
   }, [])
 
-  const getDraftMarkdownExport = useCallback((documentId: string) => {
-    if (selectedDocument?.id !== documentId || selectedDocumentIdRef.current !== documentId) return null
-    return buildDraftMarkdownExport({ title: draftTitleRef.current, blocks: draftBlocksRef.current })
-  }, [selectedDocument?.id])
+  const getDraftMarkdownSource = useCallback((documentId: string): DraftMarkdownSource | null => {
+    const detail = selectedDocumentRef.current
+    if (detail?.id !== documentId || selectedDocumentIdRef.current !== documentId) return null
+    const { path, updatedAt } = detail, title = draftTitleRef.current, blocks = draftBlocksRef.current
+    const session = editorSessionRef.current
+    return { id: documentId, path, updatedAt, title, blocks, isCurrent: () => isCurrentEditorSession(documentId, session)
+      && selectedDocumentRef.current?.path === path && draftTitleRef.current === title && draftBlocksRef.current === blocks }
+  }, [isCurrentEditorSession])
 
   const [copyDocumentAsMarkdown, saveDocumentAsMarkdown] = useMemo(() => {
     const exportMarkdown = async (destination: 'clipboard' | 'file') => {
       try {
-        const snapshot = selectedDocumentId && getDraftMarkdownExport(selectedDocumentId)
-        if (!snapshot) return
+        const source = selectedDocumentId && getDraftMarkdownSource(selectedDocumentId)
+        if (!source) return
+        const { readDocumentMarkdownExport } = await import('../utils/documentMarkdown')
+        const snapshot = await readDocumentMarkdownExport(source)
         if (destination === 'clipboard') {
           await window.knowbook.writeClipboardText(snapshot.markdown)
           triggerTransientFlash(setMdCopyFlash)
@@ -853,7 +859,7 @@ export function useDocumentEditorState({
       }
     }
     return [() => exportMarkdown('clipboard'), () => exportMarkdown('file')] as const
-  }, [getDraftMarkdownExport, onMessage, selectedDocumentId, triggerTransientFlash, ui])
+  }, [getDraftMarkdownSource, onMessage, selectedDocumentId, triggerTransientFlash, ui])
 
   const history = editHistoryRef.current, pointer = editHistoryPointerRef.current, scope = readingHistoryScopeRef.current
   const canUseHistory = !isBlockMoveBusy && !hostHistoryBusyRef.current
@@ -876,7 +882,7 @@ export function useDocumentEditorState({
     applyOrdinaryMarkdownSource,
     adoptRecoveryDraft,
     isSyncedHostComposing: () => composingDraftRef.current,
-    getDraftMarkdownExport,
+    getDraftMarkdownSource,
     getRenameTarget,
     hasPendingDraftChanges,
     isEditing,

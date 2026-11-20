@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { realpathSync } from 'node:fs'
+import { readFileSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import test from 'node:test'
 import { KnowbookStore } from '../src/main/database/store'
@@ -9,8 +9,11 @@ import { readBackupV3Archive } from '../src/main/backup/v3-reader'
 import { WebDavSyncService } from '../src/main/sync/service'
 import { createEphemeralCredentialStorage } from '../src/main/credential-storage'
 import { DEFAULT_WEBDAV_SYNC_CONFIG } from '../src/shared/webdav-sync'
-import { buildDocumentMarkdown } from '../src/renderer/src/utils/documentMarkdown'
-import { withV3Fixture, allTables, randomUUID } from './helpers/synced-backup-v3-fixture'
+import { buildDocumentMarkdown, readDocumentMarkdownExport } from '../src/renderer/src/utils/documentMarkdown'
+import { writeMarkdownFile } from '../src/main/backup/markdown-file'
+import { collectMarkdownDestinations } from '../src/shared/markdownLinks'
+import type { ResolveSyncedInlineInstanceInput } from '../src/shared/workspace-search-occurrence'
+import { addV3Assets, addV3SameGroupReference, withV3Fixture, allTables, randomUUID } from './helpers/synced-backup-v3-fixture'
 
 test('the current WebDAV service reads and rejects obsolete remote manifests without mutation', t => withV3Fixture(async f => {
   const store = KnowbookStore.openCanonicalRuntime(f.file)
@@ -60,10 +63,59 @@ test('legacy restore refuses a real V3 source and a current canonical target bef
   } finally { ordinary.destroy(); current.destroy() }
 }))
 
-test('single Markdown export rejects a real structural reference and ordinary Markdown keeps its existing serialization', () => withV3Fixture(f => {
-  const host = f.store.getDocumentDetail(f.hostId)
-  assert.ok(host)
-  assert.equal(host.blocks.some(block => block.type === 'synced-block'), true)
-  assert.throws(() => buildDocumentMarkdown(host), /同步块.*V3/)
+test('single Markdown export requires actual snapshots and ordinary Markdown keeps its existing serialization', () => {
+  const block = { id: randomUUID(), type: 'synced-block', content: JSON.stringify({ version: 1, groupId: randomUUID() }), checked: false, depth: 0 }
+  assert.throws(() => buildDocumentMarkdown({ title: 'Shared', blocks: [block] }), /同步块快照/)
   assert.equal(buildDocumentMarkdown({title:'Ordinary',blocks:[{id:'ordinary',type:'paragraph',content:'normal text',checked:false,depth:0,parentBlockId:null}]}), '# Ordinary\n\nnormal text')
+})
+
+test('single Markdown export expands actual repeated references and independently imports their links and attachments', () => withV3Fixture(async f => {
+  const parent = f.store.createDocument(null), documentId = f.store.createDocument(parent)
+  f.store.updateDocument(parent, { title: 'Folder', summary: '', blocks: [] })
+  f.store.updateDocument(documentId, { title: 'Portable reader', summary: '', blocks: [] })
+  addV3SameGroupReference(f, documentId)
+  addV3SameGroupReference(f, documentId)
+  const assetGroup = await addV3Assets(f)
+  addV3SameGroupReference({ ...f, groupId: assetGroup.groupId }, documentId)
+  const stored = f.store.getDocumentDetail(documentId)!
+  const before = allTables(f.db), originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
+  const ordinary = new KnowbookStore(join(f.root, 'plain-import.db'))
+  Object.defineProperty(globalThis, 'window', { configurable: true, value: { knowbook: {
+    resolveSyncedInlineInstance: async (input: ResolveSyncedInlineInstanceInput) => f.store.resolveSyncedInlineInstance(input),
+    getDocumentDetail: async (id: string) => f.store.getDocumentDetail(id),
+    resolveSyncedStoredBlockLink: async (input: unknown) => f.store.resolveSyncedStoredBlockLink(input)
+  } } })
+  try {
+    const exported = await readDocumentMarkdownExport(stored)
+    const link = '[target](../V3%20Target.md#target-heading)'
+    assert.equal(exported.fileName, 'Portable reader.md')
+    assert.equal(exported.markdown.split(link).length - 1 >= 2, true)
+    assert.equal(exported.markdown.includes(f.groupId), false)
+    const output = join(f.root, 'portable'), file = join(output, exported.fileName)
+    writeMarkdownFile(file, exported.markdown, join(f.userDataRoot, 'storage', 'assets'))
+    const attachment = collectMarkdownDestinations(readFileSync(file, 'utf8')).find(item => item.url.startsWith('./Portable%20reader.assets/'))
+    assert.ok(attachment, 'The real file export copied an actual canonical attachment')
+    assert.deepEqual(readFileSync(join(output, decodeURIComponent(attachment.url.split(/[?#]/, 1)[0]))), assetGroup.bytes)
+    await new MarkdownRestoreService(ordinary, join(f.root, 'ordinary-assets')).restoreFromDirectory(output)
+    const imported = ordinary.getAllDocumentSnapshots().find(document => document.title === 'Portable reader')
+    const restored = imported && ordinary.getDocumentDetail(imported.id)
+    assert.ok(restored)
+    assert.ok(restored.blocks.every(block => block.type !== 'synced-block'))
+    const repeated = restored.blocks.filter(block => block.content === link)
+    assert.equal(repeated.length, 2)
+    assert.notEqual(repeated[0].id, repeated[1].id)
+    const forged = { ...stored, blocks: stored.blocks.map(block => block.type === 'synced-block'
+      ? { ...block, content: JSON.stringify({ version: 1, groupId: randomUUID() }) } : block) }
+    await assert.rejects(readDocumentMarkdownExport(forged), /同步块快照已变化或不可用/)
+    assert.deepEqual(allTables(f.db), before)
+
+    f.store.deleteDocument(f.targetId)
+    assert.equal(f.store.getDocumentDetail(f.targetId), null)
+    const missingLinkTarget = await readDocumentMarkdownExport(f.store.getDocumentDetail(documentId)!)
+    assert.equal(missingLinkTarget.markdown.split(f.raw).length - 1, 3)
+  } finally {
+    ordinary.destroy()
+    if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
+    else Reflect.deleteProperty(globalThis, 'window')
+  }
 }))

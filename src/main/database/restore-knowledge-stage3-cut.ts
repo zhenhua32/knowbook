@@ -9,7 +9,7 @@ import { isSyncedUuid } from '../../shared/syncedBlockValidation'
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import type { readRootRestoreReferenceGraphInputs3 } from './restore-knowledge-reference3-read'
 import { graph3Encode, graph3Text } from './restore-knowledge-graph3-data'
-import type { Capsule2Encoding, Capsule2RawSqlTable } from './restore-knowledge-capsule2-raw-model'
+import { capsule2RawTableRows, type Capsule2Encoding, type Capsule2RawSqlTable } from './restore-knowledge-capsule2-raw-model'
 import { rawRestoreSqlCell, type RawRestoreSqlCell } from './restore-knowledge-sql-cell'
 import { assertMerge3JsonBudget } from './restore-knowledge-merge3-storage'
 import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-read'
@@ -94,7 +94,7 @@ function occupied(actual: Actual, target: readonly Capsule2RawSqlTable[], contex
     }
   }
   const visit = (tables: readonly Capsule2RawSqlTable[], encoding: Capsule2Encoding) => {
-    for (const table of tables) for (const row of table.rows) for (const [index, value] of row.cells.entries()) if (value[0] === 'text') {
+    for (const table of tables) for (const row of capsule2RawTableRows(table)) for (const [index, value] of row.cells.entries()) if (value[0] === 'text') {
       const source = graph3Text(value, encoding)
       collect(source)
       // Unknown ordinary settings/content are opaque TEXT in the original raw

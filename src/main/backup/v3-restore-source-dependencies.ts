@@ -11,6 +11,7 @@ import { parseInitialIncomingStored } from '../sync/synced-initial-incoming-mode
 import { EditorRecoveryDraftStore } from '../editor-recovery/draft-store'
 import { join } from 'node:path'
 import { graph3Value, type Graph3Inputs } from '../database/restore-knowledge-graph3-data'
+import { capsule2RawTableRows, type Capsule2RawContentStream } from '../database/restore-knowledge-capsule2-raw-model'
 import type { Reference3Value } from '../database/restore-knowledge-reference3-read'
 import { restoreExists } from '../database/restore-safety-files'
 
@@ -24,7 +25,7 @@ function stableTargets(groups: readonly SyncedGroupWire[]) {
 type LinkOrigin = { documentId: string; path?: string }
 type LinkDocument = { documentId: string; path: string; title: string }
 type GraphOriginal = Graph3Inputs['inputs']['source']
-type Original = { source: Pick<GraphOriginal['source'], 'sourceContent' | 'physical'>;
+type Original = { source: Pick<GraphOriginal['source'], 'physical'> & { sourceContent: Capsule2RawContentStream };
   knowledge: Pick<GraphOriginal['knowledge'], 'pins' | 'occupancy' | 'bindings' | 'hostJournals' | 'groupHistories' | 'archivedGroupHistories'> }
 
 const sqliteNoCase = (value: string) => value.replace(/[A-Z]/g, character => character.toLowerCase())
@@ -266,7 +267,7 @@ export function hasNoV3RetirementHistoricalReferences(input: Original, wires: re
     for (const table of source.sourceContent.tables) {
       if (!['document_history', 'document_trash', 'document_block_moves', 'document_templates'].includes(table.name)) continue
       const columns = new Map(table.columns.map((name, index) => [name, index]))
-      for (const row of table.rows) {
+      for (const row of capsule2RawTableRows(table)) {
         const get = (name: string) => graph3Value(row.cells[columns.get(name)!], source.sourceContent.encoding)
         if (table.name === 'document_history' && referencesSavedContent(parseInitialIncomingStored(String(get('content_json'))), retiring,
           { documentId: String(get('document_id')), path: String(get('path')) })) return false

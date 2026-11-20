@@ -19,6 +19,12 @@ test('controlled V3 maintenance installs the real SQLite and attachments and col
   f.store.updateDocument(f.targetId, { ...ordinary,
     summary: `![ordinary][alias]\n\n[alias]: <${first.url}>\n\n<img src="${second.url}" alt="ordinary HTML">`
   })
+  f.store.documentRecovery.checkpoint(f.targetId, 'edit', true)
+  const removedSource = f.store.createDocument(null)
+  f.store.updateDocument(removedSource, { title: 'Incoming archive trash', summary: 'Source-only evidence', blocks: [] })
+  f.store.deleteDocument(removedSource)
+  assert.ok(f.db.prepare('SELECT 1 FROM document_history LIMIT 1').get())
+  assert.ok(f.db.prepare('SELECT 1 FROM document_trash LIMIT 1').get())
   writeSyncedBackupV3(f.db, { userDataRoot: f.userDataRoot, destination: f.destination, snapshotId: randomUUID() })
   const requested = join(f.root, 'restore-receiver')
   await mkdir(requested)

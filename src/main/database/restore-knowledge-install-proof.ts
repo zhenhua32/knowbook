@@ -16,7 +16,7 @@ import { assertOriginCatalogDirectory } from './restore-knowledge-origin-bundle-
 import { assertJointRestoreInstalledResult4, jointRestorePaths4, readJointRestoreFence4, readJointRestoreIntent4,
   type JointRestoreIntent4 } from './restore-joint-journal4'
 import { captureReopenedRootKnowledgeConservationPlan3 } from './restore-knowledge-root3-read'
-import { readRootRestoreReferenceFromQualified5 } from './restore-knowledge-reference3-read'
+import { withRootRestoreReferenceOriginalRowsFromQualified5 } from './restore-knowledge-reference3-read'
 import { validateV3SettledPrivateSyncLocator, type V3SettledPrivateSyncLocator } from './restore-knowledge-settled-private-sync'
 import { readV3SourceGroupRetirementsOwned, v3SourceGroupRetirementHash, type V3SourceGroupRetirement } from './v3-source-group-retirement'
 
@@ -264,6 +264,8 @@ const priorInstalls = new WeakMap<RestoreKnowledgePriorInstall, Prior>()
 export function readVerifiedRestoreKnowledgePriorInstall(handle: RestoreKnowledgePriorInstall) {
   const item = priorInstalls.get(handle)
   if (!item) return fail('历史安装证明需要真实 Main owner')
+  const qualified = { profileRoot: item.profileRoot, operationId: item.proof.operationId,
+    mountId: item.proof.mountId, expectedDescriptorHash: item.proof.descriptorHash }
   return Object.freeze({ profileRoot: item.profileRoot, bundle: item.original.bundle, coverage: item.coverage,
     requirement: item.proof.coverage, rootMaterialHash: item.proof.rootMaterialHash, descriptorHash: item.proof.descriptorHash,
     sourceArchive: item.proof.sourceArchive,
@@ -274,9 +276,10 @@ export function readVerifiedRestoreKnowledgePriorInstall(handle: RestoreKnowledg
       const candidate = jointRestorePaths4(item.profileRoot, intent.operationId).candidateOriginal
       if (restoreJson(await restoreInventory(candidate)) !== restoreJson(intent.candidateInventory)) return fail('历史已安装 SQL 原件变化')
     },
-    readReferenceInputs() {
-      return readRootRestoreReferenceFromQualified5({ profileRoot: item.profileRoot, operationId: item.proof.operationId,
-        mountId: item.proof.mountId, expectedDescriptorHash: item.proof.descriptorHash }, item.proof.identity, item.proof.reference)
+    withReferenceOriginalRows<Projection, Result>(
+      project: Parameters<typeof withRootRestoreReferenceOriginalRowsFromQualified5<Projection, Result>>[3],
+      read: (projection: Projection) => Promise<Result>) {
+      return withRootRestoreReferenceOriginalRowsFromQualified5(qualified, item.proof.identity, item.proof.reference, project, read)
     } })
 }
 

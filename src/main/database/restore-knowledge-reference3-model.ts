@@ -2,12 +2,13 @@ import { createHmac } from 'node:crypto'
 import type { SyncedBindingKey, SyncedLinkTarget, SyncedOriginV1 } from '../../shared/synced-blocks'
 import { validateSyncedOrigin } from '../../shared/syncedBlockValidation'
 import { capsuleBytesHash, capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
-import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_RAW_MAX_ROWS } from './restore-knowledge-capsule2-raw-model'
+import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_RAW_MAX_ROWS, capsule2RawTableRows } from './restore-knowledge-capsule2-raw-model'
 import { graph3Conflict, graph3Key, graph3Rows, graph3Text, type Graph3Inputs } from './restore-knowledge-graph3-data'
 import type { Identity3Assignment } from './restore-knowledge-identity3-model'
 import { assertMerge3JsonBudget } from './restore-knowledge-merge3-storage'
 import { knowledgeGroupComparisonKey, knowledgeHash, type KnowledgeCapturedBinding, type KnowledgeGroup, type KnowledgeRowRef } from './restore-knowledge-payload-model'
 import { deriveRootRestoreProvenanceSources3 } from './restore-knowledge-provenance3-model'
+import { withStoredRestoreAllocationValues, type StoredRestoreAllocationValues } from './restore-knowledge-allocation-values'
 
 export interface Reference3Kernel {
   readonly kind: 'root-restore-reference-kernel'
@@ -190,6 +191,11 @@ function bindingKey(binding: SyncedBindingKey): SyncedBindingKey {
 export function deriveRootRestoreReferenceAllocation3(data: Graph3Inputs, inputKernel: Reference3Kernel,
   inputChoices?: Reference3Choices): Reference3Allocation {
   const kernel = validateReference3Kernel(inputKernel), choices = normalizeReference3Choices(inputChoices)
+  return withStoredRestoreAllocationValues(values => deriveReferenceWithValues(data, kernel, choices, values))
+}
+
+function deriveReferenceWithValues(data: Graph3Inputs, kernel: Reference3Kernel, choices: Reference3Choices,
+  values: StoredRestoreAllocationValues): Reference3Allocation {
   const provenance = deriveRootRestoreProvenanceSources3(data)
   const roots = (side: Reference3Side) => {
     const rows = data.inputs.knowledge.constraints.payloads.filter(p => !p.witness.domain.length && p.witness.side === side)
@@ -241,12 +247,14 @@ export function deriveRootRestoreReferenceAllocation3(data: Graph3Inputs, inputK
       if (!fact || (fact.snapshot !== null) !== (fact.absence === null)) return fail('physical-group-activity', { side, source: group.source })
     }
   }
-  const used = new Set<string>(), retainedTimes = new Set<string>()
-  const retainId = (value: string) => { used.add(value); for (const m of value.matchAll(uuidPattern)) used.add(m[0].toLowerCase()) }
+  const retainId = (value: string) => {
+    values.add('identity', value)
+    for (const match of value.matchAll(uuidPattern)) values.add('identity', match[0].toLowerCase())
+  }
   let newestDocument = Math.max(Date.parse(kernel.preparedAt), Date.parse(data.value.execution.documentUpdatedAt))
   const scan = (value: string) => {
-    for (const match of value.matchAll(uuidPattern)) used.add(match[0].toLowerCase())
-    for (const match of value.matchAll(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z/g)) retainedTimes.add(match[0])
+    for (const match of value.matchAll(uuidPattern)) values.add('identity', match[0].toLowerCase())
+    for (const match of value.matchAll(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z/g)) values.add('document-time', match[0])
   }
   for (const payload of data.inputs.knowledge.constraints.payloads) {
     const projection = payload.input.knowledge.projection
@@ -261,7 +269,7 @@ export function deriveRootRestoreReferenceAllocation3(data: Graph3Inputs, inputK
   }
   for (const side of ['source', 'current'] as const) {
     const content = data.inputs[side].source.sourceContent
-    for (const table of content.tables) for (const row of table.rows) for (const cell of row.cells)
+    for (const table of content.tables) for (const row of capsule2RawTableRows(table)) for (const cell of row.cells)
       if (cell[0] === 'text') scan(graph3Text(cell, content.encoding))
   }
   for (const assignment of data.value.assignments) { retainId(assignment.targetId); if (assignment.targetCreationId) retainId(assignment.targetCreationId) }
@@ -282,8 +290,8 @@ export function deriveRootRestoreReferenceAllocation3(data: Graph3Inputs, inputK
         data.value.allocationHash, choices, purposeKey, attempt)).digest().subarray(0, 16)
       bytes[6] = bytes[6] & 15 | 64; bytes[8] = bytes[8] & 63 | 128
       const hex = bytes.toString('hex'), candidate = [hex.slice(0,8),hex.slice(8,12),hex.slice(12,16),hex.slice(16,20),hex.slice(20)].join('-')
-      if (used.has(candidate)) continue
-      used.add(candidate); targetId = candidate; break
+      if (!values.add('identity', candidate)) continue
+      targetId = candidate; break
     }
     if (!targetId) return fail('finite-purpose-collision-budget', purposeKey)
     const purpose: Reference3Purpose = { key: purposeKey, family, namespace, side: 'source', sourceGroupId: group?.tuple.groupId ?? null,
@@ -522,15 +530,19 @@ export function deriveRootRestoreReferenceAllocation3(data: Graph3Inputs, inputK
   // though the core Origin shape validator does not demand it. This does NOT
   // rename the old ID or establish a historical birth. Shared references to
   // the same already-existing current-domain ID support ONE reserved SQL row.
-  const currentPhysicalIds = new Set<string>()
-  for (const name of ['blocks', 'synced_group_blocks'] as const)
-    for (const row of graph3Rows(data.inputs.current.source.sourceContent, name)) currentPhysicalIds.add(text(row.value.id))
+  const rawCurrent = data.inputs.current.source.sourceContent
+  for (const name of ['blocks', 'synced_group_blocks'] as const) {
+    const table = rawCurrent.tables.find(candidate => candidate.name === name) ?? fail('missing-current-block-table', name)
+    const id = table.columns.indexOf('id')
+    if (id < 0) return fail('missing-current-block-id-column', name)
+    for (const row of table.rows) values.add('current-physical-block', graph3Text(row.cells[id], rawCurrent.encoding))
+  }
   const sourcePhysicalTargetIds = new Set(assignments.filter(a => a.kind === 'block' && a.physical).map(a => a.targetId))
   const currentMissingOrigins = new Map<string, KnowledgeRowRef[]>()
   for (const group of current.groups) {
     if (!currentPhysical.get(group.tuple.groupId)!.snapshot) continue
     const id = group.tuple.origin.firstInstanceId
-    if (currentPhysicalIds.has(id) || currentIdentities.has(id)) continue
+    if (values.has('current-physical-block', id) || currentIdentities.has(id)) continue
     if (sourcePhysicalTargetIds.has(id)) return fail('existing-current-missing-origin-would-become-physical', group.source)
     const supports = currentMissingOrigins.get(id) ?? []; supports.push(group.source); currentMissingOrigins.set(id, supports)
   }
@@ -551,7 +563,7 @@ export function deriveRootRestoreReferenceAllocation3(data: Graph3Inputs, inputK
   }
   if (!Number.isFinite(newestDocument) || newestDocument >= 8_640_000_000_000_000) return fail('finite-document-cas-time', null)
   let documentUpdatedAt = new Date(newestDocument + 1).toISOString()
-  while (retainedTimes.has(documentUpdatedAt)) {
+  while (values.has('document-time', documentUpdatedAt)) {
     newestDocument++
     if (newestDocument >= 8_640_000_000_000_000) return fail('finite-document-cas-time', null)
     documentUpdatedAt = new Date(newestDocument + 1).toISOString()
