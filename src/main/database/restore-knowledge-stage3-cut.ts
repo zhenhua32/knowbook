@@ -7,8 +7,9 @@ import type Database from 'better-sqlite3'
 import { createHash } from 'node:crypto'
 import { isSyncedUuid } from '../../shared/syncedBlockValidation'
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
+import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
 import type { readRootRestoreReferenceGraphInputs3 } from './restore-knowledge-reference3-read'
-import { graph3Encode, graph3Text } from './restore-knowledge-graph3-data'
+import { graph3Encode, graph3TablesHashInput, graph3Text } from './restore-knowledge-graph3-data'
 import { capsule2RawTableRows, type Capsule2Encoding, type Capsule2RawSqlTable } from './restore-knowledge-capsule2-raw-model'
 import { rawRestoreSqlCell, type RawRestoreSqlCell } from './restore-knowledge-sql-cell'
 import { assertMerge3JsonBudget } from './restore-knowledge-merge3-storage'
@@ -219,7 +220,8 @@ export function planRootRestoreStage3RetainedCut3(actual: Actual, physicalTables
   const recordBody = { kind: 'root-restore-current-retained-cut' as const, version: 1 as const, policyVersion: 1 as const,
     bindings, workspace: allocation.workspace, documentBoundary, cutHash: executionHash,
     archive: { storage: 'genuine-current-copy-and-qualified-originals' as const, encoding, tables: archiveTables,
-      currentOriginalRawTablesHash: hash('knowbook.restore.stage3.retained-cut.all-original-tables.v1', actual.data.inputs.current.source.sourceContent.tables) },
+      currentOriginalRawTablesHash: hashBoundedCapsuleJson(graph3TablesHashInput(actual.data.inputs.current.source.sourceContent.tables),
+        Number.MAX_SAFE_INTEGER, 'knowbook.restore.stage3.retained-cut.all-original-tables.v1\0') ?? fail('current原全集超过准确JSON范围') },
     finalTablesHash: hash('knowbook.restore.stage3.retained-cut.final-tables.v1', { tables, protectedTables }),
     counts: { documents: documentAllocations.length, hosts: hostAllocations.length, groups: groupAllocations.length,
       activeGroups: groupAllocations.filter(row => row.disposition === 'active').length, instances: instanceAllocations.length,

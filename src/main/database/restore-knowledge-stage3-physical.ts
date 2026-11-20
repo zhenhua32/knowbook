@@ -17,8 +17,9 @@ import { prepareRootRestoreCurrentCopyForStage3, readRootRestoreCurrentCopyForSt
   type RootRestoreCurrentCopy3 } from './restore-knowledge-stage3-current-copy'
 import { stage3MarkerJson, stage3MarkerKey, stage3MarkerHash, type RootRestoreStage3Marker } from './restore-knowledge-stage3-marker-model'
 import { readStage3OriginalRecoveryFamilyOwned, readRootRestoreStage3MarkerOwned } from './restore-knowledge-stage3-marker-read'
-import { CAPSULE2_RAW_MAX_ROWS, CAPSULE2_RAW_MAX_VALUE_BYTES, capsule2RawSqlValueBytesExpression,
-  capsule2DerivedFtsTables, type Capsule2Encoding, type Capsule2RawSqlTable, type Capsule2RawSqlRow } from './restore-knowledge-capsule2-raw-model'
+import { CAPSULE2_RAW_MAX_ROWS, CAPSULE2_RAW_MAX_VALUE_BYTES, capsule2RawSqlValueBytesExpression, capsule2RawTableRowCount,
+  capsule2RawTableRows, scopedCapsule2TableRowLookup, capsule2DerivedFtsTables, type Capsule2Encoding, type Capsule2RawSqlTable,
+  type Capsule2RawSqlRow } from './restore-knowledge-capsule2-raw-model'
 import { MERGE3_CONTENT_TABLES, assertMerge3JsonBudget } from './restore-knowledge-merge3-storage'
 import { rawRestoreSqlCell, type RawRestoreSqlCell } from './restore-knowledge-sql-cell'
 import { readCapsule2AssetManifest, writeCapsule2AssetCopy } from './restore-knowledge-capsule2-assets-files'
@@ -229,11 +230,11 @@ function planSql(actual: Actual, preparedAt: string, cutContext: { stageId: stri
   for (const table of tables) {
     const before = raw(actual, table.name)
     if (!same(table.columns, before.columns) || !same(table.primaryKey, before.primaryKey)) return fail('目标列序/PK不属于current schema')
-    const oldRows = new Map(before.rows.map(row => [row.sourceRowId, row]))
+    const readOld = originalLookup(before)
     for (const row of table.rows) {
       int64(row.sourceRowId)
-      const old = oldRows.get(row.sourceRowId)
-      if (old && table.primaryKey.some(column => !same(old.cells[table.columns.indexOf(column)], row.cells[table.columns.indexOf(column)])))
+      const previous = readOld(row.sourceRowId)
+      if (previous && table.primaryKey.some(column => !same(previous.cells[table.columns.indexOf(column)], row.cells[table.columns.indexOf(column)])))
         return fail('existing targetRowId试图换主键；不能借rowid改身份')
     }
     if (table.name === 'documents' || table.name === 'synced_groups') {
@@ -350,26 +351,37 @@ function assertSchema(db: Database.Database, actual: Actual) {
   if(triggers.length!==allowed.size)return fail('native compiled trigger闭集缺失')
   for (const trigger of compiled) if (!triggers.some(row=>row.name===trigger.name && normalized(row.sql)===normalized(trigger.sql))) return fail('触发器不等于现compiled定义')
 }
-function cellsBytes(rows: readonly Row[]) { let total = 0n; for (const row of rows) for (const cell of row.cells)
+function cellsBytes(rows: Iterable<Row>) { let total = 0n; for (const row of rows) for (const cell of row.cells)
   total += BigInt(cell[0]==='text'||cell[0]==='blob' ? Buffer.from(cell[1],'base64').length : 8); return total }
-function exactTable(db: Database.Database, table: Capsule2RawSqlTable, enc: Capsule2Encoding): Capsule2RawSqlTable {
+export function assertRootRestoreStage3ExactTable3(db: Database.Database, table: Capsule2RawSqlTable, enc: Capsule2Encoding): Capsule2RawSqlTable {
   const columns = db.prepare('SELECT * FROM main.'+quote(table.name)+' LIMIT 0').columns().map(column=>column.name)
   if (!same(columns,table.columns)) return fail('实际列序变化：'+table.name)
   const measured = db.prepare('SELECT count(*),coalesce(sum('+capsule2RawSqlValueBytesExpression(columns)+'),0) FROM main.'+quote(table.name))
     .safeIntegers(true).raw(true).get() as [bigint,bigint]
-  if (measured[0]!==BigInt(table.rows.length)||measured[1]!==cellsBytes(table.rows)) return fail('实际行数/值bytes不符：'+table.name)
+  if (measured[0]!==BigInt(capsule2RawTableRowCount(table))||measured[1]!==cellsBytes(capsule2RawTableRows(table))) return fail('实际行数/值bytes不符：'+table.name)
   const projection=columns.flatMap(column=>[`typeof(${quote(column)})`, `CASE WHEN typeof(${quote(column)})='text' THEN CAST(${quote(column)} AS BLOB) ELSE ${quote(column)} END`]).join(',')
   // Original capsule rows are already in signed physical order. Keep the
   // previous sort for local plans that supply a different row order.
-  const expected=table.rows.some((row,index)=>index>0&&rowOrder(table.rows[index-1],row)>0)?[...table.rows].sort(rowOrder):table.rows
-  let count=0
-  for (const rawRow of db.prepare('SELECT _rowid_,'+projection+' FROM main.'+quote(table.name)+' ORDER BY _rowid_').safeIntegers(true).raw(true).iterate() as IterableIterator<unknown[]>) {
-    if (typeof rawRow[0]!=='bigint') return fail('实际rowid非int64')
-    const row={sourceRowId:rawRow[0].toString(),cells:columns.map((_column,index)=>rawRestoreSqlCell(rawRow[2*index+1],rawRow[2*index+2],enc))}
-    if (!same(row,expected[count++])) return fail('原行/targetRowId/storage class/bytes不符：'+table.name+':'+row.sourceRowId)
-  }
-  if(count!==expected.length)return fail('实际行被截断')
-  return expected===table.rows?table:{...table,rows:expected}
+  const ordered = !scopedCapsule2TableRowLookup(table) && table.rows.some((row,index)=>index>0&&rowOrder(table.rows[index-1],row)>0)
+    ? [...table.rows].sort(rowOrder) : undefined
+  const expected = (ordered ?? capsule2RawTableRows(table))[Symbol.iterator]()
+  try {
+    for (const rawRow of db.prepare('SELECT _rowid_,'+projection+' FROM main.'+quote(table.name)+' ORDER BY _rowid_').safeIntegers(true).raw(true).iterate() as IterableIterator<unknown[]>) {
+      if (typeof rawRow[0]!=='bigint') return fail('实际rowid非int64')
+      const row={sourceRowId:rawRow[0].toString(),cells:columns.map((_column,index)=>rawRestoreSqlCell(rawRow[2*index+1],rawRow[2*index+2],enc))}
+      const prior = expected.next()
+      if (prior.done || !same(row,prior.value)) return fail('原行/targetRowId/storage class/bytes不符：'+table.name+':'+row.sourceRowId)
+    }
+    if (!expected.next().done) return fail('实际行被截断')
+  } finally { expected.return?.() }
+  return ordered ? { ...table, rows: ordered } : table
+}
+
+function originalLookup(table: Capsule2RawSqlTable) {
+  const stored = scopedCapsule2TableRowLookup(table)
+  if (stored) return stored
+  const rows = new Map(table.rows.map(row => [row.sourceRowId, row]))
+  return (id: string) => rows.get(id)
 }
 function cellParam(cell: RawRestoreSqlCell,enc:Capsule2Encoding): {sql:string; value:null|bigint|number|Buffer|string} {
   if(cell[0]==='null')return {sql:'?',value:null}
@@ -402,7 +414,7 @@ function* parentOrdered(table: Capsule2RawSqlTable, enc: Capsule2Encoding, rever
     else yield* table.rows
     return
   }
-  if (!table.rows.length) return
+  if (!capsule2RawTableRowCount(table)) return
   const columns = [table.columns.indexOf('id'), table.columns.indexOf(parentColumn),
     ownerColumn === undefined ? -1 : table.columns.indexOf(ownerColumn), table.columns.indexOf('type')]
   const [idIndex, parentIndex, ownerIndex, typeIndex] = columns
@@ -423,10 +435,11 @@ function* parentOrdered(table: Capsule2RawSqlTable, enc: Capsule2Encoding, rever
       SELECT child.id,child.source_index FROM temp.parent_order base CROSS JOIN temp.forest child
       WHERE base.position BETWEEN ? AND ? AND child.parent=base.id ORDER BY base.position,child.row_id`)
     scratch.transaction(() => {
-      for (const [index, row] of table.rows.entries()) {
+      let index = 0
+      for (const row of capsule2RawTableRows(table)) {
         const reference = table.name === 'blocks' && textAt(row, typeIndex) === 'synced-block'
         if (insert.run(text(textAt(row, idIndex)), textAt(row, parentIndex), textAt(row, ownerIndex),
-          int64(row.sourceRowId), index, Number(reference)).changes !== 1) return fail('parent ordering发现重复物理id')
+          int64(row.sourceRowId), index++, Number(reference)).changes !== 1) return fail('parent ordering发现重复物理id')
       }
       if (scratch.prepare(`SELECT 1 FROM temp.forest child LEFT JOIN temp.forest base ON base.id=child.parent
         WHERE child.parent IS NOT NULL AND (base.id IS NULL OR base.owner IS NOT child.owner) LIMIT 1`).get())
@@ -441,16 +454,23 @@ function* parentOrdered(table: Capsule2RawSqlTable, enc: Capsule2Encoding, rever
         first = last + 1
         last += count
       }
-      if (last !== table.rows.length) return fail('parent ordering发现循环/无根组件')
+      if (last !== capsule2RawTableRowCount(table)) return fail('parent ordering发现循环/无根组件')
     })()
     const direction = reverse ? 'DESC' : 'ASC'
-    const indexes = scratch.prepare(`SELECT source_index FROM temp.parent_order ORDER BY position ${direction}`).pluck().iterate()
-    for (const index of indexes as IterableIterator<number>) yield table.rows[index]
+    const stored = scopedCapsule2TableRowLookup(table)
+    if (stored) {
+      const ids = scratch.prepare(`SELECT forest.row_id FROM temp.parent_order AS ordered JOIN temp.forest AS forest
+        ON forest.id=ordered.id ORDER BY ordered.position ${direction}`).safeIntegers(true).pluck().iterate() as IterableIterator<bigint>
+      for (const id of ids) yield stored(id.toString()) ?? fail('parent ordering缺原rowid：'+table.name)
+    } else {
+      const indexes = scratch.prepare(`SELECT source_index FROM temp.parent_order ORDER BY position ${direction}`).pluck().iterate()
+      for (const index of indexes as IterableIterator<number>) yield table.rows[index]
+    }
   } finally { scratch.close() }
 }
 function upsertTargets(db:Database.Database,table:Capsule2RawSqlTable,before:Capsule2RawSqlTable,enc:Capsule2Encoding) {
-  const old=new Map(before.rows.map(row=>[row.sourceRowId,row]))
-  for(const row of parentOrdered(table,enc)){const prior=old.get(row.sourceRowId);if(!prior){insertRow(db,table,row,enc);continue}
+  const old=originalLookup(before)
+  for(const row of parentOrdered(table,enc)){const prior=old(row.sourceRowId);if(!prior){insertRow(db,table,row,enc);continue}
     const changes=table.columns.flatMap((column,index)=>same(row.cells[index],prior.cells[index])?[]:[{column,param:cellParam(row.cells[index],enc)}])
     if(!changes.length)continue
     const result=db.prepare('UPDATE main.'+quote(table.name)+' SET '+changes.map(change=>quote(change.column)+'='+change.param.sql).join(',')+' WHERE _rowid_=?')
@@ -555,12 +575,12 @@ function observeSql(db:Database.Database,actual:Actual,plan:Planned,marker:RootR
   // SQL exhausts and compares the true ordered rows before returning this
   // exact view. Downstream graph reconstruction does not need a second copy
   // of the same storage cells, including on an independent cold connection.
-  const tables=plan.tables.map(table=>exactTable(db,table,plan.encoding))
+  const tables=plan.tables.map(table=>assertRootRestoreStage3ExactTable3(db,table,plan.encoding))
   const physical12TablesHash=hashStageData('knowbook.restore.stage3.planned-content.v1',tables)
   if(physical12TablesHash!==plan.physical12TablesHash)return fail('实际physical12不等于声明execution转换')
   const exactTables = new Map(tables.map(table => [table.name, table]))
   const protectedObservations=protectedTables(actual,plan,marker).map(table=>{
-    const verified=exactTable(db,table,plan.encoding)
+    const verified=assertRootRestoreStage3ExactTable3(db,table,plan.encoding)
     if(assets&&table.name==='app_settings'){
       const {rows:originalRows,...original}=raw(actual,'app_settings'),keys=new Set(originalRows.map(row=>row.sourceRowId))
       const {rows:observedRows,...observed}=verified,retained=observedRows.filter(row=>keys.has(row.sourceRowId))
@@ -671,7 +691,7 @@ function writeRetainedCutSql(db:Database.Database,actual:Actual,plan:Planned) {
         return fail('retained cut未移出准确原执行行：'+table.name)
     }
     upsertTargets(db,table,original,plan.encoding)
-    exactTable(db,table,plan.encoding)
+    assertRootRestoreStage3ExactTable3(db,table,plan.encoding)
   }
   insertRow(db,raw(actual,'app_settings'),retainedCutRecordRow(actual,plan),plan.encoding)
 }
@@ -680,15 +700,16 @@ function writeSql(db:Database.Database,actual:Actual,plan:Planned,marker:RootRes
   db.transaction(()=>{
     if(hasAnySyncedObservationPending())return fail('仍有未持久化的远端观察，不能建立恢复执行cut')
     context(db,plan.encoding,false);assertSchema(db,actual)
-    for(const table of actual.data.inputs.current.source.sourceContent.tables)if(!ftsFootprint.has(table.name))exactTable(db,table,plan.encoding)
+    for(const table of actual.data.inputs.current.source.sourceContent.tables)if(!ftsFootprint.has(table.name))assertRootRestoreStage3ExactTable3(db,table,plan.encoding)
     db.pragma('defer_foreign_keys=ON')
     const app=raw(actual,'app_settings');insertRow(db,app,{sourceRowId:plan.markerRowId,cells:encodeValues(app.columns,plan.encoding,
       {key:stage3MarkerKey(marker.stageId),value:stage3MarkerJson(marker),updated_at:marker.preparedAt})},plan.encoding)
     // The registry is a declared complete content table. Removing it first is
     // the schema's atomic reference-transition rule, not a cut/history delete.
     db.exec('DELETE FROM main.synced_instances')
-    const removed=new Map(plan.tables.map(table=>{const wanted=new Set(table.rows.map(row=>row.sourceRowId))
-      return [table.name,new Set(raw(actual,table.name).rows.filter(row=>!wanted.has(row.sourceRowId)).map(row=>row.sourceRowId))] as const}))
+    const removed=new Map(plan.tables.map(table=>{const wanted=new Set(table.rows.map(row=>row.sourceRowId)), ids=new Set<string>()
+      for (const row of capsule2RawTableRows(raw(actual, table.name))) if (!wanted.has(row.sourceRowId)) ids.add(row.sourceRowId)
+      return [table.name,ids] as const}))
     const foreign=foreignDeletePlans(db)
     // Saved-view names have an immediate NOCASE uniqueness constraint. A
     // legitimate source/current name permutation cannot be applied one row
@@ -712,7 +733,7 @@ function writeSql(db:Database.Database,actual:Actual,plan:Planned,marker:RootRes
       return fail('实体过渡未释放准确原关联集合')
     const beforeEntities:Capsule2RawSqlTable={...oldEntities,rows:oldEntities.rows.map(row=>({...row,
       cells:row.cells.map((cell,index):RawRestoreSqlCell=>index===documentColumn?['null']:cell)}))}
-    exactTable(db,beforeEntities,plan.encoding)
+    assertRootRestoreStage3ExactTable3(db,beforeEntities,plan.encoding)
     const ledger=raw(actual,'block_identities')
     for(const row of plan.ledgerAdded){const state=ledger.columns.indexOf('state'),cells=[...row.cells];cells[state]=graph3Encode('retained',plan.encoding)
       insertRow(db,ledger,{...row,cells},plan.encoding)}

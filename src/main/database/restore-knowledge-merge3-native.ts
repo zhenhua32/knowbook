@@ -4,10 +4,10 @@ import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_RAW_MAX_ROWS, CAPSULE2_RAW_MAX_VALUE_BYTES,
   capsule2ApplicationColumns, type Capsule2Encoding } from './restore-knowledge-capsule2-raw-model'
 import { graph3Conflict, graph3Text } from './restore-knowledge-graph3-data'
-import { MERGE3_CONTENT_TABLES, assertMerge3JsonBudget, type FinishedMerge3Table, type Merge3ContentTable } from './restore-knowledge-merge3-storage'
+import { MERGE3_CONTENT_TABLES, assertMerge3JsonBudget, type Merge3ContentTable } from './restore-knowledge-merge3-storage'
+import { assertNavigation3TableJsonBudget, readScopedNavigation3Rows, type Navigation3TableSource } from './restore-knowledge-navigation3-tables'
 import { rawRestoreSqlCell, type RawRestoreSqlCell } from './restore-knowledge-sql-cell'
 
-type Table = FinishedMerge3Table['table']
 type Collation = 'BINARY' | 'NOCASE'
 type InsertComparison = Database.Statement<[string, string, string, string, string, Collation]>
 export interface Merge3NativeConflict {
@@ -41,6 +41,10 @@ function array(value: unknown, max: number): unknown[] {
   const input = ownArray(value, max)
   return Array.from({ length: input.length }, (_, index) => arrayItem(input, index))
 }
+function* plainTableRows(value: unknown) {
+  const rows = ownArray(value, CAPSULE2_RAW_MAX_ROWS)
+  for (let index = 0; index < rows.length; index++) yield arrayItem(rows, index)
+}
 function encoding(value: unknown): Capsule2Encoding {
   return value === 'UTF-8' || value === 'UTF-16le' || value === 'UTF-16be' ? value : fail('encoding', value)
 }
@@ -49,9 +53,9 @@ function text(value: unknown): string { return typeof value === 'string' ? value
 /** Actual SQLite comparison of complete candidate storage keys. The in-memory
  * connection holds no candidate tables in its main schema. The comparison
  * indexes use SQLite's private file-backed temp schema with a small page cache. */
-export function checkMerge3NativeStorage3(input: readonly Table[]) {
-  assertMerge3JsonBudget(input)
-  const tables = array(input, MERGE3_CONTENT_TABLES.length), names = new Set<string>()
+export function checkMerge3NativeStorage3(input: readonly Navigation3TableSource[]) {
+  assertNavigation3TableJsonBudget(input)
+  const tables = array(input, MERGE3_CONTENT_TABLES.length) as Navigation3TableSource[], names = new Set<string>()
   const checks: Check[] = [], conflicts: Merge3NativeConflict[] = []
   let rows = 0, valueBytes = 0, comparisonRows = 0, conflictKeyMinimumBytes = 0
   let targetEncoding: Capsule2Encoding
@@ -91,8 +95,8 @@ export function checkMerge3NativeStorage3(input: readonly Table[]) {
     targetEncoding = db.transaction(() => {
       let commonEncoding: Capsule2Encoding | null = null, insert: InsertComparison | undefined
       let insertRowKey: Database.Statement<[Buffer]> | undefined
-      for (let tableIndex = 0; tableIndex < tables.length; tableIndex++) {
-        const source = capsuleRecord(tables[tableIndex], ['name', 'role', 'columns', 'primaryKey', 'encoding', 'rows'])
+      for (const table of tables) {
+        const source = capsuleRecord(table, ['name', 'role', 'columns', 'primaryKey', 'encoding', 'rows'])
         if (!MERGE3_CONTENT_TABLES.includes(source.name as Merge3ContentTable) || source.role !== 'content' || names.has(String(source.name))) return fail('table-closure', source.name)
         const name = source.name as Merge3ContentTable, enc = encoding(source.encoding), columns = array(source.columns, 512).map(text)
         if (!same([...columns].sort(), [...fixedColumns.get(name)!].sort()) || !same(array(source.primaryKey, 2), primaryKey(name))) return fail('fixed-columns-or-pk', name)
@@ -121,9 +125,8 @@ export function checkMerge3NativeStorage3(input: readonly Table[]) {
         if (name === 'database_entities') tableChecks.push({ rule: name + ':database-document', code: 'native-binary-database-document-duplicate', table: name,
           constraint: 'non-null-database-entity-document', columns: ['database_id', 'document_id'], collations: ['BINARY', 'BINARY'], rowsChecked: 0, nullKeyRowsSkipped: 0, duplicateGroups: 0 })
         checks.push(...tableChecks)
-        const tableRows = ownArray(source.rows, CAPSULE2_RAW_MAX_ROWS)
-        for (let index = 0; index < tableRows.length; index++) {
-          const row = capsuleRecord(arrayItem(tableRows, index), ['key', 'targetRowId', 'cells', 'sourceRef', 'replaces']), rowKey = text(row.key)
+        for (const value of readScopedNavigation3Rows(table) ?? plainTableRows(source.rows)) {
+          const row = capsuleRecord(value, ['key', 'targetRowId', 'cells', 'sourceRef', 'replaces']), rowKey = text(row.key)
           if (++rows > CAPSULE2_RAW_MAX_ROWS || !int64(row.targetRowId) || insertRowKey!.run(Buffer.from(rowKey, 'utf16le')).changes !== 1)
             return fail('row-closure-or-budget', { table: name, rowKey })
           const cells = array(row.cells, 512).map(value => cell(value, enc))

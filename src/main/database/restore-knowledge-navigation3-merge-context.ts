@@ -15,7 +15,8 @@ import { parseSyncedBlockPayload, SYNCED_MAX_BLOCKS, SYNCED_MAX_DEPTH, validateS
 import { parseStrictJson } from '../../shared/strictJson'
 import { capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { capsuleJsonStoredArray, capsuleJsonStringBytes, hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
-import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_RAW_MAX_ROWS, CAPSULE2_RAW_MAX_VALUE_BYTES } from './restore-knowledge-capsule2-raw-model'
+import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_RAW_MAX_ROWS, CAPSULE2_RAW_MAX_VALUE_BYTES,
+  scopedCapsule2TableIdLookup } from './restore-knowledge-capsule2-raw-model'
 import { findGraph3OriginalRow, graph3Conflict, graph3Key, graph3Text, graph3Value } from './restore-knowledge-graph3-data'
 import { assertMerge3JsonBudget } from './restore-knowledge-merge3-storage'
 import { withStoredRestoreScopes } from './restore-knowledge-stored-scopes'
@@ -127,6 +128,11 @@ function originalAccess(data: Graph3Inputs) {
   const byId = new Map<string, Map<string, Capsule2RawSqlRow>>()
   function findIdentity(side: Side, name: 'documents' | 'blocks' | 'synced_group_blocks', id: string) {
     const key = graph3Key(side, name), originalTable = table(side, name)
+    const stored = scopedCapsule2TableIdLookup(originalTable)
+    if (stored) {
+      const row = stored(id)
+      return row && { table: originalTable, row }
+    }
     let index = byId.get(key)
     if (!index) {
       index = new Map()

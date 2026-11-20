@@ -10,6 +10,10 @@ import { capsule2AssetArchiveOriginalBytes3, parseCapsule2CompleteAssetArchiveMa
   readCapsule2ArchiveSourceOriginal, readCapsule2AssetArchive, reopenCapsule2AssetArchive } from '../src/main/database/restore-knowledge-capsule2-asset-archive'
 import { validateCapsule2ManagedTree } from '../src/main/database/restore-knowledge-capsule2-assets-model'
 import { capsuleBytesHash, capsuleJson } from '../src/main/database/restore-knowledge-capsule-model'
+import { capsule2RawTableRowCount, hashValidatedCapsule2RawSqlTable,
+  scopedCapsule2TableRowEncoding } from '../src/main/database/restore-knowledge-capsule2-raw-model'
+import { captureReopenedSealedCapsule2SourceWithWorking5, captureSealedCapsule2SourceFromArchive } from '../src/main/database/restore-knowledge-capsule2-source-seal'
+import { scopeIncomingReferenceTables5, withReferenceOriginalRows5 } from '../src/main/database/restore-knowledge-reference-original-rows5'
 import { readOwnedRawCapsuleOriginal, reopenPreparedRawCapsuleOriginal } from '../src/main/database/restore-knowledge-capsule-files'
 import { CAPSULE_V3_ASSET_MAX_FILE_BYTES } from '../src/main/database/restore-knowledge-capsule-v3-assets'
 import { captureSyncedBackupV3, readSyncedBackupV3Capture } from '../src/main/database/synced-backup-v3'
@@ -129,4 +133,35 @@ test('archive6 cold reopen rejects independently valid V3 contents paired with d
   const raw = await reopenPreparedRawCapsuleOriginal({ profileRoot: original.profileRoot, operationId,
     capsuleId: manifest.capsuleId, expectedInventory: original.originalInventory })
   await assert.rejects(reopenCapsule2AssetArchive(raw, pinned), /private V3 SQL readback differs from its source records/)
+}))
+
+test('archive6 seal verifies direct file-backed block rows against the original material', () => withV3Fixture(async f => {
+  material(f, new Uint8Array([19, 29, 239]))
+  const owner = openBackupV3RestoreSource(f.destination), operationId = randomUUID()
+  mkdirSync(join(f.userDataRoot, 'backups', 'database-restore', operationId), { recursive: true })
+  const stage = await prepareBackupV3RestoreSqlStage(owner, f.userDataRoot, operationId)
+  const archive = await prepareCapsule2AssetArchiveFromVerifiedV3(stage, owner)
+  const sealed = await captureSealedCapsule2SourceFromArchive(archive)
+  const readBlocks = await withReferenceOriginalRows5(async (store, _groups, stageBlocks) => {
+    const reopened = await captureReopenedSealedCapsule2SourceWithWorking5({ profileRoot: f.userDataRoot, operationId,
+      capsuleId: sealed.value.capsuleId, expectedManifestHash: sealed.info.manifestHash }, stageBlocks)
+    return { reopened, scoped: scopeIncomingReferenceTables5(reopened.value.source.sourceContent, store) }
+  }, async ({ reopened, scoped }) => {
+    assert.equal(reopened.value.materialHash, sealed.value.materialHash)
+    assert.equal(reopened.value.knowledge.observationHash, sealed.value.knowledge.observationHash)
+    assert.equal(reopened.value.source.policy.observationHash, sealed.value.source.policy.observationHash)
+    const selected = []
+    for (const name of ['blocks', 'synced_group_blocks']) {
+      const table = reopened.value.source.sourceContent.tables.find(entry => entry.name === name)!
+      const original = sealed.value.source.sourceContent.tables.find(entry => entry.name === name)!
+      assert.equal(scoped.tables.find(entry => entry.name === name), table, 'the qualified scope reuses the producer table')
+      assert.ok(capsule2RawTableRowCount(table) > 0)
+      assert.equal(capsule2RawTableRowCount(table), original.rows.length)
+      assert.equal(hashValidatedCapsule2RawSqlTable('test.archive6', table), hashValidatedCapsule2RawSqlTable('test.archive6', original))
+      assert.throws(() => table.rows, /逐行读取范围/)
+      selected.push(scopedCapsule2TableRowEncoding(table)!)
+    }
+    return selected
+  })
+  for (const blocks of readBlocks) assert.throws(() => [...blocks()], /读取范围已结束/)
 }))

@@ -2,6 +2,7 @@ import { freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, capsule2RawTableRowCount, hashValidatedCapsule2RawSqlTable, type Capsule2RawSqlTable,
   type Capsule2TableRole } from './restore-knowledge-capsule2-raw-model'
+import { freezeGraph3Tables, graph3TablesHashInput } from './restore-knowledge-graph3-data'
 import type { readRootKnowledgeConservationContent3 } from './restore-knowledge-root3-read'
 
 type Inputs = Awaited<ReturnType<typeof readRootKnowledgeConservationContent3>>
@@ -39,7 +40,7 @@ export function selectRootRestoreContent3(inputs: Inputs) {
     sourceEncoding: source.source.sourceContent.encoding, currentEncoding: current.source.sourceContent.encoding,
     sourceSchemaVersion: source.source.sourceContent.schemaVersion, currentSchemaVersion: current.source.sourceContent.schemaVersion,
     sourceAssetArchiveHash: source.assetArchiveHash, currentAssetArchiveHash: current.assetArchiveHash,
-    candidateTables, dispositions,
+    dispositions,
     executionColumns: [
       { table: 'documents', column: 'updated_at', action: 'fresh-document-cas' },
       { table: 'synced_groups', column: 'revision', action: 'fresh-group-cas' },
@@ -55,7 +56,8 @@ export function selectRootRestoreContent3(inputs: Inputs) {
     assets: 'requires-rollbackable-original-bound-staging' as const,
     sourcePolicyReplayAllowed: false as const, originalInputClosureAuthenticated: true as const,
     semanticValidationComplete: false as const, acceptedCoverage: false as const, effective: false as const, permit: false as const }
-  const selectionHash = hashBoundedCapsuleJson(body, CAPSULE2_RAW_MAX_JSON_BYTES, 'knowbook.restore.content3.selection.v1\0')
+  const selectionHash = hashBoundedCapsuleJson({ ...body, candidateTables: graph3TablesHashInput(candidateTables) }, CAPSULE2_RAW_MAX_JSON_BYTES,
+    'knowbook.restore.content3.selection.v1\0')
     ?? content3Invalid('完整候选超过原有限材料预算，不能截断')
-  return freezeCapsuleValue({ ...body, selectionHash })
+  return Object.freeze({ ...freezeCapsuleValue(body), candidateTables: freezeGraph3Tables(candidateTables), selectionHash })
 }

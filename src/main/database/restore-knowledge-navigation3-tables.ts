@@ -30,6 +30,10 @@ function scopedTable(layout: Omit<Navigation3Table, 'rows'>, rows: Navigation3Ro
   return table
 }
 
+export function readScopedNavigation3Rows(table: Navigation3TableSource): Navigation3Rows | undefined {
+  return scopedTables.has(table) ? table.rows : undefined
+}
+
 /** The producer finishes before the first consumer of the file. Its complete
  * input array is outside the read scope and only ordered row coordinates remain. */
 export function withStoredNavigation3Tables<Metadata, Result>(

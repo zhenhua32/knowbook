@@ -7,7 +7,7 @@ import type { DocumentBlockDraft } from '../../shared/contracts'
 import { serializeMarkdownWithBlockRanges } from '../../shared/markdown'
 import { collectStoredMarkdownAssetDestinations } from '../../shared/syncedBlockPortable'
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
-import { CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-model'
+import { CAPSULE2_RAW_MAX_JSON_BYTES, type StoreCapsule2Archive6Blocks5 } from './restore-knowledge-capsule2-raw-model'
 import { readRawCapsule2WorkspaceHistoryEvidenceOwned, readRawCapsule2WorkspaceHistorySourceWithHeadingTitle3Owned } from './restore-knowledge-capsule2-workspace-history-read'
 import { decodeHostJournal, hostJournalKind, validateHostSides } from './synced-host-journal'
 import type { SyncedHostHistoryBranchRow } from './synced-host-history-branch'
@@ -67,8 +67,8 @@ export function readRawCapsule2AssetReferencesOwned(db: Database.Database): RawC
 
 /** One fixed same-transaction source pipeline for the material owner; the
  * public raw observation above keeps its exact original DTO/hash domain. */
-export function readRawCapsule2AssetReferenceSourceOwned(db: Database.Database) {
-  const captured = readRawCapsule2WorkspaceHistorySourceWithHeadingTitle3Owned(db)
+export function readRawCapsule2AssetReferenceSourceOwned(db: Database.Database, blocks?: StoreCapsule2Archive6Blocks5) {
+  const captured = readRawCapsule2WorkspaceHistorySourceWithHeadingTitle3Owned(db, blocks)
   return Object.freeze({ ...captured.source, assets: observeAssetReferences(db, captured) })
 }
 

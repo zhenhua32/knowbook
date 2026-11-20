@@ -12,7 +12,7 @@ import { isWorkingAssetArchive5, withReopenedCapsule2ArchiveInputs5, readCapsule
 import type { InstalledV3AssetContinuity } from './restore-knowledge-installed-v3-assets'
 import { captureCapsule2SourceMaterial, captureCapsule2SourceMaterialWithWorking5, readCapsule2SourceMaterial, readCapsule2SourceInputsWithWorking5, tryAssertCapsule2SourceWorking5OriginalBytes5, readCapsule2SourceSealInput,
   assertCapsule2SourceOriginalBytes, readCapsule2SourceBaseProjection4, readCapsule2SourceWorkingOriginals5, type PreparedCapsule2SourceMaterial } from './restore-knowledge-capsule2-source-material'
-import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_READER } from './restore-knowledge-capsule2-raw-model'
+import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_READER, type StoreCapsule2Archive6Blocks5 } from './restore-knowledge-capsule2-raw-model'
 import { capsule2SourceManifestHash, parseCapsule2SourceManifest, capsule2SourceSealInvalid as bad,
   type Capsule2SourceManifest } from './restore-knowledge-capsule2-source-seal-model'
 
@@ -79,7 +79,8 @@ export async function captureReopenedSealedCapsule2Source(input: { profileRoot: 
   return Object.freeze(captured)
 }
 /** Fixed cold seam for consumers of the same complete original observation. */
-export async function captureReopenedSealedCapsule2SourceWithWorking5(input: { profileRoot: string; operationId: string; capsuleId: string; expectedManifestHash: string }) {
+export async function captureReopenedSealedCapsule2SourceWithWorking5(input: { profileRoot: string; operationId: string; capsuleId: string; expectedManifestHash: string },
+  blocks?: StoreCapsule2Archive6Blocks5) {
   const row = capsuleRecord(input, ['profileRoot','operationId','capsuleId','expectedManifestHash'])
   if (typeof row.profileRoot !== 'string' || !isAbsolute(row.profileRoot) || row.profileRoot.includes('\0')
     || (process.platform === 'win32' ? resolve(row.profileRoot).toLowerCase() !== row.profileRoot.toLowerCase() : resolve(row.profileRoot) !== row.profileRoot)) return bad('profile不是准确绝对路径')
@@ -98,7 +99,7 @@ export async function captureReopenedSealedCapsule2SourceWithWorking5(input: { p
   return withReopenedCapsule2ArchiveInputs5(original, manifest.assetArchiveHash, async (archive, scope) => {
     await assertOwnedRawCapsuleOriginal(original); await closure()
     await readExact(path, root, bytes.length, capsuleBytesHash(bytes), CAPSULE2_RAW_MAX_JSON_BYTES)
-    const { material, value, working } = await captureCapsule2SourceMaterialWithWorking5(archive, scope)
+    const { material, value, working } = await captureCapsule2SourceMaterialWithWorking5(archive, scope, blocks)
     if (capsuleJson(manifestFor(value)) !== capsuleJson(manifest)) return bad('完整实际SQL/K/政策/附件/原要求与来源清单不一致')
     await closure(); await readExact(path, root, bytes.length, capsuleBytesHash(bytes), CAPSULE2_RAW_MAX_JSON_BYTES)
     await assertOwnedRawCapsuleOriginal(original)

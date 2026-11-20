@@ -535,7 +535,7 @@ function deriveReferenceWithValues(data: Graph3Inputs, kernel: Reference3Kernel,
     const table = rawCurrent.tables.find(candidate => candidate.name === name) ?? fail('missing-current-block-table', name)
     const id = table.columns.indexOf('id')
     if (id < 0) return fail('missing-current-block-id-column', name)
-    for (const row of table.rows) values.add('current-physical-block', graph3Text(row.cells[id], rawCurrent.encoding))
+    for (const row of capsule2RawTableRows(table)) values.add('current-physical-block', graph3Text(row.cells[id], rawCurrent.encoding))
   }
   const sourcePhysicalTargetIds = new Set(assignments.filter(a => a.kind === 'block' && a.physical).map(a => a.targetId))
   const currentMissingOrigins = new Map<string, KnowledgeRowRef[]>()

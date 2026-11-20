@@ -1,10 +1,11 @@
 import { capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { capsuleJsonStringBytes, hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_RAW_MAX_ROWS, CAPSULE2_RAW_MAX_VALUE_BYTES,
-  areValidatedCapsule2ContentCells, capsule2ApplicationColumns, type Capsule2Encoding, type Capsule2RawSqlTable } from './restore-knowledge-capsule2-raw-model'
+  areValidatedCapsule2ContentCells, capsule2ApplicationColumns, capsule2RawTableRowCount, capsule2RawTableRows,
+  scopedCapsule2TableRowLookup, type Capsule2Encoding, type Capsule2RawSqlRow, type Capsule2RawSqlTable } from './restore-knowledge-capsule2-raw-model'
 import { validateCoverageCapsuleReference, validateCoverageRootReference } from './restore-knowledge-coverage-model'
 import { DURABLE_SQL_DAG_MAX_DEPTH } from './restore-knowledge-dag-model'
-import { graph3Encode, graph3Text } from './restore-knowledge-graph3-data'
+import { graph3Encode, graph3TableLayout, graph3Text } from './restore-knowledge-graph3-data'
 import type { Root3Witness } from './restore-knowledge-root3-model'
 import { assertRawRestoreSqlTextRoundtrip, type RawRestoreSqlCell } from './restore-knowledge-sql-cell'
 
@@ -64,6 +65,7 @@ export interface PrepareMerge3TableInput {
   readonly source: Merge3Material; readonly current: Merge3Material
 }
 const validatedPreparedTables = new WeakSet<PreparedMerge3Table>()
+const storedPreparedRows = new WeakMap<Merge3InputRow, PreparedMerge3Table>()
 const fail = (message: string): never => { throw new Error('merge3存储候选无效：' + message + '；纯数据不授SQL或安装权。') }
 function hash(domain: string, value: object, maxBytes = Number.MAX_SAFE_INTEGER) {
   return hashBoundedCapsuleJson(value, maxBytes, domain + '\0') ?? fail('完整jsonBytes超原有限预算，不截断')
@@ -266,11 +268,17 @@ function originalTable(value: unknown, textEncoding: Capsule2Encoding, unchanged
 export function prepareMerge3Table(input: PrepareMerge3TableInput): PreparedMerge3Table {
   const value = capsuleRecord(input, ['sourceOriginal', 'sourceCandidate', 'currentOriginal', 'sourceEncoding', 'currentEncoding', 'source', 'current'])
   const sourceEncoding = encoding(value.sourceEncoding), currentEncoding = encoding(value.currentEncoding)
-  const source = originalTable(value.sourceOriginal, sourceEncoding)
-  const candidate = originalTable(value.sourceCandidate, sourceEncoding, source.rows)
-  const current = originalTable(value.currentOriginal, currentEncoding)
+  const stored = scopedCapsule2TableRowLookup(input.sourceOriginal)
+  const storedCandidate = scopedCapsule2TableRowLookup(input.sourceCandidate)
+  const storedCurrent = scopedCapsule2TableRowLookup(input.currentOriginal)
+  if (Boolean(stored) !== Boolean(storedCandidate)) return fail('source候选与原件必须使用同一逐行读取范围')
+  const scopedLayout = (table: Capsule2RawSqlTable, encoding: Capsule2Encoding) => originalTable({ ...graph3TableLayout(table), rows: [] }, encoding)
+  const source = stored ? scopedLayout(input.sourceOriginal, sourceEncoding) : originalTable(value.sourceOriginal, sourceEncoding)
+  const candidate = stored ? scopedLayout(input.sourceCandidate, sourceEncoding) : originalTable(value.sourceCandidate, sourceEncoding, source.rows)
+  const current = storedCurrent ? scopedLayout(input.currentOriginal, currentEncoding) : originalTable(value.currentOriginal, currentEncoding)
   if (source.name !== candidate.name || source.name !== current.name || source.rows.length !== candidate.rows.length
-    || source.rows.some((row, index) => row.sourceRowId !== candidate.rows[index].sourceRowId))
+    || source.rows.some((row, index) => row.sourceRowId !== candidate.rows[index].sourceRowId)
+    || stored && capsule2RawTableRowCount(input.sourceOriginal) !== capsule2RawTableRowCount(input.sourceCandidate))
     return fail('source候选必须逐原行对应同一表，不得新增/省略/合并occurrence')
   const sourceMaterial = material(value.source, 'source'), currentMaterial = material(value.current, 'current')
   const targetColumns = current.columns, primaryKey = current.primaryKey, preparedBudget = budget()
@@ -280,8 +288,7 @@ export function prepareMerge3Table(input: PrepareMerge3TableInput): PreparedMerg
     const sameEncoding = originalEncoding === currentEncoding
     const columnOrder = targetColumns.map(name => incoming.columns.indexOf(name))
     const sameLayout = sameEncoding && columnOrder.every((index, targetIndex) => index === targetIndex)
-    return original.rows.map((row, index) => {
-      const incomingRow = incoming.rows[index]
+    const append = (row: Capsule2RawSqlRow, incomingRow: Capsule2RawSqlRow): Merge3InputRow => {
       const aligned = sameLayout ? incomingRow.cells : columnOrder.map(position => {
         const value = incomingRow.cells[position]
         return value[0] === 'text' && !sameEncoding ? graph3Encode(graph3Text(value, originalEncoding), currentEncoding) : value
@@ -294,7 +301,42 @@ export function prepareMerge3Table(input: PrepareMerge3TableInput): PreparedMerg
         cells: targetCells, primaryKeyCells: primaryKeyCells(targetColumns, primaryKey, targetCells) }
       take(preparedBudget, 'jsonBytes', preparedRowJsonBytes(result))
       return result
-    })
+    }
+    const raw = side === 'source' ? input.sourceOriginal : input.currentOriginal
+    const rawCandidate = side === 'source' ? input.sourceCandidate : raw
+    const originalLookup = side === 'source' ? stored : storedCurrent
+    const candidateLookup = side === 'source' ? storedCandidate : storedCurrent
+    if (!originalLookup || !candidateLookup) return original.rows.map((row, index) => append(row, incoming.rows[index]))
+    const sourceBudget = budget(), candidateBudget = budget(), ordered: Merge3InputRow[] = []
+    take(sourceBudget, 'jsonBytes', Buffer.byteLength(capsuleJson(original)))
+    take(candidateBudget, 'jsonBytes', Buffer.byteLength(capsuleJson(incoming)))
+    let previous: bigint | null = null
+    for (const row of capsule2RawTableRows(raw)) {
+      const id = row.sourceRowId
+      if (!int64(id)) return fail('原rowid不合法或未严格递增')
+      const number = BigInt(id), changed = raw === rawCandidate ? row : candidateLookup(id)
+      if (previous !== null && previous >= number || !changed || changed.sourceRowId !== id)
+        return fail('source候选必须逐原行对应同一表，不得新增/省略/合并occurrence')
+      previous = number
+      const overhead = Buffer.byteLength(capsuleJson({ sourceRowId: id, cells: [] })) - 2 + Number(ordered.length > 0)
+      take(sourceBudget, 'jsonBytes', overhead)
+      take(candidateBudget, 'jsonBytes', overhead)
+      const originalCells = cells(row.cells, original.columns.length, originalEncoding, sourceBudget)
+      const candidateCells = changed === row ? accountCells(originalCells, incoming.columns.length, candidateBudget)
+        : cells(changed.cells, incoming.columns.length, originalEncoding, candidateBudget, originalCells)
+      const { originalCells: _original, cells: targetCells, ...prepared } = append({ sourceRowId: id, cells: originalCells },
+        { sourceRowId: id, cells: candidateCells })
+      const loadOriginal = () => originalLookup(id)?.cells ?? fail('原件行在作用域中消失：' + side)
+      if (sameLayout) {
+        const loadCandidate = raw === rawCandidate ? loadOriginal
+          : () => candidateLookup(id)?.cells ?? fail('候选行在作用域中消失：' + side)
+        ordered.push({ ...prepared, get originalCells() { return loadOriginal() }, get cells() { return loadCandidate() } })
+      } else {
+        ordered.push({ ...prepared, get originalCells() { return loadOriginal() }, cells: targetCells })
+      }
+    }
+    if (ordered.length !== capsule2RawTableRowCount(raw)) return fail('原行数变化：' + side)
+    return ordered
   }
   const body = { kind: 'restore-merge3-prepared-content-table' as const, version: 1 as const, name: source.name,
     columns: targetColumns, primaryKey, sourceEncoding, currentEncoding, targetEncoding: currentEncoding,
@@ -302,6 +344,8 @@ export function prepareMerge3Table(input: PrepareMerge3TableInput): PreparedMerg
     sourceRows: makeRows('source', source, candidate, sourceMaterial, sourceEncoding), currentRows: makeRows('current', current, current, currentMaterial, currentEncoding) }
   const prepared = freezeCapsuleValue({ ...body, preparedHash: hash('knowbook.restore.merge3.prepared-table.v1', body, CAPSULE2_RAW_MAX_JSON_BYTES) })
   validatedPreparedTables.add(prepared)
+  if (stored) for (const row of prepared.sourceRows) storedPreparedRows.set(row, prepared)
+  if (storedCurrent) for (const row of prepared.currentRows) storedPreparedRows.set(row, prepared)
   return prepared
 }
 
@@ -420,14 +464,16 @@ export function finishMerge3Table(input: PreparedMerge3Table, selectedRows: read
   return freezeCapsuleValue({ ...body, storageHash: hash('knowbook.restore.merge3.selected-table.v1', body, CAPSULE2_RAW_MAX_JSON_BYTES) })
 }
 
-/** Planning convenience only. Decoded BigInts/Buffers are deliberately not
- * stored in the serializable DTO or any hash. No SQL is read by this helper. */
+/** Decode selected values without putting BigInts or Buffers into a DTO or hash.
+ * An owned row can read from the file-backed scope that prepared it. */
 export function merge3RowValues(prepared: PreparedMerge3Table, row: Merge3InputRow, projection?: readonly string[]): Record<string, unknown> {
   const metadata = capsuleRecord(prepared, ['kind', 'version', 'name', 'columns', 'primaryKey', 'sourceEncoding', 'currentEncoding',
     'targetEncoding', 'originalColumns', 'sourceRows', 'currentRows', 'preparedHash'])
   const columnNames = columns(metadata.columns, tableName(metadata.name)), textEncoding = encoding(metadata.targetEncoding)
-  const input = capsuleRecord(row, ['key', 'ref', 'originalCells', 'cells', 'primaryKeyCells'])
-  const values = cells(input.cells, columnNames.length, textEncoding, budget())
+  // Only a row produced by this exact table may supply a file-backed original.
+  const targetCells = storedPreparedRows.get(row) === prepared ? row.cells
+    : capsuleRecord(row, ['key', 'ref', 'originalCells', 'cells', 'primaryKeyCells']).cells
+  const values = cells(targetCells, columnNames.length, textEncoding, budget())
   return Object.fromEntries((projection ?? columnNames).map(column => {
     const value = values[columnNames.indexOf(column)] ?? fail('所需原列缺失：' + column)
     return [column, value[0] === 'null' ? null : value[0] === 'text' ? graph3Text(value, textEncoding)

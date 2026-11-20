@@ -31,7 +31,12 @@ test('controlled V3 maintenance installs the real SQLite and attachments and col
   const root = await canonicalRestoreRoot(requested), database = join(root, 'storage', 'knowbook.db')
   const old = KnowbookStore.createEmptySyncedReceiver(database)
   const oldDocument = old.createDocument(null)
-  old.updateDocument(oldDocument, { title: 'Existing ordinary document', summary: 'Retain this workspace content', blocks: [] })
+  const retainedRoot = randomUUID(), retainedChild = randomUUID()
+  const retainedBlocks = [
+    { id: retainedRoot, type: 'bulleted-list', content: 'Retain this list', checked: false, depth: 0, parentBlockId: null },
+    { id: retainedChild, type: 'bulleted-list', content: 'Retain the nested current block', checked: false, depth: 1, parentBlockId: retainedRoot }
+  ]
+  old.updateDocument(oldDocument, { title: 'Existing ordinary document', summary: 'Retain this workspace content', blocks: retainedBlocks })
   old.destroy()
   const oldBytes = await readFile(database)
   const legacy = {
@@ -63,7 +68,10 @@ test('controlled V3 maintenance installs the real SQLite and attachments and col
   assert.equal(await recoverControlledDatabaseRestore(root, legacy.recoverLegacy), true)
   const store = KnowbookStore.openCanonicalRuntime(database)
   try {
-    assert.equal(store.getDocumentDetail(oldDocument)?.summary, 'Retain this workspace content')
+    const retained = store.getDocumentDetail(oldDocument)
+    assert.equal(retained?.summary, 'Retain this workspace content')
+    assert.deepEqual(retained?.blocks.map(({ id, type, content, checked, depth, parentBlockId }) =>
+      ({ id, type, content, checked, depth, parentBlockId })), retainedBlocks)
     const summary = store.getDocumentDetail(f.targetId)?.summary
     assert.match(String(summary), /\[alias\]: <file:.*attachments/)
     assert.match(String(summary), /<img src="file:.*attachments/)

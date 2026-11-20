@@ -1,6 +1,6 @@
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { graph3Conflict, graph3Key, graph3Value } from './restore-knowledge-graph3-data'
-import type { Capsule2Encoding } from './restore-knowledge-capsule2-raw-model'
+import { capsule2RawTableRows, scopedCapsule2TableIdLookup, type Capsule2Encoding } from './restore-knowledge-capsule2-raw-model'
 import type { RawRestoreSqlCell } from './restore-knowledge-sql-cell'
 import type { Identity3Assignment, Identity3Inputs } from './restore-knowledge-identity3-model'
 import type { Reference3Allocation } from './restore-knowledge-reference3-model'
@@ -69,7 +69,7 @@ export function deriveExactV3RepeatProof(input: Identity3Inputs, prior: ReturnTy
   const source = input.source.source.sourceContent, current = input.current.source.sourceContent
   if (!prior.candidateConflictFree || current.workspaceScope !== prior.currentWorkspaceScope)
     return fail('先前已安装候选与本次工作区不同')
-  type RowIndex = Map<string, Map<string, Record<string, unknown>>>
+  type RowIndex = Map<string, { get(id: string): Record<string, unknown> | undefined }>
   const currentRows: RowIndex = new Map(), sourceRows: RowIndex = new Map()
   const get = (tables: typeof currentRows, content: typeof current, table: string) => {
     let rows = tables.get(table)
@@ -77,10 +77,16 @@ export function deriveExactV3RepeatProof(input: Identity3Inputs, prior: ReturnTy
       const raw = content.tables.find(entry => entry.name === table)
       if (!raw) return graph3Conflict('missing-source-table', table)
       const readIdentity = identityReader(raw.columns, content.encoding, table === 'synced_instances' ? 'instance_id' : 'id')
-      rows = new Map()
-      for (const row of raw.rows) {
-        const { id, value } = readIdentity(row.cells)
-        rows.set(id, value)
+      const stored = scopedCapsule2TableIdLookup(raw)
+      if (stored) {
+        rows = { get(id) { const row = stored(id); return row && readIdentity(row.cells).value } }
+      } else {
+        const indexed = new Map<string, Record<string, unknown>>()
+        for (const row of capsule2RawTableRows(raw)) {
+          const { id, value } = readIdentity(row.cells)
+          indexed.set(id, value)
+        }
+        rows = indexed
       }
       tables.set(table, rows)
     }

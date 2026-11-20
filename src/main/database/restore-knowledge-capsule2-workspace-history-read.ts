@@ -7,7 +7,7 @@ import { publicationHash, publicationInvalid, publicationJson } from '../sync/sy
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { readRawCapsule2OrdinaryPolicyEvidenceOwned, readRawCapsule2OrdinaryPolicySourceOwned } from './restore-knowledge-capsule2-policy-source-read'
 import { readRawCapsule2HistoricalEvidenceSourceOwned } from './restore-knowledge-capsule2-history-read'
-import { CAPSULE2_READER, CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-model'
+import { CAPSULE2_READER, CAPSULE2_RAW_MAX_JSON_BYTES, type StoreCapsule2Archive6Blocks5 } from './restore-knowledge-capsule2-raw-model'
 
 interface InitialIncomingIdentity { id: string; last_owner_kind: 'document' | 'group' | 'reserved'; last_owner_id: string; state: 'live' | 'retained'; created_at: string | null }
 export interface RawCapsule2WorkspaceHistoryObservation {
@@ -43,8 +43,8 @@ export function readRawCapsule2WorkspaceHistorySourceOwned(db: Database.Database
   return readRawCapsule2WorkspaceHistorySourceWithHeadingTitle3Owned(db).source
 }
 /** Fixed same-read handoff only; no serialized owner/map or caller skip. */
-export function readRawCapsule2WorkspaceHistorySourceWithHeadingTitle3Owned(db: Database.Database) {
-  return observeWorkspaceHistory(db, readRawCapsule2OrdinaryPolicySourceOwned(db))
+export function readRawCapsule2WorkspaceHistorySourceWithHeadingTitle3Owned(db: Database.Database, blocks?: StoreCapsule2Archive6Blocks5) {
+  return observeWorkspaceHistory(db, readRawCapsule2OrdinaryPolicySourceOwned(db, blocks))
 }
 
 /** The archive observer consumes the verified source evidence in this same transaction. */

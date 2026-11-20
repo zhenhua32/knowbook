@@ -8,7 +8,8 @@ import { CAPSULE2_READER, CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_RAW_MAX_ROWS, CA
   assertCapsule2RawContentStreamHeader, capsule2ApplicationColumns,
   capsule2DerivedFtsDefinitions, capsule2DerivedFtsTables, capsule2RawInvalid, capsule2RawSqlValueBytesExpression, capsule2TableRole,
   captureCapsule2RawContentStream, hashCapsule2RawContentStream, summarizeCapsule2RawPolicyContent, type Capsule2Encoding, type Capsule2RawContent,
-  type Capsule2RawContentStream, type Capsule2RawSqlRow, type Capsule2RawStreamTable } from './restore-knowledge-capsule2-raw-model'
+  type Capsule2RawContentStream, type Capsule2RawSqlRow, type Capsule2RawStreamTable,
+  type StoreCapsule2Archive6Blocks5 } from './restore-knowledge-capsule2-raw-model'
 
 const quote = (value: string): string => '"' + value.replace(/"/g, '""') + '"'
 const compare = (left: string, right: string): number => left < right ? -1 : left > right ? 1 : 0
@@ -88,8 +89,8 @@ function prepareRawCapsule2Content(db: Database.Database): Capsule2RawContentStr
 }
 
 /** Full data-only DTO for callers that need to inspect or transform raw rows. */
-export function readRawCapsule2ContentOwned(db: Database.Database): Capsule2RawContent {
-  return captureCapsule2RawContentStream(prepareRawCapsule2Content(db))
+export function readRawCapsule2ContentOwned(db: Database.Database, blocks?: StoreCapsule2Archive6Blocks5): Capsule2RawContent {
+  return captureCapsule2RawContentStream(prepareRawCapsule2Content(db), blocks)
 }
 
 export function readRawCapsule2PolicyContentOwned(db: Database.Database) {

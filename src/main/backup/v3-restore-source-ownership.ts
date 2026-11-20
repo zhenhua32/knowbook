@@ -42,7 +42,12 @@ async function readPriorV3SourceOwnedGroups(handle: RestoreKnowledgePriorInstall
     await reference.originals.assertPlanManifests()
     await prior.assertOriginalProof()
     const missing = groups.catalogId === edge.predecessor.catalogId
-      ? groups.values.filter(group => !sourceGroupIds.has(group.source.groupId) && same(current.get(group.wire.id) ?? null, group.wire)) : []
+      ? groups.values.flatMap(({ sourceSnapshot, ...group }) => {
+        if (sourceGroupIds.has(group.source.groupId) || !same(current.get(group.wire.id) ?? null, group.wire)) return []
+        const { groupId, creationId, createdAt, origin, blocks, bindings } = sourceSnapshot
+        const sourceWire: SyncedGroupWire = { kind: 'synced-group', id: groupId, creationId, createdAt, origin, blocks, bindings }
+        return [{ ...group, sourceWire }]
+      }) : []
     if (!missing.length) return { groups: missing, historiesClear: true }
     const sourceWires = missing.map(group => group.sourceWire), installedWires = missing.map(group => group.wire)
     const historiesClear = hasNoV3RetirementHistoricalReferences(reference.originals.source, sourceWires, new Set(sourceWires.map(group => group.id)))
@@ -104,10 +109,8 @@ function readSourceOwnedGroups(sourceArchive: { snapshotId: string; inventoryHas
       return invalid('a qualified source group does not match its installed allocation')
     claimed.add(slot.targetId)
     if (installed.row.replaces !== null || currentTable.byId(slot.targetId)) continue
-    const sourceWire = { kind: 'synced-group' as const, id: sourceSnapshot.groupId, creationId: sourceSnapshot.creationId,
-      createdAt: sourceSnapshot.createdAt, origin: sourceSnapshot.origin, blocks: sourceSnapshot.blocks, bindings: sourceSnapshot.bindings }
     groups.push({ source: group.tuple, installed: { groupId: wire.id, creationId: wire.creationId, createdAt: wire.createdAt, origin: wire.origin },
-      wire, sourceWire })
+      wire, sourceSnapshot })
   }
   return { catalogId, values: groups }
 }

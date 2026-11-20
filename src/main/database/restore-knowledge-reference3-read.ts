@@ -63,9 +63,9 @@ function checkedCandidate(data: Data, allocation: Reference3Allocation, choices:
   return checkedCandidateWithCells(data, allocation, choices).candidate
 }
 function checkedCandidateWithCells(data: Data, allocation: Reference3Allocation, choices: Reference3Choices, pending?: SelectedPendingLocalBody5) {
-  const cells = deriveRootRestoreCanonicalCandidateWithCells3(data, allocation, { anonymousValues: choices.anonymousValues }, pending)
-  const model = cells.candidate
-  const nativeStorageChecks = checkMerge3NativeStorage3(model.tables), conflicts = [...model.conflicts, ...nativeStorageChecks.conflicts]
+  const { candidate: model, tableInspection: nativeStorageChecks, ...cells } = deriveRootRestoreCanonicalCandidateWithCells3(data, allocation,
+    checkMerge3NativeStorage3, { anonymousValues: choices.anonymousValues }, pending)
+  const conflicts = [...model.conflicts, ...nativeStorageChecks.conflicts]
   const body = { ...model, nativeStorageChecks, conflicts, candidateConflictFree: conflicts.length === 0,
     catalogNameNativeCheckPending: false as const, finalCurrentRetainedCutComplete: false as const,
     referenceRewriteComplete: false as const, semanticValidationComplete: false as const,
@@ -303,36 +303,37 @@ function reopenedReference(saved: Saved, value: Reference3Value) {
 
 /** Read a single cold Reference3 against both pinned plans and the complete
  * original package. The caller separately authenticates the installed pin. */
-async function readRootRestoreReferenceFromQualified5(
+async function withCheckedRootRestoreReferenceFromQualified5<T>(
   qualified: Parameters<typeof withReopenedRootKnowledgeConservationInputs5>[0],
   identity: Parameters<typeof withReopenedRootRestoreIdentityInputs5>[2],
-  reference: Parameters<typeof reopenRootRestoreReferencePlan3>[1]): Promise<ColdRootRestoreReferenceInputs5> {
+  reference: Parameters<typeof reopenRootRestoreReferencePlan3>[1],
+  read: (checked: ColdRootRestoreReferenceInputs5) => Promise<T>) {
   return withReopenedRootKnowledgeConservationInputs5(qualified, (knowledge, knowledgeScope) =>
     withReopenedRootRestoreIdentityInputs5(knowledge, knowledgeScope, identity, async (plan, scope) => {
       const saved = await reopenSaved(plan, reference)
       const { actual } = await reconstructWithOriginals(saved, await readManifest(saved), await readBaseLocation(saved), scope)
-      return Object.freeze({ ...actual, async assertPlanManifests() {
+      return read(Object.freeze({ ...actual, async assertPlanManifests() {
         await readManifest(saved)
         await readBaseLocation(saved)
-      } })
+      } }))
     }))
 }
 
-/** Historical consumers work with the rows of this exact checked invocation.
- * Only their selected projection leaves the cold Reference3 producer. */
+/** Historical consumers borrow the rows and semantic graph from the same
+ * checked invocation. Keep both readers open through the selected projection. */
 export async function withRootRestoreReferenceOriginalRowsFromQualified5<Projection, Result>(
-  qualified: Parameters<typeof readRootRestoreReferenceFromQualified5>[0],
-  identity: Parameters<typeof readRootRestoreReferenceFromQualified5>[1],
-  reference: Parameters<typeof readRootRestoreReferenceFromQualified5>[2],
+  qualified: Parameters<typeof withCheckedRootRestoreReferenceFromQualified5>[0],
+  identity: Parameters<typeof withCheckedRootRestoreReferenceFromQualified5>[1],
+  reference: Parameters<typeof withCheckedRootRestoreReferenceFromQualified5>[2],
   project: (checked: ColdRootRestoreReferenceInputs5,
     rows: Readonly<{ source: ReferenceOriginalRows5; current: ReferenceOriginalRows5 }>) => Projection,
   read: (projection: Projection) => Promise<Result>) {
-  return withReferenceOriginalRows5(async store => {
-    const checked = await readRootRestoreReferenceFromQualified5(qualified, identity, reference)
-    const { source, current } = checked.data.inputs
-    return project(checked, Object.freeze({ source: store('source', source.source.sourceContent),
-      current: store('current', current.source.sourceContent) }))
-  }, read)
+  return withCheckedRootRestoreReferenceFromQualified5(qualified, identity, reference, checked =>
+    withReferenceOriginalRows5(async store => {
+      const { source, current } = checked.data.inputs
+      return project(checked, Object.freeze({ source: store('source', source.source.sourceContent),
+        current: store('current', current.source.sourceContent) }))
+    }, read))
 }
 
 /** Reopen an explicit pending selection from the actual qualified mount and

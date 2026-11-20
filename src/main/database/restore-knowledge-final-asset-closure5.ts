@@ -1,7 +1,7 @@
 import { collectStoredMarkdownAssetDestinations, parseSyncedPortableAssetUri } from '../../shared/syncedBlockPortable'
 import type { MarkdownRenderableBlock } from '../../shared/markdown'
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
-import { CAPSULE2_RAW_MAX_JSON_BYTES, hashValidatedCapsule2RawSqlTable, type Capsule2Encoding, type Capsule2RawContent,
+import { CAPSULE2_RAW_MAX_JSON_BYTES, capsule2RawTableRowCount, hashValidatedCapsule2RawSqlTable, type Capsule2Encoding, type Capsule2RawContent,
   type Capsule2RawSqlRow, type Capsule2RawSqlTable } from './restore-knowledge-capsule2-raw-model'
 import { findGraph3OriginalRow, graph3Conflict, graph3Text, graph3Value } from './restore-knowledge-graph3-data'
 import type { MergedRow3 } from './restore-knowledge-merge3-storage'
@@ -272,8 +272,11 @@ function observeFinalAssetScopes(physical: Physical, stage: Assets, index: Pick<
     }
     if (jobs) remainder.push({ domain: 'retained-working', scope: ['app_settings'], observedRows: jobs, reason: 'retained-job-scopes-not-observed-by-archive5' })
   }
-  for (const table of raw.tables) if (table.rows.length && table.role === 'policy-unresolved')
-    remainder.push({ domain: 'retained-policy', scope: [table.name], observedRows: table.rows.length, reason: 'remaining-policy-held-payload-asset-scopes' })
+  for (const table of raw.tables) {
+    if (table.role !== 'policy-unresolved') continue
+    const observedRows = capsule2RawTableRowCount(table)
+    if (observedRows) remainder.push({ domain: 'retained-policy', scope: [table.name], observedRows, reason: 'remaining-policy-held-payload-asset-scopes' })
+  }
   const blocked = entries.filter(row => row.status === 'blocked').length
   const value = { kind: 'root-restore-final-asset-closure-audit' as const, version: 1 as const,
     referenceManifestHash: captured.actual.referenceManifestHash, physicalObservationHash: sql.physicalObservationHash,

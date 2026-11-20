@@ -1,4 +1,5 @@
-import type { Capsule2RawContent, Capsule2RawSqlRow } from './restore-knowledge-capsule2-raw-model'
+import { capsule2RawTableRows, scopedCapsule2TableIdLookup, scopedCapsule2TableRowLookup,
+  type Capsule2RawContent, type Capsule2RawSqlRow } from './restore-knowledge-capsule2-raw-model'
 import { graph3Conflict, graph3Value } from './restore-knowledge-graph3-data'
 
 /** Keep original table and row identity while reading just the columns needed
@@ -14,7 +15,15 @@ export function readWorkingAssetOriginalTable5(raw: Capsule2RawContent, name: st
     return { table, original, value }
   }
   function indexBy(column: string) {
-    return new Map(table.rows.map(original => [String(cell(original, column)), original]))
+    const lookup = column === 'id' ? scopedCapsule2TableIdLookup(table) : undefined
+    if (lookup) return { get: lookup }
+    const stored = scopedCapsule2TableRowLookup(table)
+    const rows = new Map<string, Capsule2RawSqlRow | string>()
+    for (const original of capsule2RawTableRows(table)) rows.set(String(cell(original, column)), stored ? original.sourceRowId : original)
+    return { get(id: string) {
+      const row = rows.get(id)
+      return typeof row === 'string' ? stored!(row) : row
+    } }
   }
   function cachedCell(column: string) {
     const values = new Map<Capsule2RawSqlRow, unknown>()

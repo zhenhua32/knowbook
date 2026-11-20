@@ -1,9 +1,11 @@
 import type { SyncedStableBlockDraft } from '../../shared/synced-blocks'
 import { assertPersistedTemplateForest, parseSyncedBlockPayload, serializeSyncedBlockPayload } from '../../shared/syncedBlockValidation'
-import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
+import { capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
+import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
 import { CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-model'
 import { deriveRootRestoreStructureReferences3 } from './restore-knowledge-structure3-model'
-import { graph3Conflict, graph3Key, graph3PatchTable, graph3Rows, graph3Text, type Graph3Inputs } from './restore-knowledge-graph3-data'
+import { freezeGraph3Tables, graph3ChangedCells, graph3Conflict, graph3Key, graph3PatchTable, graph3Rows, graph3TablesHashInput,
+  graph3Text, type Graph3Inputs } from './restore-knowledge-graph3-data'
 import { knowledgeGroupComparisonKey, type KnowledgeRowRef } from './restore-knowledge-payload-model'
 import { template3ContentStringRanges } from './restore-knowledge-template3-json'
 
@@ -145,25 +147,19 @@ export function deriveRootRestoreTemplateReferences3(data: Graph3Inputs) {
     return { blocks_json: candidateBlocksJson }
   }))
   if (templates.length !== originals.length) return graph3Conflict('template-candidate-row-closure', null)
-  const changedCells = tables.flatMap(table => {
-    const original = raw.tables.find(item => item.name === table.name)!
-    return table.rows.flatMap((row, index) => {
-      const columns = table.columns.filter((_, column) => !same(row.cells[column], original.rows[index].cells[column]))
-      return columns.length ? [{ table: table.name, sourceRowId: row.sourceRowId, columns }] : []
-    })
-  })
+  const changedCells = tables.flatMap(table => graph3ChangedCells(table, raw.tables.find(item => item.name === table.name)!))
   const body = { kind: 'complete-root-restore-template-reference-candidate' as const, version: 3 as const,
     scope: 'root-source-saved-template-references' as const, sourceWitness: data.value.sourceWitness, sourcePayload: data.value.sourcePayload,
     conservationHash: data.inputs.knowledge.conservationHash, identityAllocationHash: data.value.allocationHash,
     structureReferenceHash: structure.structureReferenceHash, sourceMaterialHash: data.inputs.source.materialHash, currentMaterialHash: data.inputs.current.materialHash,
-    tables, changedCells, templates, templateStructureReferencesRewritten: true as const, templateGroupReferencesRewritten: true as const,
+    changedCells, templates, templateStructureReferencesRewritten: true as const, templateGroupReferencesRewritten: true as const,
     templateLocalIdsPreserved: true as const, templateLocalNavigationBytesPreserved: true as const,
     futureCopyRules: { wikiBare: 'exact-local-id', wikiFragment: 'strip-one-caret-match-local-id-clear-path-keep-alias',
       markdownFragment: 'exact-local-fragment-without-caret-normalization-clear-path-and-query', images: 'same-fragment-rules', summary: 'no-local-id-remap',
       variables: 'expand-once-at-explicit-instantiation', nonlocalNavigation: 'late-bound-until-explicit-instantiation' } as const,
     currentRetentionMerged: false as const, sourcePolicyReplayed: false as const, sourceHistoryReplayed: false as const,
     referenceRewriteComplete: false as const, semanticValidationComplete: false as const, acceptedCoverage: false as const, effective: false as const, permit: false as const }
-  const encoded = capsuleJson(body)
-  if (Buffer.byteLength(encoded) > CAPSULE2_RAW_MAX_JSON_BYTES) return graph3Conflict('complete-template-reference-candidate-budget', null)
-  return freezeCapsuleValue({ ...body, templateReferenceHash: capsuleBytesHash('knowbook.restore.template3.candidate.v1\0' + encoded) })
+  const templateReferenceHash = hashBoundedCapsuleJson({ ...body, tables: graph3TablesHashInput(tables) }, CAPSULE2_RAW_MAX_JSON_BYTES,
+    'knowbook.restore.template3.candidate.v1\0') ?? graph3Conflict('complete-template-reference-candidate-budget', null)
+  return Object.freeze({ ...freezeCapsuleValue(body), tables: freezeGraph3Tables(tables), templateReferenceHash })
 }

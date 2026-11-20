@@ -32,6 +32,11 @@ export interface RawCapsule2PhysicalGraph {
   deletions: Array<ReturnType<typeof assertSyncedLogicalDeletionRecords> extends Map<string, infer T> ? T : never>
   unresolved: ['ordinary-content-semantics2', 'observer2', 'total-historical2', 'source-assets', 'complete-private-capsule2-certifier']
 }
+const ownedPhysicalGraphs = new WeakSet<RawCapsule2PhysicalGraph>()
+
+export function isOwnedCapsule2PhysicalGraph(graph: RawCapsule2PhysicalGraph): boolean {
+  return ownedPhysicalGraphs.has(graph)
+}
 const invalid = (message: string): never => { throw new Error('capsule2 physical raw无效：' + message + '；不授认证或安装权。') }
 const compare = (a: string, b: string): number => a < b ? -1 : a > b ? 1 : 0
 const time = (value: unknown): value is string => typeof value === 'string' && Number.isFinite(Date.parse(value))
@@ -170,5 +175,7 @@ export function readRawCapsule2PhysicalGraphOwned(db: Database.Database): RawCap
     semanticValidationComplete: false, schemaVersion: version, workspaceScope: context.workspace_scope, recoveryEpoch: context.recovery_epoch,
     documents, groups, identities, instances, deletions: [...deleted.values()],
     unresolved: ['ordinary-content-semantics2', 'observer2', 'total-historical2', 'source-assets', 'complete-private-capsule2-certifier'] }
-  return freeze(observation)
+  const result = freeze(observation)
+  ownedPhysicalGraphs.add(result)
+  return result
 }

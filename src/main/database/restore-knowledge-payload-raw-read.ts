@@ -20,7 +20,7 @@ import { assertRawSyncedHistoricalEvidenceOwned } from './synced-operation-histo
 import { readHistoricalRowLocator } from './synced-history-evidence-support'
 import { hashRestoreSqlRowSet, readRawRestoreSqlInventoryOwned, type RawSqlInventory } from './restore-knowledge-sql-inventory'
 import { readRawCapsule2AssetReferenceSourceOwned } from './restore-knowledge-capsule2-assets-read'
-import { CAPSULE2_READER, CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-model'
+import { CAPSULE2_READER, CAPSULE2_RAW_MAX_JSON_BYTES, type StoreCapsule2Archive6Blocks5 } from './restore-knowledge-capsule2-raw-model'
 import { COVERAGE_ANCHOR_CHANNEL } from './restore-knowledge-coverage-model'
 import type { RawHistoricalEvidenceFact } from './synced-history-evidence-model'
 import { rawRestoreSqlCell } from './restore-knowledge-sql-cell'
@@ -486,8 +486,8 @@ function readKnowledgeProjectionOwned(db: Database.Database, schemaVersion: 26 |
 /** Complete typed K inputs from the same actual capsule2 source transaction.
  * Prior-C is retained as unresolved original rows, never reclassified as an
  * ordinary member attempt, accepted coverage, empty K or a v1 capsule. */
-export function readRawCapsule2SourceKnowledgeOwned(db: Database.Database) {
-  const source = readRawCapsule2AssetReferenceSourceOwned(db), content = source.sourceContent
+export function readRawCapsule2SourceKnowledgeOwned(db: Database.Database, blocks?: StoreCapsule2Archive6Blocks5) {
+  const source = readRawCapsule2AssetReferenceSourceOwned(db, blocks), content = source.sourceContent
   const inventory = readRawRestoreSqlInventoryOwned(db)
   if (inventory.schemaHash !== content.schemaHash || inventory.inventoryHash !== content.legacyInventoryHash)
     return capsuleInvalid('capsule2 K与同一实际SQL完整typed清单不一致')

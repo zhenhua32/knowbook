@@ -1,24 +1,27 @@
 import Database from 'better-sqlite3'
-import type { SyncedBindingKey, SyncedCanonicalWire, SyncedGroupWire, SyncedLinkBinding } from '../../shared/synced-blocks'
+import type { SyncedBindingKey, SyncedCanonicalWire, SyncedGroupWire, SyncedLinkBinding, SyncedStableBlockDraft } from '../../shared/synced-blocks'
 import { validateSyncedGroupWire, validateSyncedOrigin, SyncedValidationError, parseSyncedBlockPayload } from '../../shared/syncedBlockValidation'
-import { validateSyncedWorkspaceGraph, expandSyncedGraphDocument } from '../../shared/syncedBlockGraph'
+import { validateSyncedWorkspaceGraph } from '../../shared/syncedBlockGraph'
 import { projectSyncedGroupBudget } from '../../shared/syncedBlockPortable'
 import { collectDocumentMarkdownLinks, getMarkdownHeadingTargets } from '../../shared/markdownLinkMaintenance'
 import { escapeMarkdownDestination, parseLocalMarkdownUrl, resolveMarkdownDocumentPath } from '../../shared/markdownLinks'
 import { parseWikiReference } from '../../shared/markdownWiki'
 import { capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
-import { CAPSULE2_RAW_MAX_JSON_BYTES, type Capsule2RawContent, type Capsule2RawSqlRow, type Capsule2RawSqlTable } from './restore-knowledge-capsule2-raw-model'
+import { CAPSULE2_RAW_MAX_JSON_BYTES, scopedCapsule2TableIdLookup,
+  type Capsule2RawContent, type Capsule2RawSqlRow, type Capsule2RawSqlTable } from './restore-knowledge-capsule2-raw-model'
 import { findGraph3OriginalRow, graph3Conflict, graph3Encode, graph3Key, graph3Value, type Graph3Inputs } from './restore-knowledge-graph3-data'
 import { assertMerge3JsonBudget, type MergedRow3 } from './restore-knowledge-merge3-storage'
 import type { RootRestoreMergedContentChoices3 } from './restore-knowledge-merge3-read'
 import { withRootRestoreNavigationRewrite3, type ScopedNavigation3Rewrite } from './restore-knowledge-navigation3-rewrite-model'
+import { createOriginalPhysicalNavigationReader3 } from './restore-knowledge-navigation3-model'
 import { resolveFinalNavigation3, withStoredMerge3NavigationFinalIndex3,
   type Navigation3FinalIndex, type StoredNavigation3Index } from './restore-knowledge-navigation3-merge-context'
 import { assertNavigation3TableJsonBudget, materializeNavigation3Tables, projectNavigation3TableRows,
   type Navigation3TableSource } from './restore-knowledge-navigation3-tables'
 import { renderNavigation3Destination } from './restore-knowledge-navigation3-rewrite-cells'
 import { deriveRootRestoreReferenceAllocation3, toReference3GraphInputs } from './restore-knowledge-reference3-model'
+import { hasScopedReferenceGroupBodies5 } from './restore-knowledge-reference-original-rows5'
 import { collectSyncedBindingOccurrences } from '../sync/synced-binding-occurrences'
 import { captureSyncedCreateSourceFacts } from './synced-host-create-plan'
 import { transformCanonical3Cell, rewriteCanonical3OriginJson, type Canonical3TextEdit } from './restore-knowledge-canonical3-cells'
@@ -165,22 +168,24 @@ function remappedBlockUrl(url: string, syntax: 'markdown' | 'wiki', id: string) 
 /** Fixed pure pipeline; data and allocation are supplied by the new genuine
  * Main reference owner. Old identity3 manifests/DTOs are never mutated. */
 export function deriveRootRestoreCanonicalCandidate3(data: Graph3Inputs, allocation: Allocation, choices?: RootRestoreMergedContentChoices3) {
-  return deriveRootRestoreCanonicalCandidateWithCells3(data, allocation, choices).candidate
+  return deriveRootRestoreCanonicalCandidateWithCells3(data, allocation, () => undefined, choices).candidate
 }
 
 /** Runtime-only cell/range evidence from the same candidate derivation. */
-export function deriveRootRestoreCanonicalCandidateWithCells3(data: Graph3Inputs, allocation: Allocation,
+export function deriveRootRestoreCanonicalCandidateWithCells3<T>(data: Graph3Inputs, allocation: Allocation,
+  inspectTables: (tables: readonly Navigation3TableSource[]) => T,
   choices?: RootRestoreMergedContentChoices3, pending?: SelectedPendingLocalBody5) {
   const db = new Database(':memory:')
   try {
     db.pragma('temp_store=FILE')
     if (db.pragma('temp_store', { simple: true }) !== 1) return graph3Conflict('canonical3-file-index-unavailable', null)
     db.pragma('temp.cache_size=-2048')
-    return deriveWithCanonicalIndexes(db, data, allocation, choices, pending)
+    return deriveWithCanonicalIndexes(db, data, allocation, inspectTables, choices, pending)
   } finally { db.close() }
 }
 
-function deriveWithCanonicalIndexes(db: Database.Database, data: Graph3Inputs, allocation: Allocation,
+function deriveWithCanonicalIndexes<T>(db: Database.Database, data: Graph3Inputs, allocation: Allocation,
+  inspectTables: (tables: readonly Navigation3TableSource[]) => T,
   choices?: RootRestoreMergedContentChoices3, pending?: SelectedPendingLocalBody5) {
   const derived = toReference3GraphInputs(data, allocation)
   // Keep the original occurrence structure for the final grammar check. The
@@ -195,7 +200,7 @@ function deriveWithCanonicalIndexes(db: Database.Database, data: Graph3Inputs, a
     }
     if (pending) return withSelectedPendingLocalBody5(derived, ordinary, pending, project)
     return { selection: withStoredMerge3NavigationFinalIndex3(derived, ordinary.tables, index => project(index, ordinary.tables)), proof: undefined }
-  }, ({ selection, proof }, prior) => finalizeCanonicalCandidate(db, data, allocation, derived, ordinary, selection, proof, prior.byId)))
+  }, ({ selection, proof }, prior) => finalizeCanonicalCandidate(db, data, allocation, derived, ordinary, selection, proof, prior.byId, inspectTables)))
 }
 
 function rewriteCanonicalGroups(db: Database.Database, data: Graph3Inputs, allocation: Allocation, ordinaryTables: readonly Navigation3TableSource[],
@@ -268,10 +273,11 @@ function rewriteCanonicalGroups(db: Database.Database, data: Graph3Inputs, alloc
       continue
     }
     active.add(groupId)
-    const snapshot = fact.snapshot, oldBindings = snapshot.bindings, parsed = collectSyncedBindingOccurrences(snapshot.origin, snapshot.blocks)
+    const snapshot = fact.snapshot, originalBlocks = snapshot.blocks, oldBindings = snapshot.bindings
+    const parsed = collectSyncedBindingOccurrences(snapshot.origin, originalBlocks)
     const parsedKeys = new Map(parsed.map(item => [keyOf(item), item]))
     if (parsedKeys.size !== parsed.length || parsed.length !== oldBindings.length) return graph3Conflict('canonical3-original-parser-closure', sourceId)
-    const grammar = new Map(collectDocumentMarkdownLinks(snapshot.blocks).map(link => [graph3Key(link.blockId, link.start, link.end), link]))
+    const grammar = new Map(collectDocumentMarkdownLinks(originalBlocks).map(link => [graph3Key(link.blockId, link.start, link.end), link]))
     const bindingsByBlock = new Map<string, SyncedLinkBinding[]>()
     for (const binding of oldBindings) { const list = bindingsByBlock.get(binding.blockId) ?? []; list.push(binding); bindingsByBlock.set(binding.blockId, list) }
     const originalToFinal = new Map<string, { ordinal: number; row: MergedRow3 }>()
@@ -283,7 +289,7 @@ function rewriteCanonicalGroups(db: Database.Database, data: Graph3Inputs, alloc
         return graph3Conflict('canonical3-canonical-row-source', block.sourceRef)
       originalToFinal.set(string(originalValue(raw, blocks, originalBlock, 'id')), selected)
     }
-    if (originalToFinal.size !== snapshot.blocks.length) return graph3Conflict('canonical3-whole-canonical-forest', sourceId)
+    if (originalToFinal.size !== originalBlocks.length) return graph3Conflict('canonical3-whole-canonical-forest', sourceId)
     const cellEdits = new Map<string, Canonical3TextEdit[]>(), effective = new Map<string, Allocation['bindingTargets'][number]>()
     for (const binding of oldBindings) {
       const parsedLink = parsedKeys.get(keyOf(binding)), target = targets.get(graph3Key(side, sourceId, keyOf(binding)))
@@ -324,7 +330,7 @@ function rewriteCanonicalGroups(db: Database.Database, data: Graph3Inputs, alloc
       }
     }
     const projectedByBinding = new Map<SyncedLinkBinding, SyncedBindingKey>()
-    for (const block of snapshot.blocks) {
+    for (const block of originalBlocks) {
       const { row: selectedBlock, ordinal } = originalToFinal.get(block.id)!, ownBindings = bindingsByBlock.get(block.id) ?? []
       const content = string(graph3Value(selectedBlock.cells[groupBlocks.content], groupBlocks.table.encoding))
       if (ownBindings.length && content !== block.content) return graph3Conflict('canonical3-content-already-rewritten', block.id)
@@ -349,10 +355,11 @@ function rewriteCanonicalGroups(db: Database.Database, data: Graph3Inputs, alloc
   return { tables, active, conflicts, edits, bindingProjections, originProjections, inactive }
 }
 
-function finalizeCanonicalCandidate(db: Database.Database, data: Graph3Inputs, allocation: Allocation, derived: Graph3Inputs,
+function finalizeCanonicalCandidate<T>(db: Database.Database, data: Graph3Inputs, allocation: Allocation, derived: Graph3Inputs,
   ordinary: ScopedNavigation3Rewrite, rewrite: ReturnType<typeof rewriteCanonicalGroups>,
   pendingProof: ReturnType<typeof withSelectedPendingLocalBody5>['proof'] | undefined,
-  priorScope: (scopeId: string) => readonly PriorOccurrence[] | undefined) {
+  priorScope: (scopeId: string) => readonly PriorOccurrence[] | undefined,
+  inspectTables: (tables: readonly Navigation3TableSource[]) => T) {
   const { tables, active, conflicts, edits, bindingProjections, originProjections, inactive } = rewrite
   const conflict: Conflict = (code, side, rowKeys, detail) => { conflicts.push({ code, side, rowKeys, detail }) }
   return withStoredMerge3NavigationFinalIndex3(derived, tables, final => {
@@ -385,6 +392,7 @@ function finalizeCanonicalCandidate(db: Database.Database, data: Graph3Inputs, a
     validateOrdinaryDestinations(ordinary.projections, final, conflict)
     validateOrdinaryConsumers(priorScope, final, wires, bindingProjections, conflict)
     const projectedBudgets = measureNativeHostBudgets(final, tables, physicalMembers, wires)
+    const tableInspection = inspectTables(tables)
     const body = { kind: 'root-restore-canonical-reference-candidate' as const, version: 3 as const,
       baseIdentityAllocationHash: allocation.baseIdentityAllocationHash, derivedReferenceAllocationHash: allocation.derivedReferenceAllocationHash,
       sourceMaterialHash: ordinary.sourceMaterialHash, currentMaterialHash: ordinary.currentMaterialHash,
@@ -405,7 +413,7 @@ function finalizeCanonicalCandidate(db: Database.Database, data: Graph3Inputs, a
     const canonicalCandidateHash = hashBoundedCapsuleJson(body, CAPSULE2_RAW_MAX_JSON_BYTES, 'knowbook.restore.canonical3.candidate.v1\0')
     if (canonicalCandidateHash === null) return graph3Conflict('canonical3-candidate-json-budget', null)
     const candidate = freezeCapsuleValue({ ...body, canonicalCandidateHash })
-    return Object.freeze({ candidate, ordinaryEdits: ordinary.edits, physicalLocations: final.physicalLocations })
+    return Object.freeze({ candidate, ordinaryEdits: ordinary.edits, physicalLocations: final.physicalLocations, tableInspection })
   })
 }
 
@@ -489,7 +497,7 @@ function validateTypedTargets(data: Graph3Inputs, final: StoredNavigation3Index,
         conflict('canonical3-current-block-promoted-by-source', item.side, [item.rowKey], target)
     }
   }
-  validateCurrentHeadingSemantics(data, final, projections, conflict)
+  validateCurrentHeadingSemantics(data.inputs.current.source, final, projections, conflict)
 }
 
 /** Preserve the actual current meaning across this restore transition. The
@@ -497,17 +505,30 @@ function validateTypedTargets(data: Graph3Inputs, final: StoredNavigation3Index,
  * source occurrence cannot claim an existing target merely by taking its slug.
  * This first draft reports a conflict on a lost/renamed bound slug instead of
  * fabricating a missing-heading sentinel or retargeting the old binding. */
-function validateCurrentHeadingSemantics(data: Graph3Inputs, final: StoredNavigation3Index,
+export function validateCurrentHeadingSemantics(
+  current: Pick<Graph3Inputs['inputs']['current']['source'], 'physical' | 'sourceContent'>,
+  final: Pick<StoredNavigation3Index, 'headingNamespaces'> & {
+    physicalBlock(id: string): { block: Pick<SyncedStableBlockDraft, 'type' | 'content'> } | undefined
+  },
   projections: readonly { side: Side; binding: SyncedLinkBinding; rowKey: string; proofKind: string }[], conflict: Conflict) {
   const affected = projections.filter(item => item.side === 'current' && item.proofKind === 'current-domain-preserved' && item.binding.target.kind === 'heading')
   if (!affected.length) return
-  const physical = data.inputs.current.source.physical
-  const graph = validateSyncedWorkspaceGraph(physical.documents.map(document => ({ documentId: document.documentId, blocks: document.blocks })),
-    physical.groups.flatMap(group => group.snapshot ? [{ kind: 'synced-group' as const, id: group.snapshot.groupId,
-      creationId: group.snapshot.creationId, createdAt: group.snapshot.createdAt, origin: group.snapshot.origin,
-      bindings: group.snapshot.bindings, blocks: group.snapshot.blocks }] : []))
+  const { physical, sourceContent } = current
+  const expand = createOriginalPhysicalNavigationReader3(physical)
+  const scoped = hasScopedReferenceGroupBodies5(physical)
+  function scopedTextReader(name: 'blocks' | 'synced_group_blocks') {
+    const table = sourceContent.tables.find(table => table.name === name) ?? graph3Conflict('missing-source-table', name)
+    const lookup = scopedCapsule2TableIdLookup(table) ?? graph3Conflict('canonical3-current-block-scope-missing', name)
+    return (id: string) => {
+      const row = lookup(id) ?? graph3Conflict('canonical3-current-block-missing', { name, id })
+      return string(originalValue(sourceContent, table, row, 'content'))
+    }
+  }
+  // Keep only occurrence coordinates across hosts. The owned raw rows and
+  // semantic graph are from the same original, so exact text remains available.
+  const ordinaryText = scoped ? scopedTextReader('blocks') : undefined
+  const canonicalText = scoped ? scopedTextReader('synced_group_blocks') : undefined
   const documents = new Map(physical.documents.map(document => [document.documentId, document]))
-  const graphDocuments = new Map(graph.documents.map(document => [document.documentId, document])), graphGroups = new Map(graph.groups.map(group => [group.id, group]))
   const identities = new Map(physical.identities.map(identity => [identity.id, identity]))
   const finalNamespaces = new Map(final.headingNamespaces.map(namespace => [namespace.document.id, namespace]))
   const finalHeadingIndexes = new Map(final.headingNamespaces.map(namespace => {
@@ -516,8 +537,8 @@ function validateCurrentHeadingSemantics(data: Graph3Inputs, final: StoredNaviga
       counts.set(heading.blockId, (counts.get(heading.blockId) ?? 0) + 1) }
     return [namespace.document.id, { bySlug, counts }] as const
   }))
-  type OldLocation = { blockId: string; instanceId: string | null; blockBirth: string | null; instanceBirth: string | null; type: string; content: string }
-  type OldHeading = ReturnType<typeof getMarkdownHeadingTargets>[number]
+  type OldLocation = { blockId: string; instanceId: string | null; blockBirth: string | null; instanceBirth: string | null; type: string; content?: string }
+  type OldHeading = Pick<ReturnType<typeof getMarkdownHeadingTargets>[number], 'key' | 'blockId'>
   type OldNamespace = { bySlug: Map<string, OldHeading>; counts: Map<string | null, number>; locations: Map<string, OldLocation> }
   const oldNamespaces = new Map<string, OldNamespace>(), checked = new Map<string, boolean>()
   for (const item of affected) {
@@ -530,21 +551,23 @@ function validateCurrentHeadingSemantics(data: Graph3Inputs, final: StoredNaviga
     let old = oldNamespaces.get(target.documentId)
     if (!old && document) {
       const locations = new Map<string, OldLocation>()
-      const originalHost = graphDocuments.get(document.documentId)!, referenced = new Set(originalHost.blocks
+      const referenced = new Set(document.blocks
         .filter(block => block.type === 'synced-block').map(block => parseSyncedBlockPayload(block.content).groupId))
-      const scopedGraph = { ...graph, documents: [originalHost], groups: [...referenced].map(id => graphGroups.get(id)!) }
-      const blocks = [...expandSyncedGraphDocument(scopedGraph, document.documentId)].map(occurrence => {
+      const blocks = Array.from(expand(document, referenced), occurrence => {
         const id = graph3Key(occurrence.instanceId, occurrence.block.id)
         locations.set(id, { blockId: occurrence.block.id, instanceId: occurrence.instanceId,
           blockBirth: identities.get(occurrence.block.id)?.created_at ?? null,
           instanceBirth: occurrence.instanceId === null ? null : identities.get(occurrence.instanceId)?.created_at ?? null,
-          type: occurrence.block.type, content: occurrence.block.content })
+          type: occurrence.block.type, content: scoped ? undefined : occurrence.block.content })
         return { ...occurrence.block, id, depth: occurrence.depth,
           parentBlockId: occurrence.parent === null ? null : graph3Key(occurrence.parent.instanceId, occurrence.parent.blockId) }
       })
       const bySlug = new Map<string, OldHeading>(), counts = new Map<string | null, number>()
-      for (const heading of getMarkdownHeadingTargets(blocks, document.title)) { if (!bySlug.has(heading.slug)) bySlug.set(heading.slug, heading)
-        counts.set(heading.blockId, (counts.get(heading.blockId) ?? 0) + 1) }
+      for (const { slug, key, blockId } of getMarkdownHeadingTargets(blocks, document.title)) {
+        if (!bySlug.has(slug)) bySlug.set(slug, { key, blockId })
+        counts.set(blockId, (counts.get(blockId) ?? 0) + 1)
+      }
+      for (const id of locations.keys()) if (!counts.has(id)) locations.delete(id)
       old = { bySlug, counts, locations }; oldNamespaces.set(document.documentId, old)
     }
     const previous = old?.bySlug.get(target.slug), namespace = finalNamespaces.get(target.documentId)
@@ -559,7 +582,9 @@ function validateCurrentHeadingSemantics(data: Graph3Inputs, final: StoredNaviga
     if (previous.blockId === null) continue
     const original = old!.locations.get(previous.blockId)!, actual = next.location
     const finalBlock = final.physicalBlock(original.blockId)
-    const unchangedText = finalBlock?.block.type === original.type && finalBlock.block.content === original.content
+    const originalText = original.instanceId === null ? ordinaryText : canonicalText
+    const unchangedText = finalBlock?.block.type === original.type
+      && finalBlock.block.content === (originalText ? originalText(original.blockId) : original.content)
     const individualHeading = /^heading-[1-6]$/.test(original.type) && !!finalBlock && /^heading-[1-6]$/.test(finalBlock.block.type)
       && old!.counts.get(previous.blockId) === 1 && finalHeadingIndexes.get(target.documentId)?.counts.get(next.blockId) === 1
     if (!actual || actual.blockId !== original.blockId || actual.instanceId !== original.instanceId || actual.blockBirth !== original.blockBirth

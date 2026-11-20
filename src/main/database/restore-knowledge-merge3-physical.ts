@@ -5,8 +5,8 @@ import { isSyncedUuid, parseSyncedBlockPayload, SYNCED_MAX_DEPTH, SyncedValidati
   validateSyncedCanonicalEdit, validateSyncedHostForest } from '../../shared/syncedBlockValidation'
 import { parseStrictJson } from '../../shared/strictJson'
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
-import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_RAW_MAX_ROWS } from './restore-knowledge-capsule2-raw-model'
-import { graph3Conflict, graph3Key, graph3Value, type Graph3Inputs } from './restore-knowledge-graph3-data'
+import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_RAW_MAX_ROWS, capsule2RawTableRowCount, capsule2RawTableRows } from './restore-knowledge-capsule2-raw-model'
+import { findGraph3OriginalRow, graph3Conflict, graph3Key, graph3Value, type Graph3Inputs } from './restore-knowledge-graph3-data'
 import { assertMerge3JsonBudget, merge3RowValues, type Merge3InputRow, type Merge3OriginalRowRef, type Merge3RowDisposition,
   type Merge3SelectedRow, type PreparedMerge3Table } from './restore-knowledge-merge3-storage'
 
@@ -22,7 +22,7 @@ export interface Merge3PhysicalConflict {
   readonly detail: unknown
 }
 type Values = Record<string, unknown>
-type Row = { row: Merge3InputRow; table: PreparedMerge3Table; value: Values; originalIndex: number }
+type Row = { row: Merge3InputRow; table: PreparedMerge3Table; value: Values }
 type PhysicalGroup = Graph3Inputs['inputs']['source']['source']['physical']['groups'][number]
 type GroupState = { side: 'source' | 'current'; sourceGroupId: string; targetGroupId: string;
   absence: PhysicalGroup['absence']; active: boolean; originalLifecycle: PhysicalGroup['lifecycle']; sourceRef: Merge3OriginalRowRef }
@@ -52,16 +52,16 @@ function readPhysicalRows(data: Graph3Inputs, prepared: readonly PreparedMerge3T
     if (byTable.has(name)) return graph3Conflict('merge-duplicate-physical-table', name)
     byTable.set(name, table)
   }
-  // Only row IDs and array coordinates enter the private temp schema. The
-  // validated original cells stay in their sealed, encoding-qualified packet.
+  // Only exact row IDs enter the private temp schema. Original cells are read
+  // by rowid from the encoding-qualified packet or its owned file scope.
   const db = new Database(':memory:')
   try {
     db.pragma('temp_store=FILE')
     if (db.pragma('temp_store', { simple: true }) !== 1) return graph3Conflict('merge-physical-file-index-unavailable', null)
-    db.exec('CREATE TEMP TABLE original_rows (row_id TEXT PRIMARY KEY, ordinal INTEGER NOT NULL) WITHOUT ROWID')
+    db.exec('CREATE TEMP TABLE original_rows (row_id TEXT PRIMARY KEY) WITHOUT ROWID')
     db.pragma('temp.cache_size=-2048')
-    const insert = db.prepare('INSERT OR IGNORE INTO original_rows(row_id,ordinal) VALUES (?,?)')
-    const take = db.prepare('DELETE FROM original_rows WHERE row_id=? RETURNING ordinal').pluck()
+    const insert = db.prepare('INSERT OR IGNORE INTO original_rows(row_id) VALUES (?)')
+    const take = db.prepare('DELETE FROM original_rows WHERE row_id=? RETURNING row_id').pluck()
     return db.transaction(() => {
       const decoded = new Map<Merge3PhysicalTable, { source: Row[]; current: Row[] }>()
       for (const name of MERGE3_PHYSICAL_TABLES) {
@@ -73,22 +73,20 @@ function readPhysicalRows(data: Graph3Inputs, prepared: readonly PreparedMerge3T
         for (const [side, packet, rows] of sides) {
           const originalTable = packet.sourceContent.tables.find(table => table.name === name)
             ?? graph3Conflict('missing-source-table', name)
-          const originals = originalTable.rows
           const payloads = data.inputs.knowledge.constraints.payloads.filter(payload => !payload.witness.domain.length && payload.witness.side === side)
-          if (payloads.length !== 1 || rows.length !== originals.length || !same(table.originalColumns[side], originalTable.columns)
+          if (payloads.length !== 1 || rows.length !== capsule2RawTableRowCount(originalTable) || !same(table.originalColumns[side], originalTable.columns)
             || side === 'current' && !same(table.columns, originalTable.columns)) return graph3Conflict('merge-physical-original-closure', { name, side })
-          for (const [index, original] of originals.entries())
-            if (insert.run(original.sourceRowId, index).changes !== 1) return graph3Conflict('merge-physical-original-closure', { name, side })
+          for (const original of capsule2RawTableRows(originalTable))
+            if (insert.run(original.sourceRowId).changes !== 1) return graph3Conflict('merge-physical-original-closure', { name, side })
           for (const row of rows) {
-            const originalIndex = take.get(row.ref.sourceRowId) as number | undefined
-            const original = originalIndex === undefined ? undefined : originals[originalIndex]
-            if (originalIndex === undefined || !original || original.sourceRowId !== row.ref.sourceRowId
+            const original = take.get(row.ref.sourceRowId) === undefined ? undefined : findGraph3OriginalRow(originalTable, row.ref.sourceRowId)
+            if (!original || original.sourceRowId !== row.ref.sourceRowId
               || !same(row.originalCells, original.cells)
               || side === 'current' && !same(row.cells, original.cells)
               || row.ref.side !== side || row.ref.table !== name || row.ref.payload !== payloads[0].key
               || row.ref.materialHash !== data.inputs[side].materialHash || !same(row.ref.witness, payloads[0].witness))
               return graph3Conflict('merge-physical-original-row', { name, side, sourceRowId: row.ref.sourceRowId })
-            values[side].push({ row, table, value: merge3RowValues(table, row, physicalColumns[name]), originalIndex })
+            values[side].push({ row, table, value: merge3RowValues(table, row, physicalColumns[name]) })
           }
           // Same count plus consuming each distinct row proves the index is
           // empty, so the next role/table cannot borrow an earlier ordinal.
@@ -110,7 +108,8 @@ export function selectMerge3PhysicalRows3(data: Graph3Inputs, prepared: readonly
   const decoded = readPhysicalRows(data, prepared)
   function originalValue(name: Merge3PhysicalTable, entry: Row) {
     const table = source.sourceContent.tables.find(table => table.name === name)!
-    const original = table.rows[entry.originalIndex]
+    const original = findGraph3OriginalRow(table, entry.row.ref.sourceRowId)
+      ?? graph3Conflict('merge-physical-original-row', entry.row.ref.sourceRowId)
     return (column: string) => {
       const index = table.columns.indexOf(column)
       return index < 0 ? undefined : graph3Value(original.cells[index], source.sourceContent.encoding)

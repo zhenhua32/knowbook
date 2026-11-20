@@ -47,6 +47,8 @@ const hash = (domain: string, value: unknown): string => createHash('sha256').up
 type RawJsonWrite = (text: string) => void
 export type Capsule2RawStreamTable = Omit<Capsule2RawSqlTable, 'rows'> & { rows: Iterable<Capsule2RawSqlRow> }
 export type Capsule2RawContentStream = Omit<Capsule2RawContent, 'tables'> & { tables: readonly Capsule2RawStreamTable[] }
+export type StoreCapsule2Archive6Blocks5 = (layout: Omit<Capsule2RawSqlTable, 'rows'>, rows: Iterable<Capsule2RawSqlRow>,
+  encoding: Capsule2Encoding) => Capsule2RawSqlTable
 type RawTableObserver = (table: Capsule2RawStreamTable) => { write?: RawJsonWrite; finish: (rows: number) => void }
 
 interface ScopedRawRows {
@@ -54,6 +56,7 @@ interface ScopedRawRows {
   readonly rows: Iterable<Capsule2RawSqlRow>
   encoded(): IterableIterator<string>
   byRowId(sourceRowId: string): Capsule2RawSqlRow | undefined
+  byId?(id: string): Capsule2RawSqlRow | undefined
 }
 const scopedRawRows = new WeakMap<Capsule2RawStreamTable, ScopedRawRows>()
 
@@ -77,6 +80,14 @@ export function capsule2RawTableRowCount(table: Capsule2RawSqlTable): number {
 
 export function scopedCapsule2TableRowLookup(table: Capsule2RawSqlTable) {
   return scopedRawRows.get(table)?.byRowId
+}
+
+export function scopedCapsule2TableRowEncoding(table: Capsule2RawSqlTable) {
+  return scopedRawRows.get(table)?.encoded
+}
+
+export function scopedCapsule2TableIdLookup(table: Capsule2RawSqlTable) {
+  return scopedRawRows.get(table)?.byId
 }
 
 const validatedContentCells = new WeakMap<readonly RawRestoreSqlCell[], Capsule2Encoding>()
@@ -333,11 +344,11 @@ export function validateCapsule2RawContent(input: unknown): Capsule2RawContent {
 
 /** The native reader visits one inspected SQLite row at a time. Validate and
  * consume its stream without building a second complete, unchecked raw DTO. */
-export function captureCapsule2RawContentStream(input: Capsule2RawContentStream): Capsule2RawContent {
-  return captureRawContent(input, rows => rows as Iterable<Capsule2RawSqlRow>)
+export function captureCapsule2RawContentStream(input: Capsule2RawContentStream, blocks?: StoreCapsule2Archive6Blocks5): Capsule2RawContent {
+  return captureRawContent(input, rows => rows as Iterable<Capsule2RawSqlRow>, blocks)
 }
 
-function captureRawContent(input: unknown, readRows: (value: unknown) => Iterable<unknown>): Capsule2RawContent {
+function captureRawContent(input: unknown, readRows: (value: unknown) => Iterable<unknown>, blocks?: StoreCapsule2Archive6Blocks5): Capsule2RawContent {
   const value = rawContentHeader(input)
   const encoding = value.encoding as Capsule2Encoding
   const budget: RawBudget = { rows: 0, valueBytes: 0 }
@@ -346,18 +357,33 @@ function captureRawContent(input: unknown, readRows: (value: unknown) => Iterabl
     if (!qname(table.name) || table.role !== capsule2TableRole(table.name)) return capsule2RawInvalid('表族/role无效')
     const columns = columnNames(table.columns), primaryKey = names(table.primaryKey)
     if (primaryKey.some(key => !columns.includes(key))) return capsule2RawInvalid('原PK不属于完整列')
-    const rows: Capsule2RawSqlRow[] = []
-    for (const item of readRows(table.rows)) rows.push(row(item, columns.length, encoding, budget))
-    if (rows.some((item, index) => index > 0 && BigInt(rows[index - 1].sourceRowId) >= BigInt(item.sourceRowId)))
-      return capsule2RawInvalid('原rowid顺序/完整行总预算不闭合')
-    return { name: table.name, role: capsule2TableRole(table.name), columns, primaryKey, rows }
+    let exhausted = false
+    function* checkedRows() {
+      let previous: bigint | undefined
+      for (const item of readRows(table.rows)) {
+        const checked = row(item, columns.length, encoding, budget), id = BigInt(checked.sourceRowId)
+        if (previous !== undefined && previous >= id) return capsule2RawInvalid('原rowid顺序/完整行总预算不闭合')
+        previous = id
+        yield checked
+      }
+      exhausted = true
+    }
+    const layout = { name: table.name, role: capsule2TableRole(table.name), columns, primaryKey }
+    if (!blocks || layout.name !== 'blocks' && layout.name !== 'synced_group_blocks') return { ...layout, rows: [...checkedRows()] }
+    const rows = checkedRows()
+    try {
+      const stored = blocks(layout, rows, encoding)
+      if (!exhausted || !scopedRawRows.has(stored)) return capsule2RawInvalid('archive6原块外存未完成原表读取')
+      return stored
+    } finally { rows.return(undefined) }
   })
   const derivedTablesNotRepeated = names(value.derivedTablesNotRepeated)
   assertRawTableNames(tables.map(table => table.name), derivedTablesNotRepeated, value.schemaVersion)
   const result = { ...value, tables, derivedTablesNotRepeated } as unknown as Capsule2RawContent
   writeBoundedRawContent(result)
-  const validated = freezeCapsuleValue(result)
-  for (const table of validated.tables) if (table.role === 'content')
+  const validated = Object.freeze({ ...result, derivedTablesNotRepeated: Object.freeze(derivedTablesNotRepeated),
+    tables: Object.freeze(tables.map(table => scopedRawRows.has(table) ? table : freezeCapsuleValue(table))) })
+  for (const table of validated.tables) if (table.role === 'content' && !scopedRawRows.has(table))
     for (const row of table.rows) validatedContentCells.set(row.cells, encoding)
   return validated
 }

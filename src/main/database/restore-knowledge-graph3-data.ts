@@ -1,6 +1,8 @@
 import { TextDecoder } from 'node:util'
-import { capsuleJson } from './restore-knowledge-capsule-model'
-import { scopedCapsule2TableRowLookup, type Capsule2Encoding, type Capsule2RawContent, type Capsule2RawSqlRow,
+import { capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
+import { capsuleJsonStoredArray } from './restore-knowledge-capsule-json-hash'
+import { capsule2RawTableRows, capsule2RawTableRowCount, scopedCapsule2RawSqlTable, scopedCapsule2TableRowEncoding,
+  scopedCapsule2TableRowLookup, type Capsule2Encoding, type Capsule2RawContent, type Capsule2RawSqlRow,
   type Capsule2RawSqlTable } from './restore-knowledge-capsule2-raw-model'
 import type { RawRestoreSqlCell } from './restore-knowledge-sql-cell'
 import type { readRootRestoreIdentityGraphInputs3 } from './restore-knowledge-identity3-read'
@@ -27,6 +29,35 @@ function decodeGraph3Row(table: Capsule2RawSqlTable, row: Capsule2RawSqlRow, enc
   return Object.fromEntries(table.columns.map((column, index) => [column, graph3Value(row.cells[index], encoding)]))
 }
 
+export function graph3TableLayout({ name, role, columns, primaryKey }: Capsule2RawSqlTable) {
+  return { name, role, columns, primaryKey }
+}
+
+export function graph3TablesHashInput(tables: readonly Capsule2RawSqlTable[]) {
+  return tables.map(table => {
+    const encoded = scopedCapsule2TableRowEncoding(table)
+    return encoded ? { ...graph3TableLayout(table), rows: capsuleJsonStoredArray<Capsule2RawSqlRow>(encoded) } : table
+  })
+}
+
+export function freezeGraph3Tables(tables: readonly Capsule2RawSqlTable[]) {
+  for (const table of tables) if (!scopedCapsule2TableRowEncoding(table)) freezeCapsuleValue(table)
+  return Object.freeze(tables)
+}
+
+export function graph3ChangedCells(table: Capsule2RawSqlTable, original: Capsule2RawSqlTable) {
+  const changes: Array<{ table: string; sourceRowId: string; columns: string[] }> = []
+  for (const row of capsule2RawTableRows(table)) {
+    const before = findGraph3OriginalRow(original, row.sourceRowId) ?? graph3Conflict('missing-original-cell-row', row.sourceRowId)
+    const columns = table.columns.filter((_, column) => {
+      const old = before.cells[column], current = row.cells[column]
+      return old[0] !== current[0] || old[1] !== current[1]
+    })
+    if (columns.length) changes.push({ table: table.name, sourceRowId: row.sourceRowId, columns })
+  }
+  return changes
+}
+
 export function graph3Rows(content: Pick<Capsule2RawContent,'tables' | 'encoding'>, name: string) {
   const table = content.tables.find(table => table.name === name)
   if (!table) return graph3Conflict('missing-source-table', name)
@@ -51,18 +82,38 @@ export function findGraph3OriginalRow(table: Capsule2RawSqlTable, sourceRowId: s
  * exact bytes, column order and rowid evidence; there is no generic SQL writer. */
 export function graph3PatchTable(table: Capsule2RawSqlTable, encoding: Capsule2Encoding,
   transform: (value: Record<string,unknown>, rowId: string) => Record<string,string | null | bigint>): Capsule2RawSqlTable {
-  return { ...table, rows: table.rows.map(original => {
+  function changesFor(original: Capsule2RawSqlRow) {
     const value = decodeGraph3Row(table, original, encoding)
     const changes = transform(value,original.sourceRowId)
     for (const column of Object.keys(changes)) if (!table.columns.includes(column)) return graph3Conflict('unknown-target-column',{table:table.name,column})
-    let cells: RawRestoreSqlCell[] | undefined
+    const patches: Array<readonly [number, RawRestoreSqlCell]> = []
     for (const [index, column] of table.columns.entries()) {
       if (!Object.hasOwn(changes, column)) continue
       const changed = changes[column]
       if (changed === value[column]) continue
-      cells ??= [...original.cells]
-      cells[index] = changed === null ? ['null'] : typeof changed === 'bigint' ? ['integer', changed.toString()] : graph3Encode(changed, encoding)
+      patches.push([index, changed === null ? ['null'] : typeof changed === 'bigint' ? ['integer', changed.toString()] : graph3Encode(changed, encoding)])
     }
-    return cells ? { ...original, cells } : original
-  }) }
+    return patches
+  }
+  function apply(original: Capsule2RawSqlRow, patches?: readonly (readonly [number, RawRestoreSqlCell])[]) {
+    if (!patches?.length) return original
+    const cells = [...original.cells]
+    for (const [index, cell] of patches) cells[index] = cell
+    return { ...original, cells }
+  }
+  const lookup = scopedCapsule2TableRowLookup(table)
+  if (!lookup) return { ...table, rows: table.rows.map(original => apply(original, changesFor(original))) }
+  const patches = new Map<string, ReturnType<typeof changesFor>>()
+  for (const row of capsule2RawTableRows(table)) {
+    const changed = changesFor(row)
+    if (changed.length) patches.set(row.sourceRowId, freezeCapsuleValue(changed))
+  }
+  if (!patches.size) return table
+  const rows = { *[Symbol.iterator]() {
+    for (const row of capsule2RawTableRows(table)) yield apply(row, patches.get(row.sourceRowId))
+  } }
+  return scopedCapsule2RawSqlTable(graph3TableLayout(table), { count: capsule2RawTableRowCount(table), rows,
+    *encoded() { for (const row of rows) yield capsuleJson(row) },
+    byRowId(id) { const row = lookup(id); return row && apply(row, patches.get(id)) }
+  })
 }

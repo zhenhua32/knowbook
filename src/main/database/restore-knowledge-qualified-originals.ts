@@ -27,7 +27,7 @@ import { assertSealedCapsule2SourceOriginalBytes, captureReopenedSealedCapsule2S
   readSealedCapsule2SourceInputsWithWorking5, type SealedCapsule2Source } from './restore-knowledge-capsule2-source-seal'
 import { rawPriorCoverageRequirementsHash, validateCoverageCapsuleReference, type CoverageInputBinding } from './restore-knowledge-coverage-model'
 import { knowledgeHash, knowledgePayloadHash } from './restore-knowledge-payload-model'
-import { CAPSULE2_READER } from './restore-knowledge-capsule2-raw-model'
+import { CAPSULE2_READER, type StoreCapsule2Archive6Blocks5 } from './restore-knowledge-capsule2-raw-model'
 import { parseCapsule2BoundSourceManifest } from './restore-knowledge-bound-source-model'
 import { readCapsule2AssetManifest } from './restore-knowledge-capsule2-assets-files'
 import { restoreDirectory, syncRestoreDirectory } from './restore-safety-files'
@@ -174,7 +174,8 @@ async function contextParents(view: View, prefix: readonly string[], context: Ca
   }
   return parents
 }
-async function reopenedInput(readers: NodeReaders, side: QualifiedOriginalSide, binding: CoverageInputBinding, origin: OriginalSourceInput['origin'], context: Capsule2ReferenceContextDescriptor | null): Promise<ReopenedInput> {
+async function reopenedInput(readers: NodeReaders, side: QualifiedOriginalSide, binding: CoverageInputBinding, origin: OriginalSourceInput['origin'],
+  context: Capsule2ReferenceContextDescriptor | null, blocks?: StoreCapsule2Archive6Blocks5): Promise<ReopenedInput> {
   const profile = readers.profile, ref = binding.capsule, key = requiredDagCapsuleLocator(binding), previous = readers.sources.get(key)
   if (side.kind === 'durable-sql-v1') {
     if (previous) return { input: ownInput(await readActualNoPriorOriginalInput(profile, previous as CertifiedDurableSqlCapsule)), packet: null }
@@ -192,7 +193,7 @@ async function reopenedInput(readers: NodeReaders, side: QualifiedOriginalSide, 
       const actual = await readActualNoPriorOriginalContentAndWorking5(profile, previous as CertifiedCapsule2NoPriorSource)
       return { input: ownInput(actual.input), packet: actual.packet, working: actual.working }
     }
-    const captured = await captureReopenedCertifiedCapsule2SourceWithWorking5({ profileRoot: profile, operationId: ref.operationId, capsuleId: ref.capsuleId, expectedCertificateHash: ref.manifestHash })
+    const captured = await captureReopenedCertifiedCapsule2SourceWithWorking5({ profileRoot: profile, operationId: ref.operationId, capsuleId: ref.capsuleId, expectedCertificateHash: ref.manifestHash }, blocks)
     readers.sources.set(key, captured.source)
     const value = captured.value, rawRequirementsHash = rawPriorCoverageRequirementsHash(value.priorCoverageRequirements)
     const proof = { kind: 'no-prior-coverage-references' as const, version: 1 as const, databaseFilesHash: requiredDagDatabaseFilesHash(value.sourceInventory), rawRequirementsHash }
@@ -223,7 +224,7 @@ async function domainWorkingTexts5(view:View,prefix:readonly string[],text:strin
   },hash)
 }
 async function walk(view: View, prefix: readonly string[], reader: CompleteOriginalPackage['reader'], hash: string, b: Budget, depth: number,
-  collect?: (input: ReopenedInput) => void): Promise<CompleteOriginalRootData> {
+  collect?: (input: ReopenedInput) => void, sourceBlocks?: StoreCapsule2Archive6Blocks5): Promise<CompleteOriginalRootData> {
   const text = await domainText(view,prefix),workingTexts=await domainWorkingTexts5(view,prefix,text,reader,hash),stateKey=capsuleJson(prefix)
   if (reader === 'prepared-mixed-v2') {
     const descriptor = parseMixedOriginBundleDescriptor(text,workingTexts)
@@ -272,8 +273,8 @@ async function walk(view: View, prefix: readonly string[], reader: CompleteOrigi
   let state = view.readers.get(stateKey)
   if (!state) { state = { profile: await verificationProfile(view, prefix, inventory.directories), sources: new Map() }; view.readers.set(stateKey, state) }
   const inputs: OriginalSourceInput[] = []
-  for (const [side, binding, origin] of [[sides[0], node.source, node.origins.source], [sides[1], node.current, node.origins.current]] as const) {
-    const captured = await reopenedInput(state, side.value, binding, origin, side.context), actual = captured.input
+  for (const [ordinal, [side, binding, origin]] of ([[sides[0], node.source, node.origins.source], [sides[1], node.current, node.origins.current]] as const).entries()) {
+    const captured = await reopenedInput(state, side.value, binding, origin, side.context, ordinal === 0 ? sourceBlocks : undefined), actual = captured.input
     if (!same(actual.binding, binding) || !same(actual.origin, origin)) return bad('实际来源input与原node不同')
     b.bytes += actual.originalSqlBytes + actual.managedOriginalBytes
     if (b.bytes > DURABLE_SQL_DAG_MAX_ORIGINAL_BYTES) return bad('实际完整来源字节超原预算')
@@ -298,11 +299,12 @@ async function readDirectoryBytes(directory: string, profileRoot: string, hash?:
   await assertOriginalFrameDirectory(root, text, inventory.files)
   return { root,text,descriptor,inventory,view,workingTexts }
 }
-async function readDirectory(directory: string, profileRoot: string, hash?: string, readers: ReaderState = new Map(), rootPackets?: ReopenedInput[]): Promise<CompleteOriginalPackage> {
+async function readDirectory(directory: string, profileRoot: string, hash?: string, readers: ReaderState = new Map(),
+  rootPackets?: ReopenedInput[], sourceBlocks?: StoreCapsule2Archive6Blocks5): Promise<CompleteOriginalPackage> {
   const {root,text,descriptor,inventory,view,workingTexts}=await readDirectoryBytes(directory,profileRoot,hash)
   view.readers = readers
   const actual = await walk(view, [], 'qualified-originals-v1', qualifiedOriginalDescriptorHash(descriptor,workingTexts), budget(), 1,
-    rootPackets && (input => rootPackets.push(input)))
+    rootPackets && (input => rootPackets.push(input)), sourceBlocks)
   await assertOriginalFrameDirectory(root, text, inventory.files)
   const result = packageFrom(view, 'qualified-originals-v1', qualifiedOriginalDescriptorHash(descriptor,workingTexts), actual)
   capturedReaders.set(result, readers); return result
@@ -374,17 +376,17 @@ type CaptureQualifiedInput = { profileRoot: string; operationId: string; dagId: 
 export async function captureQualifiedOriginalBundle(input: CaptureQualifiedInput) {
   return captureQualified(input)
 }
-async function captureQualified(input: CaptureQualifiedInput, packets?: ReopenedInput[]) {
+async function captureQualified(input: CaptureQualifiedInput, packets?: ReopenedInput[], sourceBlocks?: StoreCapsule2Archive6Blocks5) {
   const row = capsuleRecord(input, ['profileRoot','operationId','dagId','source','current']), profileRoot = await canonicalRequiredSqlDagRoot(row.profileRoot)
   return buildOriginalBundle(profileRoot, row.operationId as string, row.dagId as string, [row.source as Source, row.current as Source],
-    await pair(profileRoot, row.source as Source, row.current as Source), packets)
+    await pair(profileRoot, row.source as Source, row.current as Source), packets, sourceBlocks)
 }
 
 /** The content packets come from the independent post-copy SQL traversal,
  * after the mounted originals and the source of the copy were verified. */
-export async function captureQualifiedOriginalBundleWithInitialContent5(input: CaptureQualifiedInput) {
+export async function captureQualifiedOriginalBundleWithInitialContent5(input: CaptureQualifiedInput, sourceBlocks?: StoreCapsule2Archive6Blocks5) {
   const packets: ReopenedInput[] = []
-  const captured = await captureQualified(input, packets)
+  const captured = await captureQualified(input, packets, sourceBlocks)
   return Object.freeze({ ...captured, ...contentPair(captured.originalPackage, packets) })
 }
 /** One binding/root construction, accepting a genuine context instead of a
@@ -412,7 +414,8 @@ export async function captureQualifiedOriginalBundleFromReferences(input: { prof
   return Object.freeze({ ...actual, bound: bound.source, context: bound.context, contextData: bound.contextData })
 }
 async function buildOriginalBundle(profileRoot: string, operationId: string, dagId: string, handles: readonly [Source, Source],
-  initial: readonly [Awaited<ReturnType<typeof nativeInput>>, Awaited<ReturnType<typeof nativeInput>>], packets?: ReopenedInput[]) {
+  initial: readonly [Awaited<ReturnType<typeof nativeInput>>, Awaited<ReturnType<typeof nativeInput>>], packets?: ReopenedInput[],
+  sourceBlocks?: StoreCapsule2Archive6Blocks5) {
   const source = initial[0].input, current = initial[1].input
   const node = validateRequiredSqlDagNode({ kind: 'restore-required-sql-knowledge-dag-node', version: 2, readerVersion: 'knowbook-required-sql-knowledge-dag-v2', material: 'durable-sql-only',
     source: source.binding, current: current.binding, origins: { source: source.origin, current: current.origin }, parents: requiredDagParentUnion(source.binding.requiredRoots, current.binding.requiredRoots) })
@@ -433,7 +436,7 @@ async function buildOriginalBundle(profileRoot: string, operationId: string, dag
     }
   }
   await syncOriginCatalogAncestors(target.base, profileRoot)
-  const hash = qualifiedOriginalDescriptorHash(descriptor,workingTexts), actual = await readDirectory(target.directory, profileRoot, hash, undefined, packets)
+  const hash = qualifiedOriginalDescriptorHash(descriptor,workingTexts), actual = await readDirectory(target.directory, profileRoot, hash, undefined, packets, sourceBlocks)
   return Object.freeze({ bundle: mint({ profileRoot, operationId, mountId: target.mountId, directory: target.directory, hash, readers: capturedReaders.get(actual)! }), value: actual.original,
     directory: target.directory, mountId: target.mountId, descriptorHash: hash, originalPackage: actual })
 }
@@ -466,18 +469,19 @@ export async function reopenQualifiedOriginalBundle(input: { profileRoot: string
 export async function captureReopenedQualifiedOriginalBundle(input: Parameters<typeof reopenQualifiedOriginalBundle>[0]) {
   return captureReopenedQualifiedOriginalDirectory(input)
 }
-async function captureReopenedQualifiedOriginalDirectory(input: Parameters<typeof reopenQualifiedOriginalBundle>[0], packets?: ReopenedInput[]) {
+async function captureReopenedQualifiedOriginalDirectory(input: Parameters<typeof reopenQualifiedOriginalBundle>[0],
+  packets?: ReopenedInput[], sourceBlocks?: StoreCapsule2Archive6Blocks5) {
   const row = capsuleRecord(input, ['profileRoot','operationId','mountId','expectedDescriptorHash']), profileRoot = await canonicalRequiredSqlDagRoot(row.profileRoot)
   const operationId = durableSqlDagUuid(row.operationId), mountId = durableSqlDagUuid(row.mountId), hash = durableSqlDagHash(row.expectedDescriptorHash)
   const directory = join(profileRoot, 'backups', 'database-restore', operationId, 'qualified-original-bundles-v1', mountId)
-  const actual = await readDirectory(directory, profileRoot, hash, undefined, packets)
+  const actual = await readDirectory(directory, profileRoot, hash, undefined, packets, sourceBlocks)
   return Object.freeze({ bundle: mint({ profileRoot, operationId, mountId, directory, hash, readers: capturedReaders.get(actual)! }), value: actual.original, originalPackage: actual })
 }
 
 /** Capture both content roles from this cold traversal of the actual mount. */
-export async function captureReopenedQualifiedOriginalContent5(input: Parameters<typeof reopenQualifiedOriginalBundle>[0]) {
+export async function captureReopenedQualifiedOriginalContent5(input: Parameters<typeof reopenQualifiedOriginalBundle>[0], sourceBlocks?: StoreCapsule2Archive6Blocks5) {
   const packets: ReopenedInput[] = []
-  const captured = await captureReopenedQualifiedOriginalDirectory(input, packets)
+  const captured = await captureReopenedQualifiedOriginalDirectory(input, packets, sourceBlocks)
   const content = contentPair(captured.originalPackage, packets)
   await assertCompleteOriginalPackageBytes(captured.bundle)
   return Object.freeze({ ...captured, ...content })

@@ -9,7 +9,7 @@ import { assertRawCapsule2MovesOwned } from './restore-knowledge-capsule2-moves-
 import { assertRawCapsule2AssistantHistoryOwned } from './restore-knowledge-capsule2-assistant-read'
 import { assertRawCapsule2PreferencesOwned } from './restore-knowledge-capsule2-preferences-read'
 import { assertRawCapsule2PluginPolicyOwned } from './restore-knowledge-capsule2-plugin-policy-read'
-import { CAPSULE2_READER, summarizeCapsule2RawPolicyContent } from './restore-knowledge-capsule2-raw-model'
+import { CAPSULE2_READER, summarizeCapsule2RawPolicyContent, type StoreCapsule2Archive6Blocks5 } from './restore-knowledge-capsule2-raw-model'
 
 type Family = 'host-settings-and-reserved-metadata' | 'host-activity-text' | 'host-assistant-event-history' | 'plugin-retained-storage'
 type AssetRule = 'host-message-and-retained-stream-markdown' | 'opaque-values-not-paths-or-markdown'
@@ -41,8 +41,8 @@ export interface RawCapsule2SourcePolicy {
  * This returns full private source data; never expose it as UI diagnostics.
  * Reserved metadata still needs the outer historical interpreter. Classifying
  * its source bytes as retained data cannot turn it into ordinary/empty K. */
-export function readRawCapsule2OrdinaryPolicySourceOwned(db: Database.Database) {
-  const sourceContent = readRawCapsule2ContentOwned(db)
+export function readRawCapsule2OrdinaryPolicySourceOwned(db: Database.Database, blocks?: StoreCapsule2Archive6Blocks5) {
+  const sourceContent = readRawCapsule2ContentOwned(db, blocks)
   return Object.freeze({ sourceContent, ...observeOrdinaryPolicySource(db, summarizeCapsule2RawPolicyContent(sourceContent)) })
 }
 

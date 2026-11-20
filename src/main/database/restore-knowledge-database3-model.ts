@@ -3,9 +3,10 @@ import { DATABASE_SYSTEM_FIELD_IDS } from '../../shared/database-workspace'
 import { collectDatabaseViewConfigFieldIds, mapDatabaseViewConfigFieldIds, mapDatabaseViewReferences,
   parseDatabaseViewPayload, serializeDatabaseViewPayload } from '../../shared/databaseViewBlock'
 import { strictSavedViewConfig } from '../backup/v2-format'
-import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
+import { capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
+import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, capsule2RawTableRows } from './restore-knowledge-capsule2-raw-model'
-import { graph3Conflict, graph3Key, graph3PatchTable, graph3Rows, graph3Text, type Graph3Inputs } from './restore-knowledge-graph3-data'
+import { freezeGraph3Tables, graph3Conflict, graph3Key, graph3PatchTable, graph3Rows, graph3TablesHashInput, graph3Text, type Graph3Inputs } from './restore-knowledge-graph3-data'
 
 type Kind = 'database' | 'column' | 'view' | 'entity' | 'document'
 type Reference = { kind: 'database' | 'column' | 'view'; sourceDatabaseId: string | null; sourceId: string;
@@ -158,10 +159,10 @@ export function deriveRootRestoreDatabaseReferences3(data: Graph3Inputs) {
   const body = { kind:'complete-root-restore-database-reference-candidate' as const,version:3 as const,
     conservationHash:data.inputs.knowledge.conservationHash,identityAllocationHash:data.value.allocationHash,
     sourceMaterialHash:data.inputs.source.materialHash,currentMaterialHash:data.inputs.current.materialHash,
-    tables,changedCells,references:[...references.values()],databaseReferencesRewritten:true as const,
+    changedCells,references:[...references.values()],databaseReferencesRewritten:true as const,
     sourcePolicyReplayed:false as const,sourceHistoryReplayed:false as const,structuralMergeStillRequired:true as const,
     referenceRewriteComplete:false as const,semanticValidationComplete:false as const,acceptedCoverage:false as const,effective:false as const,permit:false as const }
-  const encoded=capsuleJson(body)
-  if (Buffer.byteLength(encoded)>CAPSULE2_RAW_MAX_JSON_BYTES) return graph3Conflict('complete-database-reference-candidate-budget',null)
-  return freezeCapsuleValue({...body,databaseReferenceHash:capsuleBytesHash('knowbook.restore.database3.candidate.v1\0'+encoded)})
+  const databaseReferenceHash = hashBoundedCapsuleJson({ ...body, tables: graph3TablesHashInput(tables) }, CAPSULE2_RAW_MAX_JSON_BYTES,
+    'knowbook.restore.database3.candidate.v1\0') ?? graph3Conflict('complete-database-reference-candidate-budget', null)
+  return Object.freeze({ ...freezeCapsuleValue(body), tables: freezeGraph3Tables(tables), databaseReferenceHash })
 }

@@ -5,6 +5,7 @@ import { graph3Encode, type Graph3Inputs } from '../src/main/database/restore-kn
 import { MERGE3_PHYSICAL_TABLES, selectMerge3PhysicalRows3, type Merge3PhysicalTable } from '../src/main/database/restore-knowledge-merge3-physical'
 import { finishMerge3Table, prepareMerge3Table, type Merge3Material } from '../src/main/database/restore-knowledge-merge3-storage'
 import type { RawRestoreSqlCell } from '../src/main/database/restore-knowledge-sql-cell'
+import { scopeCurrentReferenceBlocks5, scopeIncomingReferenceTables5, withReferenceOriginalRows5 } from '../src/main/database/restore-knowledge-reference-original-rows5'
 
 const id = (n: number) => '00000000-0000-4000-8000-' + n.toString(16).padStart(12, '0')
 const hash = (n: number) => n.toString(16).padStart(64, '0')
@@ -73,13 +74,25 @@ function fixture(sourceRows: Rows, currentRows: Rows, inactive = false) {
   return { data, prepared, run: () => selectMerge3PhysicalRows3(data, prepared) }
 }
 
-test('merge3 physical whole-forest selection replaces unmatched current children and retains unrelated hosts and orphan groups', () => {
+test('merge3 physical whole-forest selection replaces unmatched current children and retains unrelated hosts and orphan groups', async () => {
   const source = empty(), current = empty()
   source.documents = [document('restored')]; source.blocks = [block('incoming child', 'restored')]
   current.documents = [document('restored'), document('retained')]
   current.blocks = [block('old removed child', 'restored'), block('untouched child', 'retained')]
   current.synced_groups = [group()]; current.synced_group_blocks = [canonical('orphan child')]
   const f = fixture(source, current), value = f.run()
+  const { inputs } = f.data, incoming = inputs.source, receiving = inputs.current
+  await withReferenceOriginalRows5(async store => ({ source: scopeIncomingReferenceTables5(incoming.source.sourceContent, store),
+    current: scopeCurrentReferenceBlocks5(receiving.source.sourceContent, store) }), async originals => {
+    const source = { ...incoming, source: { ...incoming.source, sourceContent: originals.source } }
+    const current = { ...receiving, source: { ...receiving.source, sourceContent: originals.current } }
+    const scoped = { ...f.data, inputs: { ...inputs, source, current } }
+    const sourceOriginal = originals.source.tables.find(table => table.name === 'blocks')!
+    const currentOriginal = originals.current.tables.find(table => table.name === 'blocks')!
+    const blocks = prepareMerge3Table({ sourceOriginal, sourceCandidate: sourceOriginal, currentOriginal,
+      sourceEncoding: 'UTF-8', currentEncoding: 'UTF-8', source: material('source'), current: material('current') })
+    assert.deepEqual(selectMerge3PhysicalRows3(scoped, f.prepared.map(table => table.name === 'blocks' ? blocks : table)), value)
+  })
   assert.equal(value.physicalShapeValidated, true); assert.deepEqual(value.conflicts, [])
   const blocks = value.tables.find(table => table.name === 'blocks')!, prepared = f.prepared.find(table => table.name === 'blocks')!
   assert.equal(blocks.dispositions.find(row => row.rowKey === prepared.currentRows[0].key)?.status, 'replaced')
@@ -120,14 +133,30 @@ test('merge3 physical does not claim a child PK in an unrelated retained current
   assert.ok(value.conflicts.some(item => item.code === 'incoming-physical-id-occupied-by-retained-current'))
 })
 
-test('merge3 physical checks a changed source canonical forest against retained host depth and exact instance registry mirrors', () => {
+test('merge3 physical checks a changed source canonical forest against retained host depth and exact instance registry mirrors', async () => {
   const source = empty(), current = empty()
   source.synced_groups = [group()]; source.synced_group_blocks = [canonical('root', 0, null, 'callout'), canonical('child', 1, 'root')]
   current.documents = [document('retained')]; current.synced_groups = [group()]; current.synced_group_blocks = [canonical('old root')]
   current.blocks = Array.from({ length: 6 }, (_, index) => block('parent ' + index, 'retained', '', index, index ? 'parent ' + (index - 1) : null, 'callout'))
   current.blocks.push(block(instanceId, 'retained', JSON.stringify({ version: 1, groupId }), 6, 'parent 5', 'synced-block'))
   current.synced_instances = [registry('retained', 6, 'parent 5')]
-  const value = fixture(source, current).run()
+  const f = fixture(source, current), value = f.run(), { source: incoming, current: receiving } = f.data.inputs
+  await withReferenceOriginalRows5(async store => ({ source: scopeIncomingReferenceTables5(incoming.source.sourceContent, store),
+    current: scopeCurrentReferenceBlocks5(receiving.source.sourceContent, store) }), async originals => {
+    const data = { ...f.data, inputs: { ...f.data.inputs,
+      source: { ...incoming, source: { ...incoming.source, sourceContent: originals.source } },
+      current: { ...receiving, source: { ...receiving.source, sourceContent: originals.current } } } }
+    const prepared = f.prepared.map(table => {
+      if (table.name !== 'blocks' && table.name !== 'synced_group_blocks') return table
+      const sourceOriginal = originals.source.tables.find(original => original.name === table.name)!
+      const currentOriginal = originals.current.tables.find(original => original.name === table.name)!
+      assert.throws(() => sourceOriginal.rows, /逐行读取范围/)
+      assert.throws(() => currentOriginal.rows, /逐行读取范围/)
+      return prepareMerge3Table({ sourceOriginal, sourceCandidate: sourceOriginal, currentOriginal,
+        sourceEncoding: originals.source.encoding, currentEncoding: originals.current.encoding, source: material('source'), current: material('current') })
+    })
+    assert.deepEqual(selectMerge3PhysicalRows3(data, prepared), value)
+  })
   assert.equal(value.physicalShapeValidated, false)
   assert.ok(value.conflicts.some(item => item.code === 'merged-canonical-expanded-depth'))
   current.synced_instances[0] = { ...current.synced_instances[0], depth: 5 }

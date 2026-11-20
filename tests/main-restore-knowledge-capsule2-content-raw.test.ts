@@ -7,9 +7,15 @@ import { capsule2RawContentHash, capsule2RawTableRows, capsule2RawTableRowCount,
 import { readRawCapsule2ObserverOwned } from '../src/main/database/restore-knowledge-capsule2-observer-read'
 import { readRawCapsule2OrdinaryPolicyEvidenceOwned, readRawCapsule2OrdinaryPolicySourceOwned } from '../src/main/database/restore-knowledge-capsule2-policy-source-read'
 import { capsuleBytesHash, capsuleJson } from '../src/main/database/restore-knowledge-capsule-model'
+import { hashBoundedCapsuleJson } from '../src/main/database/restore-knowledge-capsule-json-hash'
 import { root3SupplementSourceContentHash3 } from '../src/main/database/restore-knowledge-assets3-context'
-import { findGraph3OriginalRow } from '../src/main/database/restore-knowledge-graph3-data'
-import { scopeIncomingReferenceHistory5, withReferenceOriginalRows5 } from '../src/main/database/restore-knowledge-reference-original-rows5'
+import { findGraph3OriginalRow, graph3Key, graph3TablesHashInput, type Graph3Inputs } from '../src/main/database/restore-knowledge-graph3-data'
+import { scopeCurrentReferenceBlocks5, scopeIncomingReferenceTables5, withReferenceOriginalRows5 } from '../src/main/database/restore-knowledge-reference-original-rows5'
+import { assertRootRestoreStage3ExactTable3 } from '../src/main/database/restore-knowledge-stage3-physical'
+import { readRawCapsule2SourceKnowledgeOwned } from '../src/main/database/restore-knowledge-payload-raw-read'
+import { createOriginalPhysicalNavigationReader3, deriveRootRestoreNavigationRewriteInputs3 } from '../src/main/database/restore-knowledge-navigation3-model'
+import { validateCurrentHeadingSemantics } from '../src/main/database/restore-knowledge-canonical3-model'
+import { getMarkdownHeadingTargets } from '../src/shared/markdownLinkMaintenance'
 import { readInitialIncomingWorkspace } from '../src/main/database/synced-initial-incoming-read'
 import { withV3Fixture } from './helpers/synced-backup-v3-fixture'
 import { decodedCapsule2Table, withCapsule2RawCopy, writeMixedOrdinary501 } from './helpers/capsule2-raw-fixture'
@@ -92,6 +98,7 @@ test('capsule2 raw content preserves actual ordinary history rowid order and all
   const dropped = f.store.createDocument(null)
   f.store.deleteDocument(dropped)
   f.db.prepare('UPDATE document_history SET _rowid_=? WHERE _rowid_=(SELECT min(_rowid_) FROM document_history)').run(-(2n ** 63n))
+  f.db.prepare('UPDATE synced_group_blocks SET _rowid_=? WHERE _rowid_=(SELECT min(_rowid_) FROM synced_group_blocks)').run(-(2n ** 63n))
   // Legal SQLite legacy storage shape, deliberately not claimed to have a
   // valid semantic owner. Raw preparation must retain it for the later owner.
   const insert = f.db.prepare('INSERT INTO document_database_values(document_id,column_id,value_text,updated_at,entity_id) VALUES(NULL,?,?,?,NULL)')
@@ -105,9 +112,9 @@ test('capsule2 raw content preserves actual ordinary history rowid order and all
     assert.deepEqual(values.map(row => row.value_text), ['legacy A', 'legacy B'])
     assert.equal(raw.state, 'raw-storage-only'); assert.equal(raw.semanticValidationComplete, false)
     const domain = 'test.active-original'
-    const scoped = await withReferenceOriginalRows5(async store => scopeIncomingReferenceHistory5(raw, store), async parked => {
+    const scoped = await withReferenceOriginalRows5(async store => scopeIncomingReferenceTables5(raw, store), async parked => {
       assert.equal(hashValidatedCapsule2RawContent(domain, parked), capsuleBytesHash(domain + '\0' + capsuleJson(raw)))
-      for (const name of ['document_history', 'document_trash']) {
+      for (const name of ['blocks', 'synced_group_blocks', 'document_history', 'document_trash']) {
         const before = raw.tables.find(table => table.name === name)!, table = parked.tables.find(table => table.name === name)!
         assert.ok(before.rows.length > 0)
         assert.throws(() => table.rows, /逐行读取范围/)
@@ -136,5 +143,131 @@ test('capsule2 raw content rejects unknown ordinary columns and preserves the un
   await withCapsule2RawCopy(f, db => {
     assert.throws(() => db.transaction(() => readRawCapsule2ContentOwned(db))(), /未知.*普通列/)
     assert.equal((db.prepare('SELECT future_content FROM documents WHERE id=?').get(f.targetId) as { future_content: string }).future_content, 'must not disappear')
+  })
+}))
+
+test('Stage3 checks scoped current ordinary and canonical blocks against native rowid, storage class and exact bytes', () => withV3Fixture(async f => {
+  const { id: canonicalId } = f.db.prepare('SELECT id FROM synced_group_blocks ORDER BY _rowid_ LIMIT 1').get() as { id: string }
+  f.db.prepare('UPDATE blocks SET content=? WHERE id=?').run('Original ASCII cells', f.targetBodyId)
+  f.db.prepare('UPDATE blocks SET _rowid_=? WHERE id=?').run(-(2n ** 63n), f.targetBodyId)
+  f.db.prepare('UPDATE synced_group_blocks SET _rowid_=?,content=? WHERE id=?').run(-(2n ** 63n), 'Original ASCII cells', canonicalId)
+  const raw = await withCapsule2RawCopy(f, db => db.transaction(() => readRawCapsule2ContentOwned(db))())
+  await withReferenceOriginalRows5(async store => scopeCurrentReferenceBlocks5(raw, store), async current => {
+    const blocks = current.tables.find(table => table.name === 'blocks')!
+    const canonical = current.tables.find(table => table.name === 'synced_group_blocks')!
+    assert.throws(() => blocks.rows, /逐行读取范围/)
+    assert.throws(() => canonical.rows, /逐行读取范围/)
+    const cutDomain = 'knowbook.restore.stage3.retained-cut.all-original-tables.v1\0'
+    assert.equal(hashBoundedCapsuleJson(graph3TablesHashInput(current.tables), Number.MAX_SAFE_INTEGER, cutDomain),
+      capsuleBytesHash(cutDomain + capsuleJson(raw.tables)))
+    await withCapsule2RawCopy(f, db => db.transaction(() => {
+      assert.equal(assertRootRestoreStage3ExactTable3(db, blocks, current.encoding), blocks)
+      assert.equal(assertRootRestoreStage3ExactTable3(db, canonical, current.encoding), canonical)
+    })())
+    f.db.prepare('UPDATE synced_group_blocks SET content=? WHERE id=?').run('Changed! ASCII cells', canonicalId)
+    await withCapsule2RawCopy(f, db => db.transaction(() => {
+      assert.equal(assertRootRestoreStage3ExactTable3(db, blocks, current.encoding), blocks)
+      assert.throws(() => assertRootRestoreStage3ExactTable3(db, canonical, current.encoding), /storage class\/bytes不符：synced_group_blocks:-9223372036854775808/)
+    })())
+    f.db.prepare('UPDATE blocks SET content=CAST(? AS BLOB) WHERE id=?').run('Original ASCII cells', f.targetBodyId)
+    await withCapsule2RawCopy(f, db => db.transaction(() => {
+      assert.throws(() => assertRootRestoreStage3ExactTable3(db, blocks, current.encoding), /storage class\/bytes不符.*-9223372036854775808/)
+    })())
+  })
+}))
+
+test('incoming physical group bodies keep their verified semantics and expand by original host', () => withV3Fixture(async f => {
+  const captured = await withCapsule2RawCopy(f, db => db.transaction(() => readRawCapsule2SourceKnowledgeOwned(db))())
+  const original = captured.source.physical
+  const physicalHash = capsuleBytesHash(capsuleJson(original)), plain = createOriginalPhysicalNavigationReader3(original)
+  const linked = original.documents.find(document => original.instances.some(instance => instance.host_document_id === document.documentId))!
+  const unlinked = original.documents.find(document => !original.instances.some(instance => instance.host_document_id === document.documentId))!
+  assert.ok(linked && unlinked)
+  const groups = new Set(original.instances.filter(instance => instance.host_document_id === linked.documentId).map(instance => instance.group_id))
+  assert.ok(groups.size > 0)
+  const assignments = [
+    ...original.documents.map(doc => ({ kind: 'document', sourceId: doc.documentId, birth: doc.createdAt, ownerKind: null, ownerId: null })),
+    ...original.identities.filter(row => row.state === 'live').map(row => ({ kind: 'block', sourceId: row.id, birth: row.created_at,
+      ownerKind: row.last_owner_kind, ownerId: row.last_owner_id }))
+  ].map(row => ({ ...row, key: row.sourceId, targetId: row.sourceId, physical: true, ambiguous: false }))
+  const source = { ...captured, materialHash: '1'.repeat(64) }
+  const data = { inputs: { source, current: { materialHash: '2'.repeat(64) },
+    knowledge: { conservationHash: '3'.repeat(64), constraints: { root: {} } } },
+    value: { assignments, sourceWitness: {}, sourcePayload: '4'.repeat(64), allocationHash: '5'.repeat(64) } } as unknown as Graph3Inputs
+  const plainNavigation = deriveRootRestoreNavigationRewriteInputs3(data)
+  const { expand, scopedLinked, scopedUnlinked } = await withReferenceOriginalRows5(async (storeRows, storeGroups) => {
+    assert.throws(() => storeGroups({ ...original }), /已验证的物理原件/)
+    return { scoped: storeGroups(original), sourceContent: scopeIncomingReferenceTables5(captured.source.sourceContent, storeRows) }
+  }, async ({ scoped, sourceContent }) => {
+    assert.equal(capsuleBytesHash(capsuleJson(scoped)), physicalHash)
+    const snapshot = scoped.groups.find(group => group.snapshot)?.snapshot
+    assert.ok(snapshot)
+    assert.equal(typeof Object.getOwnPropertyDescriptor(snapshot, 'blocks')?.get, 'function')
+    assert.ok(Object.isFrozen(snapshot.blocks))
+    const scopedLinked = scoped.documents.find(doc => doc.documentId === linked.documentId)!
+    const scopedUnlinked = scoped.documents.find(doc => doc.documentId === unlinked.documentId)!
+    assert.notEqual(scopedLinked, linked)
+    assert.equal(typeof Object.getOwnPropertyDescriptor(scopedLinked, 'blocks')?.get, 'function')
+    assert.ok(Object.isFrozen(scopedLinked.blocks))
+    assert.deepEqual(scopedLinked.blocks, linked.blocks)
+    const read = createOriginalPhysicalNavigationReader3(scoped)
+    assert.deepEqual([...read(scopedLinked, groups)], [...plain(linked, groups)])
+    assert.deepEqual([...read(scopedUnlinked, new Set())], [...plain(unlinked, new Set())])
+    assert.throws(() => read(linked, groups), /navigation-original-physical-host/)
+    const scopedData = { ...data, inputs: { ...data.inputs, source: { ...data.inputs.source,
+      source: { ...captured.source, sourceContent, physical: scoped } } } }
+    assert.deepEqual(deriveRootRestoreNavigationRewriteInputs3(scopedData), plainNavigation)
+    return { expand: read, scopedLinked, scopedUnlinked }
+  })
+  assert.throws(() => [...expand(scopedUnlinked, new Set())], /读取范围已结束/)
+  assert.throws(() => [...expand(scopedLinked, groups)], /读取范围已结束/)
+}))
+
+test('current scoped groups preserve host heading identity and exact anchor text with the same group ID on both sides', () => withV3Fixture(async f => {
+  const capture = () => withCapsule2RawCopy(f, db => db.transaction(() => readRawCapsule2SourceKnowledgeOwned(db))())
+  const findGroup = (physical: Awaited<ReturnType<typeof capture>>['source']['physical']) =>
+    physical.groups.find(group => group.groupId === f.groupId)!.snapshot!
+  const source = (await capture()).source
+  const unmodified = findGroup(source.physical).blocks[0]
+  const anchor = '锚点-anchor'
+  const content = unmodified.content + '\n\n<a id="' + anchor + '"></a>'
+  assert.equal(f.db.prepare('UPDATE synced_group_blocks SET content=? WHERE id=?').run(content, unmodified.id).changes, 1)
+  const current = (await capture()).source
+  const group = findGroup(current.physical)
+  const block = group.blocks[0]
+  const host = current.physical.documents.find(document => document.documentId === f.hostId)!
+  const occurrenceId = graph3Key(f.instanceId, block.id)
+  const heading = getMarkdownHeadingTargets([{ ...block, id: occurrenceId }], host.title).find(heading => heading.slug === anchor)!
+  assert.equal(heading.blockId, occurrenceId)
+  const projection = { side: 'current' as const, rowKey: 'binding', proofKind: 'current-domain-preserved',
+    binding: { ...group.bindings[0], target: { kind: 'heading' as const, state: 'live' as const, documentId: f.hostId, slug: anchor } } }
+  type Final = Parameters<typeof validateCurrentHeadingSemantics>[1]
+  const final = (changed: string, instanceId = f.instanceId): Final => {
+    const document = { id: f.hostId, birth: host.createdAt } as Final['headingNamespaces'][number]['document']
+    const location = { blockId: block.id, instanceId, blockBirth: block.createdAt,
+      instanceBirth: current.physical.identities.find(row => row.id === f.instanceId)!.created_at } as NonNullable<Final['headingNamespaces'][number]['headings'][number]['location']>
+    return { headingNamespaces: [{ document, headings: [{ ...heading, location }] }],
+      physicalBlock: () => ({ block: { type: block.type, content: changed } }) }
+  }
+  function conflicts(original: typeof current, finalIndex: Final) {
+    const codes: string[] = []
+    validateCurrentHeadingSemantics(original, finalIndex, [projection], code => codes.push(code))
+    return codes
+  }
+  const replacement = 'canonical3-current-heading-occurrence-replaced'
+  assert.deepEqual(conflicts(current, final(content)), [])
+  assert.deepEqual(conflicts(current, final(content + ' changed')), [replacement])
+  await withReferenceOriginalRows5(async (store, storeGroups) => {
+    const incoming = storeGroups(source.physical)
+    const physical = storeGroups(current.physical, 'current')
+    assert.throws(() => storeGroups(current.physical, 'current'), /语义正文角色重复/)
+    return { incoming, scoped: { ...current, physical, sourceContent: scopeCurrentReferenceBlocks5(current.sourceContent, store) } }
+  }, async ({ incoming, scoped }) => {
+    assert.deepEqual(findGroup(incoming).blocks, [unmodified])
+    assert.deepEqual(findGroup(scoped.physical).blocks, group.blocks)
+    assert.equal(capsuleBytesHash(capsuleJson(scoped.physical)), capsuleBytesHash(capsuleJson(current.physical)))
+    assert.deepEqual(conflicts(scoped, final(content)), [])
+    assert.deepEqual(conflicts(scoped, final(content + ' changed')), [replacement])
+    assert.deepEqual(conflicts(scoped, final(content, 'borrowed-instance')), [replacement])
   })
 }))

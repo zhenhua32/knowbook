@@ -1,12 +1,27 @@
 import { parseSyncedBlockPayload, serializeSyncedBlockPayload } from '../../shared/syncedBlockValidation'
-import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
-import { CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-model'
+import { freezeCapsuleValue } from './restore-knowledge-capsule-model'
+import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
+import { CAPSULE2_RAW_MAX_JSON_BYTES, capsule2RawTableRows, type Capsule2RawContent } from './restore-knowledge-capsule2-raw-model'
 import { deriveRootRestoreDatabaseReferences3 } from './restore-knowledge-database3-model'
-import { graph3Conflict, graph3Key, graph3PatchTable, graph3Rows, type Graph3Inputs } from './restore-knowledge-graph3-data'
+import { freezeGraph3Tables, graph3ChangedCells, graph3Conflict, graph3Key, graph3PatchTable, graph3Rows, graph3TablesHashInput, graph3Value,
+  type Graph3Inputs } from './restore-knowledge-graph3-data'
 
 type Kind = 'document' | 'block' | 'group'
 type Row = Record<string, unknown>
 const text = (value: unknown): string => typeof value === 'string' ? value : graph3Conflict('expected-structure-text', typeof value)
+
+function originalBlockIdentities(source: Capsule2RawContent, name: 'blocks' | 'synced_group_blocks') {
+  const table = source.tables.find(table => table.name === name) ?? graph3Conflict('missing-source-table', name)
+  const names = name === 'blocks' ? ['id', 'created_at', 'document_id', 'parent_block_id', 'type', 'depth'] : ['id', 'created_at', 'group_id']
+  const fields = names.map(name => [name, table.columns.indexOf(name)] as const)
+  const content = table.columns.indexOf('content'), indexed = new Map<string, Row>()
+  for (const original of capsule2RawTableRows(table)) {
+    const row = Object.fromEntries(fields.map(([name, index]) => [name, index >= 0 ? graph3Value(original.cells[index], source.encoding) : undefined]))
+    if (name === 'blocks' && row.type === 'synced-block' && content >= 0) row.content = graph3Value(original.cells[content], source.encoding)
+    indexed.set(text(row.id), row)
+  }
+  return indexed
+}
 
 /** Column-level intermediate data only. In particular a forked canonical ID
  * still has its ORIGINAL binding keys and Origin. Those require a separate
@@ -17,9 +32,9 @@ export function deriveRootRestoreStructureReferences3(data: Graph3Inputs) {
   const source = data.inputs.source.source.sourceContent
   const rows = (name: string) => graph3Rows(source, name).map(row => row.value)
   const documents = new Map(rows('documents').map(row => [text(row.id), row]))
-  const blocks = new Map(rows('blocks').map(row => [text(row.id), row]))
+  const blocks = originalBlockIdentities(source, 'blocks')
   const groups = new Map(rows('synced_groups').map(row => [text(row.id), row]))
-  const canonical = new Map(rows('synced_group_blocks').map(row => [text(row.id), row]))
+  const canonical = originalBlockIdentities(source, 'synced_group_blocks')
   const instances = new Map(rows('synced_instances').map(row => [text(row.instance_id), row]))
   const assignments = new Map<string, typeof data.value.assignments>()
   for (const item of data.value.assignments) {
@@ -90,18 +105,12 @@ export function deriveRootRestoreStructureReferences3(data: Graph3Inputs) {
   }))
   // Report the union of database and structural changes against the actual
   // original cells, retaining the complete raw table/row order and rowid proof.
-  const changedCells = tables.flatMap(table => {
-    const original = source.tables.find(item => item.name === table.name)!
-    return table.rows.flatMap((row, index) => {
-      const columns = table.columns.filter((_, column) => capsuleJson(row.cells[column]) !== capsuleJson(original.rows[index].cells[column]))
-      return columns.length ? [{ table: table.name, sourceRowId: row.sourceRowId, columns }] : []
-    })
-  })
+  const changedCells = tables.flatMap(table => graph3ChangedCells(table, source.tables.find(item => item.name === table.name)!))
   const body = { kind: 'complete-root-restore-physical-structure-candidate' as const, version: 3 as const,
     conservationHash: data.inputs.knowledge.conservationHash, identityAllocationHash: data.value.allocationHash,
     databaseReferenceHash: database.databaseReferenceHash,
     sourceMaterialHash: data.inputs.source.materialHash, currentMaterialHash: data.inputs.current.materialHash,
-    tables, changedCells, physicalStructureReferencesRewritten: true as const, physicalSyncedPayloadsRewritten: true as const,
+    changedCells, physicalStructureReferencesRewritten: true as const, physicalSyncedPayloadsRewritten: true as const,
     provenanceReferencesRewritten: false as const, linkBindingsRewritten: false as const, templateStructureReferencesRewritten: false as const,
     currentRetentionMerged: false as const, structuralMergeStillRequired: true as const,
     pending: ['origin-provenance', 'markdown-heading-and-binding-ranges', 'template-local-identities-and-synced-payloads',
@@ -109,7 +118,7 @@ export function deriveRootRestoreStructureReferences3(data: Graph3Inputs) {
     sourcePolicyReplayed: false as const, sourceHistoryReplayed: false as const,
     referenceRewriteComplete: false as const, semanticValidationComplete: false as const, acceptedCoverage: false as const,
     effective: false as const, permit: false as const }
-  const encoded = capsuleJson(body)
-  if (Buffer.byteLength(encoded) > CAPSULE2_RAW_MAX_JSON_BYTES) return graph3Conflict('complete-structure-reference-candidate-budget', null)
-  return freezeCapsuleValue({ ...body, structureReferenceHash: capsuleBytesHash('knowbook.restore.structure3.candidate.v1\0' + encoded) })
+  const structureReferenceHash = hashBoundedCapsuleJson({ ...body, tables: graph3TablesHashInput(tables) }, CAPSULE2_RAW_MAX_JSON_BYTES,
+    'knowbook.restore.structure3.candidate.v1\0') ?? graph3Conflict('complete-structure-reference-candidate-budget', null)
+  return Object.freeze({ ...freezeCapsuleValue(body), tables: freezeGraph3Tables(tables), structureReferenceHash })
 }

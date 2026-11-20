@@ -13,6 +13,7 @@ import { materializeNavigation3Tables, navigation3TableHashInput, projectNavigat
 import { finishMerge3Table, prepareMerge3Table, type Merge3Material } from '../src/main/database/restore-knowledge-merge3-storage'
 import type { deriveRootRestoreMergedContent3 } from '../src/main/database/restore-knowledge-merge3-model'
 import { toReference3GraphInputs } from '../src/main/database/restore-knowledge-reference3-model'
+import { scopeCurrentReferenceBlocks5, scopeIncomingReferenceTables5, withReferenceOriginalRows5 } from '../src/main/database/restore-knowledge-reference-original-rows5'
 import type { RawRestoreSqlCell } from '../src/main/database/restore-knowledge-sql-cell'
 
 // These are small pure syntax/projection fixtures, never Main handles, certified
@@ -141,6 +142,18 @@ test('the SQLite scope index preserves the native navigation hash and yields eve
   const wrongOwner = createNavigation3DocumentBlockReader({ ...table, rows: table.rows.map(row => ({ ...row,
     cells: row.cells.map((cell, index) => table.columns[index] === 'document_id' ? graph3Encode('wrong', table.encoding) : cell) })) }, locations)
   assert.throws(() => wrongOwner('d'), /navigation-final-document-block-owner/)
+})
+
+test('navigation reads scoped ordinary and canonical blocks from both roles by identity and signed rowid', async () => {
+  const { data, merged } = fixture(true, { source: 'UTF-16le', current: 'UTF-16be' })
+  const plain = deriveRootRestoreNavigationMergeContext3(data, merged)
+  const { source, current } = data.inputs
+  await withReferenceOriginalRows5(async store => ({ source: scopeIncomingReferenceTables5(source.source.sourceContent, store),
+    current: scopeCurrentReferenceBlocks5(current.source.sourceContent, store) }), async raw => {
+    const scoped = { ...data, inputs: { ...data.inputs, source: { ...source, source: { ...source.source, sourceContent: raw.source } },
+      current: { ...current, source: { ...current.source, sourceContent: raw.current } } } }
+    assert.deepEqual(deriveRootRestoreNavigationMergeContext3(scoped, merged), plain)
+  })
 })
 
 test('attachment alias navigation compares projected ranges and preserves the exact rewritten index and routes', () => {

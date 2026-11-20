@@ -6,13 +6,14 @@ import { readRawCapsule2ContentOwned } from '../src/main/database/restore-knowle
 import { capsuleJsonStringBytes, hashBoundedCapsuleJson } from '../src/main/database/restore-knowledge-capsule-json-hash'
 import { CAPSULE2_RAW_MAX_ROWS, CAPSULE2_RAW_MAX_VALUE_BYTES, capsule2ApplicationColumns,
   type Capsule2Encoding, type Capsule2RawSqlTable } from '../src/main/database/restore-knowledge-capsule2-raw-model'
-import { graph3Encode, graph3PatchTable, graph3Text } from '../src/main/database/restore-knowledge-graph3-data'
+import { findGraph3OriginalRow, graph3Encode, graph3PatchTable, graph3Text } from '../src/main/database/restore-knowledge-graph3-data'
 import { MERGE3_CONTENT_TABLES, assertMerge3JsonBudget, assertMerge3StorageTablesBudget, finishMerge3Table, merge3RowValues, prepareMerge3Table,
   type FinishedMerge3Table, type Merge3ContentTable, type Merge3Material, type Merge3RowDisposition, type Merge3SelectedRow,
   type PreparedMerge3Table } from '../src/main/database/restore-knowledge-merge3-storage'
 import { rawRestoreSqlCell, type RawRestoreSqlCell } from '../src/main/database/restore-knowledge-sql-cell'
 import { withV3Fixture } from './helpers/synced-backup-v3-fixture'
 import { withCapsule2RawCopy } from './helpers/capsule2-raw-fixture'
+import { scopeCurrentReferenceBlocks5, scopeIncomingReferenceTables5, withReferenceOriginalRows5 } from '../src/main/database/restore-knowledge-reference-original-rows5'
 
 test('bounded candidate encoding counts escaped text and complete surrogate pairs at the chunk boundary', () => {
   const text = 'a'.repeat(Math.floor((64 * 1024) / 6) - 1) + '😀\ud800\n"\\' + '文'.repeat(20_000)
@@ -84,6 +85,61 @@ test('merge3 shares only checked immutable SQL payloads through unchanged, rewri
     assert.notEqual(external.table.rows[0].cells, clone.sourceRows[0].cells)
     assert.deepEqual(external, own)
   })())
+}))
+
+test('merge3 consumes file-backed ordinary and canonical blocks with the same original and target hashes', () => withV3Fixture(async fixture => {
+  await withCapsule2RawCopy(fixture, async db => {
+    const raw = db.transaction(() => readRawCapsule2ContentOwned(db))()
+    const selectAll = (prepared: PreparedMerge3Table) => {
+      const selected = prepared.sourceRows.map(row => select(row))
+      return finishMerge3Table(prepared, selected, dispositions(prepared, selected))
+    }
+    const sealed = await withReferenceOriginalRows5(async store => scopeIncomingReferenceTables5(raw, store), async scoped =>
+      ['blocks', 'synced_group_blocks'].map(name => {
+        const source = raw.tables.find(table => table.name === name)!
+        assert.ok(source.rows.length > 0)
+        const id = source.rows[0].sourceRowId, content = source.columns.indexOf('content')
+        const patch = (table: Capsule2RawSqlTable) => graph3PatchTable(table, raw.encoding, (_row, rowid): Record<string, string> =>
+          rowid === id ? { content: 'Scoped rewritten Markdown\r\n📝' } : {})
+        const current = { ...source, rows: [] }, plain = prepare(source, current, patch(source), raw.encoding, raw.encoding)
+        const original = scoped.tables.find(table => table.name === name)!, rewritten = patch(original)
+        assert.throws(() => original.rows, /逐行读取范围/)
+        assert.throws(() => rewritten.rows, /逐行读取范围/)
+        assert.ok(Object.isFrozen(findGraph3OriginalRow(rewritten, id)!.cells[content]))
+        const prepared = prepare(original, current, rewritten, raw.encoding, raw.encoding)
+        assert.deepEqual(prepared, plain)
+        const row = prepared.sourceRows[0]
+        assert.deepEqual(merge3RowValues(prepared, row, ['content']), { content: 'Scoped rewritten Markdown\r\n📝' })
+        assert.throws(() => merge3RowValues(plain, row, ['content']), /记录含访问器/)
+        assert.deepEqual(selectAll(prepared), selectAll(plain))
+        return prepared
+      }))
+    for (const prepared of sealed) {
+      assert.throws(() => prepared.sourceRows[0].originalCells, /读取范围已结束/)
+      assert.throws(() => prepared.sourceRows[0].cells, /读取范围已结束/)
+    }
+  })
+}))
+
+test('merge3 retains scoped current blocks without eagerly reading their payloads into prepared rows', () => withV3Fixture(async fixture => {
+  const raw = await withCapsule2RawCopy(fixture, db => db.transaction(() => readRawCapsule2ContentOwned(db))())
+  const current = raw.tables.find(table => table.name === 'blocks')!, source = { ...current, rows: [] }
+  const plain = prepare(source, current, source, raw.encoding, raw.encoding)
+  const result = await withReferenceOriginalRows5(async store => scopeCurrentReferenceBlocks5(raw, store), async scoped => {
+    const original = scoped.tables.find(table => table.name === 'blocks')!
+    const prepared = prepare(source, original, source, raw.encoding, raw.encoding)
+    assert.deepEqual(prepared, plain)
+    const row = prepared.currentRows[0]
+    assert.equal(typeof Object.getOwnPropertyDescriptor(row, 'cells')?.get, 'function')
+    assert.deepEqual(merge3RowValues(prepared, row, ['id']), merge3RowValues(plain, plain.currentRows[0], ['id']))
+    assert.throws(() => merge3RowValues(plain, row, ['id']), /记录含访问器/)
+    const selected = prepared.currentRows.map(row => select(row))
+    return { row, actual: finishMerge3Table(prepared, selected, dispositions(prepared, selected)),
+      expected: finishMerge3Table(plain, selected, dispositions(plain, selected)) }
+  })
+  assert.throws(() => result.row.cells, /读取范围已结束/)
+  assert.throws(() => result.row.originalCells, /读取范围已结束/)
+  assert.deepEqual(result.actual, result.expected)
 }))
 
 test('merge3 aligns every fixed content table by column name and never grants a DTO SQL authority', () => {

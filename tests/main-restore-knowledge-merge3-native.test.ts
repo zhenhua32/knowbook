@@ -3,6 +3,7 @@ import test from 'node:test'
 import { capsule2ApplicationColumns, type Capsule2Encoding, type Capsule2RawSqlTable } from '../src/main/database/restore-knowledge-capsule2-raw-model'
 import { graph3Encode, graph3Text } from '../src/main/database/restore-knowledge-graph3-data'
 import { checkMerge3NativeStorage3 } from '../src/main/database/restore-knowledge-merge3-native'
+import { withStoredNavigation3Tables } from '../src/main/database/restore-knowledge-navigation3-tables'
 import { MERGE3_CONTENT_TABLES, finishMerge3Table, prepareMerge3Table, type Merge3ContentTable,
   type Merge3Material } from '../src/main/database/restore-knowledge-merge3-storage'
 import type { RawRestoreSqlCell } from '../src/main/database/restore-knowledge-sql-cell'
@@ -57,6 +58,10 @@ test('merge3 native SQLite retains real NOCASE NUL ASCII semantics and exact dup
     assert.equal(value.stagingDatabase, false); assert.equal(value.sourceSqlRead, false)
     assert.equal(value.foreignKeysValidated, false); assert.equal(value.semanticValidationComplete, false); assert.equal(value.permit, false)
     assert.deepEqual(checkMerge3NativeStorage3(structuredClone(input)), value)
+    assert.deepEqual(withStoredNavigation3Tables(() => ({ metadata: null, tables: input }), (_, stored) => {
+      assert.equal(Array.isArray(stored[0].rows), false)
+      return checkMerge3NativeStorage3(stored)
+    }), value)
   }
 })
 

@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3'
-import type { SyncedLinkBinding, SyncedStableBlockDraft } from '../../shared/synced-blocks'
+import type { SyncedGroupSnapshot, SyncedGroupWire, SyncedLinkBinding, SyncedStableBlockDraft } from '../../shared/synced-blocks'
 import { expandSyncedGraphDocument, validateSyncedWorkspaceGraph } from '../../shared/syncedBlockGraph'
 import { parseSyncedBlockPayload, SYNCED_MAX_BLOCKS } from '../../shared/syncedBlockValidation'
 import { collectDocumentMarkdownLinks, getMarkdownHeadingTargets } from '../../shared/markdownLinkMaintenance'
@@ -8,10 +8,13 @@ import { parseLocalMarkdownUrl, resolveMarkdownDocumentPath } from '../../shared
 import { parseWikiReference, resolveWikiDocument, wikiDocumentPaths } from '../../shared/markdownWiki'
 import { freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { capsuleJsonStringBytes, hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
-import { CAPSULE2_RAW_MAX_JSON_BYTES, type Capsule2RawContent, type Capsule2RawSqlRow } from './restore-knowledge-capsule2-raw-model'
+import { CAPSULE2_RAW_MAX_JSON_BYTES, capsule2RawTableRows, scopedCapsule2TableIdLookup,
+  type Capsule2RawContent, type Capsule2RawSqlRow } from './restore-knowledge-capsule2-raw-model'
 import { graph3Conflict, graph3Key, graph3Value, type Graph3Inputs } from './restore-knowledge-graph3-data'
 import { withStoredRestoreScopes } from './restore-knowledge-stored-scopes'
 import { captureSyncedCreateSourceFacts } from './synced-host-create-plan'
+import type { RawCapsule2PhysicalGraph } from './restore-knowledge-capsule2-physical-raw-read'
+import { hasScopedReferenceGroupBodies5 } from './restore-knowledge-reference-original-rows5'
 
 type SourceLocation = { table: 'blocks' | 'synced_group_blocks' | 'documents'; sourceRowId: string; column: 'content' | 'summary';
   blockId: string | null; groupId: string | null; instanceId: string | null;
@@ -47,12 +50,42 @@ function originalValue(raw: Capsule2RawContent, row: Capsule2RawSqlRow, column: 
   return column < 0 ? undefined : graph3Value(row.cells[column], raw.encoding)
 }
 
+function groupWire(group: SyncedGroupSnapshot): SyncedGroupWire {
+  return { kind: 'synced-group', id: group.groupId, creationId: group.creationId, createdAt: group.createdAt,
+    origin: group.origin, bindings: group.bindings, blocks: group.blocks }
+}
+
+/** The owned physical reader validated the complete original graph before it
+ * moved group bodies into scope. Normalize the actual host and its groups
+ * together again when this navigation pass needs their exact expansion. */
+export function createOriginalPhysicalNavigationReader3(physical: RawCapsule2PhysicalGraph) {
+  const snapshots = physical.groups.flatMap(group => group.snapshot ? [group.snapshot] : [])
+  if (hasScopedReferenceGroupBodies5(physical)) {
+    const byId = new Map(snapshots.map(group => [group.groupId, group]))
+    const hosts = new Map(physical.documents.map(document => [document.documentId, document]))
+    return (document: RawCapsule2PhysicalGraph['documents'][number], referenced: ReadonlySet<string>) => {
+      if (hosts.get(document.documentId) !== document) return graph3Conflict('navigation-original-physical-host', document.documentId)
+      const wires = [...referenced].map(id => groupWire(byId.get(id) ?? graph3Conflict('navigation-missing-expanded-group', id)))
+      const projected = validateSyncedWorkspaceGraph([{ documentId: document.documentId, blocks: document.blocks }], wires)
+      return expandSyncedGraphDocument(projected, document.documentId)
+    }
+  }
+  const graph = validateSyncedWorkspaceGraph(physical.documents.map(({ documentId, blocks }) => ({ documentId, blocks })), snapshots.map(groupWire))
+  const documents = new Map(graph.documents.map(document => [document.documentId, document]))
+  const groups = new Map(graph.groups.map(group => [group.id, group]))
+  return (document: RawCapsule2PhysicalGraph['documents'][number], referenced: ReadonlySet<string>) =>
+    expandSyncedGraphDocument({ ...graph, documents: [documents.get(document.documentId)!], groups: [...referenced].map(id => groups.get(id)!) },
+      document.documentId)
+}
+
 function indexOriginalIdentities(raw: Capsule2RawContent, name: 'documents' | 'blocks' | 'synced_group_blocks') {
   const table = originalTable(raw, name)
   const idColumn = table.columns.indexOf('id'), birthColumn = table.columns.indexOf('created_at')
   const ownerColumn = table.columns.indexOf(name === 'blocks' ? 'document_id' : 'group_id')
+  const stored = scopedCapsule2TableIdLookup(table)
+  if (stored) return { rows: { has: (id: string) => stored(id) !== undefined, get: stored }, birthColumn, ownerColumn }
   const rows = new Map<string, Capsule2RawSqlRow>()
-  for (const row of table.rows) {
+  for (const row of capsule2RawTableRows(table)) {
     const id = text(originalValue(raw, row, idColumn))
     if (rows.has(id)) return graph3Conflict('navigation-duplicate-original-identity', { name, id })
     rows.set(id, row)
@@ -155,9 +188,12 @@ function prepareSideNavigation(data: NavigationGraphInputs, side: Side, routeDb:
   // Apply existing finite limits before allocating occurrence × canonical
   // objects. This lower bound counts fields that must appear in every emitted
   // wrapper; it cannot reject an output that would fit the final JSON budget.
-  const groupMinimum = new Map(snapshots.map(group => [group.groupId, { count: group.blocks.length,
-    bytes: group.blocks.reduce((bytes, block) => bytes + capsuleJsonStringBytes(block.content, CAPSULE2_RAW_MAX_JSON_BYTES)
-      + capsuleJsonStringBytes(block.id, CAPSULE2_RAW_MAX_JSON_BYTES) + 30, 0) }]))
+  const groupMinimum = new Map(snapshots.map(group => {
+    const blocks = group.blocks
+    return [group.groupId, { count: blocks.length,
+      bytes: blocks.reduce((bytes, block) => bytes + capsuleJsonStringBytes(block.content, CAPSULE2_RAW_MAX_JSON_BYTES)
+        + capsuleJsonStringBytes(block.id, CAPSULE2_RAW_MAX_JSON_BYTES) + 30, 0) }] as const
+  }))
   let minimumBytes = 0
   for (const document of physical.documents) {
     let count = 0
@@ -171,11 +207,7 @@ function prepareSideNavigation(data: NavigationGraphInputs, side: Side, routeDb:
       if (!Number.isSafeInteger(minimumBytes) || minimumBytes > CAPSULE2_RAW_MAX_JSON_BYTES) return graph3Conflict('complete-navigation-input-budget', null)
     }
   }
-  const graph = validateSyncedWorkspaceGraph(physical.documents.map(({ documentId, blocks }) => ({ documentId, blocks })),
-    snapshots.map(group => ({ kind: 'synced-group', id: group.groupId, creationId: group.creationId, createdAt: group.createdAt,
-      origin: group.origin, bindings: group.bindings, blocks: group.blocks })))
-  const graphDocuments = new Map(graph.documents.map(document => [document.documentId, document]))
-  const graphGroups = new Map(graph.groups.map(group => [group.id, group]))
+  const expand = createOriginalPhysicalNavigationReader3(physical)
   const instancesByDocument = new Map<string, typeof physical.instances>()
   for (const instance of physical.instances) {
     const instances = instancesByDocument.get(instance.host_document_id) ?? []
@@ -184,11 +216,10 @@ function prepareSideNavigation(data: NavigationGraphInputs, side: Side, routeDb:
   function expanded(document: typeof physical.documents[number]) {
     const instances = instancesByDocument.get(document.documentId) ?? []
     const referenced = new Set(instances.map(instance => instance.group_id))
-    const view = { ...graph, documents: [graphDocuments.get(document.documentId)!], groups: [...referenced].map(id => graphGroups.get(id)!) }
     const instanceGroups = new Map(instances.map(instance => [instance.instance_id, instance.group_id]))
     const locations = new Map<string, SourceLocation>()
     const blocks: SyncedStableBlockDraft[] = []
-    for (const item of expandSyncedGraphDocument(view, document.documentId)) {
+    for (const item of expand(document, referenced)) {
       const groupId = item.instanceId === null ? null : instanceGroups.get(item.instanceId) ?? graph3Conflict('navigation-missing-instance', item.instanceId)
       const row = (groupId === null ? blockRows : canonicalRows).rows.get(item.block.id)
       if (!row) return graph3Conflict('navigation-missing-expanded-row', item.block.id)
