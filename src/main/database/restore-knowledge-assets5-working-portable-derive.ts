@@ -8,6 +8,7 @@ import { capsule2AssetReferenceProvenanceHash, capsule2AssetReferenceProvenance2
   validateCapsule2AssetReferenceProvenance1, validateCapsule2AssetReferenceProvenance2, validateCapsuleInstalledAssetProvenance } from './restore-knowledge-capsule2-asset-provenance'
 import { capsule2CombinedAssetUris3 } from './restore-knowledge-capsule2-asset-supplement-model'
 import { findGraph3OriginalRow, graph3Rows } from './restore-knowledge-graph3-data'
+import { capsule2RawTableRows, scopedCapsule2TableOwnerLookup, scopedCapsule2TableRowOwnership } from './restore-knowledge-capsule2-raw-model'
 import { root3SupplementOriginalRowHash3, type Root3SettledCandidateProjectorForMain3 } from './restore-knowledge-assets3-context'
 import { deriveRoot5SettledWorkingEvidence5 } from './restore-knowledge-assets5-working-context'
 import { readWorkingAssetOriginalTable5 } from './restore-knowledge-assets5-original-rows'
@@ -118,7 +119,9 @@ function createCapturedBasePortableProjector5<Binding extends Capsule2SettledPor
     if (!live(value)) return block('candidate-is-not-a-complete-live-record')
     for (const row of rows) {
       const table = actualTables.get(row.table.name)
-      if (!table || table !== row.table || findGraph3OriginalRow(table, row.original.sourceRowId) !== row.original)
+      if (!table || table !== row.table) return fail('projection row不属于同次真实原SQL')
+      const ownsRow = scopedCapsule2TableRowOwnership(table)
+      if (ownsRow ? !ownsRow(row.original) : findGraph3OriginalRow(table, row.original.sourceRowId) !== row.original)
         return fail('projection row不属于同次真实原SQL')
     }
     let original: LiveRecord = value
@@ -183,10 +186,13 @@ export function projectCapturedBaseDocumentPortable5(input: Capsule2SettledPorta
   const { source } = input, raw = source.sourceContent
   const document = source.physical.documents.find(value => value.documentId === documentId)
   const documents = readWorkingAssetOriginalTable5(raw, 'documents')
-  const header = documents.table.rows.find(row => documents.cell(row, 'id') === documentId)
+  const header = documents.findById(documentId)
   if (!document || !header || documents.cell(header, 'created_at') !== document.createdAt) return null
   const originalBlocks = readWorkingAssetOriginalTable5(raw, 'blocks')
-  const blocks = originalBlocks.table.rows.filter(row => originalBlocks.cell(row, 'document_id') === documentId)
+  const lookup = scopedCapsule2TableOwnerLookup(originalBlocks.table, 'document_id')
+  const blocks = []
+  for (const row of lookup ? lookup(documentId) : capsule2RawTableRows(originalBlocks.table))
+    if (lookup || originalBlocks.cell(row, 'document_id') === documentId) blocks.push(row)
   if (blocks.length !== document.blocks.length) return null
   const { projector } = createCapturedBasePortableProjector5(input)
   const projected = projector.project({ kind: 'document', id: documentId, parentId: document.parentId, sortOrder: document.sortOrder,

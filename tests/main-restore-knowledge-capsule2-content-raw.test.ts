@@ -257,7 +257,7 @@ test('current scoped groups preserve host heading identity and exact anchor text
   const replacement = 'canonical3-current-heading-occurrence-replaced'
   assert.deepEqual(conflicts(current, final(content)), [])
   assert.deepEqual(conflicts(current, final(content + ' changed')), [replacement])
-  await withReferenceOriginalRows5(async (store, storeGroups) => {
+  const scopedHost = await withReferenceOriginalRows5(async (store, storeGroups) => {
     const incoming = storeGroups(source.physical)
     const physical = storeGroups(current.physical, 'current')
     assert.throws(() => storeGroups(current.physical, 'current'), /语义正文角色重复/)
@@ -265,9 +265,15 @@ test('current scoped groups preserve host heading identity and exact anchor text
   }, async ({ incoming, scoped }) => {
     assert.deepEqual(findGroup(incoming).blocks, [unmodified])
     assert.deepEqual(findGroup(scoped.physical).blocks, group.blocks)
+    const incomingHost = incoming.documents.find(document => document.documentId === f.hostId)!
+    const currentHost = scoped.physical.documents.find(document => document.documentId === f.hostId)!
+    assert.deepEqual(incomingHost.blocks, host.blocks)
+    assert.deepEqual(currentHost.blocks, host.blocks)
     assert.equal(capsuleBytesHash(capsuleJson(scoped.physical)), capsuleBytesHash(capsuleJson(current.physical)))
     assert.deepEqual(conflicts(scoped, final(content)), [])
     assert.deepEqual(conflicts(scoped, final(content + ' changed')), [replacement])
     assert.deepEqual(conflicts(scoped, final(content, 'borrowed-instance')), [replacement])
+    return currentHost
   })
+  assert.throws(() => scopedHost.blocks, /读取范围已结束/)
 }))

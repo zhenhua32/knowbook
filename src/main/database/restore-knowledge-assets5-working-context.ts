@@ -7,7 +7,8 @@ import { HOST_DETACH_OPERATION_KIND } from './synced-host-detach-original'
 import { TextDecoder } from 'node:util'
 import { assertSyncedShape } from '../../shared/syncedBlockValidation'
 import { capsuleBytesHash, capsuleJson } from './restore-knowledge-capsule-model'
-import type { Capsule2RawContent } from './restore-knowledge-capsule2-raw-model'
+import { capsule2RawTableRows, scopedCapsule2TableOwnerLookup,
+  type Capsule2RawContent, type Capsule2RawSqlRow } from './restore-knowledge-capsule2-raw-model'
 import { readWorkingAssetOriginalTable5 } from './restore-knowledge-assets5-original-rows'
 import { graph3Rows, graph3Text } from './restore-knowledge-graph3-data'
 import * as M from '../sync/synced-exchange-model'
@@ -173,12 +174,13 @@ export function deriveRoot5SettledWorkingEvidence5(raw: Capsule2RawContent, proj
   const numeric = (value: unknown) => typeof value === 'bigint' && value >= BigInt(Number.MIN_SAFE_INTEGER) && value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : null
   const readBlocksByOwner = (name: string, column: string, canonical: boolean) => {
     const reader = readWorkingAssetOriginalTable5(raw, name)
-    const owners = new Map<string, Array<typeof reader.table.rows[number]>>()
-    for (const original of reader.table.rows) {
+    const lookup = scopedCapsule2TableOwnerLookup(reader.table, column)
+    const owners = new Map<string, Capsule2RawSqlRow[]>()
+    if (!lookup) for (const original of capsule2RawTableRows(reader.table)) {
       const id = String(reader.cell(original, column)), rows = owners.get(id) ?? []
       rows.push(original); owners.set(id, rows)
     }
-    return (owner: string) => (owners.get(owner) ?? []).flatMap(original => {
+    return (owner: string) => (lookup ? [...lookup(owner)] : owners.get(owner) ?? []).flatMap(original => {
       const row = reader.read(original)
       const value = row.value, depth = numeric(value.depth), checked = value.checked === 0n ? false : value.checked === 1n ? true : null
       if (depth === null || checked === null) return []

@@ -10,7 +10,7 @@ import { canonicalSyncedPortableJson, projectSyncedGroupBudget } from '../../sha
 import { capsuleBytesHash, capsuleJson, capsuleRecord, freezeCapsuleValue, validateDurableSqlCapsuleInventory,
   type DurableSqlCapsuleFile } from './restore-knowledge-capsule-model'
 import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
-import { graph3Encode, graph3Rows, graph3Text } from './restore-knowledge-graph3-data'
+import { graph3Encode, graph3Rows, graph3TablesHashInput, graph3Text } from './restore-knowledge-graph3-data'
 import { readRootRestoreReferenceGraphInputs3, assertRootRestoreReferenceOriginalBytes3, readRootRestoreReferenceCopySource3,
   readRootRestoreStageInputs5, type RootRestoreReferencePlan3, type RootRestoreStageInputs5 } from './restore-knowledge-reference3-read'
 import { prepareRootRestoreCurrentCopyForStage3, readRootRestoreCurrentCopyForStage3, reopenRootRestoreCurrentCopyForStage3,
@@ -18,7 +18,7 @@ import { prepareRootRestoreCurrentCopyForStage3, readRootRestoreCurrentCopyForSt
 import { stage3MarkerJson, stage3MarkerKey, stage3MarkerHash, type RootRestoreStage3Marker } from './restore-knowledge-stage3-marker-model'
 import { readStage3OriginalRecoveryFamilyOwned, readRootRestoreStage3MarkerOwned } from './restore-knowledge-stage3-marker-read'
 import { CAPSULE2_RAW_MAX_ROWS, CAPSULE2_RAW_MAX_VALUE_BYTES, capsule2RawSqlValueBytesExpression, capsule2RawTableRowCount,
-  capsule2RawTableRows, scopedCapsule2TableRowLookup, capsule2DerivedFtsTables, type Capsule2Encoding, type Capsule2RawSqlTable,
+  capsule2RawTableRows, scopedCapsule2RawSqlTable, scopedCapsule2TableRowLookup, capsule2DerivedFtsTables, type Capsule2Encoding, type Capsule2RawSqlTable,
   type Capsule2RawSqlRow } from './restore-knowledge-capsule2-raw-model'
 import { MERGE3_CONTENT_TABLES, assertMerge3JsonBudget } from './restore-knowledge-merge3-storage'
 import { rawRestoreSqlCell, type RawRestoreSqlCell } from './restore-knowledge-sql-cell'
@@ -120,6 +120,54 @@ function rawTarget(table: Navigation3Table): Capsule2RawSqlTable {
   return { name: table.name, role: 'content', columns: table.columns, primaryKey: table.primaryKey,
     rows: table.rows.map(row => ({ sourceRowId: row.targetRowId, cells: row.cells })).sort(rowOrder) }
 }
+
+interface Stage3BodyRows {
+  target: typeof rawTarget
+  valueBytes(table: Capsule2RawSqlTable): bigint | undefined
+  rowIds(table: Capsule2RawSqlTable): IterableIterator<string> | undefined
+}
+
+/** Materialize only the two body tables in a private FILE scope. No TEMP
+ * schema is added to the independently owned installation database. */
+async function withStage3BodyRows<T>(run: (store: Stage3BodyRows) => Promise<T>): Promise<T> {
+  const db = new Database(':memory:')
+  try {
+    db.pragma('temp_store=FILE')
+    if (db.pragma('temp_store', { simple: true }) !== 1) return fail('stage正文临时文件不可用')
+    db.pragma('temp.cache_size=-2048')
+    db.exec(`CREATE TEMP TABLE stage3_body_rows (table_name TEXT NOT NULL, row_id INTEGER NOT NULL, encoded TEXT NOT NULL,
+      PRIMARY KEY (table_name,row_id)) WITHOUT ROWID`)
+    const insert = db.prepare('INSERT INTO temp.stage3_body_rows VALUES(?,?,?)')
+    const scan = db.prepare('SELECT encoded FROM temp.stage3_body_rows WHERE table_name=? ORDER BY row_id').pluck()
+    const ids = db.prepare('SELECT row_id FROM temp.stage3_body_rows WHERE table_name=? ORDER BY row_id').safeIntegers(true).pluck()
+    const lookup = db.prepare('SELECT encoded FROM temp.stage3_body_rows WHERE table_name=? AND row_id=?').pluck()
+    const stored = new Map<Capsule2RawSqlTable, bigint>()
+    const store = db.transaction(({ name, columns, primaryKey, rows }: Navigation3Table) => {
+      let valueBytes = 0n
+      for (const row of rows) {
+        const raw = { sourceRowId: row.targetRowId, cells: row.cells }
+        valueBytes += cellsBytes([raw])
+        insert.run(name, int64(raw.sourceRowId), capsuleJson(raw))
+      }
+      const encoded = () => scan.iterate(name) as IterableIterator<string>
+      const table = scopedCapsule2RawSqlTable({ name, columns, primaryKey, role: 'content' }, {
+        count: rows.length,
+        rows: { *[Symbol.iterator]() { for (const row of encoded()) yield JSON.parse(row) as Row } }, encoded,
+        byRowId(id) { const row = lookup.get(name, int64(id)); return typeof row === 'string' ? JSON.parse(row) as Row : undefined }
+      })
+      stored.set(table, valueBytes)
+      return table
+    })
+    function* rowIds(name: string) {
+      for (const id of ids.iterate(name) as IterableIterator<bigint>) yield id.toString()
+    }
+    return await run({
+      target: table => table.name === 'blocks' || table.name === 'synced_group_blocks' ? store(table) : rawTarget(table),
+      valueBytes: table => stored.get(table),
+      rowIds: table => stored.has(table) ? rowIds(table.name) : undefined
+    })
+  } finally { db.close() }
+}
 function encodeValues(columns: readonly string[], enc: Capsule2Encoding, value: Record<string,string|null|bigint>): RawRestoreSqlCell[] {
   return columns.map(column => value[column] === null ? ['null'] : typeof value[column] === 'bigint'
     ? ['integer', (value[column] as bigint).toString()] : typeof value[column] === 'string'
@@ -143,12 +191,12 @@ function acceptCandidate(actual: Actual) {
     return fail('候选不是准确完整12表')
 }
 function planSql(actual: Actual, preparedAt: string, cutContext: { stageId: string; copyId: string; copyManifestHash: string },
-  canonical?: CanonicalAssets, retainDeletedHostStates = true) {
+  canonical?: CanonicalAssets, retainDeletedHostStates = true, bodyRows?: Stage3BodyRows) {
   acceptCandidate(actual)
   const current = actual.data.inputs.current.source.sourceContent, enc = current.encoding
-  const sourceCandidate = actual.candidate.tables.map(rawTarget)
-  const sourceCandidate12TablesHash=hashStageData('knowbook.restore.stage3.planned-content.v1',sourceCandidate)
-  const originalTables=canonical ? canonical.tables.map(rawTarget) : sourceCandidate
+  const originalTables=(canonical?.tables ?? actual.candidate.tables).map(bodyRows?.target ?? rawTarget)
+  const sourceCandidate12TablesHash=hashStageData('knowbook.restore.stage3.planned-content.v1',
+    graph3TablesHashInput(canonical ? actual.candidate.tables.map(rawTarget) : originalTables))
   type Change={table:'synced_groups'|'synced_instances';targetRowId:string;targetId:string;sourceId:string;
     sourceRef:Table['rows'][number]['sourceRef'];currentSourceRef:Table['rows'][number]['sourceRef']|null;
     proofKind:'new-incoming-allocation'|'current-boundary-preserved';
@@ -231,7 +279,7 @@ function planSql(actual: Actual, preparedAt: string, cutContext: { stageId: stri
     const before = raw(actual, table.name)
     if (!same(table.columns, before.columns) || !same(table.primaryKey, before.primaryKey)) return fail('目标列序/PK不属于current schema')
     const readOld = originalLookup(before)
-    for (const row of table.rows) {
+    for (const row of capsule2RawTableRows(table)) {
       int64(row.sourceRowId)
       const previous = readOld(row.sourceRowId)
       if (previous && table.primaryKey.some(column => !same(previous.cells[table.columns.indexOf(column)], row.cells[table.columns.indexOf(column)])))
@@ -287,7 +335,7 @@ function planSql(actual: Actual, preparedAt: string, cutContext: { stageId: stri
   }
   assertAddedBudget('lifecycle', lifecycleAdded)
   const app = raw(actual, 'app_settings'), appRowIds = nextIds(app.rows), markerRowId = appRowIds(), retainedCutRowId = appRowIds()
-  const preCutPhysical12TablesHash=hashStageData('knowbook.restore.stage3.planned-content.v1',tables)
+  const preCutPhysical12TablesHash=hashStageData('knowbook.restore.stage3.planned-content.v1',graph3TablesHashInput(tables))
   const stageExecution={scope:'new-incoming-allocation-and-current-boundary-preservation' as const,
     canonicalCandidateHash:actual.candidate.canonicalCandidateHash,checkedCanonicalCandidateHash:actual.candidate.checkedCanonicalCandidateHash,
     sourceCandidate12TablesHash,physical12TablesHash:preCutPhysical12TablesHash,derivedReferenceAllocationHash:actual.allocation.derivedReferenceAllocationHash,
@@ -296,14 +344,14 @@ function planSql(actual: Actual, preparedAt: string, cutContext: { stageId: stri
   assertMerge3JsonBudget(stageExecution)
   const preCutStageExecutionHash=hash('knowbook.restore.stage3.execution-transition.v1',stageExecution)
   const retainedCut=planRootRestoreStage3RetainedCut3(actual,tables,{...cutContext,preparedAt},retainDeletedHostStates)
-  const physical12TablesHash=hashStageData('knowbook.restore.stage3.planned-content.v1',retainedCut.tables)
+  const physical12TablesHash=hashStageData('knowbook.restore.stage3.planned-content.v1',graph3TablesHashInput(retainedCut.tables))
   const stageExecutionHash=hash('knowbook.restore.stage3.execution-transition.v1',{
     scope:'incoming-staging-and-complete-current-retained-cut',preCutStageExecutionHash,preCutPhysical12TablesHash,
     physical12TablesHash,retainedCutHash:retainedCut.cutHash,currentExecutionBoundariesPreserved:false,
     workspaceEpochAndDocumentCasAndHostCutPending:false,finalCurrentRetainedCutComplete:true})
   const expectedSyntaxIndexHash = canonical ? withStoredMerge3NavigationFinalIndex3(toReference3GraphInputs(actual.data, actual.allocation),
     canonical.tables, ({ indexHash }) => indexHash) : actual.candidate.finalSyntaxIndexHash
-  return { tables:retainedCut.tables,preCutInstancesByGroup:instancesByGroup,retainedCut,retainedCutRowId,expectedWires,expectedSyntaxIndexHash,
+  return { tables:retainedCut.tables,bodyRows,preCutInstancesByGroup:instancesByGroup,retainedCut,retainedCutRowId,expectedWires,expectedSyntaxIndexHash,
     canonicalAssets: canonical?.facts,
     ledger: { ...oldLedger, rows: ledger }, ledgerAdded, lifecycleAdded, markerRowId,
     lifecycle: { ...oldLife, rows: [...oldLife.rows, ...lifecycleAdded].sort(rowOrder) }, encoding: enc,
@@ -354,11 +402,16 @@ function assertSchema(db: Database.Database, actual: Actual) {
 function cellsBytes(rows: Iterable<Row>) { let total = 0n; for (const row of rows) for (const cell of row.cells)
   total += BigInt(cell[0]==='text'||cell[0]==='blob' ? Buffer.from(cell[1],'base64').length : 8); return total }
 export function assertRootRestoreStage3ExactTable3(db: Database.Database, table: Capsule2RawSqlTable, enc: Capsule2Encoding): Capsule2RawSqlTable {
+  return assertExactStage3Table(db, table, enc)
+}
+
+function assertExactStage3Table(db: Database.Database, table: Capsule2RawSqlTable, enc: Capsule2Encoding, bodyRows?: Stage3BodyRows): Capsule2RawSqlTable {
   const columns = db.prepare('SELECT * FROM main.'+quote(table.name)+' LIMIT 0').columns().map(column=>column.name)
   if (!same(columns,table.columns)) return fail('实际列序变化：'+table.name)
   const measured = db.prepare('SELECT count(*),coalesce(sum('+capsule2RawSqlValueBytesExpression(columns)+'),0) FROM main.'+quote(table.name))
     .safeIntegers(true).raw(true).get() as [bigint,bigint]
-  if (measured[0]!==BigInt(capsule2RawTableRowCount(table))||measured[1]!==cellsBytes(capsule2RawTableRows(table))) return fail('实际行数/值bytes不符：'+table.name)
+  if (measured[0]!==BigInt(capsule2RawTableRowCount(table))||measured[1]!==(bodyRows?.valueBytes(table) ?? cellsBytes(capsule2RawTableRows(table))))
+    return fail('实际行数/值bytes不符：'+table.name)
   const projection=columns.flatMap(column=>[`typeof(${quote(column)})`, `CASE WHEN typeof(${quote(column)})='text' THEN CAST(${quote(column)} AS BLOB) ELSE ${quote(column)} END`]).join(',')
   // Original capsule rows are already in signed physical order. Keep the
   // previous sort for local plans that supply a different row order.
@@ -575,8 +628,8 @@ function observeSql(db:Database.Database,actual:Actual,plan:Planned,marker:RootR
   // SQL exhausts and compares the true ordered rows before returning this
   // exact view. Downstream graph reconstruction does not need a second copy
   // of the same storage cells, including on an independent cold connection.
-  const tables=plan.tables.map(table=>assertRootRestoreStage3ExactTable3(db,table,plan.encoding))
-  const physical12TablesHash=hashStageData('knowbook.restore.stage3.planned-content.v1',tables)
+  const tables=plan.tables.map(table=>assertExactStage3Table(db,table,plan.encoding,plan.bodyRows))
+  const physical12TablesHash=hashStageData('knowbook.restore.stage3.planned-content.v1',graph3TablesHashInput(tables))
   if(physical12TablesHash!==plan.physical12TablesHash)return fail('实际physical12不等于声明execution转换')
   const exactTables = new Map(tables.map(table => [table.name, table]))
   const protectedObservations=protectedTables(actual,plan,marker).map(table=>{
@@ -602,16 +655,23 @@ function observeSql(db:Database.Database,actual:Actual,plan:Planned,marker:RootR
   // verified rows directly before rebuilding their original source metadata.
   const actualTables = actual.candidate.tables.map(table => {
     const observed = exactTables.get(table.name)
-    if (!observed || observed.rows.length !== table.rows.length) return fail('实际候选表行数不符：' + table.name)
+    if (!observed || capsule2RawTableRowCount(observed) !== table.rows.length) return fail('实际候选表行数不符：' + table.name)
+    const persisted = capsule2RawTableRows(observed)[Symbol.iterator]()
+    const stored = scopedCapsule2TableRowLookup(observed) !== undefined
     let rows: Table['rows'][number][] | undefined
-    for (const [index, row] of table.rows.entries()) {
-      const actualRow = observed.rows[index]
-      if (row.targetRowId !== actualRow.sourceRowId) return fail('实际候选表 rowid 顺序不同：' + table.name)
-      if (row.cells !== actualRow.cells) {
-        rows ??= [...table.rows]
-        rows[index] = { ...row, cells: actualRow.cells }
+    try {
+      for (const [index, row] of table.rows.entries()) {
+        const actualRow = persisted.next().value as Row | undefined
+        if (row.targetRowId !== actualRow?.sourceRowId) return fail('实际候选表 rowid 顺序不同：' + table.name)
+        if (row.cells !== actualRow.cells && !(stored && row.cells.every((cell, column) => {
+          const original = actualRow.cells[column]
+          return cell[0] === original[0] && cell[1] === original[1]
+        }))) {
+          rows ??= [...table.rows]
+          rows[index] = { ...row, cells: actualRow.cells }
+        }
       }
-    }
+    } finally { persisted.return?.() }
     return rows ? { ...table, rows } : table
   })
   const wanted = new Map(plan.expectedWires.map(wire => [wire.id, wire]))
@@ -625,7 +685,7 @@ function observeSql(db:Database.Database,actual:Actual,plan:Planned,marker:RootR
 
     const order = new Map<string, bigint>(), body = exactTables.get('synced_group_blocks')!
     const idColumn = body.columns.indexOf('id'), orderColumn = body.columns.indexOf('sort_order')
-    for (const row of body.rows) {
+    for (const row of capsule2RawTableRows(body)) {
       const cell = row.cells[orderColumn]
       if (cell[0] !== 'integer') return fail('实际正文排序缺少原 INTEGER')
       order.set(graph3Text(row.cells[idColumn], plan.encoding), int64(cell[1]))
@@ -707,7 +767,8 @@ function writeSql(db:Database.Database,actual:Actual,plan:Planned,marker:RootRes
     // The registry is a declared complete content table. Removing it first is
     // the schema's atomic reference-transition rule, not a cut/history delete.
     db.exec('DELETE FROM main.synced_instances')
-    const removed=new Map(plan.tables.map(table=>{const wanted=new Set(table.rows.map(row=>row.sourceRowId)), ids=new Set<string>()
+    const removed=new Map(plan.tables.map(table=>{const wanted=new Set(plan.bodyRows?.rowIds(table)
+      ?? Array.from(capsule2RawTableRows(table), row=>row.sourceRowId)), ids=new Set<string>()
       for (const row of capsule2RawTableRows(raw(actual, table.name))) if (!wanted.has(row.sourceRowId)) ids.add(row.sourceRowId)
       return [table.name,ids] as const}))
     const foreign=foreignDeletePlans(db)
@@ -778,7 +839,7 @@ function intentBody(stageId:string,preparedAt:string,actual:Actual,copy:CopyInfo
   return {kind:'root-restore-non-executable-physical-stage-intent' as const,version:plan.canonicalAssets ? 2 as const : 1 as const,stageId,preparedAt,
     copyId:copy.copyId,copyManifestHash:copy.manifestHash,...binding(actual,copy,reference),originalRecoveryFamily,
     originalCurrentSchemaHash:actual.data.inputs.current.source.sourceContent.schemaHash,targetEncoding:plan.encoding,
-    planned12TablesHash:hashStageData('knowbook.restore.stage3.planned-content.v1',plan.tables),
+    planned12TablesHash:hashStageData('knowbook.restore.stage3.planned-content.v1',graph3TablesHashInput(plan.tables)),
     sourceCandidate12TablesHash:plan.sourceCandidate12TablesHash,stageExecutionHash:plan.stageExecutionHash,
     preCutPhysical12TablesHash:plan.preCutPhysical12TablesHash,preCutStageExecutionHash:plan.preCutStageExecutionHash,
     retainedCutHash:plan.retainedCut.cutHash,retainedCutRecordHash:plan.retainedCut.record.hash,retainedCutRowId:plan.retainedCutRowId,
@@ -1008,6 +1069,11 @@ function assertNoPendingObservations() {
  * working three-file copy is opened as an independent main database. */
 async function preparePhysicalStage(reference:RootRestoreReferencePlan3, aliases?: CanonicalAliasRead, scope?: RootRestoreStageInputs5,
   historyScope?: PreparedRestoreHistoryScope3) {
+  return withStage3BodyRows(store => preparePhysicalStageWithRows(reference, aliases, scope, historyScope, store))
+}
+
+async function preparePhysicalStageWithRows(reference: RootRestoreReferencePlan3, aliases: CanonicalAliasRead | undefined,
+  scope: RootRestoreStageInputs5 | undefined, historyScope: PreparedRestoreHistoryScope3 | undefined, store: Stage3BodyRows) {
   assertNoPendingObservations()
   const { actual, canonical, assertAliasBytes } = await stageInputs(reference, aliases, scope)
   const history = historyScope && preparedHistoryScopes.get(historyScope)
@@ -1017,7 +1083,7 @@ async function preparePhysicalStage(reference:RootRestoreReferencePlan3, aliases
   const {copy:currentCopy,info:copy}=await prepareRootRestoreCurrentCopyForStage3(reference)
   binding(actual,copy,reference)
   const stageId=randomUUID(),preparedAt=new Date().toISOString(),plan=planSql(actual,preparedAt,
-    {stageId,copyId:copy.copyId,copyManifestHash:copy.manifestHash},canonical)
+    {stageId,copyId:copy.copyId,copyManifestHash:copy.manifestHash},canonical,true,store)
   const collection=physicalCollection(copy.profileRoot,copy.operationId,aliases !== undefined)
   const directory=join(collection,stageId),databaseDirectory=join(directory,'database'),checksDirectory=join(directory,'checks')
   await restoreDirectory(collection,copy.profileRoot);await restoreDirectory(directory,copy.profileRoot,true)

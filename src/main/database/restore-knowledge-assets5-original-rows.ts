@@ -14,6 +14,11 @@ export function readWorkingAssetOriginalTable5(raw: Capsule2RawContent, name: st
     const value = Object.fromEntries(table.columns.map((column, index) => [column, graph3Value(original.cells[index], raw.encoding)]))
     return { table, original, value }
   }
+  function findById(id: string) {
+    const lookup = scopedCapsule2TableIdLookup(table)
+    if (lookup) return lookup(id)
+    for (const original of capsule2RawTableRows(table)) if (cell(original, 'id') === id) return original
+  }
   function indexBy(column: string) {
     const lookup = column === 'id' ? scopedCapsule2TableIdLookup(table) : undefined
     if (lookup) return { get: lookup }
@@ -32,5 +37,5 @@ export function readWorkingAssetOriginalTable5(raw: Capsule2RawContent, name: st
       return values.get(original)
     }
   }
-  return { table, cell, read, indexBy, cachedCell }
+  return { table, cell, read, findById, indexBy, cachedCell }
 }

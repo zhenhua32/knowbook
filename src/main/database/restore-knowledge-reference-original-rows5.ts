@@ -13,6 +13,8 @@ type OriginalTable = Capsule2RawStreamTable & {
   readonly count: number
   encoded(): IterableIterator<string>
   byRowId(sourceRowId: string): Capsule2RawSqlRow | undefined
+  byOwner?(id: string): IterableIterator<Capsule2RawSqlRow>
+  ownsRow(row: Capsule2RawSqlRow): boolean
 }
 export type ReferenceOriginalRows5 = Omit<Capsule2RawContentStream, 'tables'> & { readonly tables: readonly OriginalTable[] }
 
@@ -22,16 +24,15 @@ export function hasScopedReferenceGroupBodies5(graph: RawCapsule2PhysicalGraph):
   return scopedGroupGraphs.has(graph)
 }
 
-function scopeIncomingDocumentBodies(db: Database.Database, documents: RawCapsule2PhysicalGraph['documents'], assertActive: () => void) {
-  db.exec('CREATE TEMP TABLE reference_incoming_document_bodies (document_id BLOB PRIMARY KEY, encoded TEXT NOT NULL) WITHOUT ROWID')
-  const write = db.prepare('INSERT INTO temp.reference_incoming_document_bodies VALUES (?,?)')
-  const read = db.prepare('SELECT encoded FROM temp.reference_incoming_document_bodies WHERE document_id=?').pluck()
+function scopeDocumentBodies(db: Database.Database, side: Side, documents: RawCapsule2PhysicalGraph['documents'], assertActive: () => void) {
+  const write = db.prepare('INSERT INTO temp.reference_document_bodies VALUES (?,?,?)')
+  const read = db.prepare('SELECT encoded FROM temp.reference_document_bodies WHERE role=? AND document_id=?').pluck()
   const scoped = db.transaction(() => documents.map(({ blocks, ...document }) => {
     const key = Buffer.from(document.documentId, 'utf16le')
-    write.run(key, capsuleJson(blocks))
+    write.run(side, key, capsuleJson(blocks))
     return Object.freeze({ ...document, get blocks() {
       assertActive()
-      const encoded = read.get(key)
+      const encoded = read.get(side, key)
       if (typeof encoded !== 'string') return capsule2RawInvalid('Reference3找不到实际原文档正文：' + document.documentId)
       return freezeCapsuleValue(JSON.parse(encoded) as RawCapsule2PhysicalGraph['documents'][number]['blocks'])
     } })
@@ -57,18 +58,25 @@ export async function withReferenceOriginalRows5<Projection, Result>(
     if (db.pragma('temp_store', { simple: true }) !== 1) return capsule2RawInvalid('Reference3原始行外存不可用')
     db.pragma('temp.cache_size=-2048')
     db.exec(`CREATE TEMP TABLE reference_original_rows (
-      role TEXT NOT NULL, table_name TEXT NOT NULL, source_rowid INTEGER NOT NULL, identity TEXT, encoded TEXT NOT NULL,
+      role TEXT NOT NULL, table_name TEXT NOT NULL, source_rowid INTEGER NOT NULL, identity TEXT, owner TEXT, encoded TEXT NOT NULL,
       PRIMARY KEY (role, table_name, source_rowid)
     ) WITHOUT ROWID;
     CREATE INDEX temp.reference_original_identity ON reference_original_rows(role, table_name, identity, source_rowid);
     CREATE UNIQUE INDEX temp.reference_original_block_identity ON reference_original_rows(role, table_name, identity)
       WHERE table_name IN ('blocks', 'synced_group_blocks');
+    CREATE INDEX temp.reference_original_block_owner ON reference_original_rows(role, table_name, owner, source_rowid)
+      WHERE owner IS NOT NULL;
     CREATE TEMP TABLE reference_group_bodies (
       role TEXT NOT NULL, group_id TEXT NOT NULL, encoded TEXT NOT NULL,
       PRIMARY KEY (role, group_id)
+    ) WITHOUT ROWID;
+    CREATE TEMP TABLE reference_document_bodies (
+      role TEXT NOT NULL, document_id BLOB NOT NULL, encoded TEXT NOT NULL,
+      PRIMARY KEY (role, document_id)
     ) WITHOUT ROWID`)
-    const insert = db.prepare('INSERT INTO temp.reference_original_rows VALUES (?, ?, ?, ?, ?)')
+    const insert = db.prepare('INSERT INTO temp.reference_original_rows VALUES (?, ?, ?, ?, ?, ?)')
     const scan = 'SELECT encoded FROM temp.reference_original_rows WHERE role=? AND table_name=? ORDER BY source_rowid'
+    const scanOwner = 'SELECT encoded FROM temp.reference_original_rows WHERE role=? AND table_name=? AND owner=? ORDER BY source_rowid'
     const lookup = db.prepare(`SELECT encoded FROM temp.reference_original_rows
       WHERE role=? AND table_name=? AND identity=? ORDER BY source_rowid DESC LIMIT 1`).pluck()
     const lookupRow = db.prepare(`SELECT encoded FROM temp.reference_original_rows
@@ -85,27 +93,43 @@ export async function withReferenceOriginalRows5<Projection, Result>(
         return freezeCapsuleValue(JSON.parse(encoded) as SyncedGroupSnapshot['blocks'])
       } })
     }
-    const decode = (text: string): Capsule2RawSqlRow => freezeCapsuleValue(JSON.parse(text) as Capsule2RawSqlRow)
     const putTable = (side: Side, layout: Omit<Capsule2RawSqlTable, 'rows'>, rows: Iterable<Capsule2RawSqlRow>,
       encoding: Capsule2Encoding): OriginalTable => {
       assertActive()
       const { name, columns } = layout
-      const blockTable = name === 'blocks' || name === 'synced_group_blocks'
+      const ownerColumn = name === 'blocks' ? 'document_id' : name === 'synced_group_blocks' ? 'group_id' : undefined
       const key = columns.indexOf(name === 'synced_instances' ? 'instance_id' : 'id')
+      const ownerKey = ownerColumn === undefined ? -1 : columns.indexOf(ownerColumn)
       let count = 0
       for (const row of rows) {
         const identity = key < 0 ? null : graph3Value(row.cells[key], encoding)
-        if (blockTable && typeof identity !== 'string') return capsule2RawInvalid('原块身份不是确切TEXT：' + name)
-        insert.run(side, name, BigInt(row.sourceRowId), typeof identity === 'string' ? identity : null, capsuleJson(row))
+        const owner = ownerKey < 0 ? null : graph3Value(row.cells[ownerKey], encoding)
+        if (ownerColumn !== undefined && (typeof identity !== 'string' || typeof owner !== 'string'))
+          return capsule2RawInvalid('原块身份或宿主不是确切TEXT：' + name)
+        insert.run(side, name, BigInt(row.sourceRowId), typeof identity === 'string' ? identity : null,
+          typeof owner === 'string' ? owner : null, capsuleJson(row))
         count++
+      }
+      const decodedRows = new WeakSet<Capsule2RawSqlRow>()
+      function decode(text: string): Capsule2RawSqlRow {
+        const row = freezeCapsuleValue(JSON.parse(text) as Capsule2RawSqlRow)
+        decodedRows.add(row)
+        return row
       }
       function* encoded() {
         assertActive()
         yield* db.prepare(scan).pluck().iterate(side, name) as IterableIterator<string>
       }
+      function* byOwner(owner: string) {
+        assertActive()
+        for (const row of db.prepare(scanOwner).pluck().iterate(side, name, owner) as IterableIterator<string>) yield decode(row)
+      }
       const table: OriginalTable = { ...layout, rows: Object.freeze({ *[Symbol.iterator]() {
         for (const row of encoded()) yield decode(row)
-      } }), count, encoded, byId(id: string) {
+      } }), count, encoded, byOwner: ownerColumn === undefined ? undefined : byOwner, ownsRow(row) {
+        assertActive()
+        return decodedRows.has(row)
+      }, byId(id: string) {
         assertActive()
         const row = lookup.get(side, name, id)
         return typeof row === 'string' ? decode(row) : undefined
@@ -117,7 +141,7 @@ export async function withReferenceOriginalRows5<Projection, Result>(
         const row = lookupRow.get(side, name, id)
         return typeof row === 'string' ? decode(row) : undefined
       } }
-      for (const key of ['byId', 'byRowId', 'count', 'encoded']) Object.defineProperty(table, key, { enumerable: false })
+      for (const key of ['byId', 'byOwner', 'byRowId', 'count', 'encoded', 'ownsRow']) Object.defineProperty(table, key, { enumerable: false })
       return Object.freeze(table)
     }
     const put = db.transaction((side: Side, { tables, ...header }: Capsule2RawContent): ReferenceOriginalRows5 => {
@@ -154,7 +178,7 @@ export async function withReferenceOriginalRows5<Projection, Result>(
         return Object.freeze({ ...group, snapshot: scopedGroupSnapshot(side, id, snapshot) })
       }))()
       Object.freeze(groups)
-      const documents = side === 'source' ? scopeIncomingDocumentBodies(db, graph.documents, assertActive) : graph.documents
+      const documents = scopeDocumentBodies(db, side, graph.documents, assertActive)
       physicalSides.add(side)
       const scoped = Object.freeze({ ...graph, documents, groups })
       scopedGroupGraphs.add(scoped)

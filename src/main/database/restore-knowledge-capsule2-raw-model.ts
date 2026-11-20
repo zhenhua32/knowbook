@@ -57,6 +57,8 @@ interface ScopedRawRows {
   encoded(): IterableIterator<string>
   byRowId(sourceRowId: string): Capsule2RawSqlRow | undefined
   byId?(id: string): Capsule2RawSqlRow | undefined
+  byOwner?(id: string): IterableIterator<Capsule2RawSqlRow>
+  ownsRow?(row: Capsule2RawSqlRow): boolean
 }
 const scopedRawRows = new WeakMap<Capsule2RawStreamTable, ScopedRawRows>()
 
@@ -88,6 +90,15 @@ export function scopedCapsule2TableRowEncoding(table: Capsule2RawSqlTable) {
 
 export function scopedCapsule2TableIdLookup(table: Capsule2RawSqlTable) {
   return scopedRawRows.get(table)?.byId
+}
+
+export function scopedCapsule2TableOwnerLookup(table: Capsule2RawSqlTable, column: string) {
+  if (table.name === 'blocks' && column === 'document_id' || table.name === 'synced_group_blocks' && column === 'group_id')
+    return scopedRawRows.get(table)?.byOwner
+}
+
+export function scopedCapsule2TableRowOwnership(table: Capsule2RawSqlTable) {
+  return scopedRawRows.get(table)?.ownsRow
 }
 
 const validatedContentCells = new WeakMap<readonly RawRestoreSqlCell[], Capsule2Encoding>()

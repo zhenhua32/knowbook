@@ -7,6 +7,7 @@ import { deriveRoot3KnowledgeConstraints, root3Invalid, type Root3KnowledgeConst
 import { freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { readRoot3OriginalReferenceResolutions } from './restore-knowledge-root3-contexts'
 import { scopeCurrentReferenceBlocks5, scopeIncomingReferenceTables5, withReferenceOriginalRows5 } from './restore-knowledge-reference-original-rows5'
+import { isWorkingAssetArchive5 } from './restore-knowledge-capsule2-asset-archive'
 
 export interface RootKnowledgeConservationPlan3 { readonly kind: 'main-complete-qualified-knowledge-plan' }
 const plans = new WeakMap<RootKnowledgeConservationPlan3, { original: CompleteOriginalBundle; expectedHash: string }>()
@@ -60,7 +61,8 @@ function scopeQualifiedContent5(pair: KnowledgeOriginals['pair'], [store, storeP
     physical: storePhysical(pair.source.source.physical)
   }) })
   const currentArchive = pair.current.assetArchive.version
-  const current = currentArchive === 2 || currentArchive === 7 || currentArchive === 9 ? Object.freeze({ ...pair.current,
+  const scopeCurrent = currentArchive === 2 || currentArchive === 7 || currentArchive === 9 || isWorkingAssetArchive5(pair.current.assetArchive)
+  const current = scopeCurrent ? Object.freeze({ ...pair.current,
     source: Object.freeze({ ...pair.current.source,
       sourceContent: scopeCurrentReferenceBlocks5(pair.current.source.sourceContent, store),
       physical: storePhysical(pair.current.source.physical, 'current')

@@ -121,7 +121,7 @@ export function deriveSelectedPendingLocalBody5(captured: Actual, locator: Pendi
   if (!projected || publicationHash(publicationJson(projected.record)) !== provenance.localHash) return fail('original-local-record')
   const paragraph = singleParagraphDiff(projected.record, final)
   const blocks = readWorkingAssetOriginalTable5(raw, 'blocks')
-  const paragraphRow = blocks.table.rows.find(row => blocks.cell(row, 'id') === paragraph.id)
+  const paragraphRow = blocks.findById(paragraph.id)
   const original = paragraphRow && blocks.read(paragraphRow)
   if (!original || original.value.document_id !== documentId || original.value.type !== 'paragraph'
     || typeof original.value.created_at !== 'string' || typeof original.value.content !== 'string') return fail('original-block')

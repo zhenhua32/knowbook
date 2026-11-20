@@ -9,7 +9,7 @@ import { isSyncedUuid } from '../../shared/syncedBlockValidation'
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
 import type { readRootRestoreReferenceGraphInputs3 } from './restore-knowledge-reference3-read'
-import { graph3Encode, graph3TablesHashInput, graph3Text } from './restore-knowledge-graph3-data'
+import { freezeGraph3Tables, graph3Encode, graph3TablesHashInput, graph3Text } from './restore-knowledge-graph3-data'
 import { capsule2RawTableRows, type Capsule2Encoding, type Capsule2RawSqlTable } from './restore-knowledge-capsule2-raw-model'
 import { rawRestoreSqlCell, type RawRestoreSqlCell } from './restore-knowledge-sql-cell'
 import { assertMerge3JsonBudget } from './restore-knowledge-merge3-storage'
@@ -29,6 +29,8 @@ const supports = ['app_settings', 'documents', 'document_block_moves', 'synced_w
   'synced_group_history', 'synced_operations', 'synced_group_pins', 'synced_group_lifecycle'] as const
 const retainedNames = ['synced_host_history', 'synced_operations', 'synced_group_pins', 'document_block_moves'] as const
 const hash = (domain: string, value: unknown) => capsuleBytesHash(domain + '\0' + capsuleJson(value))
+const hashTables = (domain: string, value: object) => hashBoundedCapsuleJson(value, Number.MAX_SAFE_INTEGER, domain + '\0')
+  ?? fail('目标物理表超准确JSON范围')
 const same = (left: unknown, right: unknown) => capsuleJson(left) === capsuleJson(right)
 const fail = (message: string): never => { throw new Error('Root3 current retained cut失败：' + message + '；没有授予安装/accepted/执行许可。') }
 const compare = (left: string, right: string) => left < right ? -1 : left > right ? 1 : 0
@@ -213,16 +215,17 @@ export function planRootRestoreStage3RetainedCut3(actual: Actual, physicalTables
   // bound originals and the fixed context. Final native-table commitments
   // already bind every new CAS/guard/rowid; serializing all decoded before
   // values again would unnecessarily expand otherwise legal raw TEXT.
+  const finalTableHashInput = graph3TablesHashInput(tables)
   const executionHash = hash('knowbook.restore.stage3.retained-cut.execution.v1', { bindings,
-    beforePhysical12TablesHash: hash('knowbook.restore.stage3.retained-cut.physical12.v1', physicalTables),
-    afterPhysical12TablesHash: hash('knowbook.restore.stage3.retained-cut.physical12.v1', tables),
+    beforePhysical12TablesHash: hashTables('knowbook.restore.stage3.retained-cut.physical12.v1', graph3TablesHashInput(physicalTables)),
+    afterPhysical12TablesHash: hashTables('knowbook.restore.stage3.retained-cut.physical12.v1', finalTableHashInput),
     protectedTablesHash: hash('knowbook.restore.stage3.retained-cut.protected-tables.v1', protectedTables), archiveTables })
   const recordBody = { kind: 'root-restore-current-retained-cut' as const, version: 1 as const, policyVersion: 1 as const,
     bindings, workspace: allocation.workspace, documentBoundary, cutHash: executionHash,
     archive: { storage: 'genuine-current-copy-and-qualified-originals' as const, encoding, tables: archiveTables,
       currentOriginalRawTablesHash: hashBoundedCapsuleJson(graph3TablesHashInput(actual.data.inputs.current.source.sourceContent.tables),
         Number.MAX_SAFE_INTEGER, 'knowbook.restore.stage3.retained-cut.all-original-tables.v1\0') ?? fail('current原全集超过准确JSON范围') },
-    finalTablesHash: hash('knowbook.restore.stage3.retained-cut.final-tables.v1', { tables, protectedTables }),
+    finalTablesHash: hashTables('knowbook.restore.stage3.retained-cut.final-tables.v1', { tables: finalTableHashInput, protectedTables }),
     counts: { documents: documentAllocations.length, hosts: hostAllocations.length, groups: groupAllocations.length,
       activeGroups: groupAllocations.filter(row => row.disposition === 'active').length, instances: instanceAllocations.length,
       archivedHostMappings: original(actual, 'synced_host_history_documents').rows.length,
@@ -232,7 +235,7 @@ export function planRootRestoreStage3RetainedCut3(actual: Actual, physicalTables
     semanticValidationComplete: false as const, acceptedCoverage: false as const, effective: false as const, permit: false as const }
   const record = { key: ROOT3_RETAINED_CUT_PREFIX + context.stageId, json: capsuleJson(recordBody), hash: hash('knowbook.restore.stage3.retained-cut.record.v1', recordBody) }
   if (original(actual, 'app_settings').rows.some(row => text(cell(original(actual, 'app_settings'), row, 'key'), encoding) === record.key)) return fail('新cut key已被原件占用')
-  const plan = { encoding, context: { ...context }, tables, protectedTables, allocation, archiveTables, record, cutHash: executionHash,
+  const plan = { encoding, context: { ...context }, protectedTables, allocation, archiveTables, record, cutHash: executionHash,
     retainedDeletedHostIds: retainedDeletedHosts.map(row => row.documentId),
     retainedTables: retainedNames.map(name => original(actual, name)), finalCurrentRetainedCutComplete: true as const,
     historyCutComplete: false as const, acceptedCoverage: false as const, effective: false as const, permit: false as const }
@@ -242,7 +245,7 @@ export function planRootRestoreStage3RetainedCut3(actual: Actual, physicalTables
   // JSON budget to them would shrink the original raw TEXT domain. Only the
   // actual compact durable record is subject to the original JSON budget.
   assertMerge3JsonBudget(recordBody)
-  return freezeCapsuleValue(plan)
+  return Object.freeze({ ...freezeCapsuleValue(plan), tables: freezeGraph3Tables(tables) })
 }
 export type RootRestoreStage3RetainedCutPlan3 = ReturnType<typeof planRootRestoreStage3RetainedCut3>
 
