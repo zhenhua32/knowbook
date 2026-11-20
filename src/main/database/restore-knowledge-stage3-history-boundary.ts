@@ -4,16 +4,16 @@ import { readdir, rmdir, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { parseSyncedBlockPayload } from '../../shared/syncedBlockValidation'
 import { readCapsule2AssetManifest, writeCapsule2AssetCopy } from './restore-knowledge-capsule2-assets-files'
-import { readRawCapsule2ContentOwned } from './restore-knowledge-capsule2-content-raw-read'
-import { CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-model'
+import { observeRawCapsule2TablesOwned } from './restore-knowledge-capsule2-content-raw-read'
+import { CAPSULE2_RAW_MAX_JSON_BYTES, hashValidatedCapsule2RawSqlTable, type Capsule2Encoding } from './restore-knowledge-capsule2-raw-model'
 import { capsuleBytesHash, capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { durableSqlDagHash, durableSqlDagUuid } from './restore-knowledge-dag-model'
-import { graph3Rows, graph3Text } from './restore-knowledge-graph3-data'
+import { graph3Value } from './restore-knowledge-graph3-data'
 import { assertOriginCatalogDirectory, syncOriginCatalogAncestors } from './restore-knowledge-origin-bundle-files'
 import { assertRootRestoreStage3FilesHeld3, closeRootRestoreStage3FilesHeld3, holdRootRestoreStage3DatabaseFiles3,
   verifyRootRestoreStage3FilesHeld3 } from './restore-knowledge-stage3-files'
 import { assertRootRestoreStage3DatabaseReadonly3, copyRootRestoreStage3Database3,
-  holdRootRestorePhysicalStageOriginalBytes3, readRootRestoreStage3HistoryPreimage3,
+  holdRootRestorePhysicalStageOriginalBytes3, readRootRestoreStage3HistoryPreimage3, retainedGroupIdentityColumns3,
   type RootRestorePhysicalStage3, type PreparedRestoreHistoryScope3 } from './restore-knowledge-stage3-physical'
 import { assertRestorePath, restoreDirectory, syncRestoreDirectory } from './restore-safety-files'
 import { restoreSqliteFilename } from './restore-safety-sqlite-path'
@@ -27,6 +27,7 @@ import { readV3SourceGroupRetirementsOwned } from './v3-source-group-retirement'
 import { recoveryBoundaryHash, recoveryEpochRequestHash, recoveryOperationRowHash, validateSyncedRecoveryEpochReceipt,
   validateSyncedRecoveryHistoryBoundary, type SyncedRecoveryRemovedInstance } from './synced-recovery-boundary-model'
 import { assertSyncedRecoveryBoundaryRecords, isRetainedProtocol5Operation } from './synced-recovery-boundary-read'
+import { rawRestoreSqlCell, type RawRestoreSqlCell } from './restore-knowledge-sql-cell'
 
 type Preimage = Awaited<ReturnType<typeof readRootRestoreStage3HistoryPreimage3>>
 type Locator = { readonly evidenceId: string; readonly expectedManifestHash: string }
@@ -40,6 +41,83 @@ const position = (value: unknown): number => typeof value === 'bigint' && value 
 const collection = ({ copy }: Preimage) => join(copy.profileRoot, 'backups', 'database-restore', copy.operationId,
   'restore-history-boundary-evidence-v1')
 
+const historyFields = new Map<string, readonly string[]>([
+  ['documents', ['id', 'updated_at']],
+  ['synced_workspace_state', ['workspace_scope', 'recovery_epoch']],
+  ['synced_host_history_state', ['document_id', 'cursor', 'position']],
+  ['synced_groups', [...retainedGroupIdentityColumns3, 'revision', 'topology_revision', 'history_cursor', 'history_position']],
+  ['synced_instances', ['instance_id', 'group_id', 'host_document_id', 'binding_version', 'parent_block_id', 'depth']],
+  ['synced_group_history', ['id', 'group_id', 'position', 'before_json', 'after_json', 'before_hash', 'after_hash', 'created_at']],
+  ['synced_host_history_documents', ['history_id', 'document_id', 'position']],
+  ['synced_group_pins', ['group_id', 'kind', 'pin_id', 'created_at']],
+  ['synced_operations', ['client_operation_id', 'request_hash', 'result_json', 'created_at']]
+])
+
+type ObservedRow = { sourceRowId: string; value: Record<string, unknown>; groupCells?: readonly RawRestoreSqlCell[] }
+function readHistoryOriginals(db: Database.Database, retainedCut: Preimage['retainedCut']) {
+  const archives = new Map<string, typeof retainedCut.archiveTables[number]>(retainedCut.archiveTables.map(archive => [archive.table, archive]))
+  const projected = new Map<string, ObservedRow[]>()
+  const rows = (name: string): readonly ObservedRow[] => projected.get(name) ?? []
+  const structuralHistory = () => Boolean(rows('synced_host_history_state').length || rows('synced_host_history_documents').length
+    || rows('synced_groups').length || rows('synced_instances').length)
+  const retainedOperations: Array<{ operationId: string; rowHash: string }> = []
+  let operationOnly = false
+  const header = observeRawCapsule2TablesOwned(db, (table, encoding) => {
+    const archive = archives.get(table.name)
+    const columns = historyFields.get(table.name), selected: ObservedRow[] = []
+    const indexes = columns?.map(column => {
+      const index = table.columns.indexOf(column)
+      return index < 0 ? fail('原历史见证缺列：' + table.name + '.' + column) : index
+    })
+    let count = 0
+    const stream = function* () {
+      for (const row of table.rows) {
+        count++
+        if (columns && indexes) {
+          const value = Object.fromEntries(columns.map((column, ordinal) => [column, graph3Value(row.cells[indexes[ordinal]], encoding)]))
+          if (table.name === 'synced_operations') {
+            const operation = { client_operation_id: text(value.client_operation_id), request_hash: text(value.request_hash),
+              result_json: text(value.result_json), created_at: text(value.created_at) }
+            retainedOperations.push({ operationId: operation.client_operation_id, rowHash: recoveryOperationRowHash(operation) })
+            // The fixed raw catalog visits the group, host and instance
+            // tables before operations in lexical order.
+            if (!operationOnly && !structuralHistory())
+              operationOnly = isRetainedProtocol5Operation(db, operation, retainedCut.allocation.workspace.workspaceScope)
+          } else {
+            const groupCells = table.name === 'synced_groups' ? indexes.slice(0, retainedGroupIdentityColumns3.length).map(index => row.cells[index]) : undefined
+            selected.push({ sourceRowId: row.sourceRowId, value, groupCells })
+          }
+        }
+        yield row
+      }
+    }()
+    // Exhaust the real ordered SQLite rows independently of the candidate.
+    // Only the declared history projection survives the complete raw hash.
+    if (archive) {
+      const hash = hashValidatedCapsule2RawSqlTable('knowbook.restore.stage3.retained-cut.original-table.v1', { ...table, rows: stream })
+      if (hash !== archive.rawTableHash || count !== archive.rows) return fail('原 current 切点支持表不同：' + table.name)
+      archives.delete(archive.table)
+    } else for (const _row of stream) { /* All table rows count toward the original raw budget. */ }
+    if (columns) projected.set(table.name, selected)
+  })
+  for (const table of archives.keys()) return fail('原 current 切点支持表不同：' + table)
+  retainedOperations.sort((left, right) => compare(left.operationId, right.operationId))
+  return { header, rows, retainedOperations, operationOnly, hasStructuralHistory: structuralHistory() }
+}
+
+const removedMirrorColumns = {
+  blocks: ['type', 'document_id', 'depth', 'parent_block_id', 'content', 'created_at'],
+  block_identities: ['last_owner_kind', 'last_owner_id', 'state', 'created_at']
+} as const
+function readRemovedMirror(db: Database.Database, table: keyof typeof removedMirrorColumns, id: string, encoding: Capsule2Encoding) {
+  const columns = removedMirrorColumns[table]
+  const projection = columns.flatMap(column => ['typeof(' + column + ')', 'CASE WHEN typeof(' + column + ")='text' THEN CAST(" + column + ' AS BLOB) ELSE ' + column + ' END'])
+  const row = db.prepare('SELECT ' + projection.join(',') + ' FROM main.' + table + ' WHERE id=? COLLATE BINARY')
+    .safeIntegers(true).raw(true).get(id) as unknown[] | undefined
+  return row && Object.fromEntries(columns.map((column, index) => [column,
+    graph3Value(rawRestoreSqlCell(row[index * 2], row[index * 2 + 1], encoding), encoding)]))
+}
+
 function groupGuard(row: Record<string, unknown>) {
   return { revision: text(row.revision), topologyRevision: text(row.topology_revision),
     historyCursor: text(row.history_cursor), historyPosition: position(row.history_position) }
@@ -49,25 +127,18 @@ function allocatedGuard(guard: Omit<GroupGuard, 'historyPosition'> & { historyPo
   return { ...guard, historyPosition: position(BigInt(guard.historyPosition)) }
 }
 
-function observe(db: Database.Database, { copy, retainedCut, value, stageManifestHash }: Preimage,
+function observe(db: Database.Database, { copy, retainedCut, physicalObservationHash, finalGroups, finalInstanceIds, stageManifestHash }: Preimage,
   allowInstanceRemoval: boolean, allowOrdinaryCut: boolean) {
-  const raw = readRawCapsule2ContentOwned(db)
-  if (raw.schemaVersion !== 27 || raw.encoding !== retainedCut.encoding) return fail('原 current schema/encoding 不同')
-  const originalTables = new Map(raw.tables.map(table => [table.name, table]))
-  for (const { table, rows, rawTableHash } of retainedCut.archiveTables) {
-    const original = originalTables.get(table)
-    if (!original || original.rows.length !== rows
-      || capsuleBytesHash('knowbook.restore.stage3.retained-cut.original-table.v1\0' + capsuleJson(original)) !== rawTableHash)
-      return fail('原 current 切点支持表不同：' + table)
-  }
+  const { header, rows, retainedOperations, operationOnly, hasStructuralHistory } = readHistoryOriginals(db, retainedCut)
+  if (header.schemaVersion !== 27 || header.encoding !== retainedCut.encoding) return fail('原 current schema/encoding 不同')
   const prior = assertSyncedRecoveryBoundaryRecords(db)
   if (prior.boundaries.has(copy.operationId)) return fail('原 current 已有本次 operation 的恢复边界')
   const { allocation } = retainedCut
-  const [workspace] = graph3Rows(raw, 'synced_workspace_state')
+  const [workspace] = rows('synced_workspace_state')
   if (workspace?.value.workspace_scope !== allocation.workspace.workspaceScope
     || workspace.value.recovery_epoch !== allocation.workspace.beforeEpoch) return fail('原 current scope/epoch 不闭合')
 
-  const originalRows = (name: string, key: string) => new Map(graph3Rows(raw, name).map(row => [text(row.value[key]), row]))
+  const originalRows = (name: string, key: string) => new Map(rows(name).map(row => [text(row.value[key]), row]))
   const originalDocuments = originalRows('documents', 'id')
   const originalHosts = originalRows('synced_host_history_state', 'document_id')
   const originalGroups = originalRows('synced_groups', 'id')
@@ -87,20 +158,19 @@ function observe(db: Database.Database, { copy, retainedCut, value, stageManifes
     return target && (target.groupId !== row.value.group_id || target.hostDocumentId !== row.value.host_document_id)
   }).map(([id]) => id).sort(compare)
 
-  const groupsById = value.tables.find(table => table.name === 'synced_groups') ?? fail('缺已验证的 Stage3 组表')
-  const finalGroups = new Map(groupsById.rows.map(row => [row.targetRowId, row.cells]))
+  const groupsById = new Map(finalGroups.map(row => [row.targetRowId, row.cells]))
   const lifecycles = readSyncedGroupLifecycles(db, [...originalGroups.keys()])
   const deletions = assertSyncedLogicalDeletionRecords(db)
   const sourceRetirements = readV3SourceGroupRetirementsOwned(db)
   const originalHistory = new Map<string, ReturnType<typeof readGroupHistory>[]>()
-  for (const { value: row } of graph3Rows(raw, 'synced_group_history')) {
+  for (const { value: row } of rows('synced_group_history')) {
     const history = readGroupHistory(row)
     const rows = originalHistory.get(history.group_id) ?? []
     rows.push(history)
     originalHistory.set(history.group_id, rows)
   }
   const mappings = new Map<string, Array<{ documentId: string; position: number }>>()
-  for (const { value: row } of graph3Rows(raw, 'synced_host_history_documents')) {
+  for (const { value: row } of rows('synced_host_history_documents')) {
     const token = text(row.history_id), participants = mappings.get(token) ?? []
     participants.push({ documentId: text(row.document_id), position: position(row.position) })
     mappings.set(token, participants)
@@ -109,13 +179,7 @@ function observe(db: Database.Database, { copy, retainedCut, value, stageManifes
     historyToken, ...readSyncedExchangeCutJournal(db, historyToken),
     mappings: participants.sort((a, b) => compare(a.documentId, b.documentId))
   }))
-  const operations = graph3Rows(raw, 'synced_operations').map(({ value: row }) => ({
-    client_operation_id: text(row.client_operation_id), request_hash: text(row.request_hash),
-    result_json: text(row.result_json), created_at: text(row.created_at)
-  }))
-  const retainedOperations = operations.map(row => ({ operationId: row.client_operation_id, rowHash: recoveryOperationRowHash(row) }))
-    .sort((a, b) => compare(a.operationId, b.operationId))
-  const retainedPins = graph3Rows(raw, 'synced_group_pins').map(({ value: row }) => ({
+  const retainedPins = rows('synced_group_pins').map(({ value: row }) => ({
     groupId: text(row.group_id), kind: text(row.kind), pinId: text(row.pin_id), createdAt: text(row.created_at)
   })).sort((a, b) => compare(capsuleJson([a.groupId, a.kind, a.pinId]), capsuleJson([b.groupId, b.kind, b.pinId])))
 
@@ -123,7 +187,7 @@ function observe(db: Database.Database, { copy, retainedCut, value, stageManifes
     const after = documents.get(documentId)
     if (!after) return []
     const beforeUpdatedAt = text(before.value.updated_at)
-    if (after.currentSourceRowId !== before.original.sourceRowId || after.beforeUpdatedAt !== beforeUpdatedAt
+    if (after.currentSourceRowId !== before.sourceRowId || after.beforeUpdatedAt !== beforeUpdatedAt
       || after.afterUpdatedAt !== allocation.documentBoundary) return fail('文档原行/CAS 与切点不闭合')
     return [{ documentId, beforeUpdatedAt, afterUpdatedAt: after.afterUpdatedAt }]
   })
@@ -132,7 +196,7 @@ function observe(db: Database.Database, { copy, retainedCut, value, stageManifes
     const after = hosts.get(documentId)
     if (!after) return []
     const beforeCursor = text(before.value.cursor), beforePosition = position(before.value.position)
-    if (after.targetRowId !== before.original.sourceRowId || after.beforeCursor !== beforeCursor
+    if (after.targetRowId !== before.sourceRowId || after.beforeCursor !== beforeCursor
       || after.beforePosition !== String(beforePosition) || after.afterPosition !== '0') return fail('原宿主 rowid/cursor/position 与切点不闭合')
     if (retainedDeletedHostIds.has(documentId)
       && (!deletions.has('doc:' + documentId) || originalDocuments.has(documentId) || documents.has(documentId)))
@@ -144,14 +208,11 @@ function observe(db: Database.Database, { copy, retainedCut, value, stageManifes
     const target = groups.get(groupId)
     if (!target) return []
     const before = groupGuard(row.value), after = allocatedGuard(target.after), lifecycle = lifecycles.get(groupId)
-    const final = finalGroups.get(target.targetRowId)
-    if (!target.beforeCurrent || target.currentSourceRowId !== row.original.sourceRowId
+    const final = groupsById.get(target.targetRowId)
+    if (!target.beforeCurrent || target.currentSourceRowId !== row.sourceRowId
       || !same(allocatedGuard(target.beforeCurrent), before) || !lifecycle || !final || after.historyPosition !== 0)
       return fail('原组 rowid/guard/lifecycle 与切点不闭合')
-    for (const column of ['id', 'creation_id', 'created_at', 'origin_json']) {
-      if (!same(final[groupsById.columns.indexOf(column)], row.original.cells[row.table.columns.indexOf(column)]))
-        return fail('原组完整 immutable tuple 与最终 SQL 不同')
-    }
+    if (!same(final, row.groupCells)) return fail('原组完整 immutable tuple 与最终 SQL 不同')
     const disposition = deletions.has('group:' + groupId) || sourceRetirements.has(groupId) ? 'deleted-evidence' as const
       : lifecycle.state === 'retired-create' ? 'retired-evidence' as const : 'active' as const
     if ((target.disposition === 'active') !== (disposition === 'active')) changedGroupDispositions.push(groupId)
@@ -162,7 +223,7 @@ function observe(db: Database.Database, { copy, retainedCut, value, stageManifes
     const target = instances.get(instanceId)
     if (!target) return []
     const beforeBindingVersion = text(row.value.binding_version)
-    if (target.currentSourceRowId !== row.original.sourceRowId || target.beforeBindingVersion !== beforeBindingVersion)
+    if (target.currentSourceRowId !== row.sourceRowId || target.beforeBindingVersion !== beforeBindingVersion)
       return fail('原实例 rowid/binding 与切点不闭合')
     return [{ instanceId, groupId: text(row.value.group_id), hostDocumentId: text(row.value.host_document_id),
       beforeBindingVersion, afterBindingVersion: target.afterBindingVersion }]
@@ -170,28 +231,24 @@ function observe(db: Database.Database, { copy, retainedCut, value, stageManifes
   const instanceChanges: SyncedRecoveryRemovedInstance[] = []
   const removedInstances = uncovered.find(row => row.family === 'instances')?.removed ?? []
   if (allowInstanceRemoval && removedInstances.length) {
-    const originalBlocks = originalRows('blocks', 'id')
-    const originalLedger = originalRows('block_identities', 'id')
-    const stageInstances = value.tables.find(table => table.name === 'synced_instances') ?? fail('缺已验证的 Stage3 实例表')
-    const remainingIds = new Set(stageInstances.rows.map(row => graph3Text(row.cells[stageInstances.columns.indexOf('instance_id')], raw.encoding)))
+    const remainingIds = new Set(finalInstanceIds)
     for (const instanceId of removedInstances) {
       const instance = originalInstances.get(instanceId) ?? fail('移除实例缺原 SQL 行')
-      const block = originalBlocks.get(instanceId)?.value, ledger = originalLedger.get(instanceId)?.value
+      const block = readRemovedMirror(db, 'blocks', instanceId, header.encoding)
+      const ledger = readRemovedMirror(db, 'block_identities', instanceId, header.encoding)
       const groupId = text(instance.value.group_id), hostDocumentId = text(instance.value.host_document_id)
       if (!block || block.type !== 'synced-block' || block.document_id !== hostDocumentId || block.depth !== instance.value.depth
         || block.parent_block_id !== instance.value.parent_block_id || parseSyncedBlockPayload(text(block.content)).groupId !== groupId
         || !ledger || ledger.last_owner_kind !== 'document' || ledger.last_owner_id !== hostDocumentId || ledger.state !== 'live'
         || ledger.created_at !== block.created_at || remainingIds.has(instanceId)) return fail('移除实例的原镜像、出生或目标 SQL 不闭合')
       instanceChanges.push({ instanceId, createdAt: text(block.created_at), before: { groupId, hostDocumentId,
-        bindingVersion: text(instance.value.binding_version), rowId: instance.original.sourceRowId,
+        bindingVersion: text(instance.value.binding_version), rowId: instance.sourceRowId,
         parentBlockId: instance.value.parent_block_id === null ? null : text(instance.value.parent_block_id),
         depth: position(instance.value.depth) }, after: null })
     }
   }
   const currentHistory = { documents: oldDocuments, hosts: oldHosts, hostCuts, groups: oldGroups, instances: oldInstances,
     retainedOperations, retainedPins }
-  const hasStructuralHistory = Boolean(originalHosts.size || hostCuts.length || originalGroups.size || originalInstances.size)
-  const operationOnly = !hasStructuralHistory && operations.some(row => isRetainedProtocol5Operation(db, row, allocation.workspace.workspaceScope))
   const canRepresentCurrent = !uncovered.some(row => row.removed.length && (row.family !== 'instances' || !allowInstanceRemoval))
     && !scopeChanged.length && !changedGroupDispositions.length
     && Boolean(oldHosts.length || hostCuts.length || oldGroups.length || oldInstances.length || operationOnly)
@@ -211,8 +268,8 @@ function observe(db: Database.Database, { copy, retainedCut, value, stageManifes
     const capture = auditRestoreKnowledgeConnection(db)
     assertEmptyRestoreKnowledge(db, capture)
     const diagnostic = readRestoreKnowledgeCapture(capture), coverage = readRawPriorKnowledgeCoverageOwned(db)
-    if (!diagnostic || diagnostic.schemaVersion !== raw.schemaVersion || diagnostic.workspaceScope !== raw.workspaceScope
-      || diagnostic.recoveryEpoch !== raw.recoveryEpoch || prior.boundaries.size || coverage.entries.length)
+    if (!diagnostic || diagnostic.schemaVersion !== header.schemaVersion || diagnostic.workspaceScope !== header.workspaceScope
+      || diagnostic.recoveryEpoch !== header.recoveryEpoch || prior.boundaries.size || coverage.entries.length)
       return fail('普通切点必须由真实原 current 空史和原 scope/epoch 证明')
     ordinaryCut = { kind: 'ordinary-empty-epoch-cut', version: 1, operationId: copy.operationId,
       beforeWorkspaceScope: allocation.workspace.workspaceScope, afterWorkspaceScope: allocation.workspace.workspaceScope,
@@ -221,9 +278,9 @@ function observe(db: Database.Database, { copy, retainedCut, value, stageManifes
   }
   return {
     operationId: copy.operationId, stageId: retainedCut.context.stageId, stageManifestHash,
-    physicalObservationHash: value.physicalObservationHash, currentCopyManifestHash: copy.manifestHash,
+    physicalObservationHash, currentCopyManifestHash: copy.manifestHash,
     originalInventoryHash: copy.value.originalInventoryHash, retainedCutHash: retainedCut.cutHash,
-    retainedCutRecordHash: retainedCut.record.hash, retainedArchiveTables: retainedCut.archiveTables,
+    retainedCutRecordHash: retainedCut.recordHash, retainedArchiveTables: retainedCut.archiveTables,
     proposedBoundary: boundary, proposedReceipt: receipt, proposedEpochRequestHash: receipt ? recoveryEpochRequestHash(receipt) : null,
     unresolvedCurrentHistory: boundary ? null : currentHistory, uncovered, changedInstanceOwners: scopeChanged, changedGroupDispositions,
     noCurrentSyncHistory, ...(ordinaryCut ? { ordinaryCut } : {}),

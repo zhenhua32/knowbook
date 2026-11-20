@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
 import type { DocumentBlockDraft, DocumentDetail, DocumentTreeNode } from '@shared/contracts'
 import { isListBlockType } from '@shared/blockTypes'
@@ -9,6 +9,7 @@ import { useDialogCloseFocus } from '../hooks/useDialogCloseFocus'
 import { trapFocusWithinDialog } from '../utils/dialogFocus'
 import { isImeKeyboardEvent } from '../utils/imeKeyboard'
 import { getErrorMessage } from '../utils/errorMessage'
+import { getCanonicalInlineRuntime } from '../features/synced-blocks/inlineRuntime'
 import { clearStagedCrossPageMove, readStagedCrossPageMove, type BlockMoveDestination, type CrossPageMoveMode } from '../utils/blockMoveActions'
 import './document-capture.css'
 import './document-block-move.css'
@@ -32,8 +33,14 @@ function flattenDocuments(nodes: DocumentTreeNode[]): DocumentTreeNode[] {
   return nodes.flatMap(node => [node, ...flattenDocuments(node.children)])
 }
 
-export default function DocumentBlockMoveDialog(props: DocumentBlockMoveDialogProps) {
-  const { isZh, sourceDocumentId, sourceDocumentTitle, selection, documents, busy, error, onMove } = props
+export default function ConnectedDocumentBlockMoveDialog(props: DocumentBlockMoveDialogProps) {
+  const runtime = getCanonicalInlineRuntime()
+  const ready = useSyncExternalStore(runtime.subscribe, runtime.getReadyMoveHost) === props.sourceDocumentId
+  return <DocumentBlockMoveDialog {...props} ready={ready} />
+}
+
+export function DocumentBlockMoveDialog(props: DocumentBlockMoveDialogProps & { ready: boolean }) {
+  const { isZh, sourceDocumentId, sourceDocumentTitle, selection, documents, busy, error, onMove, ready } = props
   const currentProps = useRef(props)
   currentProps.current = props
   const dialog = useRef<HTMLDialogElement>(null), search = useRef<HTMLInputElement>(null)
@@ -85,7 +92,7 @@ export default function DocumentBlockMoveDialog(props: DocumentBlockMoveDialogPr
     if (!submittingLock.current && !currentProps.current.busy && !composing.current) currentProps.current.onClose()
   }
   const move = async (mode?: CrossPageMoveMode) => {
-    if (submittingLock.current || currentProps.current.busy || composing.current || !target) return
+    if (submittingLock.current || currentProps.current.busy || composing.current || !target || mode !== 'stage' && !ready) return
     if (parentId && (mode || !targetDetail || !parents.some(parent => parent.id === parentId))) return
     const operation = actionFocus.begin()
     if (!operation) return
@@ -154,7 +161,8 @@ export default function DocumentBlockMoveDialog(props: DocumentBlockMoveDialogPr
       {staged ? <p className="document-capture-hint">{isZh ? `已暂存「${staged.sourceTitle}」到「${staged.targetTitle}」的移动。` : `Queued move from “${staged.sourceTitle}” to “${staged.targetTitle}”.`}</p> : null}
       {localError || error ? <p className="document-capture-error" role="alert">{localError || error}</p> : null}
     </form>
-    <footer className="document-capture-footer"><span role="status">{disabled ? (isZh ? '正在移动…' : 'Moving…') : ''}</span>
+    <footer className="document-capture-footer"><span role="status">{disabled ? (isZh ? '正在移动…' : 'Moving…')
+      : target && !ready ? (isZh ? '正在加载编辑器…' : 'Loading the editor…') : ''}</span>
       <button type="button" className="secondary-button" disabled={disabled} onClick={close}>{isZh ? '取消' : 'Cancel'}</button>
       {staged ? <>
         <button type="button" className="secondary-button" disabled={disabled} onClick={() => { void clearStagedCrossPageMove().then(cleared => {
@@ -162,11 +170,11 @@ export default function DocumentBlockMoveDialog(props: DocumentBlockMoveDialogPr
           if (cleared) setStaged(null)
           else setLocalError(isZh ? '请先确认原批量移动结果。' : 'Resolve the original batch move first.')
         }) }}>{isZh ? '清除批量' : 'Clear batch'}</button>
-        <button type="button" className="secondary-button" disabled={disabled || !target || !!parentId || staged.sourceId === sourceDocumentId}
+        <button type="button" className="secondary-button" disabled={disabled || !ready || !target || !!parentId || staged.sourceId === sourceDocumentId}
           onClick={() => { void move('batch') }}>{isZh ? '移动批量' : 'Move batch'}</button>
       </> : <button type="button" className="secondary-button" disabled={disabled || !target || !!parentId}
         onClick={() => { void move('stage') }}>{isZh ? '加入批量' : 'Add to batch'}</button>}
-      <button type="submit" form={formId} className="primary-button" disabled={disabled || !target}>{isZh ? '移动' : 'Move'}</button>
+      <button type="submit" form={formId} className="primary-button" disabled={disabled || !ready || !target}>{isZh ? '移动' : 'Move'}</button>
     </footer>
   </dialog>, document.body)
 }

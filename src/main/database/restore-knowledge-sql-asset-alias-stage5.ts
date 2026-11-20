@@ -28,6 +28,8 @@ import { projectTemplate3ContentStringEdits, template3ContentStringRanges } from
 import { assertOriginCatalogDirectory, syncOriginCatalogAncestors } from './restore-knowledge-origin-bundle-files'
 import { restoreDirectory, syncRestoreDirectory, syncRestoreFile } from './restore-safety-files'
 import { restoreSqliteFilename } from './restore-safety-sqlite-path'
+import { withStoredNavigation3TableScan, type StoreNavigation3Table } from './restore-knowledge-navigation3-tables'
+import { deriveStage4AliasNavigation, type Stage4AliasNavigationInput } from './restore-knowledge-derived-stage4-observation'
 
 type Source = Awaited<ReturnType<typeof readRootRestoreAssetAliasSqlSource5>>
 type Sql = Source['source']['physical']
@@ -273,12 +275,12 @@ async function writeCopy(directory: string, source: PhysicalCopy, input: Plan) {
   }
 }
 
-function assertSqlReadback(db: Database.Database, physical: Sql, source: PhysicalCopy, input: Plan) {
+function assertSqlReadback(db: Database.Database, physical: Sql, source: PhysicalCopy, input: Plan, publish?: StoreNavigation3Table) {
   readRootRestoreStage3MarkerOwned(db, source.marker)
   if (!same(readRootRestoreStage3NativeFtsProjection3(db, false), physical.nativeFtsProjection)) return fail('原生 FTS 的稳定映射变化')
   const content = new Map<string, Table>(physical.tables.map(table => [table.name, table]))
   const protectedTables = new Map(physical.protectedObservations.map(table => [table.table, table]))
-  const tableNames: string[] = [], readback = new Map<string, Table>()
+  const tableNames: string[] = []
   const changedRows = new Map<string, Map<string, string>>()
   for (const { table, row, column, rewritten } of input.changes.values()) {
     const id = table.name + ':' + row.targetRowId
@@ -292,20 +294,25 @@ function assertSqlReadback(db: Database.Database, physical: Sql, source: Physica
     if (expected) {
       if (encoding !== expected.encoding || !same(actual.columns, expected.columns) || !same(actual.primaryKey, expected.primaryKey))
         return fail('实际内容表身份变化')
-      const rows: Row[] = []
-      for (const observed of actual.rows) {
-        const row = expected.rows[rows.length]
-        if (!row || observed.sourceRowId !== row.targetRowId) return fail('实际内容表 rowid 顺序变化')
-        const changed = changedRows.get(expected.name + ':' + row.targetRowId)
-        const cells = changed ? row.cells.map((cell, index) => {
-          const value = changed.get(expected.columns[index])
-          return value === undefined ? cell : graph3Encode(value, expected.encoding)
-        }) : row.cells
-        if (!same(observed.cells, cells)) return fail('原行或声明改写之外的 SQL 数据变化')
-        rows.push(changed ? { ...row, cells: observed.cells } : row)
-      }
-      if (rows.length !== expected.rows.length) return fail('实际内容表行数变化')
-      readback.set(actual.name, { ...expected, rows })
+      const { rows: expectedRows, ...layout } = expected
+      const checked = function* () {
+        let ordinal = 0
+        for (const observed of actual.rows) {
+          const row = expectedRows[ordinal++]
+          if (!row || observed.sourceRowId !== row.targetRowId) return fail('实际内容表 rowid 顺序变化')
+          const changed = changedRows.get(expected.name + ':' + row.targetRowId)
+          const cells = changed ? row.cells.map((cell, index) => {
+            const value = changed.get(expected.columns[index])
+            return value === undefined ? cell : graph3Encode(value, expected.encoding)
+          }) : row.cells
+          if (observed.cells.length !== cells.length || observed.cells.some(([kind, value], index) => kind !== cells[index][0] || value !== cells[index][1]))
+            return fail('原行或声明改写之外的 SQL 数据变化')
+          yield { ...row, cells: observed.cells }
+        }
+        if (ordinal !== expectedRows.length) return fail('实际内容表行数变化')
+      }()
+      if (publish) publish(layout, checked)
+      else for (const _row of checked) { /* A plain alias read only needs the SQL proof. */ }
       content.delete(actual.name)
       return
     }
@@ -323,7 +330,25 @@ function assertSqlReadback(db: Database.Database, physical: Sql, source: Physica
   if (header.schemaVersion !== 27 || header.schemaHash !== source.schemaHash) return fail('原 schema 或版本变化')
   if (content.size || protectedTables.size) return fail('实际 SQL 回读缺少候选表或受保护表')
   if ((db.prepare('SELECT total_changes() AS n').get() as { n: number }).n !== 0) return fail('独立只读回读出现写入')
-  return { schemaHash: header.schemaHash, tableNames, tables: physical.tables.map(table => readback.get(table.name)!) }
+  return { schemaHash: header.schemaHash, tableNames }
+}
+
+function navigationEdits(plan: Plan): Stage4AliasNavigationInput['navigationEdits'] {
+  return [...plan.changes.values()].flatMap(({ table, row, column, navigationEdits }) => {
+    if (!navigationEdits) return []
+    if (table.name !== 'blocks' && table.name !== 'documents' || column !== 'content' && column !== 'summary')
+      return fail('导航改写不属于实际普通正文或摘要')
+    return [{ table: table.name, targetRowId: row.targetRowId, column, edits: navigationEdits }]
+  })
+}
+
+function readStage4AliasRows(db: Database.Database, physical: Sql, source: PhysicalCopy, plan: Plan, input: Source) {
+  return withStoredNavigation3TableScan(publish => assertSqlReadback(db, physical, source, plan, publish), (metadata, stored) => {
+    const byName = new Map(stored.map(table => [table.name, table]))
+    const tables = physical.tables.map(table => byName.get(table.name) ?? fail('缺派生回读的确切候选表'))
+    const { data, allocation } = input.source
+    return { ...metadata, navigation: deriveStage4AliasNavigation({ data, allocation, physical, tables, navigationEdits: navigationEdits(plan) }) }
+  })
 }
 
 function manifest(stageId: string, format: Format, input: Plan, inventory: readonly DurableSqlCapsuleFile[], lineage?: CanonicalLineage) {
@@ -345,7 +370,8 @@ function holdAliasDatabase(directory: string, value: Manifest, root: string) {
     absentFiles: inventory.filter(file => !file.present).map(file => join(database, file.name)) })
 }
 
-async function verify(directory: string, value: Manifest, input: Source, plan: Plan, source: PhysicalCopy, base: Base) {
+type Readback = ReturnType<typeof assertSqlReadback> & { navigation?: ReturnType<typeof deriveStage4AliasNavigation> }
+async function verify(directory: string, value: Manifest, input: Source, plan: Plan, source: PhysicalCopy, base: Base, derive: boolean) {
   const { root } = source, database = join(directory, 'database'), checks = join(directory, 'checks')
   const inventory = value.inventory, held = await holdAliasDatabase(directory, value, root)
   try {
@@ -353,11 +379,12 @@ async function verify(directory: string, value: Manifest, input: Source, plan: P
     await copyRootRestoreStage3Database3(database, probe, root, inventory)
     const probeIdentity = await assertOriginCatalogDirectory(probe, root)
     const db = new Database(restoreSqliteFilename(join(probe, 'knowbook.db')), { readonly: true, fileMustExist: true })
-    let raw: ReturnType<typeof assertSqlReadback>
+    let raw: Readback
     try {
       db.pragma('query_only=ON')
       db.pragma('foreign_keys=ON')
-      raw = db.transaction(() => assertSqlReadback(db, base.physical, source, plan))()
+      raw = db.transaction(() => derive ? readStage4AliasRows(db, base.physical, source, plan, input)
+        : assertSqlReadback(db, base.physical, source, plan))()
     } finally { db.close() }
     await assertRootRestoreStage3DatabaseReadonly3(probe, root, inventory)
     await input.assertOriginalBytes()
@@ -375,7 +402,7 @@ function mint(aliases: RootRestoreAssetAliasStage5, directory: string, value: Ma
   return Object.freeze({ stage, directory, stageId, manifestHash, value })
 }
 
-async function prepare(aliases: RootRestoreAssetAliasStage5, input: Source, base: Base, canonical?: CanonicalAddress) {
+async function prepare(aliases: RootRestoreAssetAliasStage5, input: Source, base: Base, canonical?: CanonicalAddress, derive = false) {
   const format = base.lineage ? 3 : 2, edits = plan(input, format, base)
   const source = physicalCopy(input, base), { root } = source
   const parent = collection(input.source.location), stageId = randomUUID(), directory = join(parent, stageId)
@@ -393,10 +420,10 @@ async function prepare(aliases: RootRestoreAssetAliasStage5, input: Source, base
     if (Buffer.byteLength(text) > maxManifestBytes) return fail('阶段清单超预算')
     await writeCapsule2AssetCopy(join(directory, 'manifest.json'), Buffer.from(text), root)
     await syncOriginCatalogAncestors(directory, root)
-    const raw = await verify(directory, value, input, edits, source, base)
+    const raw = await verify(directory, value, input, edits, source, base, derive)
     await verifyRootRestoreStage3FilesHeld3(held)
     assertRootRestoreStage3FilesHeld3(held)
-    return { alias: mint(aliases, directory, value, canonical), readback: { input, source, base, value, directory, raw, edits } }
+    return { alias: mint(aliases, directory, value, canonical), readback: { input, source, base, value, directory, raw } }
   } finally { closeRootRestoreStage3FilesHeld3(held) }
 }
 
@@ -407,7 +434,7 @@ export async function prepareRootRestoreSqlAssetAliasStage5(aliases: RootRestore
   return (await prepare(aliases, input, sqlBase(input))).alias
 }
 
-async function reopen(locator: Locator, input: Source, base: Base) {
+async function reopen(locator: Locator, input: Source, base: Base, derive = false) {
   const address = capsuleRecord(locator, ['stageId', 'expectedManifestHash'])
   const stageId = durableSqlDagUuid(address.stageId), expectedHash = durableSqlDagHash(address.expectedManifestHash)
   const source = physicalCopy(input, base)
@@ -421,23 +448,23 @@ async function reopen(locator: Locator, input: Source, base: Base) {
   if (text !== capsuleJson(value) + '\n') return fail('持久清单不同于真实附件改写计划')
   const held = base.lineage ? await holdRootRestorePhysicalStageOriginalBytes3(base.stage) : undefined
   try {
-    const raw = await verify(directory, value, input, edits, source, base)
+    const raw = await verify(directory, value, input, edits, source, base, derive)
     if (held) {
       await verifyRootRestoreStage3FilesHeld3(held)
       assertRootRestoreStage3FilesHeld3(held)
     }
-    return { input, source, base, value, directory, raw, edits }
+    return { input, source, base, value, directory, raw }
   } finally { if (held) closeRootRestoreStage3FilesHeld3(held) }
 }
 
-async function reconstruct({ aliases, locator, canonical }: Saved) {
+async function reconstruct({ aliases, locator, canonical }: Saved, derive = false) {
   if (canonical) {
     const { input, stage } = await reopenRootRestoreCanonicalAssetPhysicalWithAliasSource5(canonical.reference, canonical.combined,
       canonical.alias, canonical.physical)
-    return reopen(locator, input, sqlBase(input, stage))
+    return reopen(locator, input, sqlBase(input, stage), derive)
   }
   const input = await readRootRestoreAssetAliasSqlSource5(aliases)
-  return reopen(locator, input, sqlBase(input))
+  return reopen(locator, input, sqlBase(input), derive)
 }
 
 export async function reopenRootRestoreSqlAssetAliasStage5(aliases: RootRestoreAssetAliasStage5, locator: Locator) {
@@ -450,37 +477,32 @@ export async function readRootRestoreSqlAssetAliasStage5(stage: RootRestoreSqlAs
   return (await reconstruct(saved)).value
 }
 
-/** Fixed alias-to-derived boundary. The tables come from independent SQL
- * readback, the input graph from the same authenticated original observation. */
+/** The actual alias SQLite rows have been checked and consumed before handing
+ * route evidence and exact file coordinates to the derived writer. */
 export async function reopenRootRestoreSqlAssetAliasDerivationSource5(aliases: RootRestoreAssetAliasStage5, locator: Locator) {
-  const readback = await reconstruct({ aliases, locator })
+  const readback = await reconstruct({ aliases, locator }, true)
   return derivationSource(mint(aliases, readback.directory, readback.value), readback)
 }
 
 function derivationSource(alias: ReturnType<typeof mint>, readback: Awaited<ReturnType<typeof reopen>>) {
-  const { input, source, base, value, directory, raw, edits } = readback
-  const { location, referencePlanId, referenceManifestHash, data, allocation } = input.source
+  const { input, source, base, value, directory, raw } = readback
+  const { location, referencePlanId, referenceManifestHash, coverageOriginal, readRetainedAssetPolicy: readPolicy } = input.source
   const { physical, lineage } = base
-  const navigationEdits = [...edits.changes.values()].flatMap(({ table, row, column, navigationEdits }) => {
-    if (!navigationEdits) return []
-    if (table.name !== 'blocks' && table.name !== 'documents' || column !== 'content' && column !== 'summary')
-      return fail('导航改写不属于实际普通正文或摘要')
-    return [{ table: table.name, targetRowId: row.targetRowId, column, edits: navigationEdits }]
-  })
+  const { schemaHash, tableNames, navigation } = raw
+  if (!navigation) return fail('缺同一 SQL 回读的派生导航证明')
   const { assertOriginalBytes } = input, physicalStage = base.stage, root = source.root
-  const readPolicy = input.source.readRetainedAssetPolicy
+  const { physicalObservationHash, nativeFtsProjection } = physical
   const closure = { ...value.remaining, remainingCanonicalOccurrences: physical.canonicalAssets?.remainingCanonicalOccurrences ?? 0,
     observationHash: value.assetClosureObservationHash }
-  return Object.freeze({ alias, location, referencePlanId, referenceManifestHash, physical, physicalStage, lineage,
+  return Object.freeze({ alias, location, referencePlanId, referenceManifestHash, physicalObservationHash, nativeFtsProjection, physicalStage, lineage,
     closure, readPolicy, async readCoverageOriginal(reference: RootRestoreReferencePlan3) {
       const binding = await readRootRestoreReferenceCopySource3(reference)
       if (binding.referencePlanId !== referencePlanId || binding.referenceManifestHash !== referenceManifestHash
         || !same(binding.location, location)) return fail('最终 SQL 不属于实际覆盖 reference owner')
-      const original = input.source.coverageOriginal
-      if (original.descriptorHash !== binding.originalDescriptorHash) return fail('最终覆盖原件 descriptor 不同')
-      return original.original
+      if (coverageOriginal.descriptorHash !== binding.originalDescriptorHash) return fail('最终覆盖原件 descriptor 不同')
+      return coverageOriginal.original
     },
-    data, allocation, ...raw, navigationEdits, marker: source.marker, databaseDirectory: join(directory, 'database'),
+    schemaHash, tableNames, navigation, marker: source.marker, databaseDirectory: join(directory, 'database'),
     holdOriginalBytes: () => holdAliasDatabase(directory, value, root), async assertOriginalBytes() {
       await assertOriginalBytes()
       if (lineage) {
@@ -494,13 +516,13 @@ function derivationSource(alias: ReturnType<typeof mint>, readback: Awaited<Retu
 /** Compose the independent alias and SQL writers with their own fresh readback. */
 export async function prepareRootRestoreSqlAssetAliasDerivationFromCombined5(combined: RootRestoreSqlAssetStage5) {
   const { aliases, input } = await prepareRootRestoreAssetAliasWithSqlSource5(combined)
-  const { alias, readback } = await prepare(aliases.owner, input, sqlBase(input))
+  const { alias, readback } = await prepare(aliases.owner, input, sqlBase(input), undefined, true)
   return { aliases, source: derivationSource(alias, readback) }
 }
 
 export async function reopenRootRestoreSqlAssetAliasDerivationFromCombined5(combined: RootRestoreSqlAssetStage5, aliasLocator: Locator, sqlLocator: Locator) {
   const { aliases, input } = await reopenRootRestoreAssetAliasWithSqlSource5(combined, aliasLocator)
-  const readback = await reopen(sqlLocator, input, sqlBase(input))
+  const readback = await reopen(sqlLocator, input, sqlBase(input), true)
   return { aliases, source: derivationSource(mint(aliases.owner, readback.directory, readback.value), readback) }
 }
 
@@ -508,7 +530,7 @@ export async function prepareRootRestoreCanonicalAliasDerivationFromCombined5(re
   historyScope?: PreparedRestoreHistoryScope3, stageScope?: RootRestoreStageInputs5) {
   const { aliases, input, stage: canonical } = await prepareRootRestoreCanonicalAssetPhysicalWithAliasSource5(reference, combined, historyScope, stageScope)
   const address = { reference, combined, alias: addressOf(aliases), physical: addressOf(canonical) }
-  const { alias, readback } = await prepare(aliases.owner, input, sqlBase(input, canonical), address)
+  const { alias, readback } = await prepare(aliases.owner, input, sqlBase(input, canonical), address, true)
   return { aliases, canonical, source: derivationSource(alias, readback) }
 }
 
@@ -517,12 +539,12 @@ export async function reopenRootRestoreCanonicalAliasDerivationFromCombined5(ref
   const { aliases, input, stage: canonical } = await reopenRootRestoreCanonicalAssetPhysicalWithAliasSource5(reference, combined,
     aliasLocator, physicalLocator)
   const address = { reference, combined, alias: addressOf(aliases), physical: addressOf(canonical) }
-  const readback = await reopen(sqlLocator, input, sqlBase(input, canonical))
+  const readback = await reopen(sqlLocator, input, sqlBase(input, canonical), true)
   return { aliases, canonical, source: derivationSource(mint(aliases.owner, readback.directory, readback.value, address), readback) }
 }
 
 export async function readRootRestoreSqlAssetAliasDerivationSource5(stage: RootRestoreSqlAssetAliasStage5) {
   const saved = owners.get(stage) ?? fail('不是实际 SQL 附件地址 owner')
-  const readback = await reconstruct(saved)
+  const readback = await reconstruct(saved, true)
   return derivationSource(mint(saved.aliases, readback.directory, readback.value, saved.canonical), readback)
 }

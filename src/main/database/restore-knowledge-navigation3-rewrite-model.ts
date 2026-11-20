@@ -10,7 +10,9 @@ import type { RootRestoreMergedContentChoices3 } from './restore-knowledge-merge
 import { assertMerge3JsonBudget, type Merge3OriginalRowRef } from './restore-knowledge-merge3-storage'
 import { resolveFinalNavigation3, withStoredRootRestoreNavigationMergeContext3, withStoredMerge3NavigationFinalIndex3,
   type Navigation3Cell, type Navigation3ContextScope, type Navigation3FinalScope,
-  type Navigation3Table, type StoredNavigation3Index, type StoredNavigation3MergeContext } from './restore-knowledge-navigation3-merge-context'
+  type StoredNavigation3Index, type StoredNavigation3MergeContext } from './restore-knowledge-navigation3-merge-context'
+import { materializeNavigation3Tables, navigation3TableHashInput, projectNavigation3TableRows,
+  withNavigation3TextPatches, withStoredNavigation3Tables, type Navigation3TableSource } from './restore-knowledge-navigation3-tables'
 import { applyNavigation3TextEdits, createNavigation3RangeProjection, renderNavigation3Destination,
   type Navigation3FinalTarget, type Navigation3TextEdit } from './restore-knowledge-navigation3-rewrite-cells'
 
@@ -21,6 +23,9 @@ type Edit = Navigation3TextEdit & { side: 'source' | 'current'; table: Navigatio
 const same = (left: unknown, right: unknown) => capsuleJson(left) === capsuleJson(right)
 const fieldKey = (cell: Navigation3Cell) => graph3Key(cell.table, cell.rowKey, cell.column)
 const exactKey = (key: Destination['key']) => graph3Key(key.blockId, key.from, key.to, key.raw, key.syntax)
+type MergeMetadata = Pick<ReturnType<typeof deriveRootRestoreMergedContent3>, 'mergedContentHash' | 'conservationHash' | 'identityAllocationHash'
+  | 'sourceMaterialHash' | 'currentMaterialHash' | 'choices' | 'targetEncoding' | 'conflicts'>
+export type ScopedNavigation3Rewrite = ReturnType<typeof rewriteOrdinaryNavigation>
 function targetMatches(expected: Navigation3FinalTarget, actual: ReturnType<typeof resolveFinalNavigation3>): boolean {
   if (actual.kind !== expected.kind || !('documentId' in actual) || actual.documentId !== expected.documentId) return false
   return expected.kind === 'block' ? actual.blockId === expected.blockId
@@ -31,15 +36,33 @@ function targetMatches(expected: Navigation3FinalTarget, actual: ReturnType<type
  * The old side's resolution is fixed first. A current occupant of an old source
  * path is never consulted to choose the destination identity. */
 export function deriveRootRestoreNavigationRewrite3(data: Graph3Inputs, choices?: RootRestoreMergedContentChoices3) {
-  const merged = deriveRootRestoreMergedContent3(data, choices)
-  return withStoredRootRestoreNavigationMergeContext3(data, merged, context => rewriteOrdinaryNavigation(data, merged, context))
+  return withRootRestoreNavigationRewrite3(data, choices, ({ tables: scopedTables, navigationRewriteHash, ...metadata }) => {
+    const body = { ...metadata, tables: materializeNavigation3Tables(scopedTables) }
+    assertMerge3JsonBudget(body)
+    return freezeCapsuleValue({ ...body, navigationRewriteHash })
+  })
 }
 
-function rewriteOrdinaryNavigation(data: Graph3Inputs, merged: ReturnType<typeof deriveRootRestoreMergedContent3>,
-  context: StoredNavigation3MergeContext) {
+/** Canonical restore consumes the checked ordinary rows inside their file scope. */
+export function withRootRestoreNavigationRewrite3<Result>(data: Graph3Inputs, choices: RootRestoreMergedContentChoices3 | undefined,
+  read: (ordinary: ScopedNavigation3Rewrite) => Result): Result {
+  return withStoredNavigation3Tables(() => {
+    const { mergedContentHash, conservationHash, identityAllocationHash, sourceMaterialHash, currentMaterialHash,
+      choices: selected, targetEncoding, conflicts, tables } = deriveRootRestoreMergedContent3(data, choices)
+    return { metadata: { mergedContentHash, conservationHash, identityAllocationHash, sourceMaterialHash,
+      currentMaterialHash, choices: selected, targetEncoding, conflicts }, tables }
+  }, (metadata, tables) => {
+    const merged = { ...metadata, tables }
+    return withNavigation3TextPatches((write, readText) =>
+      withStoredRootRestoreNavigationMergeContext3(data, merged, context => rewriteOrdinaryNavigation(data, merged, context, write, readText)), read)
+  })
+}
+
+function rewriteOrdinaryNavigation(data: Graph3Inputs, merged: MergeMetadata & { tables: readonly Navigation3TableSource[] },
+  context: StoredNavigation3MergeContext, write: (key: string, text: string) => void, readText: (key: string) => string | undefined) {
   const conflicts: Navigation3RewriteConflict[] = [], unresolved: Array<{ side: 'source' | 'current'; scopeId: string;
     rowKey: string; key: Destination['key']; sourceRef: Merge3OriginalRowRef; reason: string; target: Destination['target'] }> = []
-  const editsByCell = new Map<string, Edit[]>(), cells = new Map<string, Navigation3Cell>()
+  const editsByCell = new Map<string, Edit[]>(), cells = new Map<string, Omit<Navigation3Cell, 'text'>>()
   const editsByRange = new Map<string, Edit>()
   const finalDocuments = new Map(context.final.documents.map(document => [document.id, document]))
   const selectedText = new Map(context.final.documents.map(document => [graph3Key('documents', document.rowKey, 'summary'), document.summary]))
@@ -47,6 +70,10 @@ function rewriteOrdinaryNavigation(data: Graph3Inputs, merged: ReturnType<typeof
   for (const block of context.final.physicalLocations) {
     const table = block.groupId === null ? 'blocks' : 'synced_group_blocks'
     selectedBlocks.set(graph3Key(table, block.rowKey, 'content'), block.id)
+  }
+  const selectedBody = (key: string) => {
+    const blockId = selectedBlocks.get(key)
+    return selectedText.get(key) ?? (blockId === undefined ? undefined : context.final.physicalBlock(blockId)?.block.content)
   }
   const conflict = (code: string, scope: Navigation3ContextScope, rowKeys: readonly string[], detail: unknown) =>
     conflicts.push({ code, side: scope.side, scopeId: scope.scopeId, rowKeys, detail })
@@ -59,6 +86,7 @@ function rewriteOrdinaryNavigation(data: Graph3Inputs, merged: ReturnType<typeof
     const host = finalDocuments.get(scope.finalDocumentId)
       ?? graph3Conflict('navigation-final-host-missing', scope.scopeId)
     const originals = new Map(scope.blocks.map(block => [block.occurrenceKey, block]))
+    const bodies = new Map<string, string>()
     for (const link of scope.destinations) {
       if (!link.cell || link.finalOccurrenceKey === null) continue
       const cell = link.cell, key = fieldKey(cell), old = originals.get(link.key.blockId)
@@ -66,12 +94,12 @@ function rewriteOrdinaryNavigation(data: Graph3Inputs, merged: ReturnType<typeof
         || !old.cell || !same(old.cell.sourceRef, cell.sourceRef)) return graph3Conflict('navigation-original-cell-provenance', link.key)
       // Upstream structure changes may change a synced ref payload, but never
       // ordinary destinations or canonical text before this explicit transform.
-      const previous = cells.get(key), blockId = selectedBlocks.get(key)
-      const text = previous?.text ?? selectedText.get(key) ?? (blockId === undefined ? undefined : context.final.physicalBlock(blockId)?.block.content)
+      const previous = cells.get(key), text = bodies.get(key) ?? selectedBody(key)
       if (text !== cell.text || old.block.content !== text) return graph3Conflict('navigation-original-cell-already-rewritten', cell.rowKey)
+      bodies.set(key, text)
       if (previous && (previous.targetRowId !== cell.targetRowId || previous.encoding !== cell.encoding || !same(previous.sourceRef, cell.sourceRef)))
         return graph3Conflict('navigation-conflicting-cell-occurrences', cell.rowKey)
-      if (!previous) cells.set(key, { ...cell, text })
+      if (!previous) { const { text: _text, ...address } = cell; cells.set(key, address) }
       if (link.target.kind === 'captured-binding' || link.location.groupId !== null) {
         if (link.target.kind !== 'opaque') defer(scope, link, 'captured-canonical-binding-awaits-qualified-target-proof')
         continue
@@ -99,25 +127,28 @@ function rewriteOrdinaryNavigation(data: Graph3Inputs, merged: ReturnType<typeof
       editsByCell.set(key, list)
     }
   }
-  const changedText = new Map<string, string>(), edits: Edit[] = []
+  const changedKeys = new Set<string>(), changedTables = new Set<Navigation3Cell['table']>(), edits: Edit[] = []
+  const changedText = (key: string) => changedKeys.has(key) ? readText(key) ?? graph3Conflict('navigation-rewrite-cell-missing', key) : undefined
   let valueBytes = storageValueBytes(merged.tables)
   for (const [key, list] of editsByCell) {
     const cell = cells.get(key)!, ordered = [...list].sort((a, b) => a.from - b.from || a.to - b.to)
-    const text = applyNavigation3TextEdits(cell.text, ordered)
+    const before = selectedBody(key) ?? graph3Conflict('navigation-rewrite-cell-missing', key), text = applyNavigation3TextEdits(before, ordered)
     const encoding = cell.encoding === 'UTF-8' ? 'utf8' : 'utf16le'
-    valueBytes += Buffer.byteLength(text, encoding) - Buffer.byteLength(cell.text, encoding)
-    changedText.set(key, text); for (const edit of ordered) edits.push(edit)
+    valueBytes += Buffer.byteLength(text, encoding) - Buffer.byteLength(before, encoding)
+    write(key, text); changedKeys.add(key); changedTables.add(cell.table)
+    for (const edit of ordered) edits.push(edit)
   }
   if (valueBytes > CAPSULE2_RAW_MAX_VALUE_BYTES) return graph3Conflict('navigation-final-storage-value-budget', null)
-  const tables = merged.tables.map(table => ({ ...table, rows: table.rows.map(row => {
-    const column = table.name === 'documents' ? 'summary' : table.name === 'blocks' || table.name === 'synced_group_blocks' ? 'content' : null
-    const changed = column === null ? undefined : changedText.get(graph3Key(table.name, row.key, column))
-    if (changed === undefined || column === null) return row
+  const tables = merged.tables.map(table => {
+    if (table.name !== 'documents' && table.name !== 'blocks' && table.name !== 'synced_group_blocks' || !changedTables.has(table.name)) return table
+    const column = table.name === 'documents' ? 'summary' : 'content'
     const index = table.columns.indexOf(column)
     if (index < 0) return graph3Conflict('navigation-final-column-missing', column)
-    return { ...row, cells: row.cells.map((cell, i) => i === index ? graph3Encode(changed, table.encoding) : cell) }
-  }) }))
-  assertMerge3JsonBudget(tables)
+    return projectNavigation3TableRows(table, row => {
+      const changed = changedText(graph3Key(table.name, row.key, column))
+      return changed === undefined ? row : { ...row, cells: row.cells.map((cell, i) => i === index ? graph3Encode(changed, table.encoding) : cell) }
+    })
+  })
   return withStoredMerge3NavigationFinalIndex3(data, tables, final => {
     const rangeProjections = new Map([...editsByCell].map(([key, list]) => [key, createNavigation3RangeProjection(list)]))
     const unchangedRange = createNavigation3RangeProjection([])
@@ -137,7 +168,7 @@ function rewriteOrdinaryNavigation(data: Graph3Inputs, merged: ReturnType<typeof
           if (!destinationScope) return graph3Conflict('navigation-final-scope-missing', scope.scopeId)
           destinations = new Map(destinationScope.destinations.map(link => [exactKey(link.key), link]))
         }
-        const text = changedText.get(fieldKey(cell)) ?? cell.text
+        const text = changedText(fieldKey(cell)) ?? cell.text
         const range = (rangeProjections.get(fieldKey(cell)) ?? unchangedRange)(link.key.from, link.key.to)
         if (!range) return graph3Conflict('navigation-final-range-overlap', link.key)
         const key = { ...link.key, blockId: link.finalOccurrenceKey!, ...range, raw: text.slice(range.from, range.to) }
@@ -170,7 +201,7 @@ function rewriteOrdinaryNavigation(data: Graph3Inputs, merged: ReturnType<typeof
       sourceNavigationInputHash: context.sourceNavigationInputHash, currentNavigationInputHash: context.currentNavigationInputHash,
       conservationHash: merged.conservationHash, identityAllocationHash: merged.identityAllocationHash,
       sourceMaterialHash: merged.sourceMaterialHash, currentMaterialHash: merged.currentMaterialHash, choices: merged.choices,
-      targetEncoding: merged.targetEncoding, tables, edits, projections, unresolved,
+      targetEncoding: merged.targetEncoding, edits, projections, unresolved,
       finalSyntaxIndexHash: final.indexHash, finalHeadingNamespaces: final.headingNamespaces,
       conflicts: [...merged.conflicts, ...conflicts], candidateConflictFree: merged.conflicts.length === 0 && conflicts.length === 0,
       ordinaryNavigationCellsRewritten: true as const, completeFinalScopesReparsed: true as const,
@@ -179,13 +210,14 @@ function rewriteOrdinaryNavigation(data: Graph3Inputs, merged: ReturnType<typeof
       referenceRewriteComplete: false as const, semanticValidationComplete: false as const,
       sourcePolicyReplayed: false as const, sourceHistoryReplayed: false as const, acceptedCoverage: false as const, effective: false as const, permit: false as const }
     assertMerge3JsonBudget(body)
-    const navigationRewriteHash = hashBoundedCapsuleJson(body, CAPSULE2_RAW_MAX_JSON_BYTES, 'knowbook.restore.navigation3.rewritten-cells.v1\0')
+    const navigationRewriteHash = hashBoundedCapsuleJson({ ...body, tables: navigation3TableHashInput(tables) },
+      CAPSULE2_RAW_MAX_JSON_BYTES, 'knowbook.restore.navigation3.rewritten-cells.v1\0')
     if (!navigationRewriteHash) return graph3Conflict('navigation-rewrite-hash-budget', null)
-    return freezeCapsuleValue({ ...body, navigationRewriteHash })
+    return Object.freeze({ ...freezeCapsuleValue(body), tables, navigationRewriteHash })
   })
 }
 
-function storageValueBytes(tables: readonly Navigation3Table[]) {
+function storageValueBytes(tables: readonly Navigation3TableSource[]) {
   let bytes = 0
   for (const table of tables) for (const row of table.rows) for (const cell of row.cells) {
     bytes += cell[0] === 'text' || cell[0] === 'blob' ? cell[1].length / 4 * 3 - (cell[1].endsWith('==') ? 2 : cell[1].endsWith('=') ? 1 : 0) : 8
@@ -195,7 +227,7 @@ function storageValueBytes(tables: readonly Navigation3Table[]) {
 }
 
 function validateDefinitionEnvironments(scopes: Iterable<Navigation3ContextScope>, final: StoredNavigation3Index,
-  changed: ReadonlyMap<string, string>,
+  changed: (key: string) => string | undefined,
   conflict: (code: string, scope: Navigation3ContextScope, rowKeys: readonly string[], detail: unknown) => void) {
   for (const scope of scopes) {
     const ordinary = scope.blocks.filter(block => block.cell && block.finalOccurrenceKey !== null && block.location.groupId === null)
@@ -205,7 +237,7 @@ function validateDefinitionEnvironments(scopes: Iterable<Navigation3ContextScope
     // Reparse the complete OLD environment with just the declared destination
     // edits. This permits changed hrefs while retaining semantic units/uses.
     const expected = captureSyncedCreateSourceFacts(scope.blocks.map(entry => ({ ...entry.block,
-      content: entry.cell ? changed.get(fieldKey(entry.cell)) ?? entry.block.content : entry.block.content })))
+      content: entry.cell ? changed(fieldKey(entry.cell)) ?? entry.block.content : entry.block.content })))
     const originals = new Map(scope.blocks.map(block => [block.occurrenceKey, block]))
     const actualUses = new Map(actual.uses.map(use => [use.blockId, use.definitions]))
     const actualEffective = new Map(actual.effectiveDefinitions.map(item => [item.key, item.definition]))

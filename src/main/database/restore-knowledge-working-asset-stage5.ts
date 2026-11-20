@@ -3,10 +3,11 @@ import { join } from 'node:path'
 import { collectStoredMarkdownAssetDestinations, projectSyncedPortableMarkdownAssetEdits } from '../../shared/syncedBlockPortable'
 import { ATTACHMENT_MAX_FILE_BYTES } from '../../shared/attachments'
 import { capsuleBytesHash, capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
+import { readWorkingAssetOriginalTable5 } from './restore-knowledge-assets5-original-rows'
 import { readCapsule2AssetManifest } from './restore-knowledge-capsule2-assets-files'
 import { CAPSULE_V3_ASSET_MAX_FILE_BYTES } from './restore-knowledge-capsule-v3-assets'
 import { durableSqlDagHash, durableSqlDagUuid } from './restore-knowledge-dag-model'
-import { graph3Rows, graph3Text } from './restore-knowledge-graph3-data'
+import { graph3Text } from './restore-knowledge-graph3-data'
 import { assertMerge3JsonBudget, type Merge3OriginalRowRef, type MergedRow3 } from './restore-knowledge-merge3-storage'
 import { createNavigation3DocumentBlockReader } from './restore-knowledge-navigation3-merge-context'
 import { applyNavigation3TextEdits, createNavigation3RangeProjection } from './restore-knowledge-navigation3-rewrite-cells'
@@ -107,27 +108,30 @@ function selectAssets(actual: Actual, format: Format) {
   }
 
   for (const role of actual.value.roles) {
-    const packet = actual.captured.pair[role.role], working = actual.captured.working[role.role]!
-    const records = by(working.records, item => capsuleJson([item.jobSettingKey, item.recordKey]))
-    const originals = by(graph3Rows(packet.source.sourceContent, 'documents'), row => String(row.value.id))
-    const originalBlocks = by(graph3Rows(packet.source.sourceContent, 'blocks'), row => String(row.value.id))
-    const physicalDocuments = by(packet.source.physical.documents, row => row.documentId)
-    const scopes = by(packet.source.assets.scopes, scope => capsuleJson(scope.source))
     const occurrences = new Map<string, Sealed[]>()
     for (const item of role.occurrences) {
       if (item.status !== 'sealed-blob' || item.evidence.kind !== 'settled-captured-base-alias') continue
       const key = capsuleJson(item.scopeSource), group = occurrences.get(key) ?? []
       group.push(item); occurrences.set(key, group)
     }
+    if (!occurrences.size) continue
+    const packet = actual.captured.pair[role.role], working = actual.captured.working[role.role]!
+    const records = by(working.records, item => capsuleJson([item.jobSettingKey, item.recordKey]))
+    const raw = packet.source.sourceContent
+    const originalDocuments = readWorkingAssetOriginalTable5(raw, 'documents'), documentRows = originalDocuments.indexBy('id')
+    const originalBlocks = readWorkingAssetOriginalTable5(raw, 'blocks'), blockRows = originalBlocks.indexBy('id')
+    const physicalDocuments = by(packet.source.physical.documents, row => row.documentId)
+    const scopes = by(packet.source.assets.scopes, scope => capsuleJson(scope.source))
     for (const items of occurrences.values()) {
       const first = items[0], savedRecord = records.get(capsuleJson([first.jobSettingKey, first.recordKey]))
       if (!savedRecord || savedRecord.provenance.resultHash !== first.resultHash) return fail('实际 W 原件不属于该入选 scope')
       const record = savedRecord.record
       if (!record || record.kind !== 'document') continue
-      const original = originals.get(record.id), scope = scopes.get(capsuleJson(['documents', record.id]))
-      if (!original || !scope || typeof original.value.summary !== 'string') continue
-      const target = selectedRows.get(capsuleJson([role.role, original.original.sourceRowId]))
-      const originalSummary = original.value.summary
+      const original = documentRows.get(record.id), scope = scopes.get(capsuleJson(['documents', record.id]))
+      if (!original || !scope) continue
+      const originalSummary = originalDocuments.cell(original, 'summary')
+      if (typeof originalSummary !== 'string') continue
+      const target = selectedRows.get(capsuleJson([role.role, original.sourceRowId]))
       const mappings = new Map<string, string>(), nativeItems: Sealed[] = []
       for (const item of items) {
         if (item.evidence.kind !== 'settled-captured-base-alias') continue
@@ -183,14 +187,17 @@ function selectAssets(actual: Actual, format: Format) {
         const cell = workingBody.byBodyPosition.get(workingAssetPosition5(item.destination))
         return cell ? [{ item, cell }] : []
       })
+      const oldContent = originalBlocks.cachedCell('content')
       for (const destination of scope.destinations.filter(item => item.section === 'body')) {
         const cell = originalBody.byBodyPosition.get(workingAssetPosition5(destination))
         if (!cell || cell.raw !== destination.raw) continue
-        const originalBlock = originalBlocks.get(cell.blockId), workingBlock = workingBlocks.get(cell.blockId)
-        if (!originalBlock || !workingBlock || originalBlock.value.document_id !== record.id || typeof originalBlock.value.content !== 'string') continue
-        const chosen = selectedBlocks.get(capsuleJson([role.role, originalBlock.original.sourceRowId]))
+        const originalBlock = blockRows.get(cell.blockId), workingBlock = workingBlocks.get(cell.blockId)
+        if (!originalBlock || !workingBlock || originalBlocks.cell(originalBlock, 'document_id') !== record.id) continue
+        const originalText = oldContent(originalBlock)
+        if (typeof originalText !== 'string') continue
+        const chosen = selectedBlocks.get(capsuleJson([role.role, originalBlock.sourceRowId]))
         if (!chosen || chosen.sourceRef.materialHash !== packet.materialHash) continue
-        const originalText = originalBlock.value.content, finalText = graph3Text(chosen.cells[blocks.columns.indexOf('content')], blocks.encoding)
+        const finalText = graph3Text(chosen.cells[blocks.columns.indexOf('content')], blocks.encoding)
         if (originalText.slice(cell.from, cell.to) !== cell.raw) return fail('原正文资产坐标与实际 SQL cell 不符')
         const portable = portableCell(originalText, workingBlock.content)?.(cell.from, cell.to)
         const final = finalCandidateRange(chosen, 'content', originalText, finalText, cell), finalBlock = finalBlocks.get(chosen.key)

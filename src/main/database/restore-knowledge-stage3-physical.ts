@@ -4,9 +4,8 @@ import { createHash, randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { readdir, rmdir, unlink } from 'node:fs/promises'
 import type { BigIntStats } from 'node:fs'
-import type { SyncedCanonicalWire, SyncedGroupWire } from '../../shared/synced-blocks'
-import { validateSyncedGroupWire } from '../../shared/syncedBlockValidation'
-import { validateSyncedWorkspaceGraph } from '../../shared/syncedBlockGraph'
+import type { SyncedCanonicalWire } from '../../shared/synced-blocks'
+import { isSyncedBlockId, SyncedValidationError, validateSyncedGroupWire } from '../../shared/syncedBlockValidation'
 import { canonicalSyncedPortableJson, projectSyncedGroupBudget } from '../../shared/syncedBlockPortable'
 import { capsuleBytesHash, capsuleJson, capsuleRecord, freezeCapsuleValue, validateDurableSqlCapsuleInventory,
   type DurableSqlCapsuleFile } from './restore-knowledge-capsule-model'
@@ -69,8 +68,7 @@ interface Saved {
 }
 const stages = new WeakMap<RootRestorePhysicalStage3, Saved>()
 export interface PreparedRestoreHistoryScope3 { readonly kind: 'main-prepared-restore-history-scope' }
-type PreparedHistory = { stage: RootRestorePhysicalStage3; value: PreparedPhysicalStage3['value']; retainedCut: Planned['retainedCut'];
-  assertAliasBytes: () => Promise<void> }
+type PreparedHistory = { stage: RootRestorePhysicalStage3; proof: ReturnType<typeof historyProof>; assertAliasBytes: () => Promise<void> }
 type PreparedAliasTransfer = { owner: RootRestoreAssetAliasStage5; readCopies: () => ReturnType<typeof readRootRestoreAssetAliasStageCopies5> }
 const preparedHistoryScopes = new WeakMap<PreparedRestoreHistoryScope3, { prepared?: PreparedHistory; transfer?: PreparedAliasTransfer }>()
 
@@ -272,13 +270,14 @@ function planSql(actual: Actual, preparedAt: string, cutContext: { stageId: stri
   const instanceTable = byName.get('synced_instances')!, instancesByGroup = new Map<string, Array<{instanceId:string;hostDocumentId:string;bindingVersion:string}>>()
   for (const row of instanceTable.rows) { const value = values({columns:instanceTable.columns,encoding:enc}, row), group = text(value.group_id), list = instancesByGroup.get(group) ?? []
     list.push({ instanceId: text(value.instance_id), hostDocumentId: text(value.host_document_id), bindingVersion: text(value.binding_version) }); instancesByGroup.set(group, list) }
+  for (const list of instancesByGroup.values()) list.sort((left, right) => left.instanceId < right.instanceId ? -1 : left.instanceId > right.instanceId ? 1 : 0)
   const oldLife = raw(actual, 'synced_group_lifecycle'), lifeIds = nextIds(oldLife.rows), lifecycleAdded: Row[] = []
   for (const [id, row] of headers) if (!originalGroups.has(id)) {
     const intent = intents.get(id), wire = wireById.get(id), value = values({ columns: byName.get('synced_groups')!.columns, encoding: enc }, row)
     if (!intent || intent.mode !== 'new-import-materialization' || !wire || intent.targetCreationId !== value.creation_id
       || intent.activationRevision !== value.revision || intent.activationTopologyRevision !== value.topology_revision)
       return fail('new group没有严格new-import生命周期意图/最终wire')
-    const instances = (instancesByGroup.get(id) ?? []).sort((a,b) => a.instanceId < b.instanceId ? -1 : a.instanceId > b.instanceId ? 1 : 0)
+    const instances = instancesByGroup.get(id) ?? []
     lifecycleAdded.push({ sourceRowId: lifeIds(), cells: encodeValues(oldLife.columns, enc, { group_id: id,
       creation_id: text(value.creation_id), state: 'active', state_version: 1n, exposure_state: 'unknown', create_history_id: null,
       activation_revision: text(value.revision), activation_topology_revision: text(value.topology_revision),
@@ -303,7 +302,7 @@ function planSql(actual: Actual, preparedAt: string, cutContext: { stageId: stri
     workspaceEpochAndDocumentCasAndHostCutPending:false,finalCurrentRetainedCutComplete:true})
   const expectedSyntaxIndexHash = canonical ? withStoredMerge3NavigationFinalIndex3(toReference3GraphInputs(actual.data, actual.allocation),
     canonical.tables, ({ indexHash }) => indexHash) : actual.candidate.finalSyntaxIndexHash
-  return { tables:retainedCut.tables,preCutTables:tables,retainedCut,retainedCutRowId,expectedWires,expectedSyntaxIndexHash,
+  return { tables:retainedCut.tables,preCutInstancesByGroup:instancesByGroup,retainedCut,retainedCutRowId,expectedWires,expectedSyntaxIndexHash,
     canonicalAssets: canonical?.facts,
     ledger: { ...oldLedger, rows: ledger }, ledgerAdded, lifecycleAdded, markerRowId,
     lifecycle: { ...oldLife, rows: [...oldLife.rows, ...lifecycleAdded].sort(rowOrder) }, encoding: enc,
@@ -584,50 +583,66 @@ function observeSql(db:Database.Database,actual:Actual,plan:Planned,marker:RootR
   const actualTables = actual.candidate.tables.map(table => {
     const observed = exactTables.get(table.name)
     if (!observed || observed.rows.length !== table.rows.length) return fail('实际候选表行数不符：' + table.name)
-    return { ...table, rows: table.rows.map((row, index) => {
+    let rows: Table['rows'][number][] | undefined
+    for (const [index, row] of table.rows.entries()) {
       const actualRow = observed.rows[index]
       if (row.targetRowId !== actualRow.sourceRowId) return fail('实际候选表 rowid 顺序不同：' + table.name)
-      return { ...row, cells: actualRow.cells }
-    }) }
-  })
-  const final=withStoredMerge3NavigationFinalIndex3(toReference3GraphInputs(actual.data,actual.allocation),actualTables,
-    ({indexHash,physicalBlocks,documents})=>({indexHash,physicalBlocks,documents}))
-  if(final.indexHash!==plan.expectedSyntaxIndexHash)return fail('实际final index与candidate不同')
-  const sortedPhysical=[...final.physicalBlocks], order=new Map<string,bigint>()
-  for (const name of ['blocks', 'synced_group_blocks']) {
-    const table = exactTables.get(name)!
-    const idIndex = table.columns.indexOf('id'), orderIndex = table.columns.indexOf('sort_order')
-    for (const row of table.rows) {
-      const cell = row.cells[orderIndex]
-      if (cell[0] !== 'integer') return fail('实际正文排序缺少原 INTEGER')
-      order.set(graph3Text(row.cells[idIndex], plan.encoding), int64(cell[1]))
+      if (row.cells !== actualRow.cells) {
+        rows ??= [...table.rows]
+        rows[index] = { ...row, cells: actualRow.cells }
+      }
     }
-  }
-  sortedPhysical.sort((a,b)=>order.get(a.id)!<order.get(b.id)!?-1:order.get(a.id)!>order.get(b.id)!?1:0)
-  const byGroup=new Map<string,typeof sortedPhysical>(),byDoc=new Map<string,typeof sortedPhysical>()
-  for(const block of sortedPhysical){const map=block.groupId===null?byDoc:byGroup,id=block.groupId??block.documentId!,list=map.get(id)??[];list.push(block);map.set(id,list)}
-  const wanted=new Map(plan.expectedWires.map(wire=>[wire.id,wire])),wires:SyncedGroupWire[]=[]
-  for(const [index, id] of groupIds.entries()){
-    if(!wanted.has(id)){if((byGroup.get(id)??[]).length)return fail('inactive current组出现canonical体');continue}
-    const group = values({ columns: groupTable.columns, encoding: plan.encoding }, groupTable.rows[index])
-    const wire=validateSyncedGroupWire({kind:'synced-group',id,creationId:group.creation_id,createdAt:group.created_at,
-      origin:JSON.parse(text(group.origin_json)),bindings:JSON.parse(text(group.bindings_json)),
-      blocks:(byGroup.get(id)??[]).map(block=>({...block.block,createdAt:block.birth})) as SyncedCanonicalWire[]})
-    if(!same(wire,wanted.get(id)))return fail('实际final wire不等于固定candidate')
-    projectSyncedGroupBudget(wire);assertSyncedStoredBindings(db,wire.origin,wire.blocks,wire.bindings);wires.push(wire)
-  }
-  validateSyncedWorkspaceGraph(final.documents.map(document=>({documentId:document.id,blocks:(byDoc.get(document.id)??[]).map(block=>block.block)})),wires)
-  const activationInstancesByGroup=new Map<string,Array<{instanceId:string;hostDocumentId:string;bindingVersion:string}>>()
-  for(const instance of graph3Rows({tables:plan.preCutTables,encoding:plan.encoding},'synced_instances')){
-    const id=text(instance.value.group_id),list=activationInstancesByGroup.get(id)??[]
-    list.push({instanceId:text(instance.value.instance_id),hostDocumentId:text(instance.value.host_document_id),bindingVersion:text(instance.value.binding_version)})
-    activationInstancesByGroup.set(id,list)
-  }
-  for(const list of activationInstancesByGroup.values())list.sort((a,b)=>a.instanceId<b.instanceId?-1:a.instanceId>b.instanceId?1:0)
+    return rows ? { ...table, rows } : table
+  })
+  const wanted = new Map(plan.expectedWires.map(wire => [wire.id, wire]))
+  const final = withStoredMerge3NavigationFinalIndex3(toReference3GraphInputs(actual.data, actual.allocation), actualTables, index => {
+    if (index.indexHash !== plan.expectedSyntaxIndexHash) return fail('实际final index与candidate不同')
+    // Navigation has already checked the complete block ownership closure,
+    // both forests, mirrored references and each host's projected depth/role.
+    // Keep the workspace graph check's separate document ID shape rule here.
+    for (const document of index.documents) if (!isSyncedBlockId(document.id))
+      throw new SyncedValidationError('identity', '候选工作区中的文档身份无效或重复。')
+
+    const order = new Map<string, bigint>(), body = exactTables.get('synced_group_blocks')!
+    const idColumn = body.columns.indexOf('id'), orderColumn = body.columns.indexOf('sort_order')
+    for (const row of body.rows) {
+      const cell = row.cells[orderColumn]
+      if (cell[0] !== 'integer') return fail('实际正文排序缺少原 INTEGER')
+      order.set(graph3Text(row.cells[idColumn], plan.encoding), int64(cell[1]))
+    }
+    const byGroup = new Map<string, Array<{ id: string; order: bigint }>>()
+    for (const location of index.physicalLocations) if (location.groupId !== null) {
+      const sort = order.get(location.id) ?? fail('实际共享正文缺少排序原行')
+      const members = byGroup.get(location.groupId) ?? []
+      members.push({ id: location.id, order: sort })
+      byGroup.set(location.groupId, members)
+    }
+    const activeWireHashes: Array<{ id: string; hash: string }> = []
+    for (const [ordinal, id] of groupIds.entries()) {
+      const members = byGroup.get(id) ?? [], expected = wanted.get(id)
+      if (!expected) {
+        if (members.length) return fail('inactive current组出现canonical体')
+        continue
+      }
+      members.sort((left, right) => left.order < right.order ? -1 : left.order > right.order ? 1 : 0)
+      const blocks = members.map(({ id }) => {
+        const block = index.physicalBlock(id) ?? fail('实际共享正文缺少已核对的块')
+        return { ...block.block, createdAt: block.birth }
+      }) as SyncedCanonicalWire[]
+      const group = values({ columns: groupTable.columns, encoding: plan.encoding }, groupTable.rows[ordinal])
+      const wire = validateSyncedGroupWire({ kind: 'synced-group', id, creationId: group.creation_id, createdAt: group.created_at,
+        origin: JSON.parse(text(group.origin_json)), bindings: JSON.parse(text(group.bindings_json)), blocks })
+      if (!same(wire, expected)) return fail('实际final wire不等于固定candidate')
+      projectSyncedGroupBudget(wire)
+      assertSyncedStoredBindings(db, wire.origin, wire.blocks, wire.bindings)
+      activeWireHashes.push({ id: wire.id, hash: syncedLifecycleSemanticHash(wire) })
+    }
+    return { indexHash: index.indexHash, activeWireHashes }
+  })
   for(const row of plan.lifecycleAdded){const value=values({columns:plan.lifecycle.columns,encoding:plan.encoding},row),id=text(value.group_id),life=lifecycles.get(id),wire=wanted.get(id)
     if(!life||!wire||life.state!=='active'||life.exposure!=='unknown'||life.createHistoryId!==null||life.stateVersion!==1
       ||life.activationHash!==syncedLifecycleSemanticHash(wire))return fail('new lifecycle实际activation不等于最终wire')
-    const activationInstances=activationInstancesByGroup.get(id)??[]
+    const activationInstances=plan.preCutInstancesByGroup.get(id)??[]
     if(!same(life.activationInstances,activationInstances))return fail('new lifecycle原allocation activation实例闭包不符')
   }
   const retainedCut=assertRootRestoreStage3RetainedCutObserved3(db,actual,plan.retainedCut)
@@ -637,7 +652,7 @@ function observeSql(db:Database.Database,actual:Actual,plan:Planned,marker:RootR
     physical12TablesHash,executionChanges:plan.executionChanges,stageExecutionHash:plan.stageExecutionHash,
     preCutPhysical12TablesHash:plan.preCutPhysical12TablesHash,preCutStageExecutionHash:plan.preCutStageExecutionHash,retainedCut,
     currentExecutionBoundariesPreserved:false as const,workspaceEpochAndDocumentCasAndHostCutPending:false as const,
-    activeWireHashes:wires.map(wire=>({id:wire.id,hash:syncedLifecycleSemanticHash(wire)})),finalSyntaxIndexHash:final.indexHash,
+    activeWireHashes:final.activeWireHashes,finalSyntaxIndexHash:final.indexHash,
     actual12TablesRead:true as const,actualLedgerRead:true as const,actualLifecycleRead:true as const,
     currentHistoryEvidenceRetained:true as const,currentExecutableHistoryCut:true as const,currentStageComplete:false as const,historyCutComplete:false as const,
     canonicalExpandedSearchComplete:false as const,routesRebuilt:false as const,linkCountsRebuilt:false as const,
@@ -854,6 +869,20 @@ function stageValue(saved:Saved,observation:Observation) {
 }
 type PreparedPhysicalStage3 = Readonly<{ stage: RootRestorePhysicalStage3; value: ReturnType<typeof stageValue>;
   stageId: string; manifestHash: string; directory: string }>
+export const retainedGroupIdentityColumns3 = Object.freeze(['id', 'creation_id', 'created_at', 'origin_json'] as const)
+function historyProof(value: PreparedPhysicalStage3['value'], cut: Planned['retainedCut']) {
+  const groups = value.tables.find(table => table.name === 'synced_groups') ?? fail('缺已验证的 Stage3 组表')
+  const instances = value.tables.find(table => table.name === 'synced_instances') ?? fail('缺已验证的 Stage3 实例表')
+  const immutableColumns = retainedGroupIdentityColumns3.map(column => groups.columns.indexOf(column))
+  const instanceColumn = instances.columns.indexOf('instance_id')
+  if (immutableColumns.some(index => index < 0) || instanceColumn < 0) return fail('缺历史切点原身份列')
+  const { encoding, context, allocation, archiveTables, cutHash, retainedDeletedHostIds } = cut
+  return freezeCapsuleValue({ physicalObservationHash: value.physicalObservationHash,
+    finalGroups: groups.rows.map(row => ({ targetRowId: row.targetRowId, cells: immutableColumns.map(column => row.cells[column]) })),
+    finalInstanceIds: instances.rows.map(row => graph3Text(row.cells[instanceColumn], instances.encoding)),
+    retainedCut: { encoding, context, allocation, archiveTables, cutHash, retainedDeletedHostIds, recordHash: cut.record.hash } })
+}
+
 function holdPhysicalStageOriginalBytes(saved: Saved) {
   const inventory = saved.manifest.sealedInventory
   const small = [['intent.json', saved.intent], ['manifest.json', saved.manifest]] as const
@@ -1011,7 +1040,7 @@ async function preparePhysicalStage(reference:RootRestoreReferencePlan3, aliases
   if (history && assertAliasBytes) {
     if (!historyScope || preparedHistoryScopes.get(historyScope) !== history || history.prepared)
       return fail('本次 canonical 历史预镜像范围已结束')
-    history.prepared = { stage: result.stage, value: result.value, retainedCut: plan.retainedCut, assertAliasBytes }
+    history.prepared = { stage: result.stage, proof: historyProof(result.value, plan.retainedCut), assertAliasBytes }
   }
   return result
 }
@@ -1078,11 +1107,11 @@ export async function readRootRestoreStage3HistoryPreimage3(stage: RootRestorePh
       await verifyRootRestoreStage3FilesHeld3(held)
       if (preparedHistoryScopes.get(scope)?.prepared !== prepared) return fail('本次 canonical 历史预镜像范围已结束')
       assertRootRestoreStage3FilesHeld3(held)
-      return { value: prepared.value, copy, retainedCut: prepared.retainedCut, stageManifestHash: saved.manifestHash }
+      return { ...prepared.proof, copy, stageManifestHash: saved.manifestHash }
     } finally { closeRootRestoreStage3FilesHeld3(held) }
   }
   const { value, copy, retainedCut } = await reconstruct(saved)
-  return { value, copy, retainedCut, stageManifestHash: saved.manifestHash }
+  return { ...historyProof(value, retainedCut), copy, stageManifestHash: saved.manifestHash }
 }
 
 /** Private bytes-only input for the first history SQL successor. Canonical

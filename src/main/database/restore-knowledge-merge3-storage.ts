@@ -1,7 +1,7 @@
 import { capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { capsuleJsonStringBytes, hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_RAW_MAX_ROWS, CAPSULE2_RAW_MAX_VALUE_BYTES,
-  capsule2ApplicationColumns, type Capsule2Encoding, type Capsule2RawSqlTable } from './restore-knowledge-capsule2-raw-model'
+  areValidatedCapsule2ContentCells, capsule2ApplicationColumns, type Capsule2Encoding, type Capsule2RawSqlTable } from './restore-knowledge-capsule2-raw-model'
 import { validateCoverageCapsuleReference, validateCoverageRootReference } from './restore-knowledge-coverage-model'
 import { DURABLE_SQL_DAG_MAX_DEPTH } from './restore-knowledge-dag-model'
 import { graph3Encode, graph3Text } from './restore-knowledge-graph3-data'
@@ -63,6 +63,7 @@ export interface PrepareMerge3TableInput {
   readonly sourceEncoding: Capsule2Encoding; readonly currentEncoding: Capsule2Encoding
   readonly source: Merge3Material; readonly current: Merge3Material
 }
+const validatedPreparedTables = new WeakSet<PreparedMerge3Table>()
 const fail = (message: string): never => { throw new Error('merge3存储候选无效：' + message + '；纯数据不授SQL或安装权。') }
 function hash(domain: string, value: object, maxBytes = Number.MAX_SAFE_INTEGER) {
   return hashBoundedCapsuleJson(value, maxBytes, domain + '\0') ?? fail('完整jsonBytes超原有限预算，不截断')
@@ -153,6 +154,10 @@ function jsonBudget(value: unknown): void {
   }
 }
 export { jsonBudget as assertMerge3JsonBudget }
+function base64Bytes(value: string) {
+  const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0
+  return value.length / 4 * 3 - padding
+}
 function cell(value: unknown, textEncoding: Capsule2Encoding, b: Budget): RawRestoreSqlCell {
   const tuple = array(value, 2), tag = tuple[0]
   if (tag === 'null' && tuple.length === 1) { take(b, 'valueBytes', 8); return ['null'] }
@@ -160,8 +165,7 @@ function cell(value: unknown, textEncoding: Capsule2Encoding, b: Budget): RawRes
   if (tag === 'integer' && int64(tuple[1])) { take(b, 'valueBytes', 8); return ['integer', tuple[1]] }
   if (tag === 'real-ieee754-le' && /^[0-9a-f]{16}$/.test(tuple[1])) { take(b, 'valueBytes', 8); return ['real-ieee754-le', tuple[1]] }
   if ((tag === 'text' || tag === 'blob') && tuple[1].length % 4 === 0) {
-    const padding = tuple[1].endsWith('==') ? 2 : tuple[1].endsWith('=') ? 1 : 0
-    take(b, 'valueBytes', tuple[1].length / 4 * 3 - padding)
+    take(b, 'valueBytes', base64Bytes(tuple[1]))
     const bytes = Buffer.from(tuple[1], 'base64')
     if (bytes.toString('base64') === tuple[1]) {
       if (tag === 'text') assertRawRestoreSqlTextRoundtrip(bytes, textEncoding)
@@ -182,11 +186,29 @@ function sameCells(left: readonly RawRestoreSqlCell[], right: readonly RawRestor
   return left.length === right.length && left.every((value, index) => value[0] === right[index][0] && value[1] === right[index][1])
 }
 
-function cells(value: unknown, width: number, textEncoding: Capsule2Encoding, b: Budget): RawRestoreSqlCell[] {
+function accountCell(value: RawRestoreSqlCell, b: Budget) {
+  take(b, 'valueBytes', value[0] === 'text' || value[0] === 'blob' ? base64Bytes(value[1]) : 8)
+  return value
+}
+
+function accountCells(checked: readonly RawRestoreSqlCell[], width: number, b: Budget) {
+  if (checked.length !== width) return fail('完整原行宽度不一致')
+  take(b, 'rows', 1)
+  for (const value of checked) accountCell(value, b)
+  take(b, 'jsonBytes', rowCellsJsonBytes(checked))
+  return checked
+}
+
+function cells(value: unknown, width: number, textEncoding: Capsule2Encoding, b: Budget,
+  unchanged?: readonly RawRestoreSqlCell[]): readonly RawRestoreSqlCell[] {
+  if (areValidatedCapsule2ContentCells(value, textEncoding)) return accountCells(value, width, b)
   const values = array(value, 512)
   if (values.length !== width) return fail('完整原行宽度不一致')
   take(b, 'rows', 1)
-  const checked = values.map(value => cell(value, textEncoding, b))
+  const checked = values.map((value, index) => {
+    const original = unchanged?.[index]
+    return original !== undefined && value === original ? accountCell(original, b) : cell(value, textEncoding, b)
+  })
   take(b, 'jsonBytes', rowCellsJsonBytes(checked))
   return checked
 }
@@ -223,16 +245,18 @@ function primaryKeyCells(columnNames: readonly string[], primaryKey: readonly st
   if (result.some(value => value[0] !== 'text')) return fail('非NULL content PK不是TEXT身份')
   return result
 }
-function originalTable(value: unknown, textEncoding: Capsule2Encoding) {
+function originalTable(value: unknown, textEncoding: Capsule2Encoding, unchanged?: Capsule2RawSqlTable['rows']) {
   const table = capsuleRecord(value, ['name', 'role', 'columns', 'primaryKey', 'rows']), name = tableName(table.name)
   if (table.role !== 'content') return fail('表role不是content')
   const columnNames = columns(table.columns, name), primaryKey = pk(table.primaryKey, name), b = budget()
   let previous: bigint | null = null
-  const rows = array(table.rows, CAPSULE2_RAW_MAX_ROWS).map(value => {
+  const rows = array(table.rows, CAPSULE2_RAW_MAX_ROWS).map((value, index) => {
     const row = capsuleRecord(value, ['sourceRowId', 'cells'])
     if (!int64(row.sourceRowId) || previous !== null && previous >= BigInt(row.sourceRowId)) return fail('原rowid不合法或未严格递增')
     previous = BigInt(row.sourceRowId)
-    return { sourceRowId: row.sourceRowId, cells: cells(row.cells, columnNames.length, textEncoding, b) }
+    const original = unchanged?.[index]
+    return { sourceRowId: row.sourceRowId, cells: cells(row.cells, columnNames.length, textEncoding, b,
+      original?.sourceRowId === row.sourceRowId ? original.cells : undefined) }
   })
   const result = { name, role: 'content' as const, columns: columnNames, primaryKey, rows }
   jsonBudget(result)
@@ -242,7 +266,8 @@ function originalTable(value: unknown, textEncoding: Capsule2Encoding) {
 export function prepareMerge3Table(input: PrepareMerge3TableInput): PreparedMerge3Table {
   const value = capsuleRecord(input, ['sourceOriginal', 'sourceCandidate', 'currentOriginal', 'sourceEncoding', 'currentEncoding', 'source', 'current'])
   const sourceEncoding = encoding(value.sourceEncoding), currentEncoding = encoding(value.currentEncoding)
-  const source = originalTable(value.sourceOriginal, sourceEncoding), candidate = originalTable(value.sourceCandidate, sourceEncoding)
+  const source = originalTable(value.sourceOriginal, sourceEncoding)
+  const candidate = originalTable(value.sourceCandidate, sourceEncoding, source.rows)
   const current = originalTable(value.currentOriginal, currentEncoding)
   if (source.name !== candidate.name || source.name !== current.name || source.rows.length !== candidate.rows.length
     || source.rows.some((row, index) => row.sourceRowId !== candidate.rows[index].sourceRowId))
@@ -252,13 +277,17 @@ export function prepareMerge3Table(input: PrepareMerge3TableInput): PreparedMerg
   const makeRows = (side: Merge3Side, original: typeof source, incoming: typeof source, meta: Merge3Material,
     originalEncoding: Capsule2Encoding): Merge3InputRow[] => {
     const b = budget()
+    const sameEncoding = originalEncoding === currentEncoding
+    const columnOrder = targetColumns.map(name => incoming.columns.indexOf(name))
+    const sameLayout = sameEncoding && columnOrder.every((index, targetIndex) => index === targetIndex)
     return original.rows.map((row, index) => {
       const incomingRow = incoming.rows[index]
-      const aligned = targetColumns.map(name => {
-        const value = incomingRow.cells[incoming.columns.indexOf(name)]
-        return value[0] === 'text' && originalEncoding !== currentEncoding ? graph3Encode(graph3Text(value, originalEncoding), currentEncoding) : value
+      const aligned = sameLayout ? incomingRow.cells : columnOrder.map(position => {
+        const value = incomingRow.cells[position]
+        return value[0] === 'text' && !sameEncoding ? graph3Encode(graph3Text(value, originalEncoding), currentEncoding) : value
       })
-      const targetCells = cells(aligned, targetColumns.length, currentEncoding, b)
+      const targetCells = sameEncoding ? accountCells(aligned, targetColumns.length, b)
+        : cells(aligned, targetColumns.length, currentEncoding, b)
       const ref: Merge3OriginalRowRef = { ...meta, side, table: source.name, sourceRowId: row.sourceRowId,
         originalRowHash: originalRowHash(source.name, original.columns, primaryKey, originalEncoding, row.sourceRowId, row.cells) }
       const result = { key: rowKey(ref), ref, originalCells: row.cells,
@@ -271,12 +300,15 @@ export function prepareMerge3Table(input: PrepareMerge3TableInput): PreparedMerg
     columns: targetColumns, primaryKey, sourceEncoding, currentEncoding, targetEncoding: currentEncoding,
     originalColumns: { source: source.columns, current: current.columns },
     sourceRows: makeRows('source', source, candidate, sourceMaterial, sourceEncoding), currentRows: makeRows('current', current, current, currentMaterial, currentEncoding) }
-  return freezeCapsuleValue({ ...body, preparedHash: hash('knowbook.restore.merge3.prepared-table.v1', body, CAPSULE2_RAW_MAX_JSON_BYTES) })
+  const prepared = freezeCapsuleValue({ ...body, preparedHash: hash('knowbook.restore.merge3.prepared-table.v1', body, CAPSULE2_RAW_MAX_JSON_BYTES) })
+  validatedPreparedTables.add(prepared)
+  return prepared
 }
 
-/** Validate data afresh, including full original-row hashes. This intentionally
- * accepts a consistent plain-data clone; it never treats one as an owned read. */
+/** Preserve this invocation's fully validated immutable value. A consistent
+ * plain-data clone still requires every original-row hash and data check. */
 function preparedTable(input: PreparedMerge3Table): PreparedMerge3Table {
+  if (validatedPreparedTables.has(input)) return input
   const value = capsuleRecord(input, ['kind', 'version', 'name', 'columns', 'primaryKey', 'sourceEncoding', 'currentEncoding', 'targetEncoding',
     'originalColumns', 'sourceRows', 'currentRows', 'preparedHash'])
   if (value.kind !== 'restore-merge3-prepared-content-table' || value.version !== 1) return fail('未知prepared格式')
@@ -372,7 +404,7 @@ export function finishMerge3Table(input: PreparedMerge3Table, selectedRows: read
       if (targetKeys.has(identity)) return fail('目标非NULL PK重复，storage不自动upsert')
       targetKeys.add(identity)
     }
-    const targetCells = cells(row.cells, prepared.columns.length, prepared.currentEncoding, b)
+    const targetCells = accountCells(row.cells, prepared.columns.length, b)
     const target: MergedRow3 = { key: row.key, targetRowId, cells: targetCells, sourceRef: row.ref, replaces: replaced?.ref ?? null }
     const { cells: _cells, ...targetMetadata } = target
     take(b, 'jsonBytes', Buffer.byteLength(capsuleJson(targetMetadata)))

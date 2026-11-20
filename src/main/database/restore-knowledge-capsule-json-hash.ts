@@ -4,11 +4,19 @@ import { capsuleJson } from './restore-knowledge-capsule-model'
 const bufferLimit = 64 * 1024
 const stringUnits = Math.floor(bufferLimit / 6) // An escaped code unit can occupy six bytes.
 const storedArrays = new WeakMap<readonly unknown[], () => Iterable<string>>()
+const projectedArrays = new WeakMap<readonly unknown[], () => Iterable<unknown>>()
 
 /** Private hash serializer input for arrays already encoded by an owned plan. */
 export function capsuleJsonStoredArray<T>(encodedItems: () => Iterable<string>): readonly T[] {
   const array: readonly T[] = Object.freeze([])
   storedArrays.set(array, encodedItems)
+  return array
+}
+
+/** An ordered view of privately produced values. Used only for canonical hashes. */
+export function capsuleJsonProjectedArray<T>(values: () => Iterable<T>): readonly T[] {
+  const array: readonly T[] = Object.freeze([])
+  projectedArrays.set(array, values)
   return array
 }
 
@@ -69,12 +77,21 @@ export function hashBoundedCapsuleJson(value: object, maxBytes: number, prefix =
     else if (Array.isArray(item)) {
       emit('[')
       const stored = storedArrays.get(item)
+      const projected = projectedArrays.get(item)
       if (stored) {
         let first = true
         for (const encoded of stored()) {
           if (bytes > maxBytes) break
           if (!first) emit(',')
           emit(encoded)
+          first = false
+        }
+      } else if (projected) {
+        let first = true
+        for (const value of projected()) {
+          if (bytes > maxBytes) break
+          if (!first) emit(',')
+          write(value)
           first = false
         }
       } else {

@@ -19,11 +19,11 @@ register(`data:text/javascript,${encodeURIComponent(`
 `)}`, import.meta.url)
 const { BlockContextMenu } = await import('../src/renderer/src/components/BlockContextMenu')
 const { BlockSelectionToolbar } = await import('../src/renderer/src/components/BlockSelectionToolbar')
-const { default: DocumentBlockMoveDialog } = await import('../src/renderer/src/components/DocumentBlockMoveDialog')
+const { DocumentBlockMoveDialog } = await import('../src/renderer/src/components/DocumentBlockMoveDialog')
 const { BlockEditorRow } = await import('../src/renderer/src/components/BlockEditorRow')
 await import('../src/renderer/src/components/SourceInlinePresentationToolbar')
 type MenuProps = import('../src/renderer/src/components/BlockContextMenu').BlockContextMenuProps
-type MoveProps = import('../src/renderer/src/components/DocumentBlockMoveDialog').DocumentBlockMoveDialogProps
+type MoveProps = Parameters<typeof DocumentBlockMoveDialog>[0]
 type RowProps = import('../src/renderer/src/components/BlockEditorRow').BlockEditorRowProps
 
 type Context = {
@@ -106,7 +106,7 @@ const tree: DocumentTreeNode[] = [
 ]
 function moveProps(overrides: Partial<MoveProps> = {}): MoveProps {
   return { isZh: false, sourceDocumentId: 'source', sourceDocumentTitle: 'Source', selection: { blocks: [], blockIds: ['first', 'second'] }, documents: tree,
-    busy: false, onClose: noop, onMove: () => false, ...overrides }
+    busy: false, ready: true, onClose: noop, onMove: () => false, ...overrides }
 }
 
 test('single and multiple block controls expose all sixteen conversions in the same order', async () => withDom(async context => {
@@ -170,7 +170,7 @@ test('move picker excludes its source, searches nested paths and retains a faile
   const pending = deferred<boolean>(), requests: string[] = []
   let closes = 0
   const props = moveProps({ onMove: id => { assert.equal(typeof id, 'string'); if (typeof id === 'string') requests.push(id); return pending.promise }, onClose: () => { closes++ } })
-  await context.render(createElement(DocumentBlockMoveDialog, props))
+  await context.render(createElement(DocumentBlockMoveDialog, { ...props, ready: false }))
   assert.equal(context.document.activeElement!.tagName, 'INPUT')
   assert.equal(context.document.querySelector('input[value="source"]'), null)
   const search = context.document.querySelector<HTMLInputElement>('.document-capture-field input')!
@@ -179,6 +179,12 @@ test('move picker excludes its source, searches nested paths and retains a faile
   const radio = context.document.querySelector<HTMLInputElement>('input[value="destination"]')!
   await context.change(() => { radio.focus(); radio.click() })
   const form = context.document.querySelector('form')!
+  assert.equal(button(context, 'Move').disabled, true)
+  assert.equal(context.document.querySelector('[role="status"]')!.textContent, 'Loading the editor…')
+  await context.change(() => form.dispatchEvent(new context.window.Event('submit', { bubbles: true, cancelable: true })))
+  assert.deepEqual(requests, [])
+  await context.render(createElement(DocumentBlockMoveDialog, props))
+  assert.equal(button(context, 'Move').disabled, false)
   await context.change(() => {
     form.dispatchEvent(new context.window.Event('submit', { bubbles: true, cancelable: true }))
     form.dispatchEvent(new context.window.Event('submit', { bubbles: true, cancelable: true }))

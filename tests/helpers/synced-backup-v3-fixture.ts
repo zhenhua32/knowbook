@@ -118,14 +118,15 @@ export function keepOnlyV3SourceReference(fixture: V3Fixture): void {
 }
 
 export function addV3CrossMoveDependency(fixture: V3Fixture, syntax: 'wiki' | 'markdown' | 'reference' | 'html' = 'wiki',
-  options: { title?: string; stationary?: boolean } = {}) {
-  const { store, db, instanceId } = fixture, documentId = store.createDocument(null), blockId = randomUUID()
+  options: { title?: string; stationary?: boolean; targetBlockId?: string } = {}) {
+  const { store, db } = fixture, documentId = store.createDocument(null), blockId = randomUUID()
+  const targetId = options.targetBlockId ?? fixture.instanceId
   const title = options.title ?? 'V6 Wiki dependency'
   const content = (target: string) => syntax === 'wiki'
-    ? `Keep [[${target}#${instanceId}|original label]].`
-    : syntax === 'reference' ? `Keep [original label][ref].\n\n[ref]: <${encodeURIComponent(target)}.md#^${instanceId}> "original title"`
-    : syntax === 'html' ? `<a title="original title" href="${encodeURIComponent(target)}.md#^${instanceId}">original label</a>`
-    : `Keep [original label](${encodeURIComponent(target)}.md#^${instanceId}).`
+    ? `Keep [[${target}#${targetId}|original label]].`
+    : syntax === 'reference' ? `Keep [original label][ref].\n\n[ref]: <${encodeURIComponent(target)}.md#^${targetId}> "original title"`
+    : syntax === 'html' ? `<a title="original title" href="${encodeURIComponent(target)}.md#^${targetId}">original label</a>`
+    : `Keep [original label](${encodeURIComponent(target)}.md#^${targetId}).`
   const before = content('V3 Host'), after = content('V3 Target')
   const childId = randomUUID()
   const blocks = [{ id: blockId, type: 'paragraph' as const, content: before, checked: false, depth: 0 }]

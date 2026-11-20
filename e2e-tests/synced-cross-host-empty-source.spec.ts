@@ -36,7 +36,19 @@ for (const syntax of ['none', 'inline', 'reference-and-html'] as const) test(`mo
       }
       return result
     }, linkContents(source.title, false))
-    if (dependents.length) await page.reload()
+    // An ordinary host row and the move dialog can be available while the
+    // canonical shell is still starting after a reload.
+    const shellChunk = '**/CanonicalInlineShell-*.js'
+    let shellRequested = false
+    let resumeShell: () => void = () => {}
+    if (syntax === 'inline') {
+      const released = new Promise<void>(resolve => { resumeShell = resolve })
+      await page.route(shellChunk, async route => {
+        shellRequested = true
+        await released
+        await route.continue()
+      })
+    }
     const readPages = () => page.evaluate(async ids => Promise.all(ids.map(async id => {
       const document = await window.knowbook.getDocumentDetail(id)
       if (!document) throw new Error('The actual edited document is missing')
@@ -52,22 +64,33 @@ for (const syntax of ['none', 'inline', 'reference-and-html'] as const) test(`mo
     const initial = [source, destination].map(host => host.blocks.map(block => block.id))
     const expectedDestination = [...initial[1], ...initial[0]]
 
-    await openInlineHost(page, source)
-    await setInlineReading(page, false)
-    const firstInput = row(source.blocks[0].id).locator('textarea.block-inline-textarea')
-    await firstInput.focus()
-    await expect(firstInput).toBeFocused()
-    await page.keyboard.press('ControlOrMeta+a')
-    await page.keyboard.press('ControlOrMeta+a')
-    await expect.poll(() => page.locator('.block-editor-row-selected').evaluateAll(rows =>
-      rows.map(element => element.getAttribute('data-block-id')))).toEqual(initial[0])
-    await page.locator('.block-selection-toolbar').getByRole('button', {
-      name: uiText('Move to document…', '移动到文档…'), exact: true
-    }).click()
     const dialog = page.locator('.document-block-move-dialog')
-    await dialog.locator('.document-capture-field input').fill(destination.title)
-    await dialog.locator(`input[value="${destination.id}"]`).check()
-    await dialog.getByRole('button', { name: uiText('Move', '移动'), exact: true }).click()
+    const move = dialog.getByRole('button', { name: uiText('Move', '移动'), exact: true })
+    try {
+      if (dependents.length) await page.reload({ waitUntil: syntax === 'inline' ? 'domcontentloaded' : 'load' })
+      await openInlineHost(page, source)
+      await setInlineReading(page, false)
+      const firstInput = row(source.blocks[0].id).locator('textarea.block-inline-textarea')
+      await firstInput.focus()
+      await expect(firstInput).toBeFocused()
+      await page.keyboard.press('ControlOrMeta+a')
+      await page.keyboard.press('ControlOrMeta+a')
+      await expect.poll(() => page.locator('.block-editor-row-selected').evaluateAll(rows =>
+        rows.map(element => element.getAttribute('data-block-id')))).toEqual(initial[0])
+      await page.locator('.block-selection-toolbar').getByRole('button', {
+        name: uiText('Move to document…', '移动到文档…'), exact: true
+      }).click()
+      await dialog.locator('.document-capture-field input').fill(destination.title)
+      await dialog.locator(`input[value="${destination.id}"]`).check()
+      if (syntax === 'inline') {
+        await expect.poll(() => shellRequested).toBe(true)
+        await expect(move).toBeDisabled()
+      }
+    } finally {
+      resumeShell()
+      if (syntax === 'inline') await page.unrouteAll({ behavior: 'wait' })
+    }
+    await move.click()
     await expect(dialog).toHaveCount(0)
     await expect.poll(async () => (await blockIds())[1]).toEqual(expectedDestination)
     const [blank] = (await readPages())[0]

@@ -1,7 +1,7 @@
 import type { SyncedStableBlockDraft } from '../../shared/synced-blocks'
 import type { Graph3Inputs } from './restore-knowledge-graph3-data'
 import type { Capsule2Encoding, Capsule2RawSqlRow, Capsule2RawSqlTable } from './restore-knowledge-capsule2-raw-model'
-import type { FinishedMerge3Table, Merge3OriginalRowRef, MergedRow3 } from './restore-knowledge-merge3-storage'
+import type { Merge3OriginalRowRef, MergedRow3 } from './restore-knowledge-merge3-storage'
 import type { deriveRootRestoreMergedContent3 } from './restore-knowledge-merge3-model'
 import type { Navigation3FinalTarget } from './restore-knowledge-navigation3-rewrite-cells'
 import { deriveRootRestoreNavigationRewriteInputs3, deriveRootRestoreCurrentNavigationRewriteInputs3,
@@ -20,11 +20,12 @@ import { findGraph3OriginalRow, graph3Conflict, graph3Key, graph3Text, graph3Val
 import { assertMerge3JsonBudget } from './restore-knowledge-merge3-storage'
 import { withStoredRestoreScopes } from './restore-knowledge-stored-scopes'
 import { captureSyncedCreateSourceFacts } from './synced-host-create-plan'
+import { assertNavigation3TableJsonBudget, type Navigation3Table, type Navigation3TableSource } from './restore-knowledge-navigation3-tables'
 
 export type Navigation3Baseline = ReturnType<typeof deriveRootRestoreNavigationRewriteInputs3>
 export type Navigation3OriginalScope = Navigation3Baseline['scopes'][number]
 export type Navigation3OriginalDestination = Navigation3OriginalScope['destinations'][number]
-export type Navigation3Table = FinishedMerge3Table['table']
+export type { Navigation3Table } from './restore-knowledge-navigation3-tables'
 export interface Navigation3Cell {
   readonly table: 'documents' | 'blocks' | 'synced_group_blocks'; readonly rowKey: string; readonly targetRowId: string
   readonly column: 'content' | 'summary'; readonly sourceRef: Merge3OriginalRowRef; readonly encoding: Capsule2Encoding
@@ -87,7 +88,9 @@ type Side = 'source' | 'current'
 type OriginalIdentity = Navigation3OriginalScope['document']
 type OriginalLocation = Navigation3OriginalDestination['location']
 type Values = Record<string, unknown>
-type FinalEntry = { table: Navigation3Table; row: MergedRow3; value: Values }
+type RowAddress = Omit<MergedRow3, 'cells'>
+type FinalEntry<Row extends RowAddress = MergedRow3> = { table: Omit<Navigation3Table, 'rows'>; row: Row; value: Values }
+type MergeContextInput = { tables: readonly Navigation3TableSource[]; mergedContentHash: string }
 const text = (value: unknown): string => typeof value === 'string' ? value : graph3Conflict('navigation-merge-text', typeof value)
 const integer = (value: unknown): number => typeof value === 'bigint' && Number.isSafeInteger(Number(value)) ? Number(value) : graph3Conflict('navigation-merge-integer', typeof value)
 const same = (a: unknown, b: unknown) => capsuleJson(a) === capsuleJson(b)
@@ -170,17 +173,17 @@ const finalFields: Partial<Record<Navigation3Table['name'], readonly string[]>> 
   synced_instances: ['instance_id', 'host_document_id', 'group_id', 'parent_block_id', 'depth']
 }
 
-function finalEntries(tables: readonly Navigation3Table[]): Map<Navigation3Table['name'], FinalEntry[]> {
-  assertMerge3JsonBudget(tables)
+function* finalEntries(tables: readonly Navigation3TableSource[]): IterableIterator<FinalEntry> {
+  assertNavigation3TableJsonBudget(tables)
   let rows = 0, valueBytes = 0
-  const entries = new Map<Navigation3Table['name'], FinalEntry[]>()
-  for (const table of tables) {
-    if (entries.has(table.name)) return graph3Conflict('navigation-final-table-duplicate', table.name)
-    const items: FinalEntry[] = [], targetRows = new Set<string>()
-    entries.set(table.name, items)
+  const tableNames = new Set<Navigation3Table['name']>()
+  for (const { rows: tableRows, ...table } of tables) {
+    if (tableNames.has(table.name)) return graph3Conflict('navigation-final-table-duplicate', table.name)
+    const targetRows = new Set<string>()
+    tableNames.add(table.name)
     const columns = table.columns.map(column => finalFields[table.name]?.includes(column) ? column : null)
     const contentColumn = columns.lastIndexOf('content')
-    for (const row of table.rows) {
+    for (const row of tableRows) {
       if (++rows > CAPSULE2_RAW_MAX_ROWS || row.cells.length !== table.columns.length) return graph3Conflict('navigation-final-row-budget-or-width', table.name)
       if (targetRows.has(row.targetRowId)) return graph3Conflict('navigation-final-rowid-duplicate', graph3Key(table.name, row.targetRowId))
       targetRows.add(row.targetRowId)
@@ -194,10 +197,9 @@ function finalEntries(tables: readonly Navigation3Table[]): Map<Navigation3Table
         const decoded = graph3Value(cell, table.encoding)
         if (column !== null && column !== 'content') value[column] = decoded
       }
-      if (finalFields[table.name]) items.push({ table, row, value })
+      if (finalFields[table.name]) yield { table, row, value }
     }
   }
-  return entries
 }
 function blockSyntax({ table, row, value }: FinalEntry): SyncedStableBlockDraft {
   const column = table.columns.lastIndexOf('content')
@@ -237,7 +239,7 @@ export function createNavigation3DocumentBlockReader(table: Navigation3Table, lo
   })
 }
 
-function cell(entry: FinalEntry, column: 'content' | 'summary', content: string): Navigation3Cell {
+function cell(entry: FinalEntry<RowAddress>, column: 'content' | 'summary', content: string): Navigation3Cell {
   return { table: entry.table.name as Navigation3Cell['table'], rowKey: entry.row.key, targetRowId: entry.row.targetRowId,
     column, sourceRef: entry.row.sourceRef, encoding: entry.table.encoding, text: content }
 }
@@ -264,10 +266,10 @@ function captureGrammar(blocks: readonly SyncedStableBlockDraft[]) {
 /** Final syntax only. Stale wire bindings are deliberately NOT validated or
  * replaced by an empty binding wire. Physical forests, registry mirrors and
  * every expanded occurrence are checked directly; no live authority is minted. */
-function projectFinalNavigation(data: Graph3Inputs, tables: readonly Navigation3Table[],
+function projectFinalNavigation(data: Graph3Inputs, tables: readonly Navigation3TableSource[],
   blocks: { append(block: Navigation3FinalBlock): void; read(id: string): Navigation3FinalBlock },
   acceptScope: (scope: Navigation3FinalScope) => void) {
-  const access = originalAccess(data), byTable = finalEntries(tables)
+  const access = originalAccess(data)
   const assignments = new Map<string, typeof data.value.assignments>()
   for (const item of data.value.assignments) { const key = graph3Key(item.kind, item.sourceId), values = assignments.get(key) ?? []; values.push(item); assignments.set(key, values) }
   function mapped(side: Side, kind: 'document' | 'block' | 'group', original: Values, ownerKind: 'document' | 'group' | null, ownerId: string | null) {
@@ -278,8 +280,13 @@ function projectFinalNavigation(data: Graph3Inputs, tables: readonly Navigation3
     return slots[0].targetId
   }
   const documents: Navigation3FinalDocument[] = [], physicalLocations: Navigation3PhysicalLocation[] = []
-  const documentEntries = new Map<string, FinalEntry>(), blockEntries = new Map<string, FinalEntry>(), groupEntries = new Map<string, FinalEntry>()
-  for (const [table, entries] of byTable) if (table !== 'synced_instances') for (const entry of entries) {
+  const documentEntries = new Map<string, FinalEntry<RowAddress>>(), blockEntries = new Map<string, FinalEntry<RowAddress>>()
+  const groupEntries = new Map<string, FinalEntry<RowAddress>>(), instances = new Map<string, Values>()
+  for (const entry of finalEntries(tables)) {
+    if (entry.table.name === 'synced_instances') {
+      instances.set(text(entry.value.instance_id), entry.value)
+      continue
+    }
     const name = entry.table.name, kind = name === 'documents' ? 'document' : name === 'synced_groups' ? 'group' : 'block'
     const ownerKind = kind !== 'block' ? null : name === 'blocks' ? 'document' : 'group'
     const ownerColumn = ownerKind === null ? null : ownerKind === 'document' ? 'document_id' : 'group_id'
@@ -292,16 +299,17 @@ function projectFinalNavigation(data: Graph3Inputs, tables: readonly Navigation3
       if (entry.row.replaces.side !== 'current' || entry.row.replaces.table !== name || old.id !== entry.value.id || old.created_at !== entry.value.created_at)
         return graph3Conflict('navigation-final-replaced-incarnation', entry.row.key)
     }
-    const id = text(entry.value.id)
+    const id = text(entry.value.id), { cells: _cells, ...address } = entry.row
+    const located = { table: entry.table, row: address, value: { sort_order: entry.value.sort_order, type: entry.value.type } }
     if (name === 'documents') {
       if (documentEntries.has(id)) return graph3Conflict('navigation-final-document-duplicate', id)
-      documentEntries.set(id, entry)
+      documentEntries.set(id, located)
       documents.push({ id, birth: text(entry.value.created_at), path: text(entry.value.path), title: text(entry.value.title), summary: text(entry.value.summary),
         sourceRef: entry.row.sourceRef, replaces: entry.row.replaces, rowKey: entry.row.key, targetRowId: entry.row.targetRowId })
-    } else if (name === 'synced_groups') { if (groupEntries.has(id)) return graph3Conflict('navigation-final-group-duplicate', id); groupEntries.set(id, entry) }
+    } else if (name === 'synced_groups') { if (groupEntries.has(id)) return graph3Conflict('navigation-final-group-duplicate', id); groupEntries.set(id, located) }
     else {
       if (blockEntries.has(id)) return graph3Conflict('navigation-final-global-block-owner', id)
-      blockEntries.set(id, entry)
+      blockEntries.set(id, located)
       const location = { id, birth: text(entry.value.created_at), documentId: name === 'blocks' ? text(entry.value.document_id) : null,
         groupId: name === 'synced_group_blocks' ? text(entry.value.group_id) : null,
         sourceRef: entry.row.sourceRef, replaces: entry.row.replaces, rowKey: entry.row.key, targetRowId: entry.row.targetRowId }
@@ -337,7 +345,6 @@ function projectFinalNavigation(data: Graph3Inputs, tables: readonly Navigation3
     groupMaximum.set(id, items.reduce((max, item) => Math.max(max, item.block.depth), 0))
     minimumByGroup.set(id, items.reduce((bytes, item) => bytes + capsuleJsonStringBytes(item.block.content, expandedBudget) * 2, 0))
   }
-  const instances = new Map((byTable.get('synced_instances') ?? []).map(entry => [text(entry.value.instance_id), entry]))
   const usedInstances = new Set<string>(), headingNamespaces: Navigation3FinalIndex['headingNamespaces'][number][] = []
   let expandedJsonBytes = 0, expandedMinimumBytes = 0
   for (const document of documents) {
@@ -365,8 +372,8 @@ function projectFinalNavigation(data: Graph3Inputs, tables: readonly Navigation3
     for (const host of hosts) {
       if (host.block.type !== 'synced-block') { add(host, null, host.block.depth, host.block.parentBlockId === null ? null : graph3Key(null, host.block.parentBlockId)); continue }
       const groupId = parseSyncedBlockPayload(host.block.content).groupId, registry = instances.get(host.id)
-      if (!registry || registry.value.host_document_id !== document.id || registry.value.group_id !== groupId
-        || registry.value.parent_block_id !== host.block.parentBlockId || registry.value.depth !== BigInt(host.block.depth) || !activeGroups.has(groupId))
+      if (!registry || registry.host_document_id !== document.id || registry.group_id !== groupId
+        || registry.parent_block_id !== host.block.parentBlockId || registry.depth !== BigInt(host.block.depth) || !activeGroups.has(groupId))
         return graph3Conflict('navigation-final-instance-mirror-or-inactive', host.id)
       usedInstances.add(host.id)
       let group = expandedGroups.get(groupId)
@@ -433,7 +440,7 @@ export type StoredNavigation3Index = Omit<Navigation3FinalIndex, 'scopes'> & {
 }
 
 /** Use one document scope at a time while carrying the exact same index hash. */
-export function withStoredMerge3NavigationFinalIndex3<T>(data: Graph3Inputs, tables: readonly Navigation3Table[],
+export function withStoredMerge3NavigationFinalIndex3<T>(data: Graph3Inputs, tables: readonly Navigation3TableSource[],
   read: (index: StoredNavigation3Index) => T): T {
   type StoredRow = Navigation3FinalBlock | Navigation3FinalScope
   return withStoredRestoreScopes(
@@ -491,7 +498,7 @@ export interface StoredNavigation3MergeContext {
   scopes(): IterableIterator<Navigation3ContextScope>
 }
 
-export function withStoredRootRestoreNavigationMergeContext3<T>(data: Graph3Inputs, merged: ReturnType<typeof deriveRootRestoreMergedContent3>,
+export function withStoredRootRestoreNavigationMergeContext3<T>(data: Graph3Inputs, merged: MergeContextInput,
   read: (context: StoredNavigation3MergeContext) => T): T {
   return withStoredRootRestoreNavigationInputs3(data, 'source', source =>
     withStoredRootRestoreNavigationInputs3(data, 'current', current =>
@@ -514,7 +521,7 @@ type OriginNavigationView = {
   headingNamespace(id: string): Navigation3Baseline['headingNamespaces'][number] | undefined
 }
 
-function projectNavigationMergeScopes(data: Graph3Inputs, merged: ReturnType<typeof deriveRootRestoreMergedContent3>,
+function projectNavigationMergeScopes(data: Graph3Inputs, merged: MergeContextInput,
   originals: Record<Side, OriginNavigationView>, final: Omit<Navigation3FinalIndex, 'scopes'> | StoredNavigation3Index,
   findFinalScope: (id: string) => Navigation3FinalScope | undefined, acceptScope: (scope: Navigation3ContextScope) => void) {
   const access = originalAccess(data)

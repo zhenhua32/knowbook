@@ -608,7 +608,8 @@ export class EditorRecoveryDraftService {
             reference.instanceId === move.binding.instanceId && reference.groupId === move.groupId))) return false
           const v4 = !linked && single
           const stationary = single ? readCanonicalStationaryInstances(single, move.groupId, move.binding.instanceId) : undefined
-          if ((v4 && !matchesCanonicalV4CrossMoveForest(v4, move.binding.instanceId)) || (single && !stationary)) return false
+          if ((v4 && !matchesCanonicalV4CrossMoveForest(v4, move.binding.instanceId)) || (single && !stationary)
+            || (linked && linked.instanceId !== move.binding.instanceId)) return false
           if (linked || batch) {
             const checkDraft = this.crossMoveDraftCheck(event)
             const outside = new Set(dependencyIds)

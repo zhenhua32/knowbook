@@ -4,6 +4,7 @@ import { isSyncedBlockId } from '../../shared/syncedBlockValidation'
 import * as exchange from '../sync/synced-exchange-model'
 import { publicationHash, publicationJson } from '../sync/synced-publication-model'
 import { projectCapturedBaseDocumentPortable5 } from './restore-knowledge-assets5-working-portable-derive'
+import { readWorkingAssetOriginalTable5 } from './restore-knowledge-assets5-original-rows'
 import { root3SupplementOriginalRowHash3 } from './restore-knowledge-assets3-context'
 import { capsuleBytesHash, capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { durableSqlDagHash, durableSqlDagUuid } from './restore-knowledge-dag-model'
@@ -119,7 +120,9 @@ export function deriveSelectedPendingLocalBody5(captured: Actual, locator: Pendi
     binding: { baseProjectionManifestHash: base.baseManifestHash, baseProjectionMaterialHash: base.baseMaterialHash } }, documentId)
   if (!projected || publicationHash(publicationJson(projected.record)) !== provenance.localHash) return fail('original-local-record')
   const paragraph = singleParagraphDiff(projected.record, final)
-  const original = graph3Rows(raw, 'blocks').find(row => row.value.id === paragraph.id)
+  const blocks = readWorkingAssetOriginalTable5(raw, 'blocks')
+  const paragraphRow = blocks.table.rows.find(row => blocks.cell(row, 'id') === paragraph.id)
+  const original = paragraphRow && blocks.read(paragraphRow)
   if (!original || original.value.document_id !== documentId || original.value.type !== 'paragraph'
     || typeof original.value.created_at !== 'string' || typeof original.value.content !== 'string') return fail('original-block')
   const previousProjection = projectWorkingAssetBodyCells5(projected.record.content.blocks, 'working')

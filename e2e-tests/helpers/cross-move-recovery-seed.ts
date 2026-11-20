@@ -36,7 +36,7 @@ const f = createV3Fixture(process.argv[2])
 const mode = process.argv[3]
 if (['hot-before-move', 'hot-empty-before-move', 'hot-wiki-before-move', 'hot-v7-before-move', 'hot-v9-before-move',
   'hot-v10-before-move', 'hot-v11-before-move', 'hot-nested-before-move', 'hot-list-parent-before-move', 'hot-list-parent-target-peer-before-move',
-  'hot-list-parent-source-peer-before-move', 'hot-mixed-target-peer-before-move',
+  'hot-list-parent-source-peer-before-move', 'hot-list-parent-outside-before-move', 'hot-mixed-target-peer-before-move', 'hot-mixed-outside-before-move',
   'hot-shared-target-before-move', 'hot-shared-source-before-move', 'hot-batch-before-move', 'hot-mixed-root-pair-before-move',
   'hot-batch-saved-reference-before-move', 'hot-batch-stationary-saved-before-move',
   'hot-shared-wiki-before-move', 'hot-shared-markdown-before-move', 'hot-shared-multiple-dependencies-before-move',
@@ -44,7 +44,8 @@ if (['hot-before-move', 'hot-empty-before-move', 'hot-wiki-before-move', 'hot-v7
   try {
     if (mode === 'hot-empty-before-move' || mode === 'hot-v9-before-move') keepOnlyV3SourceReference(f)
     const listSourcePeer = mode === 'hot-list-parent-source-peer-before-move'
-    const listParent = mode === 'hot-list-parent-before-move' || mode === 'hot-list-parent-target-peer-before-move' || listSourcePeer
+    const listOutside = mode === 'hot-list-parent-outside-before-move'
+    const listParent = mode === 'hot-list-parent-before-move' || mode === 'hot-list-parent-target-peer-before-move' || listSourcePeer || listOutside
     const placement = mode === 'hot-nested-before-move' || listParent
       ? seedHotNestedCrossMove(f, 0, listParent ? 'single-reference' : undefined) : undefined
     const sharedWiki = mode === 'hot-shared-wiki-before-move', sharedMarkdown = mode === 'hot-shared-markdown-before-move'
@@ -52,11 +53,14 @@ if (['hot-before-move', 'hot-empty-before-move', 'hot-wiki-before-move', 'hot-v7
     const savedBatchReference = mode === 'hot-batch-saved-reference-before-move'
     const stationaryBatchDraft = mode === 'hot-batch-stationary-saved-before-move'
     const batch = mode === 'hot-batch-before-move' || savedBatchReference || stationaryBatchDraft
-    const dependencies = mode === 'hot-wiki-before-move' || batch || sharedWiki ? [addV3CrossMoveDependency(f)]
+    const mixedOutside = mode === 'hot-mixed-outside-before-move'
+    const dependencies = mode === 'hot-wiki-before-move' || batch || sharedWiki || listOutside ? [addV3CrossMoveDependency(f)]
       : mode === 'hot-v7-before-move' || sharedMarkdown ? [addV3CrossMoveDependency(f, 'markdown', { title: 'V7 Markdown dependency' })]
       : mode === 'hot-v9-before-move' ? [addV3CrossMoveDependency(f, 'wiki', { title: 'V9 outside Wiki' }),
         addV3CrossMoveDependency(f, 'markdown', { title: 'V9 outside Markdown' })]
       : mode === 'hot-v10-before-move' ? [addV3CrossMoveDependency(f, 'html', { title: 'V10 outside HTML' })]
+      : mixedOutside ? [addV3CrossMoveDependency(f, 'wiki', { title: 'Reference dependency' }),
+        addV3CrossMoveDependency(f, 'markdown', { title: 'Ordinary block dependency', targetBlockId: f.hostBodyId })]
       : sharedMultiple ? [addV3CrossMoveDependency(f, 'wiki', { title: 'Independent outside Wiki' }),
         addV3CrossMoveDependency(f, 'reference', { title: 'Independent outside definition', stationary: true })]
       : mode === 'hot-v11-before-move' ? [addV3CrossMoveDependency(f, 'reference', { title: 'V11 outside reference', stationary: true })] : []
@@ -87,7 +91,7 @@ if (['hot-before-move', 'hot-empty-before-move', 'hot-wiki-before-move', 'hot-v7
     writeFileSync(join(f.userDataRoot, 'cross-move-recovery-seed.json'), JSON.stringify({
       groupId: f.groupId, instanceId: f.instanceId, sourceId: f.hostId, targetId: f.targetId, raw: f.raw,
       primaryId: f.created.groups[0].blocks[0].id, dependencies, placement, sharedSourceId, sharedTargetId, stagedSource, independent,
-      ordinaryRootId: ordinaryBranch || mode === 'hot-mixed-root-pair-before-move' || mode === 'hot-mixed-target-peer-before-move' ? f.hostBodyId : undefined, ordinaryBranch
+      ordinaryRootId: ordinaryBranch || mixedOutside || mode === 'hot-mixed-root-pair-before-move' || mode === 'hot-mixed-target-peer-before-move' ? f.hostBodyId : undefined, ordinaryBranch
     }))
   } finally { f.close() }
 } else {

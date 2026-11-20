@@ -84,6 +84,7 @@ class InlineRuntime {
   private saveTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private mounts = new Map<string, MountedInline>()
   private host: InlineHostPort | null = null
+  private readyMoveHost: string | null = null
   private rpc = new Set<Promise<unknown>>()
   private surfaces = new Map<object, { hostSession: object; expectedInstances: readonly string[] }>()
   private openingBindings = new Set<object>()
@@ -237,6 +238,8 @@ class InlineRuntime {
   reviewingRecovery(): boolean { return this.recoveryReview }
   observeRecoveryHost() {
     const current = this.sourceCurrent(), persisted = this.host?.getPersisted()
+    const ready = current && this.host?.isReady?.() ? current.host.documentId : null
+    if (ready !== this.readyMoveHost) { this.readyMoveHost = ready; this.emit() }
     if (!current || !persisted || persisted.id !== current.host.documentId) return
     if (this.recoveryHost && this.recoveryHost !== current.hostSession) this.recovery.detach(this.recoveryHost)
     this.recoveryHost = current.hostSession
@@ -296,6 +299,7 @@ class InlineRuntime {
     return this.recovery.checkpointFlushed(() => this.ownsClose(requestId) && this.sourceHasReported())
   }
   getSnapshot = () => this.ui
+  getReadyMoveHost = () => this.readyMoveHost
   retainedCrossMoveRevision = 0
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => this.listeners.delete(listener) }
   private emit() {
@@ -862,8 +866,6 @@ class InlineRuntime {
         if ('mode' in request) {
           const plan = await this.invoke('prepareSyncedCrossHostMove', request)
           if (!canSubmit() || plan.status !== 'ready') return false
-          if (protection && plan.dependencies.length && request.action.kind === 'move'
-            && (request.action.selection.selectedRootIds.length !== 1 || request.action.selection.selectedRootIds[0] !== protection.instanceId)) return reportDirty()
           const newWorking = []
           const syncedDependencies = new Map<string, string>()
           for (const { documentId, updatedAt } of plan.dependencies) {

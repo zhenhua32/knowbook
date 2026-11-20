@@ -190,17 +190,32 @@ async function prepareReference3(identity: RootRestoreIdentityPlan3, inputChoice
     referenceManifestHash: prepared.manifestHash })
   return { prepared, captured: captured && Object.freeze({ ...captured, actual, cells: Object.freeze({ ordinaryEdits, physicalLocations }) }) }
 }
+type ReferenceAddress = Omit<Awaited<ReturnType<typeof prepareRootRestoreReferencePlan3>>, 'value'>
 
 /** Share only the newly persisted ordinary plan and the original SQL read
  * owned by this invocation's prepared identity scope. */
-export async function withPreparedRootRestoreReferenceInputs5<T>(identity: RootRestoreIdentityPlan3, inputChoices: Reference3Choices | undefined,
+export async function withPreparedRootRestoreReferenceInputs5<Preview, T>(identity: RootRestoreIdentityPlan3, inputChoices: Reference3Choices | undefined,
   identityScope: PreparedRootIdentityInputs5,
-  run: (prepared: Awaited<ReturnType<typeof prepareRootRestoreReferencePlan3>>, scope: RootRestoreStageInputs5) => Promise<T>): Promise<T> {
-  const { prepared, captured } = await prepareReference3(identity, inputChoices, identityScope)
-  if (!captured) return invalid('联合阶段需要本次准备的真实身份规划')
-  const result = await runRootRestoreStageInputs5(prepared.plan, undefined, scope => run(prepared, scope), captured)
+  review: (address: ReferenceAddress, value: Reference3Value, scope: RootRestoreStageInputs5) => Promise<Preview>,
+  run: (address: ReferenceAddress, scope: RootRestoreStageInputs5, preview: Preview) => Promise<T>): Promise<T> {
+  let staged: Promise<T>, reference: RootRestoreReferencePlan3
+  {
+    const { prepared, captured } = await prepareReference3(identity, inputChoices, identityScope)
+    if (!captured) return invalid('联合阶段需要本次准备的真实身份规划')
+    const { plan, planId, manifestHash, directory } = prepared
+    const address = Object.freeze({ plan, planId, manifestHash, directory })
+    let previewValue: Reference3Value | undefined = prepared.value
+    reference = plan
+    staged = runRootRestoreStageInputs5(reference, undefined, async scope => {
+      if (!previewValue) return invalid('本次预览引用已释放')
+      const reviewed = review(address, previewValue, scope)
+      previewValue = undefined
+      return run(address, scope, await reviewed)
+    }, captured)
+  }
+  const result = await staged
   await readPreparedRootRestoreIdentityInputs5(identity, identityScope)
-  await assertRootRestoreReferenceOriginalBytes3(prepared.plan)
+  await assertRootRestoreReferenceOriginalBytes3(reference)
   return result
 }
 
@@ -368,8 +383,15 @@ async function runRootRestoreStageInputs5<T>(reference: RootRestoreReferencePlan
   if (captured && captured.actual.candidate.pendingLocalBody?.proofHash !== pendingCellProofHash)
     return invalid('联合阶段与实际持久pending选择不符')
   stageInputs.set(scope, { reference, pendingCellProofHash, read: captured && Promise.resolve(captured) })
+  captured = undefined
   try { return await run(scope) }
   finally { stageInputs.delete(scope) }
+}
+
+/** No later stage can borrow the SQL read after the verified alias boundary. */
+export function finishRootRestoreStageInputReads5(reference: RootRestoreReferencePlan3, scope: RootRestoreStageInputs5) {
+  if (stageInputs.get(scope)?.reference !== reference) return invalid('不是本次同一genuine reference的阶段认证')
+  stageInputs.delete(scope)
 }
 
 export async function readRootRestoreStageInputs5(reference: RootRestoreReferencePlan3, scope: RootRestoreStageInputs5) {

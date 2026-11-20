@@ -52,11 +52,14 @@ export function graph3PatchTable(table: Capsule2RawSqlTable, encoding: Capsule2E
     const value = decodeGraph3Row(table, original, encoding)
     const changes = transform(value,original.sourceRowId)
     for (const column of Object.keys(changes)) if (!table.columns.includes(column)) return graph3Conflict('unknown-target-column',{table:table.name,column})
-    return { ...original, cells: original.cells.map((cell,index)=>{
-      const column=table.columns[index]
-      if (!Object.hasOwn(changes,column) || changes[column]===value[column]) return cell
-      const changed=changes[column]
-      return changed===null ? ['null'] : typeof changed==='bigint' ? ['integer',changed.toString()] : graph3Encode(changed,encoding)
-    }) }
+    let cells: RawRestoreSqlCell[] | undefined
+    for (const [index, column] of table.columns.entries()) {
+      if (!Object.hasOwn(changes, column)) continue
+      const changed = changes[column]
+      if (changed === value[column]) continue
+      cells ??= [...original.cells]
+      cells[index] = changed === null ? ['null'] : typeof changed === 'bigint' ? ['integer', changed.toString()] : graph3Encode(changed, encoding)
+    }
+    return cells ? { ...original, cells } : original
   }) }
 }

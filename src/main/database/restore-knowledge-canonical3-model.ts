@@ -12,9 +12,11 @@ import { CAPSULE2_RAW_MAX_JSON_BYTES, type Capsule2RawContent, type Capsule2RawS
 import { findGraph3OriginalRow, graph3Conflict, graph3Encode, graph3Key, graph3Value, type Graph3Inputs } from './restore-knowledge-graph3-data'
 import { assertMerge3JsonBudget, type MergedRow3 } from './restore-knowledge-merge3-storage'
 import type { RootRestoreMergedContentChoices3 } from './restore-knowledge-merge3-read'
-import { deriveRootRestoreNavigationRewrite3 } from './restore-knowledge-navigation3-rewrite-model'
+import { withRootRestoreNavigationRewrite3, type ScopedNavigation3Rewrite } from './restore-knowledge-navigation3-rewrite-model'
 import { resolveFinalNavigation3, withStoredMerge3NavigationFinalIndex3,
-  type Navigation3FinalIndex, type Navigation3Table, type StoredNavigation3Index } from './restore-knowledge-navigation3-merge-context'
+  type Navigation3FinalIndex, type StoredNavigation3Index } from './restore-knowledge-navigation3-merge-context'
+import { assertNavigation3TableJsonBudget, materializeNavigation3Tables, projectNavigation3TableRows,
+  type Navigation3TableSource } from './restore-knowledge-navigation3-tables'
 import { renderNavigation3Destination } from './restore-knowledge-navigation3-rewrite-cells'
 import { deriveRootRestoreReferenceAllocation3, toReference3GraphInputs } from './restore-knowledge-reference3-model'
 import { collectSyncedBindingOccurrences } from '../sync/synced-binding-occurrences'
@@ -26,7 +28,7 @@ import { withStoredRestoreScopes } from './restore-knowledge-stored-scopes'
 
 type Allocation = ReturnType<typeof deriveRootRestoreReferenceAllocation3>
 type Side = 'source' | 'current'
-type Entry = { table: Navigation3Table; row: MergedRow3; ordinal: number; value: Record<string, unknown> }
+type Entry = { table: Navigation3TableSource; row: MergedRow3; ordinal: number; value: Record<string, unknown> }
 type FinalScope = Navigation3FinalIndex['scopes'][number]
 type PriorOccurrence = { occurrenceKey: string; block: Omit<FinalScope['blocks'][number]['block'], 'content'> }
 export interface Canonical3Conflict { readonly code: string; readonly side: Side | null; readonly rowKeys: readonly string[]; readonly detail: unknown }
@@ -34,7 +36,7 @@ const same = (a: unknown, b: unknown) => capsuleJson(a) === capsuleJson(b)
 const keyOf = (key: SyncedBindingKey) => graph3Key(key.blockId, key.from, key.to, key.raw, key.syntax)
 const onlyKey = ({ blockId, from, to, raw, syntax }: SyncedBindingKey): SyncedBindingKey => ({ blockId, from, to, raw, syntax })
 const string = (value: unknown) => typeof value === 'string' ? value : graph3Conflict('canonical3-text', typeof value)
-type EntryProjection = Readonly<Partial<Record<Navigation3Table['name'], readonly string[]>>>
+type EntryProjection = Readonly<Partial<Record<Navigation3TableSource['name'], readonly string[]>>>
 const selectedGroupColumns = {
   synced_groups: ['id', 'creation_id', 'origin_json', 'bindings_json']
 } satisfies EntryProjection
@@ -49,7 +51,7 @@ function originalValue(raw: Capsule2RawContent, table: Capsule2RawSqlTable, row:
 }
 
 const ownerKey = (owner: string) => Buffer.from(owner, 'utf16le')
-function indexSelectedBlocks(db: Database.Database, tables: readonly Navigation3Table[]) {
+function indexSelectedBlocks(db: Database.Database, tables: readonly Navigation3TableSource[]) {
   const table = tables.find(table => table.name === 'synced_group_blocks') ?? graph3Conflict('canonical3-missing-selected-canonical-table', null)
   const columns = table.columns, owner = columns.indexOf('group_id'), id = columns.indexOf('id'), content = columns.indexOf('content')
   if (owner < 0 || id < 0 || content < 0) return graph3Conflict('canonical3-projection-column', { table: table.name })
@@ -65,7 +67,10 @@ function indexSelectedBlocks(db: Database.Database, tables: readonly Navigation3
     table, content,
     id: (row: MergedRow3) => string(graph3Value(row.cells[id], table.encoding)),
     *rows(group: string) {
-      for (const ordinal of select.iterate(ownerKey(group)) as IterableIterator<number>) yield { ordinal, row: table.rows[ordinal] }
+      for (const ordinal of select.iterate(ownerKey(group)) as IterableIterator<number>) {
+        const row = table.rows.at(ordinal) ?? graph3Conflict('canonical3-selected-row-ordinal', ordinal)
+        yield { ordinal, row }
+      }
     }
   }
 }
@@ -75,33 +80,32 @@ function stageCanonicalCellPatches(db: Database.Database) {
     ordinal INTEGER NOT NULL, column_index INTEGER NOT NULL, text_units BLOB NOT NULL,
     PRIMARY KEY(table_name,ordinal,column_index)) WITHOUT ROWID`)
   const write = db.prepare('INSERT INTO canonical_cell_patches VALUES (?,?,?,?)')
-  const read = db.prepare('SELECT ordinal,column_index,text_units FROM canonical_cell_patches WHERE table_name=? ORDER BY ordinal,column_index')
-  type Patch = { ordinal: number; column_index: number; text_units: Buffer }
+  const read = db.prepare('SELECT column_index,text_units FROM canonical_cell_patches WHERE table_name=? AND ordinal=? ORDER BY column_index')
+  const affected = new Map<string, Set<number>>()
+  type Patch = { column_index: number; text_units: Buffer }
   return {
-    set(table: Navigation3Table, ordinal: number, column: number, value: string) {
+    set(table: Navigation3TableSource, ordinal: number, column: number, value: string) {
       // Preserve exact JS code units until the target table encoding is applied.
       write.run(table.name, ordinal, column, Buffer.from(value, 'utf16le'))
+      const rows = affected.get(table.name) ?? new Set<number>()
+      rows.add(ordinal)
+      affected.set(table.name, rows)
     },
-    apply(table: Navigation3Table): Navigation3Table {
-      let rows: MergedRow3[] | undefined
-      let previousOrdinal = -1
-      let cells: MergedRow3['cells'][number][] = []
-      for (const { ordinal, column_index, text_units } of read.iterate(table.name) as IterableIterator<Patch>) {
-        rows ??= table.rows.slice()
-        if (ordinal !== previousOrdinal) {
-          const row = table.rows[ordinal]
-          cells = row.cells.slice()
-          rows[ordinal] = { ...row, cells }
-          previousOrdinal = ordinal
-        }
-        cells[column_index] = graph3Encode(text_units.toString('utf16le'), table.encoding)
-      }
-      return rows === undefined ? table : { ...table, rows }
+    apply(table: Navigation3TableSource): Navigation3TableSource {
+      const ordinals = affected.get(table.name)
+      if (!ordinals) return table
+      return projectNavigation3TableRows(table, (row, ordinal) => {
+        if (!ordinals.has(ordinal)) return row
+        const cells = row.cells.slice()
+        for (const { column_index, text_units } of read.iterate(table.name, ordinal) as IterableIterator<Patch>)
+          cells[column_index] = graph3Encode(text_units.toString('utf16le'), table.encoding)
+        return { ...row, cells }
+      })
     }
   }
 }
 
-function indexFinalMembers(db: Database.Database, final: Pick<StoredNavigation3Index, 'physicalLocations' | 'physicalBlock'>, tables: readonly Navigation3Table[]) {
+function indexFinalMembers(db: Database.Database, final: Pick<StoredNavigation3Index, 'physicalLocations' | 'physicalBlock'>, tables: readonly Navigation3TableSource[]) {
   db.exec(`CREATE TEMP TABLE canonical_final_members (kind TEXT NOT NULL, owner BLOB NOT NULL, sort_order INTEGER NOT NULL,
     ordinal INTEGER NOT NULL, PRIMARY KEY(kind,owner,sort_order,ordinal)) WITHOUT ROWID`)
   const insert = db.prepare('INSERT INTO canonical_final_members(kind,owner,sort_order,ordinal) VALUES (?,?,?,?)')
@@ -131,7 +135,7 @@ function indexFinalMembers(db: Database.Database, final: Pick<StoredNavigation3I
 
 /** The preceding navigation index has already read and validated every cell
  * of these same tables. Keep the fields that the canonical lookups consume. */
-function* projectEntries(tables: readonly Navigation3Table[], projection: EntryProjection): IterableIterator<Entry> {
+function* projectEntries(tables: readonly Navigation3TableSource[], projection: EntryProjection): IterableIterator<Entry> {
   for (const table of tables) {
     const fields = projection[table.name]
     if (!fields) continue
@@ -179,11 +183,10 @@ export function deriveRootRestoreCanonicalCandidateWithCells3(data: Graph3Inputs
 function deriveWithCanonicalIndexes(db: Database.Database, data: Graph3Inputs, allocation: Allocation,
   choices?: RootRestoreMergedContentChoices3, pending?: SelectedPendingLocalBody5) {
   const derived = toReference3GraphInputs(data, allocation)
-  const ordinary = deriveRootRestoreNavigationRewrite3(derived, choices)
   // Keep the original occurrence structure for the final grammar check. The
   // check uses rewritten content, so the original physical index can close first.
-  return withStoredRestoreScopes((append: (id: string, blocks: PriorOccurrence[]) => void) => {
-    const project = (before: StoredNavigation3Index, ordinaryTables: readonly Navigation3Table[]) => {
+  return withRootRestoreNavigationRewrite3(derived, choices, ordinary => withStoredRestoreScopes((append: (id: string, blocks: PriorOccurrence[]) => void) => {
+    const project = (before: StoredNavigation3Index, ordinaryTables: readonly Navigation3TableSource[]) => {
       const rewrite = rewriteCanonicalGroups(db, data, allocation, ordinaryTables, before)
       for (const scope of before.scopes()) {
         append(scope.scopeId, scope.blocks.map(({ occurrenceKey, block: { content: _content, ...block } }) => ({ occurrenceKey, block })))
@@ -192,10 +195,10 @@ function deriveWithCanonicalIndexes(db: Database.Database, data: Graph3Inputs, a
     }
     if (pending) return withSelectedPendingLocalBody5(derived, ordinary, pending, project)
     return { selection: withStoredMerge3NavigationFinalIndex3(derived, ordinary.tables, index => project(index, ordinary.tables)), proof: undefined }
-  }, ({ selection, proof }, prior) => finalizeCanonicalCandidate(db, data, allocation, derived, ordinary, selection, proof, prior.byId))
+  }, ({ selection, proof }, prior) => finalizeCanonicalCandidate(db, data, allocation, derived, ordinary, selection, proof, prior.byId)))
 }
 
-function rewriteCanonicalGroups(db: Database.Database, data: Graph3Inputs, allocation: Allocation, ordinaryTables: readonly Navigation3Table[],
+function rewriteCanonicalGroups(db: Database.Database, data: Graph3Inputs, allocation: Allocation, ordinaryTables: readonly Navigation3TableSource[],
   before: Pick<StoredNavigation3Index, 'documents' | 'physicalLocations'>) {
   const originals = (side: Side) => {
     const raw = data.inputs[side].source.sourceContent
@@ -347,18 +350,19 @@ function rewriteCanonicalGroups(db: Database.Database, data: Graph3Inputs, alloc
 }
 
 function finalizeCanonicalCandidate(db: Database.Database, data: Graph3Inputs, allocation: Allocation, derived: Graph3Inputs,
-  ordinary: ReturnType<typeof deriveRootRestoreNavigationRewrite3>, rewrite: ReturnType<typeof rewriteCanonicalGroups>,
+  ordinary: ScopedNavigation3Rewrite, rewrite: ReturnType<typeof rewriteCanonicalGroups>,
   pendingProof: ReturnType<typeof withSelectedPendingLocalBody5>['proof'] | undefined,
   priorScope: (scopeId: string) => readonly PriorOccurrence[] | undefined) {
   const { tables, active, conflicts, edits, bindingProjections, originProjections, inactive } = rewrite
   const conflict: Conflict = (code, side, rowKeys, detail) => { conflicts.push({ code, side, rowKeys, detail }) }
   return withStoredMerge3NavigationFinalIndex3(derived, tables, final => {
     const physicalMembers = indexFinalMembers(db, final, tables)
-    const afterGroups = new Map<string, Entry>()
-    for (const entry of projectEntries(tables, { synced_groups: ['id'] })) afterGroups.set(string(entry.value.id), entry)
+    const afterGroups = new Map<string, Pick<Entry, 'table' | 'ordinal'>>()
+    for (const { table, ordinal, value } of projectEntries(tables, { synced_groups: ['id'] })) afterGroups.set(string(value.id), { table, ordinal })
     const wires: SyncedGroupWire[] = []
     for (const id of active) {
-      const { table, row } = afterGroups.get(id)!
+      const { table, ordinal } = afterGroups.get(id) ?? graph3Conflict('canonical3-active-group-row', id)
+      const row = table.rows.at(ordinal) ?? graph3Conflict('canonical3-active-group-row', id)
       const field = (name: string) => {
         const index = table.columns.indexOf(name)
         if (index < 0) return graph3Conflict('canonical3-projection-column', { table: table.name, column: name })
@@ -384,7 +388,8 @@ function finalizeCanonicalCandidate(db: Database.Database, data: Graph3Inputs, a
     const body = { kind: 'root-restore-canonical-reference-candidate' as const, version: 3 as const,
       baseIdentityAllocationHash: allocation.baseIdentityAllocationHash, derivedReferenceAllocationHash: allocation.derivedReferenceAllocationHash,
       sourceMaterialHash: ordinary.sourceMaterialHash, currentMaterialHash: ordinary.currentMaterialHash,
-      ordinaryNavigationRewriteHash: ordinary.navigationRewriteHash, tables, canonicalEdits: edits, originProjections, bindingProjections,
+      ordinaryNavigationRewriteHash: ordinary.navigationRewriteHash, tables: materializeNavigation3Tables(tables),
+      canonicalEdits: edits, originProjections, bindingProjections,
       ...(pendingProof ? { pendingLocalBody: pendingProof } : {}),
       activeGroupWires: wires, inactiveGroups: inactive, projectedBudgets, finalSyntaxIndexHash: final.indexHash,
       materialization: { reservationRows: allocation.materialization.reservationRows, ledgerOverlay,
@@ -563,7 +568,7 @@ function validateCurrentHeadingSemantics(data: Graph3Inputs, final: StoredNaviga
   }
 }
 
-function validateOrdinaryDestinations(projections: ReturnType<typeof deriveRootRestoreNavigationRewrite3>['projections'], final: StoredNavigation3Index, conflict: Conflict) {
+function validateOrdinaryDestinations(projections: ScopedNavigation3Rewrite['projections'], final: StoredNavigation3Index, conflict: Conflict) {
   const wanted = new Set(projections.map(projection => keyOf(projection.after)))
   const destinations = new Map<string, { documentId: string; url: string; wiki: boolean }>()
   if (wanted.size) for (const scope of final.scopes()) for (const link of scope.destinations) {
@@ -650,8 +655,8 @@ function validateOrdinaryConsumers(priorScope: (scopeId: string) => readonly Pri
     }
   }
 }
-function assertFinalStorageBudget(tables: readonly Navigation3Table[]) {
-  assertMerge3JsonBudget(tables)
+function assertFinalStorageBudget(tables: readonly Navigation3TableSource[]) {
+  assertNavigation3TableJsonBudget(tables)
   let count = 0, bytes = 0
   for (const table of tables) for (const row of table.rows) {
     if (++count > 100_000) return graph3Conflict('canonical3-final-row-budget', null)
@@ -664,14 +669,14 @@ function assertFinalStorageBudget(tables: readonly Navigation3Table[]) {
 /** Root-native measurement only. The SQL INT64 sort value is counted as its
  * exact decimal token, without rounding it into a fabricated public wire. The
  * later asset stage must check its actual rewritten portable bytes again. */
-function measureNativeHostBudgets(final: Pick<Navigation3FinalIndex, 'documents'>, tables: readonly Navigation3Table[],
+function measureNativeHostBudgets(final: Pick<Navigation3FinalIndex, 'documents'>, tables: readonly Navigation3TableSource[],
   physicalMembers: ReturnType<typeof indexFinalMembers>, wires: readonly SyncedGroupWire[]) {
-  const documents = new Map<string, Entry>(), groups = new Map(wires.map(wire => [wire.id, wire]))
-  for (const entry of projectEntries(tables, { documents: ['id', 'parent_id', 'sort_order'] })) documents.set(string(entry.value.id), entry)
+  const documents = new Map<string, Entry['value']>(), groups = new Map(wires.map(wire => [wire.id, wire]))
+  for (const { value } of projectEntries(tables, { documents: ['id', 'parent_id', 'sort_order'] })) documents.set(string(value.id), value)
   return final.documents.map(document => {
-    const row = documents.get(document.id)!, sortOrder = row.value.sort_order
+    const row = documents.get(document.id)!, sortOrder = row.sort_order
     if (typeof sortOrder !== 'bigint') return graph3Conflict('canonical3-host-sort-storage', document.id)
-    let bytes = Buffer.byteLength(capsuleJson({ kind: 'document', id: document.id, parentId: row.value.parent_id,
+    let bytes = Buffer.byteLength(capsuleJson({ kind: 'document', id: document.id, parentId: row.parent_id,
       createdAt: document.birth, content: { title: document.title, summary: document.summary, blocks: [] } }))
       + Buffer.byteLength(',"sortOrder":' + sortOrder.toString()), count = 0
     if (bytes > 16 * 1024 * 1024) return graph3Conflict('canonical3-native-projection-budget', document.id)

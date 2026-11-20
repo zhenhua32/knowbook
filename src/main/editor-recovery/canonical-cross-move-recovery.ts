@@ -35,7 +35,7 @@ export function readCanonicalCrossMoveRequests(base: EditorRecoveryBase, draft: 
     const source = input.hostsWorkingBefore.find(host => host.documentId === selection.documentId)
     if (!source || !input.hostsWorkingBefore.some(host => host.documentId === target.documentId)) return []
     const block = readProtectedCrossMoveReference(source.workingBefore.blocks, selectedRootIds)
-    if (!block || (selectedRootIds.length !== 1 || block.id !== selectedRootIds[0]) && input.hostsWorkingBefore.length !== 2) return []
+    if (!block) return []
     const { groupId } = parseSyncedBlockPayload(block.content)
     const binding = input.expectedInstances.find(instance => instance.instanceId === block.id && instance.hostDocumentId === selection.documentId)
     const guard = input.groups.find(group => group.groupId === groupId)
@@ -90,7 +90,7 @@ export function canCaptureCanonicalCrossMoveGroupOwned(db: Database.Database, ho
   }
   if (instances.length > 1) {
     const guards = new Map(move.input.expectedInstances.map(guard => [guard.instanceId, guard]))
-    if (move.kind === 'batch' || !direct && move.dependencyDocumentIds.length > 0 || instances.some(item => {
+    if (move.kind === 'batch' || instances.some(item => {
       const guard = guards.get(item.instanceId)
       return guard?.hostDocumentId !== item.hostDocumentId || guard.bindingVersion !== item.bindingVersion
         || item.hostDocumentId !== move.binding.hostDocumentId && item.hostDocumentId !== move.targetDocumentId
@@ -132,7 +132,7 @@ function readCanonicalCrossMoveEvidenceOwned(db: Database.Database, host: Editor
   const proofInput = { operationId: attested.clientOperationId,
     requestHash: attested.businessRequestHash, baselineKey: original.key, baselineHash: original.requestHash }
   const proof = move.kind === 'batch' ? readCanonicalBatchCrossMoveOriginalOwned(db, proofInput, host, move.binding.instanceId)
-    : move.dependencyDocumentIds.length ? readCanonicalLinkedCrossMoveOriginalOwned(db, proofInput)
+    : move.dependencyDocumentIds.length ? readCanonicalLinkedCrossMoveOriginalOwned(db, proofInput, move.binding.instanceId)
       : readCanonicalCrossMoveOriginal4Owned(db, proofInput, move.binding.instanceId)
   if (proof.groupId !== move.groupId || proof.before.instanceId !== move.binding.instanceId
     || proof.before.hostDocumentId !== move.binding.hostDocumentId || move.kind === 'single' && proof.before.hostCreatedAt !== hostOwner.createdAt
@@ -144,7 +144,8 @@ function readCanonicalCrossMoveEvidenceOwned(db: Database.Database, host: Editor
   const replay = readCanonicalRecoveryClosedFrames(group, before, proof.workspaceScope)
   const frames = [...replay.frames, ...replay.redoFrames]
   if (!frames.length || frames.some(frame => frame.instance.instanceId !== proof.before.instanceId)) return undefined
-  if (move.kind === 'batch' || proof.beforeInstances.length > 1) {
+  if (move.kind === 'batch' || proof.beforeInstances.length > 1 || proof.after.depth !== proof.before.depth
+    || proof.after.parentType !== proof.before.parentType) {
     try { for (const frame of frames) validateSyncedCanonicalProjection(frame.after, actual.snapshot.instances) }
     catch (error) { if (error instanceof SyncedValidationError) return undefined; throw error }
   }

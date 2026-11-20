@@ -8,7 +8,7 @@ import { CAPSULE_MAX_MANIFEST_BYTES, capsuleBytesHash, capsuleJson, capsuleRecor
 import { readCapsule2AssetManifest, writeCapsule2AssetCopy } from './restore-knowledge-capsule2-assets-files'
 import { durableSqlDagHash, durableSqlDagUuid } from './restore-knowledge-dag-model'
 import { assertOriginCatalogDirectory, copyOriginCatalogFileWithIdentity3, syncOriginCatalogAncestors } from './restore-knowledge-origin-bundle-files'
-import { assertRootRestoreReferenceOriginalBytes3, readRootRestoreReferenceCopySource3,
+import { assertRootRestoreReferenceOriginalBytes3, finishRootRestoreStageInputReads5, readRootRestoreReferenceCopySource3, withRootRestoreStageInputs5,
   type RootRestoreReferencePlan3, type RootRestoreStageInputs5 } from './restore-knowledge-reference3-read'
 import { rawRestoreSqlCell } from './restore-knowledge-sql-cell'
 import { readRawRestoreSqlInventoryOwned } from './restore-knowledge-sql-inventory'
@@ -27,11 +27,12 @@ import type { RootRestoreAssetAliasStage5 } from './restore-knowledge-asset-alia
 import type { RootRestoreSqlAssetStage5 } from './restore-knowledge-sql-asset-stage5'
 import { restoreDirectory, restoreInventory, syncRestoreDirectory, syncRestoreFile } from './restore-safety-files'
 import { restoreSqliteFilename } from './restore-safety-sqlite-path'
-import { completeStage4Routes, deriveStage4AliasNavigation, deriveStage4Routes, observeStage4Routes, observeStage4CanonicalSearch,
+import { completeStage4Routes, deriveStage4Routes, observeStage4Routes, observeStage4CanonicalSearch,
   type DerivedRoutePlan4 } from './restore-knowledge-derived-stage4-observation'
 
 type PhysicalLocator = Parameters<typeof reopenRootRestorePhysicalStage3>[1]
 type Physical = Awaited<ReturnType<typeof reopenRootRestorePhysicalStage3>>
+type PhysicalInput = Pick<Physical, 'stage' | 'stageId' | 'manifestHash' | 'directory'> & { physicalObservationHash: string }
 type Binding = Awaited<ReturnType<typeof readRootRestoreReferenceCopySource3>>
 type Link = { source_document_id: string; target_document_id: string; label: string }
 type Observation = ReturnType<typeof observe>
@@ -40,7 +41,7 @@ type AliasSql = Awaited<ReturnType<typeof readRootRestoreSqlAssetAliasDerivation
 type Locator = { stageId: string; expectedManifestHash: string }
 type SqlCopy = { databaseDirectory: string; inventory: readonly DurableSqlCapsuleFile[]; physicalStageId: string }
 export interface RootRestoreDerivedStage4 { readonly kind: 'main-root-restore-non-executable-link-stage4' }
-type Saved = { reference: RootRestoreReferencePlan3; physical: Physical; root: string; directory: string; manifest: Manifest; routes?: DerivedRoutePlan4 }
+type Saved = { reference: RootRestoreReferencePlan3; physical: Physical['stage']; root: string; directory: string; manifest: Manifest; routes?: DerivedRoutePlan4 }
 const owners = new WeakMap<RootRestoreDerivedStage4, Saved>()
 const fail = (message: string): never => { throw new Error('非执行恢复链接派生失败：' + message) }
 const quote = (name: string) => '"' + name.replaceAll('"', '""') + '"'
@@ -155,15 +156,15 @@ async function copyDatabase(root: string, from: string, to: string, inventory: r
   return created
 }
 
-function manifestFor(binding: Binding, physical: Physical, stageId: string,
+function manifestFor(binding: Binding, physical: PhysicalInput, stageId: string,
   inventory: readonly DurableSqlCapsuleFile[], observation: Observation, version: 1 | 2) {
   return freezeCapsuleValue({ kind: 'root-restore-non-executable-link-stage4' as const, version, stageId,
     referencePlanId: binding.referencePlanId, referenceManifestHash: binding.referenceManifestHash,
     physicalStageId: physical.stageId, physicalManifestHash: physical.manifestHash,
-    physicalObservationHash: physical.value.physicalObservationHash, inventory, observation, installPermit: false as const })
+    physicalObservationHash: physical.physicalObservationHash, inventory, observation, installPermit: false as const })
 }
 
-async function physicalInventory(physical: Physical, root: string) {
+async function physicalInventory(physical: PhysicalInput, root: string) {
   const text = await readCapsule2AssetManifest(join(physical.directory, 'manifest.json'), root, CAPSULE_MAX_MANIFEST_BYTES)
   const manifest = JSON.parse(text)
   if (capsuleJson(manifest) + '\n' !== text ||
@@ -218,7 +219,7 @@ async function readIndependent(saved: Independent, original: RootRestoreStage3He
           readRootRestoreStage3MarkerOwned(db, alias.source.marker)
           if (readRawRestoreSqlInventoryOwned(db).schemaHash !== alias.source.schemaHash)
             return fail('派生附件副本原 schema 变化')
-          if (!same(readRootRestoreStage3NativeFtsProjection3(db, false), alias.source.physical.nativeFtsProjection))
+          if (!same(readRootRestoreStage3NativeFtsProjection3(db, false), alias.source.nativeFtsProjection))
             return fail('派生附件副本原生 FTS 或映射变化')
         }
         return observe(db, saved.routes, alias?.protectedNames)
@@ -239,7 +240,7 @@ async function readIndependent(saved: Independent, original: RootRestoreStage3He
   } finally { closeRootRestoreStage3FilesHeld3(held) }
 }
 
-async function physicalCopy(physical: Physical, root: string): Promise<SqlCopy> {
+async function physicalCopy(physical: PhysicalInput, root: string): Promise<SqlCopy> {
   return { databaseDirectory: join(physical.directory, 'database'), inventory: await physicalInventory(physical, root),
     physicalStageId: physical.stageId }
 }
@@ -258,14 +259,29 @@ function mint(saved: Saved, actual: Observation) {
     manifestHash: capsuleBytesHash(capsuleJson(saved.manifest) + '\n'), value: value(saved.manifest, actual) })
 }
 
+async function openPhysicalDerivation(reference: RootRestoreReferencePlan3, locator: PhysicalLocator,
+  pendingCellProofHash: string | undefined, rebuildRoutes: boolean) {
+  return withRootRestoreStageInputs5(reference, pendingCellProofHash, async scope => {
+    const physical = await reopenRootRestorePhysicalStage3(reference, locator, scope)
+    const original = await holdRootRestorePhysicalStageOriginalBytes3(physical.stage)
+    try {
+      const routes = rebuildRoutes ? await deriveStage4Routes(reference, physical, scope) : undefined
+      const input: PhysicalInput = { stage: physical.stage, stageId: physical.stageId, manifestHash: physical.manifestHash,
+        directory: physical.directory, physicalObservationHash: physical.value.physicalObservationHash }
+      return { physical: input, original, routes }
+    } catch (error) {
+      closeRootRestoreStage3FilesHeld3(original)
+      throw error
+    }
+  })
+}
+
 /** Original Stage3 stays sealed. Only the new private scratch ever opens writable. */
 export async function prepareRootRestoreDerivedStage4(reference: RootRestoreReferencePlan3, locator: PhysicalLocator) {
-  const physical = await reopenRootRestorePhysicalStage3(reference, locator)
   const binding = await readRootRestoreReferenceCopySource3(reference), root = binding.location.profileRoot
   const stageId = randomUUID(), base = collection(binding.location), directory = join(base, stageId)
-  const original = await holdRootRestorePhysicalStageOriginalBytes3(physical.stage)
+  const { physical, original, routes } = await openPhysicalDerivation(reference, locator, binding.pendingCellProofHash, true)
   try {
-    const routes = await deriveStage4Routes(reference, physical)
     const databaseDirectory = join(directory, 'database')
     await restoreDirectory(base, root); await restoreDirectory(directory, root, true)
     await restoreDirectory(join(directory, 'checks'), root, true)
@@ -279,14 +295,14 @@ export async function prepareRootRestoreDerivedStage4(reference: RootRestoreRefe
     if (bytes.length > maxManifestBytes) return fail('派生清单超预算')
     await writeCapsule2AssetCopy(join(directory, 'manifest.json'), bytes, root)
     await syncRestoreDirectory(directory); await syncRestoreDirectory(base)
-    const saved = { reference, physical, root, directory, manifest, routes }
+    const saved = { reference, physical: physical.stage, root, directory, manifest, routes }
     return mint(saved, await readIndependent(saved, original, () => assertRootRestoreReferenceOriginalBytes3(reference)))
   } finally { closeRootRestoreStage3FilesHeld3(original) }
 }
 
 export async function readRootRestoreDerivedStage4(stage: RootRestoreDerivedStage4) {
   const saved = owners.get(stage) ?? fail('不是实际 Main 派生阶段句柄')
-  const original = await holdRootRestorePhysicalStageOriginalBytes3(saved.physical.stage)
+  const original = await holdRootRestorePhysicalStageOriginalBytes3(saved.physical)
   try {
     return value(saved.manifest, await readIndependent(saved, original, () => assertRootRestoreReferenceOriginalBytes3(saved.reference)))
   } finally { closeRootRestoreStage3FilesHeld3(original) }
@@ -309,16 +325,15 @@ export async function reopenRootRestoreDerivedStage4(reference: RootRestoreRefer
     || row.referencePlanId !== binding.referencePlanId || row.referenceManifestHash !== binding.referenceManifestHash)
     return fail('冷清单与原引用或派生阶段不闭合')
   const inventory = validateDurableSqlCapsuleInventory(row.inventory)
-  const physical = await reopenRootRestorePhysicalStage3(reference, {
-    stageId: durableSqlDagUuid(row.physicalStageId), expectedManifestHash: durableSqlDagHash(row.physicalManifestHash) })
-  const original = await holdRootRestorePhysicalStageOriginalBytes3(physical.stage)
+  const { physical, original, routes } = await openPhysicalDerivation(reference, {
+    stageId: durableSqlDagUuid(row.physicalStageId), expectedManifestHash: durableSqlDagHash(row.physicalManifestHash)
+  }, binding.pendingCellProofHash, row.version === 2)
   try {
-    const routes = row.version === 2 ? await deriveStage4Routes(reference, physical) : undefined
     const probe = join(directory, 'checks', randomUUID())
     const observation = await writeIndependent(root, await physicalCopy(physical, root), original, probe, stageId, routes)
     const manifest = manifestFor(binding, physical, stageId, inventory, observation, row.version)
     if (text !== capsuleJson(manifest) + '\n') return fail('原物理暂存重建的派生 SQL 与持久清单不同')
-    const saved = { reference, physical, root, directory, manifest, routes }
+    const saved = { reference, physical: physical.stage, root, directory, manifest, routes }
     return mint(saved, await readIndependent(saved, original, () => assertRootRestoreReferenceOriginalBytes3(reference)))
   } finally { closeRootRestoreStage3FilesHeld3(original) }
 }
@@ -334,8 +349,8 @@ const canonicalManifestKeys = [...aliasManifestKeys, 'canonicalStageId', 'canoni
 
 async function deriveAfterAlias(source: AliasSql, stageId: string, expectedHash?: string) {
   const root = source.location.profileRoot, base = collection(source.location), directory = join(base, stageId)
-  const { alias, physical, lineage } = source, version = lineage ? 4 as const : 3 as const
-  const { routes, syntaxIndexHash } = deriveStage4AliasNavigation(source)
+  const { alias, physicalObservationHash, lineage } = source, version = lineage ? 4 as const : 3 as const
+  const { routes, syntaxIndexHash } = source.navigation
   const names = source.tableNames.filter(name => name !== 'links' && name !== 'markdown_link_sources')
   const copy: SqlCopy = { databaseDirectory: source.databaseDirectory, inventory: alias.value.inventory, physicalStageId: source.marker.stageId }
   const original = await source.holdOriginalBytes()
@@ -364,7 +379,7 @@ async function deriveAfterAlias(source: AliasSql, stageId: string, expectedHash?
     const manifest = freezeCapsuleValue({ kind: 'root-restore-non-executable-link-stage4' as const, version, stageId,
       referencePlanId: source.referencePlanId, referenceManifestHash: source.referenceManifestHash,
       aliasStageId: alias.stageId, aliasManifestHash: alias.manifestHash, physicalStageId: copy.physicalStageId,
-      physicalObservationHash: physical.physicalObservationHash, ...lineage, syntaxIndexHash, inventory, observation, installPermit: false as const })
+      physicalObservationHash, ...lineage, syntaxIndexHash, inventory, observation, installPermit: false as const })
     const text = capsuleJson(manifest) + '\n', manifestHash = capsuleBytesHash(text)
     if (Buffer.byteLength(text) > maxManifestBytes) return fail('派生附件清单超预算')
     if (persisted === undefined) {
@@ -430,6 +445,16 @@ export async function prepareRootRestoreFinalAssetSql5(reference: RootRestoreRef
   const { aliases, canonical, source } = await prepareRootRestoreCanonicalAliasDerivationFromCombined5(reference, combined, historyScope, stageScope)
   const derived = await deriveAfterAlias(source, randomUUID())
   return Object.freeze({ aliases, canonical, sql: source.alias, derived })
+}
+
+/** The install path only needs the sealed owners and has finished reading the
+ * Reference3 candidate once the independent alias verification is complete. */
+export async function prepareRootRestoreFinalAssetSqlOwners5(reference: RootRestoreReferencePlan3, combined: RootRestoreSqlAssetStage5,
+  historyScope: PreparedRestoreHistoryScope3, stageScope: RootRestoreStageInputs5) {
+  const { aliases, source } = await prepareRootRestoreCanonicalAliasDerivationFromCombined5(reference, combined, historyScope, stageScope)
+  finishRootRestoreStageInputReads5(reference, stageScope)
+  const { stage } = await deriveAfterAlias(source, randomUUID())
+  return Object.freeze({ aliases: aliases.owner, derived: stage })
 }
 
 export async function reopenRootRestoreFinalAssetSql5(reference: RootRestoreReferencePlan3, combined: RootRestoreSqlAssetStage5,

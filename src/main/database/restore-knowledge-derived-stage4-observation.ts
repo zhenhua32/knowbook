@@ -4,11 +4,12 @@ import { capsuleJson } from './restore-knowledge-capsule-model'
 import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
 import { graph3Text, type Graph3Inputs } from './restore-knowledge-graph3-data'
 import { withStoredMerge3NavigationFinalIndex3, type Navigation3FinalIndex, type StoredNavigation3Index } from './restore-knowledge-navigation3-merge-context'
-import { createNavigation3RangeProjection } from './restore-knowledge-navigation3-rewrite-cells'
-import { toReference3GraphInputs } from './restore-knowledge-reference3-model'
-import { readRootRestoreReferenceGraphInputs3, type RootRestoreReferencePlan3 } from './restore-knowledge-reference3-read'
+import { createNavigation3RangeProjection, type Navigation3TextEdit } from './restore-knowledge-navigation3-rewrite-cells'
+import { toReference3GraphInputs, type Reference3Allocation } from './restore-knowledge-reference3-model'
+import { readRootRestoreStageInputs5, type RootRestoreReferencePlan3, type RootRestoreStageInputs5 } from './restore-knowledge-reference3-read'
 import type { reopenRootRestorePhysicalStage3 } from './restore-knowledge-stage3-physical'
-import type { readRootRestoreSqlAssetAliasDerivationSource5 } from './restore-knowledge-sql-asset-alias-stage5'
+import type { Navigation3TableSource } from './restore-knowledge-navigation3-tables'
+import type { MarkdownDestination } from '../../shared/markdownLinks'
 import { withStoredRestoreScopes } from './restore-knowledge-stored-scopes'
 import { iterateRawActiveSyncedGroupSnapshotsOwned } from './synced-blocks-raw-read'
 import { assertSyncedLifecycleCoverage } from './synced-lifecycle-state'
@@ -16,7 +17,13 @@ import { canonicalSearchOccurrencesSql, occurrenceFromCanonicalSearchRow,
   type CanonicalSearchOccurrenceRow } from './workspace-search-occurrences'
 
 type Physical = Awaited<ReturnType<typeof reopenRootRestorePhysicalStage3>>
-type AliasSql = Awaited<ReturnType<typeof readRootRestoreSqlAssetAliasDerivationSource5>>
+type AliasNavigationEdit = Navigation3TextEdit & { uri: string; kind: MarkdownDestination['kind']; syntax?: MarkdownDestination['syntax']; destination?: string }
+export interface Stage4AliasNavigationInput {
+  data: Graph3Inputs; allocation: Reference3Allocation
+  physical: Pick<Physical['value'], 'tables' | 'finalSyntaxIndexHash'>
+  tables: readonly Navigation3TableSource[]
+  navigationEdits: readonly { table: 'blocks' | 'documents'; targetRowId: string; column: 'content' | 'summary'; edits: readonly AliasNavigationEdit[] }[]
+}
 type FinalScope = Navigation3FinalIndex['scopes'][number]
 export type DerivedRoutePlan4 = Awaited<ReturnType<typeof deriveStage4Routes>>
 const fail = (message: string): never => { throw new Error('恢复派生路由与搜索：' + message) }
@@ -25,8 +32,8 @@ const same = (left: unknown, right: unknown) => capsuleJson(left) === capsuleJso
 
 /** Use the qualified original row/birth mapping already proved by Reference3.
  * A current path, a coincident slug or a bare block ID cannot mint a route. */
-export async function deriveStage4Routes(reference: RootRestoreReferencePlan3, physical: Physical) {
-  const original = await readRootRestoreReferenceGraphInputs3(reference)
+export async function deriveStage4Routes(reference: RootRestoreReferencePlan3, physical: Physical, scope: RootRestoreStageInputs5) {
+  const { actual: original } = await readRootRestoreStageInputs5(reference, scope)
   if (original.candidate.checkedCanonicalCandidateHash !== physical.value.checkedCanonicalCandidateHash)
     return fail('路由原件属于另一候选')
   return withStoredMerge3NavigationFinalIndex3(toReference3GraphInputs(original.data, original.allocation), physical.value.tables, index => {
@@ -66,7 +73,7 @@ function routesFromIndex(index: Pick<StoredNavigation3Index, 'physicalLocations'
 
 /** The readback rows, not a computed post-edit DTO, drive the new index.
  * Prove that exact address edits preserve other scoped navigation. */
-export function deriveStage4AliasNavigation(source: AliasSql) {
+export function deriveStage4AliasNavigation(source: Stage4AliasNavigationInput) {
   const graph = toReference3GraphInputs(source.data, source.allocation)
   const key = (cell: Pick<FinalScope['blocks'][number]['cell'], 'table' | 'targetRowId' | 'column'>) =>
     capsuleJson([cell.table, cell.targetRowId, cell.column])

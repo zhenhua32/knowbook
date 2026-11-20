@@ -18,12 +18,12 @@ import { requiredReferenceRoots } from '../database/restore-knowledge-reference-
 import { withPreparedRootKnowledgeInputs5, type captureRootKnowledgeConservationPlanFromCertifiedSources3 } from '../database/restore-knowledge-root3-read'
 import { withPreparedRootRestoreIdentityInputs5, type prepareRootRestoreIdentityPlan3, type PreparedRootIdentityInputs5 } from '../database/restore-knowledge-identity3-read'
 import { prepareRootRestoreReferencePlan3, readRootRestoreStageInputs5, withPreparedRootRestoreReferenceInputs5,
-  type Reference3Value } from '../database/restore-knowledge-reference3-read'
+  type Reference3Value, type RootRestoreReferencePlan3, type RootRestoreStageInputs5 } from '../database/restore-knowledge-reference3-read'
 import type { Reference3Choices } from '../database/restore-knowledge-reference3-model'
 import { restoreSqliteFilename } from '../database/restore-safety-sqlite-path'
 import { readInheritedInitialIncomingTombstones } from '../database/synced-initial-incoming-read'
 import { prepareRootRestoreSqlAssetStage5 } from '../database/restore-knowledge-sql-asset-stage5'
-import { prepareRootRestoreFinalAssetSql5 } from '../database/restore-knowledge-derived-stage4'
+import { prepareRootRestoreFinalAssetSqlOwners5 } from '../database/restore-knowledge-derived-stage4'
 import { prepareRootRestoreCoverageSql } from '../database/restore-knowledge-stage3-history-sql'
 import { withPreparedRestoreHistoryScope3 } from '../database/restore-knowledge-stage3-physical'
 import { prepareRootRestoreAssetTransfer4 } from '../database/restore-asset-transfer4'
@@ -215,6 +215,18 @@ async function inspectSourceOwnership(input: BackupV3RestorePreparation, current
   } finally { db.close() }
 }
 
+async function inspectPreparedReference(input: BackupV3RestorePreparation, original: OwnedRawCapsuleOriginal,
+  prior: readonly RestoreKnowledgePriorInstall[], value: Reference3Value, reference: RootRestoreReferencePlan3, scope: RootRestoreStageInputs5) {
+  const disposition = previewResolvedReference(value)
+  const { retained, retirement } = await inspectSourceOwnership(input, original, prior, value,
+    async () => (await readRootRestoreStageInputs5(reference, scope)).actual.data.inputs)
+  const preview = Object.freeze({ ...disposition,
+    ...(retirement ? { groups: { ...disposition.groups, retained: disposition.groups.retained - retirement.records.length } } : {}),
+    ...(retained.length ? { sourceOwnedMissingGroups: retained } : {}),
+    ...(retirement ? { sourceGroupRetirements: retirement.detail } : {}) })
+  return { preview, retirement }
+}
+
 /** Build the exact candidate and its independently readable original, plus
  * a durable transfer and SQL proof. No live files are moved by preparation. */
 export async function prepareBackupV3RestoreCandidate(input: BackupV3RestorePreparation) {
@@ -223,23 +235,19 @@ export async function prepareBackupV3RestoreCandidate(input: BackupV3RestorePrep
   const privateSync = await readV3SettledPrivateSyncOriginals(currentOriginal)
   const { root, identity, reference, preview, coverage, installed, transfer, retirement } = await withPreparedRestoreHistoryScope3(async historyScope => {
     const { root, identity, reference, prior, preview, final, retirement } = await withPlanIdentityFromCurrent(input, currentOriginal, (plan, identityScope) =>
-      withPreparedRootRestoreReferenceInputs5(plan.identity.plan, input.choices, identityScope, async (reference, stageScope) => {
+      withPreparedRootRestoreReferenceInputs5(plan.identity.plan, input.choices, identityScope, (reference, value, stageScope) => {
         assertBackupV3RestoreSourceCurrent(source)
-        const disposition = previewResolvedReference(reference.value)
-        const { retained, retirement } = await inspectSourceOwnership(input, currentOriginal, plan.prior, reference.value,
-          async () => (await readRootRestoreStageInputs5(reference.plan, stageScope)).actual.data.inputs)
-        const preview = Object.freeze({ ...disposition,
-          ...(retirement ? { groups: { ...disposition.groups, retained: disposition.groups.retained - retirement.records.length } } : {}),
-          ...(retained.length ? { sourceOwnedMissingGroups: retained } : {}),
-          ...(retirement ? { sourceGroupRetirements: retirement.detail } : {}) })
-        const combined = await prepareRootRestoreSqlAssetStage5(reference.plan, stageScope)
-        const final = await prepareRootRestoreFinalAssetSql5(reference.plan, combined.stage, historyScope, stageScope)
-        return { ...plan, reference, preview, final, retirement }
+        return inspectPreparedReference(input, currentOriginal, plan.prior, value, reference.plan, stageScope)
+      }, async (reference, stageScope, { preview, retirement }) => {
+        const { stage: combined } = await prepareRootRestoreSqlAssetStage5(reference.plan, stageScope)
+        const final = await prepareRootRestoreFinalAssetSqlOwners5(reference.plan, combined, historyScope, stageScope)
+        return { root: { mountId: plan.root.mountId, descriptorHash: plan.root.descriptorHash, materialHash: plan.root.value.materialHash },
+          identity: { planId: plan.identity.planId, manifestHash: plan.identity.manifestHash }, prior: plan.prior, reference, preview, final, retirement }
       }))
-    const coverage = await prepareRootRestoreCoverageSql(reference.plan, final.derived.stage, prior, historyScope, retirement?.records)
+    const coverage = await prepareRootRestoreCoverageSql(reference.plan, final.derived, prior, historyScope, retirement?.records)
     const installed = coverage.value.coverage
     if (!installed) throw new Error('The V3 candidate is missing its original coverage readback.')
-    const transfer = await prepareRootRestoreAssetTransfer4(final.aliases.owner, historyScope)
+    const transfer = await prepareRootRestoreAssetTransfer4(final.aliases, historyScope)
     return { root, identity, reference, preview, coverage, installed, transfer, retirement }
   })
   const copy = join(paths.recovery, 'coverage-install-read')
@@ -255,7 +263,7 @@ export async function prepareBackupV3RestoreCandidate(input: BackupV3RestorePrep
   const { manifest, inventoryHash } = readBackupV3RestoreIndex(source)
   const proofHash = await writeRestoreKnowledgeInstallProof(profileRoot, {
     operationId, mountId: root.mountId, descriptorHash: root.descriptorHash, coverage: installed,
-    planHash: coverage.value.planHash, rootMaterialHash: root.value.materialHash, requirementsHash: coverage.requirementsHash,
+    planHash: coverage.value.planHash, rootMaterialHash: root.materialHash, requirementsHash: coverage.requirementsHash,
     identity: { planId: identity.planId, expectedManifestHash: identity.manifestHash },
     reference: { planId: reference.planId, expectedManifestHash: reference.manifestHash },
     sourceArchive: { snapshotId: manifest.snapshotId, inventoryHash },

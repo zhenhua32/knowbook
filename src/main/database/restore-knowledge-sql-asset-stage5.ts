@@ -21,7 +21,7 @@ import { observeRootRestoreFinalAssetClosure5, rootRestoreFinalAssetCellKey5, ro
   rootRestoreStagedAssetSelections5 } from './restore-knowledge-final-asset-closure5'
 import { referenceContextFileKey, referenceContextObjectPath } from './restore-knowledge-reference-context-model'
 import type { OriginalFrameCopy } from './restore-knowledge-original-frame-files'
-import { observeRootRestoreRetainedAssetPolicy5 } from './restore-knowledge-retained-asset-policy5'
+import { prepareRootRestoreRetainedAssetPolicy5 } from './restore-knowledge-retained-asset-policy5'
 
 export interface RootRestoreSqlAssetStage5 { readonly kind: 'main-root-restore-non-executable-sql-asset-stage5' }
 type Reference = Awaited<ReturnType<typeof readRootRestoreReferenceCopySource3>>
@@ -194,7 +194,7 @@ export async function readRootRestoreSqlAssetClosureCopySource5(stage: RootResto
   const referenceActual = assets.sources.captured.actual, { data, allocation } = referenceActual
   return Object.freeze({ audit, matched: Object.freeze(matched), location: binding.location, physical: sql.value, physicalStage: saved.sql,
     coverageOriginal: assets.sources.captured.pair.originalPackage,
-    readRetainedAssetPolicy: () => observeRootRestoreRetainedAssetPolicy5(sql, assets, audit),
+    readRetainedAssetPolicy: prepareRootRestoreRetainedAssetPolicy5(sql, assets, audit),
     referencePlanId: binding.referencePlanId, referenceManifestHash: binding.referenceManifestHash, data, allocation, referenceActual,
     combinedStageId: saved.stageId, combinedManifestHash: saved.expectedManifestHash })
 }

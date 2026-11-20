@@ -48,6 +48,14 @@ type RawJsonWrite = (text: string) => void
 export type Capsule2RawStreamTable = Omit<Capsule2RawSqlTable, 'rows'> & { rows: Iterable<Capsule2RawSqlRow> }
 export type Capsule2RawContentStream = Omit<Capsule2RawContent, 'tables'> & { tables: readonly Capsule2RawStreamTable[] }
 
+const validatedContentCells = new WeakMap<readonly RawRestoreSqlCell[], Capsule2Encoding>()
+
+/** Only exact immutable arrays produced by this validator can reuse their
+ * already checked storage values, and only under their original encoding. */
+export function areValidatedCapsule2ContentCells(value: unknown, encoding: Capsule2Encoding): value is readonly RawRestoreSqlCell[] {
+  return Array.isArray(value) && validatedContentCells.get(value) === encoding
+}
+
 /** The validated raw schema has fixed, non-index property names. Keep the
  * canonical property order and use the original codec for every leaf and
  * row, while emitting the two potentially large arrays incrementally. */
@@ -264,6 +272,16 @@ export function hashCapsule2RawContentStream(domain: string, content: Capsule2Ra
 }
 
 export function validateCapsule2RawContent(input: unknown): Capsule2RawContent {
+  return captureRawContent(input, rows => list(rows, CAPSULE2_RAW_MAX_ROWS))
+}
+
+/** The native reader visits one inspected SQLite row at a time. Validate and
+ * consume its stream without building a second complete, unchecked raw DTO. */
+export function captureCapsule2RawContentStream(input: Capsule2RawContentStream): Capsule2RawContent {
+  return captureRawContent(input, rows => rows as Iterable<Capsule2RawSqlRow>)
+}
+
+function captureRawContent(input: unknown, readRows: (value: unknown) => Iterable<unknown>): Capsule2RawContent {
   const value = rawContentHeader(input)
   const encoding = value.encoding as Capsule2Encoding
   const budget: RawBudget = { rows: 0, valueBytes: 0 }
@@ -272,7 +290,8 @@ export function validateCapsule2RawContent(input: unknown): Capsule2RawContent {
     if (!qname(table.name) || table.role !== capsule2TableRole(table.name)) return capsule2RawInvalid('表族/role无效')
     const columns = columnNames(table.columns), primaryKey = names(table.primaryKey)
     if (primaryKey.some(key => !columns.includes(key))) return capsule2RawInvalid('原PK不属于完整列')
-    const rows = list(table.rows, CAPSULE2_RAW_MAX_ROWS).map(item => row(item, columns.length, encoding, budget))
+    const rows: Capsule2RawSqlRow[] = []
+    for (const item of readRows(table.rows)) rows.push(row(item, columns.length, encoding, budget))
     if (rows.some((item, index) => index > 0 && BigInt(rows[index - 1].sourceRowId) >= BigInt(item.sourceRowId)))
       return capsule2RawInvalid('原rowid顺序/完整行总预算不闭合')
     return { name: table.name, role: capsule2TableRole(table.name), columns, primaryKey, rows }
@@ -281,7 +300,10 @@ export function validateCapsule2RawContent(input: unknown): Capsule2RawContent {
   assertRawTableNames(tables.map(table => table.name), derivedTablesNotRepeated, value.schemaVersion)
   const result = { ...value, tables, derivedTablesNotRepeated } as unknown as Capsule2RawContent
   writeBoundedRawContent(result)
-  return freezeCapsuleValue(result)
+  const validated = freezeCapsuleValue(result)
+  for (const table of validated.tables) if (table.role === 'content')
+    for (const row of table.rows) validatedContentCells.set(row.cells, encoding)
+  return validated
 }
 export const capsule2RawContentHash = (value: Capsule2RawContent): string =>
   hashValidatedCapsule2RawContent('knowbook.capsule2.raw-content.v1', validateCapsule2RawContent(value))

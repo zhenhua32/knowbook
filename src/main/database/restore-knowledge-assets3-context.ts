@@ -61,7 +61,8 @@ const list = (value: unknown): unknown[] => Array.isArray(value) ? value : fail(
 const parse = (value: Uint8Array) => M.parseExchangeStored(new TextDecoder('utf-8', { fatal: true }).decode(value))
 export const root3SupplementSourceContentHash3 = (raw: Capsule2RawContent) =>
   hashValidatedCapsule2RawContent('knowbook.capsule2.workspace-history-source-content.v1', raw)
-export function root3SupplementOriginalRowHash3(raw: Capsule2RawContent, row: ReturnType<typeof graph3Rows>[number]) {
+export type OriginalRowPointer3 = Pick<ReturnType<typeof graph3Rows>[number], 'table' | 'original'>
+export function root3SupplementOriginalRowHash3(raw: Capsule2RawContent, row: OriginalRowPointer3) {
   return capsuleBytesHash('knowbook.restore.merge3.original-row.v1\0' + capsuleJson({ table: row.table.name,
     columns: row.table.columns, primaryKey: row.table.primaryKey, encoding: raw.encoding,
     sourceRowId: row.original.sourceRowId, cells: row.original.cells }))
@@ -104,7 +105,7 @@ export function requiredRoot3MergeContextLocators3(raw: Capsule2RawContent, opti
 /** Pure extension point only. It cannot mint a Main owner; only the genuine
  * sealed-source portable owner constructs this projector internally. */
 export interface Root3SettledCandidateProjectorForMain3 {
-  project(value: unknown, source: readonly string[], rows: readonly ReturnType<typeof graph3Rows>[number][]): {
+  project(value: unknown, source: readonly string[], rows: readonly OriginalRowPointer3[]): {
     readonly record: SyncedProtocol5Snapshot['records'][number]['record']; readonly binding: unknown
   } | null
 }
@@ -334,7 +335,6 @@ function normalizedPlan(value: ReturnType<typeof planSyncedExchange> | ReturnTyp
 /** Authenticate every original byte/hash first, then run the SAME pure planner
  * and merge codec as the original service. Replaying today's SQL records is
  * forbidden: block role/skeleton/birth come exclusively from the sealed inputs. */
-type OriginalRowPointer3 = Pick<ReturnType<typeof graph3Rows>[number], 'table' | 'original'>
 function replayContext(raw: Capsule2RawContent, locator: Root3MergeContextLocator3, bytes: Root3MergeContextBytes3,
   originalRows: ReadonlyMap<string, readonly OriginalRowPointer3[]>) {
   if (bytes.operationId !== locator.operationId || bytes.attemptId !== locator.attemptId) return fail('context identity mismatch')

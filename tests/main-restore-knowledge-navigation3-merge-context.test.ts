@@ -2,11 +2,14 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { capsule2ApplicationColumns, type Capsule2Encoding, type Capsule2RawSqlTable } from '../src/main/database/restore-knowledge-capsule2-raw-model'
 import { capsuleBytesHash, capsuleJson } from '../src/main/database/restore-knowledge-capsule-model'
+import { hashBoundedCapsuleJson } from '../src/main/database/restore-knowledge-capsule-json-hash'
 import { markdownOriginalOffsetLookup } from '../src/shared/markdownNativeText'
 import { deriveStage4AliasNavigation } from '../src/main/database/restore-knowledge-derived-stage4-observation'
 import { graph3Encode, graph3Key, graph3Text, type Graph3Inputs } from '../src/main/database/restore-knowledge-graph3-data'
 import { createNavigation3DocumentBlockReader, deriveRootRestoreNavigationMergeContext3, buildMerge3NavigationFinalIndex3, resolveFinalNavigation3,
   withStoredMerge3NavigationFinalIndex3, withStoredRootRestoreNavigationMergeContext3 } from '../src/main/database/restore-knowledge-navigation3-merge-context'
+import { materializeNavigation3Tables, navigation3TableHashInput, projectNavigation3TableRows,
+  withNavigation3TextPatches, withStoredNavigation3TableScan, withStoredNavigation3Tables } from '../src/main/database/restore-knowledge-navigation3-tables'
 import { finishMerge3Table, prepareMerge3Table, type Merge3Material } from '../src/main/database/restore-knowledge-merge3-storage'
 import type { deriveRootRestoreMergedContent3 } from '../src/main/database/restore-knowledge-merge3-model'
 import { toReference3GraphInputs } from '../src/main/database/restore-knowledge-reference3-model'
@@ -164,7 +167,10 @@ test('attachment alias navigation compares projected ranges and preserves the ex
     tables: rewritten, navigationEdits: [{ table: 'blocks', targetRowId: retained.targetRowId, column: 'content', edits: [{
       from: prefix.length, to: prefix.length + fromUri.length, before: fromUri, after: toUri, uri: fromUri, kind: 'image' }] }]
   } as unknown as Parameters<typeof deriveStage4AliasNavigation>[0]
-  const result = deriveStage4AliasNavigation(source)
+  const result = withStoredNavigation3TableScan(append => {
+    for (const { rows, ...layout } of rewritten) append(layout, rows.values())
+  }, (_metadata, tables) => deriveStage4AliasNavigation({ ...source, tables }))
+  assert.deepEqual(result, deriveStage4AliasNavigation(source))
   assert.equal(result.syntaxIndexHash, buildMerge3NavigationFinalIndex3(graph, rewritten).indexHash)
   assert.deepEqual(result.routes.routes.get(capsuleJson(['Previous route 🍃', 'retained'])), {
     path: 'Previous route 🍃', blockId: 'retained', documentId: 'r', createdAt: born, currentRowId: '-9223372036854775808'
@@ -192,6 +198,36 @@ test('stored source, current and final scopes preserve the complete merge contex
       assert.deepEqual([...stored.scopes()], full.scopes)
     })
   }
+})
+
+test('file-backed candidate rows preserve exact SQL order and canonical bytes across sparse rewrite and final navigation', () => {
+  const { data, merged } = fixture(true), full = deriveRootRestoreNavigationMergeContext3(data, merged)
+  let readAfterScope: (() => unknown) | undefined
+  withStoredNavigation3Tables(() => ({ metadata: merged.mergedContentHash, tables: merged.tables }), (mergedContentHash, tables) => {
+    assert.deepEqual(tables.map(table => table.rows.length), merged.tables.map(table => table.rows.length))
+    assert.deepEqual(materializeNavigation3Tables(tables), merged.tables)
+    assert.equal(hashBoundedCapsuleJson(navigation3TableHashInput(tables), Number.MAX_SAFE_INTEGER), capsuleBytesHash(capsuleJson(merged.tables)))
+    withStoredRootRestoreNavigationMergeContext3(data, { mergedContentHash, tables }, stored => {
+      assert.equal(stored.contextHash, full.contextHash)
+      assert.deepEqual([...stored.scopes()], full.scopes)
+    })
+    const changed = tables.map(table => {
+      if (table.name !== 'blocks') return table
+      readAfterScope = () => table.rows.at(0)
+      const column = table.columns.indexOf('content'), type = table.columns.indexOf('type')
+      const target = [...table.rows].find(row => graph3Text(row.cells[type], table.encoding) !== 'synced-block')!
+      return projectNavigation3TableRows(table, row => row.key === target.key ? { ...row,
+        cells: row.cells.map((cell, ordinal) => ordinal === column ? graph3Encode('A rewritten body 😀\r\n', table.encoding) : cell) } : row)
+    })
+    const materialized = materializeNavigation3Tables(changed), expected = capsuleBytesHash(capsuleJson(materialized))
+    assert.equal(hashBoundedCapsuleJson(navigation3TableHashInput(changed), Number.MAX_SAFE_INTEGER), expected)
+    withStoredMerge3NavigationFinalIndex3(data, changed, stored => {
+      assert.equal(stored.indexHash, buildMerge3NavigationFinalIndex3(data, materialized).indexHash)
+    })
+  })
+  assert.throws(readAfterScope!, /connection is not open/)
+  const verbatim = '\0正文😀\r\n\ud800'
+  withNavigation3TextPatches((write, read) => { write('patch', verbatim); return read }, read => assert.equal(read('patch'), verbatim))
 })
 
 test('navigation merge context preserves source/current birth evidence and maps retained links before final path lookup', () => {

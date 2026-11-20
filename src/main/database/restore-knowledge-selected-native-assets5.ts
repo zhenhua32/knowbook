@@ -7,8 +7,9 @@ import { capsule2CombinedAssetUris4 } from './restore-knowledge-capsule2-asset-s
 import { capsule5CombinedAssetUris5 } from './restore-knowledge-capsule5-asset-supplement-model'
 import { CAPSULE_V3_ASSET_MAX_FILE_BYTES } from './restore-knowledge-capsule-v3-assets'
 import { logicalFileAsset } from './restore-knowledge-assets5-working-portable-derive'
+import { readWorkingAssetOriginalTable5 } from './restore-knowledge-assets5-original-rows'
 import { transformCanonical3Cell, type Canonical3TextEdit } from './restore-knowledge-canonical3-cells'
-import { graph3Rows, graph3Text } from './restore-knowledge-graph3-data'
+import { graph3Text } from './restore-knowledge-graph3-data'
 import type { Merge3OriginalRowRef, MergedRow3 } from './restore-knowledge-merge3-storage'
 import { createNavigation3DocumentBlockReader } from './restore-knowledge-navigation3-merge-context'
 import { applyNavigation3TextEdits, createNavigation3RangeProjection } from './restore-knowledge-navigation3-rewrite-cells'
@@ -137,8 +138,8 @@ function selectBackupV3DocumentAssets(actual: Actual, side: 'source' | 'current'
   const packet = actual.captured.pair[side], raw = packet.source.sourceContent
   const chosenDocuments = mapBy(documents.rows.filter(row => row.sourceRef.side === side), row => row.sourceRef.sourceRowId)
   const chosenBlocks = mapBy(blocks.rows.filter(row => row.sourceRef.side === side), row => row.sourceRef.sourceRowId)
-  const originalDocuments = mapBy(graph3Rows(raw, 'documents'), row => String(row.value.id))
-  const originalBlocks = mapBy(graph3Rows(raw, 'blocks'), row => String(row.value.id))
+  const originalDocuments = readWorkingAssetOriginalTable5(raw, 'documents'), documentRows = originalDocuments.indexBy('id')
+  const originalBlocks = readWorkingAssetOriginalTable5(raw, 'blocks'), blockRows = originalBlocks.indexBy('id')
   const editGroups = new Map<string, (typeof actual.captured.cells.ordinaryEdits)[number][]>()
   for (const edit of actual.captured.cells.ordinaryEdits) {
     const list = editGroups.get(edit.rowKey) ?? []
@@ -156,22 +157,23 @@ function selectBackupV3DocumentAssets(actual: Actual, side: 'source' | 'current'
   }
   const selected: SelectedNativeAsset5[] = []
   for (const doc of packet.source.physical.documents) {
-    const originalDocument = originalDocuments.get(doc.documentId)
+    const originalDocument = documentRows.get(doc.documentId)
     const scope = scopes.get(capsuleJson(['documents', doc.documentId]))
     if (!originalDocument || !scope?.destinations.length) continue
-    const header = chosenDocuments.get(originalDocument.original.sourceRowId)
+    const header = chosenDocuments.get(originalDocument.sourceRowId)
     if (header?.sourceRef.materialHash !== packet.materialHash) continue
     const documentId = cellText(documents, header, 'id'), body = projectWorkingAssetBodyCells5(doc.blocks, 'base')
     if (body.baseProjectionHash !== scope.bodyProjectionHash) return fail('V3 原正文范围与封存 typed scope 不符')
     const summary = cellText(documents, header, 'summary'), summaryDestinations = collectStoredMarkdownAssetDestinations(summary)
+    const oldSummary = originalDocuments.cell(originalDocument, 'summary'), oldContent = originalBlocks.cachedCell('content')
     for (const destination of scope.destinations) {
       const cell = destination.section === 'body' ? body.byBodyPosition.get(workingAssetPosition5(destination)) : undefined
-      const originalBlock = cell && originalBlocks.get(cell.blockId)
-      if (destination.section === 'body' && (!cell || !originalBlock || originalBlock.value.document_id !== doc.documentId)) continue
-      const target = originalBlock ? chosenBlocks.get(originalBlock.original.sourceRowId) : header
+      const originalBlock = cell && blockRows.get(cell.blockId)
+      if (destination.section === 'body' && (!cell || !originalBlock || originalBlocks.cell(originalBlock, 'document_id') !== doc.documentId)) continue
+      const target = originalBlock ? chosenBlocks.get(originalBlock.sourceRowId) : header
       if (target?.sourceRef.materialHash !== packet.materialHash || originalBlock && cellText(blocks, target, 'document_id') !== documentId) continue
       const column = originalBlock ? 'content' : 'summary', original = cell ?? destination
-      const oldText = originalBlock ? originalBlock.value.content : originalDocument.value.summary
+      const oldText = originalBlock ? oldContent(originalBlock) : oldSummary
       const finalText = originalBlock ? cellText(blocks, target, 'content') : summary
       const edits = editGroups.get(target.key) ?? []
       if (edits.some(edit => edit.column !== column || !same(edit.sourceRef, target.sourceRef))) return fail('V3 导航改写不属于原 cell')
@@ -218,12 +220,12 @@ export function selectRootRestoreNativeAssetScopes5(actual: Actual): SelectedNat
       || packet.assetArchive.version === 9 || packet.assetArchive.version === 10)
       selected.push(...selectBackupV3DocumentAssets(actual, side, table('documents'), table('blocks'), scopes, bindBlob))
     const belongs = (row: MergedRow3 | undefined): row is MergedRow3 => row !== undefined && row.sourceRef.materialHash === packet.materialHash
-    const groupRows = mapBy(graph3Rows(raw, 'synced_groups'), row => String(row.value.id))
-    const blockRows = mapBy(graph3Rows(raw, 'synced_group_blocks'), row => String(row.value.id))
+    const groupRows = readWorkingAssetOriginalTable5(raw, 'synced_groups').indexBy('id')
+    const originalBlocks = readWorkingAssetOriginalTable5(raw, 'synced_group_blocks'), blockRows = originalBlocks.indexBy('id')
     for (const group of packet.source.physical.groups) {
       const snapshot = group.snapshot, owner = groupRows.get(group.groupId), scope = scopes.get(capsuleJson(['synced_groups', group.groupId]))
       if (!snapshot || !owner || !scope?.destinations.length) continue
-      const selectedGroup = selectedGroups.get(rowKey(side, owner.original.sourceRowId))
+      const selectedGroup = selectedGroups.get(rowKey(side, owner.sourceRowId))
       if (!belongs(selectedGroup)) continue
       const groupId = cellText(groupTable, selectedGroup, 'id'), finalWire = finalWires.get(groupId)
       if (!finalWire) continue
@@ -237,22 +239,25 @@ export function selectRootRestoreNativeAssetScopes5(actual: Actual): SelectedNat
       if (originalBody.baseProjectionHash !== scope.bodyProjectionHash) return fail('canonical 完整原 body scope 与原字节不符')
       let finalBody = finalBodies.get(groupId)
       if (!finalBody) { finalBody = projectWorkingAssetBodyCells5(finalWire.blocks, 'base'); finalBodies.set(groupId, finalBody) }
+      const oldContent = originalBlocks.cachedCell('content')
       for (const destination of scope.destinations) {
         if (destination.section !== 'body') continue
         const cell = originalBody.byBodyPosition.get(workingAssetPosition5(destination))
         if (!cell || cell.raw !== destination.raw) continue
         const original = blockRows.get(cell.blockId)
-        if (!original || original.value.group_id !== group.groupId || typeof original.value.content !== 'string') continue
-        const target = selectedBlocks.get(rowKey(side, original.original.sourceRowId))
+        if (!original || originalBlocks.cell(original, 'group_id') !== group.groupId) continue
+        const originalText = oldContent(original)
+        if (typeof originalText !== 'string') continue
+        const target = selectedBlocks.get(rowKey(side, original.sourceRowId))
         if (!belongs(target) || cellText(blockTable, target, 'group_id') !== groupId) continue
         const finalText = cellText(blockTable, target, 'content'), id = cellText(blockTable, target, 'id')
         const finalBlock = finalWire.blocks.find(block => block.id === id)
-        if (!finalBlock || finalBlock.content !== finalText || original.value.content.slice(cell.from, cell.to) !== cell.raw)
+        if (!finalBlock || finalBlock.content !== finalText || originalText.slice(cell.from, cell.to) !== cell.raw)
           return fail('canonical SQL 单元与实际原/最终 block 不符')
         const edits = groupEdits.get(target.key) ?? []
         if (edits.some(edit => edit.side !== side || edit.key.blockId !== cell.blockId)) return fail('canonical 改写串借原 cell')
         const parsed = snapshot.bindings.filter(binding => binding.blockId === cell.blockId)
-        const projected = transformCanonical3Cell(original.value.content, parsed, edits, blockTable.encoding)
+        const projected = transformCanonical3Cell(originalText, parsed, edits, blockTable.encoding)
         if (projected.text !== finalText) continue
         const final = reprojectCanonicalRange(cell, projected.edits)
         const finalOccurrence = final && finalBody.byCellPosition.get(workingAssetCellPosition5(id, { ...final, uri: destination.uri }))
@@ -262,10 +267,13 @@ export function selectRootRestoreNativeAssetScopes5(actual: Actual): SelectedNat
       }
     }
 
-    for (const original of graph3Rows(raw, 'document_templates')) {
-      const id = original.value.id, sourceJson = original.value.blocks_json, sourceSummary = original.value.summary
-      const scope = scopes.get(capsuleJson(['document_templates', id])), target = selectedTemplates.get(rowKey(side, original.original.sourceRowId))
-      if (typeof id !== 'string' || typeof sourceJson !== 'string' || typeof sourceSummary !== 'string' || !scope?.destinations.length || !belongs(target)) continue
+    const originalTemplates = readWorkingAssetOriginalTable5(raw, 'document_templates')
+    for (const original of originalTemplates.table.rows) {
+      const id = originalTemplates.cell(original, 'id')
+      const scope = scopes.get(capsuleJson(['document_templates', id])), target = selectedTemplates.get(rowKey(side, original.sourceRowId))
+      if (typeof id !== 'string' || !scope?.destinations.length || !belongs(target)) continue
+      const sourceJson = originalTemplates.cell(original, 'blocks_json'), sourceSummary = originalTemplates.cell(original, 'summary')
+      if (typeof sourceJson !== 'string' || typeof sourceSummary !== 'string') continue
       const finalJson = cellText(templates, target, 'blocks_json'), finalSummary = cellText(templates, target, 'summary')
       const sourceBlocks = JSON.parse(sourceJson) as MarkdownRenderableBlock[], finalBlocks = JSON.parse(finalJson) as MarkdownRenderableBlock[]
       const sourceTokens = template3ContentStringRanges(sourceJson), finalTokens = template3ContentStringRanges(finalJson)

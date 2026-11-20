@@ -2,12 +2,13 @@ import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-kno
 import { graph3Conflict, graph3Encode, graph3Key, graph3Rows, type Graph3Inputs } from './restore-knowledge-graph3-data'
 import { withStoredMerge3NavigationFinalIndex3, type Navigation3FinalIndex, type Navigation3FinalScope,
   type Navigation3Table, type StoredNavigation3Index } from './restore-knowledge-navigation3-merge-context'
-import type { deriveRootRestoreNavigationRewrite3 } from './restore-knowledge-navigation3-rewrite-model'
+import type { ScopedNavigation3Rewrite } from './restore-knowledge-navigation3-rewrite-model'
+import { projectNavigation3TableRows, type Navigation3TableSource } from './restore-knowledge-navigation3-tables'
+import type { MergedRow3 } from './restore-knowledge-merge3-storage'
 import type { SelectedPendingLocalBody5 } from './restore-knowledge-pending-local-selection5'
 import { withStoredRestoreScopes } from './restore-knowledge-stored-scopes'
 import { projectWorkingAssetBodyCells5, workingAssetCellPosition5 } from './restore-knowledge-working-asset-cells5'
 
-type Ordinary = ReturnType<typeof deriveRootRestoreNavigationRewrite3>
 const same = (left: unknown, right: unknown) => capsuleJson(left) === capsuleJson(right)
 const fail = (reason: string): never => graph3Conflict('pending-local-cell-' + reason, null)
 const hash = (domain: string, value: unknown) => capsuleBytesHash(domain + '\0' + capsuleJson(value))
@@ -54,13 +55,17 @@ function assertNavigationClosure5(previous: PriorNavigation, next: Navigation3Fi
 
 /** The sourceRef is copied from the existing checked business row. This
  * function only substitutes its content cell after validating exact identity. */
-export function withSelectedPendingLocalBody5<Selection>(data: Graph3Inputs, ordinary: Ordinary, selected: SelectedPendingLocalBody5,
-  read: (index: StoredNavigation3Index, tables: readonly Navigation3Table[]) => Selection) {
+export function withSelectedPendingLocalBody5<Selection>(data: Graph3Inputs, ordinary: ScopedNavigation3Rewrite, selected: SelectedPendingLocalBody5,
+  read: (index: StoredNavigation3Index, tables: readonly Navigation3TableSource[]) => Selection) {
   const blocks = ordinary.tables.find(table => table.name === 'blocks') ?? fail('missing-business-table')
   const column = blocks.columns.indexOf('content')
-  const rows = blocks.rows.filter(row => row.sourceRef.side === 'source' && row.sourceRef.sourceRowId === selected.sourceRowId)
-  const target = rows[0]
-  if (rows.length !== 1 || !target || column < 0 || target.sourceRef.table !== 'blocks'
+  let match: MergedRow3 | undefined
+  for (const row of blocks.rows) if (row.sourceRef.side === 'source' && row.sourceRef.sourceRowId === selected.sourceRowId) {
+    if (match) return fail('selected-row')
+    match = row
+  }
+  const target = match
+  if (!target || column < 0 || target.sourceRef.table !== 'blocks'
     || target.sourceRef.materialHash !== selected.sourceMaterialHash || !same(target.cells[column], graph3Encode(selected.before, blocks.encoding))
     || ordinary.edits.some(edit => edit.table === 'blocks' && edit.rowKey === target.key)) return fail('selected-row')
   type NavigationRow = Navigation3FinalIndex['headingNamespaces'][number] | Navigation3FinalIndex['routes'][number]
@@ -80,9 +85,9 @@ export function withSelectedPendingLocalBody5<Selection>(data: Graph3Inputs, ord
       return { blockId: physical.id, blockBirth: physical.birth, documentId: document.id, scopeId, navigation,
         indexHash: prior.indexHash, headings: prior.headingNamespaces.length, routes: prior.routes.length }
     }), (prior, evidence) => {
-    const tables = ordinary.tables.map(table => table === blocks ? { ...table, rows: table.rows.map(row => row === target ? {
+    const tables = ordinary.tables.map(table => table === blocks ? projectNavigation3TableRows(table, row => row.key === target.key ? {
       ...row, cells: row.cells.map((cell, index) => index === column ? graph3Encode(selected.after, table.encoding) : cell)
-    } : row) } : table)
+    } : row) : table)
     return withStoredMerge3NavigationFinalIndex3(data, tables, final => {
       const nextScope = final.scope(prior.scopeId), occurrence = nextScope?.blocks.find(block => block.cell.rowKey === target.key)?.occurrenceKey
       if (!prior.navigation || !nextScope || !occurrence || prior.headings !== final.headingNamespaces.length || prior.routes !== final.routes.length)

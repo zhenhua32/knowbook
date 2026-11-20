@@ -7,9 +7,10 @@ import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-kno
 import { capsule2AssetReferenceProvenanceHash, capsule2AssetReferenceProvenance2Hash,
   validateCapsule2AssetReferenceProvenance1, validateCapsule2AssetReferenceProvenance2, validateCapsuleInstalledAssetProvenance } from './restore-knowledge-capsule2-asset-provenance'
 import { capsule2CombinedAssetUris3 } from './restore-knowledge-capsule2-asset-supplement-model'
-import { graph3Rows } from './restore-knowledge-graph3-data'
+import { findGraph3OriginalRow, graph3Rows } from './restore-knowledge-graph3-data'
 import { root3SupplementOriginalRowHash3, type Root3SettledCandidateProjectorForMain3 } from './restore-knowledge-assets3-context'
 import { deriveRoot5SettledWorkingEvidence5 } from './restore-knowledge-assets5-working-context'
+import { readWorkingAssetOriginalTable5 } from './restore-knowledge-assets5-original-rows'
 import { mapPublicationCatalog, publicationHash, publicationJson } from '../sync/synced-publication-model'
 import { validateSyncedProtocol5Record } from '../sync/synced-protocol5-model'
 import { parseExchangeStored, validateExchangeJob, exchangeJobHash } from '../sync/synced-exchange-model'
@@ -33,7 +34,6 @@ function projectionBinding(binding: Capsule2SettledPortableBinding3) {
 }
 
 type LiveRecord = Extract<ReturnType<typeof validateSyncedProtocol5Record>, { kind: 'document' | 'synced-group' }>
-type RawRow = ReturnType<typeof graph3Rows>[number]
 const fail = (reason: string): never => { throw new Error('settled portable owner无效：' + reason + '；不授spool跳过、资产读写、语义选择或安装权。') }
 const hash = (domain: string, value: unknown) => capsuleBytesHash(domain + '\0' + capsuleJson(value))
 const same = (left: unknown, right: unknown) => capsuleJson(left) === capsuleJson(right)
@@ -105,7 +105,7 @@ function createCapturedBasePortableProjector5<Binding extends Capsule2SettledPor
   const uriIndex = new Map(proofUris.map((uri, index) => [uri, index])), blobs = new Map(archive.tree.files.map(file => [file.hash, file.bytes]))
   const aliasIndex = new Map(archive.tree.aliases.map(alias => [capsuleJson([alias.hash, alias.name]), alias]))
   const scopes = new Map(assets.scopes.map(scope => [capsuleJson(scope.source), scope]))
-  const actualRows = new Map(raw.tables.map(table => [table.name, { table, rows: new Map(table.rows.map(row => [row.sourceRowId, row])) }]))
+  const actualTables = new Map(raw.tables.map(table => [table.name, table]))
   const settings = graph3Rows(raw, 'app_settings'), catalogRows = settings.filter(row => row.value.key === 'database.defaultId')
   if (catalogRows.length !== 1 || typeof catalogRows[0].value.value !== 'string') return fail('缺原真实default catalog来源')
   const catalogId = catalogRows[0].value.value
@@ -116,8 +116,11 @@ function createCapturedBasePortableProjector5<Binding extends Capsule2SettledPor
   const projector: Root3SettledCandidateProjectorForMain3 = { project(value, source, rows) {
     const block = (reason: string) => { rejected.push({ source: [...source], reason }); return null }
     if (!live(value)) return block('candidate-is-not-a-complete-live-record')
-    for (const row of rows) { const actual = actualRows.get(row.table.name)
-      if (!actual || actual.table !== row.table || actual.rows.get(row.original.sourceRowId) !== row.original) return fail('projection row不属于同次真实原SQL') }
+    for (const row of rows) {
+      const table = actualTables.get(row.table.name)
+      if (!table || table !== row.table || findGraph3OriginalRow(table, row.original.sourceRowId) !== row.original)
+        return fail('projection row不属于同次真实原SQL')
+    }
     let original: LiveRecord = value
     if (source.length === 3 && source[2] === 'complete-original-protocol-record') {
       if (source[0] === 'documents') {
@@ -179,14 +182,18 @@ function createCapturedBasePortableProjector5<Binding extends Capsule2SettledPor
 export function projectCapturedBaseDocumentPortable5(input: Capsule2SettledPortableInput3<Capsule2SettledPortableBinding3>, documentId: string) {
   const { source } = input, raw = source.sourceContent
   const document = source.physical.documents.find(value => value.documentId === documentId)
-  const header = graph3Rows(raw, 'documents').find(row => row.value.id === documentId)
-  if (!document || !header || header.value.created_at !== document.createdAt) return null
-  const blocks = graph3Rows(raw, 'blocks').filter(row => row.value.document_id === documentId)
+  const documents = readWorkingAssetOriginalTable5(raw, 'documents')
+  const header = documents.table.rows.find(row => documents.cell(row, 'id') === documentId)
+  if (!document || !header || documents.cell(header, 'created_at') !== document.createdAt) return null
+  const originalBlocks = readWorkingAssetOriginalTable5(raw, 'blocks')
+  const blocks = originalBlocks.table.rows.filter(row => originalBlocks.cell(row, 'document_id') === documentId)
   if (blocks.length !== document.blocks.length) return null
   const { projector } = createCapturedBasePortableProjector5(input)
   const projected = projector.project({ kind: 'document', id: documentId, parentId: document.parentId, sortOrder: document.sortOrder,
     createdAt: document.createdAt, content: { title: document.title, summary: document.summary, blocks: document.blocks } },
-  ['documents', documentId, 'complete-original-protocol-record'], [header, ...blocks])
+  ['documents', documentId, 'complete-original-protocol-record'], [
+    { table: documents.table, original: header }, ...blocks.map(original => ({ table: originalBlocks.table, original }))
+  ])
   return projected?.record.kind === 'document' ? { ...projected, record: projected.record } : null
 }
 

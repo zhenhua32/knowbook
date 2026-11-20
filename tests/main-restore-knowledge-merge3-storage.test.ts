@@ -2,14 +2,17 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import Database from 'better-sqlite3'
 import { capsuleBytesHash, capsuleJson } from '../src/main/database/restore-knowledge-capsule-model'
+import { readRawCapsule2ContentOwned } from '../src/main/database/restore-knowledge-capsule2-content-raw-read'
 import { capsuleJsonStringBytes, hashBoundedCapsuleJson } from '../src/main/database/restore-knowledge-capsule-json-hash'
 import { CAPSULE2_RAW_MAX_ROWS, CAPSULE2_RAW_MAX_VALUE_BYTES, capsule2ApplicationColumns,
   type Capsule2Encoding, type Capsule2RawSqlTable } from '../src/main/database/restore-knowledge-capsule2-raw-model'
-import { graph3Encode, graph3Text } from '../src/main/database/restore-knowledge-graph3-data'
+import { graph3Encode, graph3PatchTable, graph3Text } from '../src/main/database/restore-knowledge-graph3-data'
 import { MERGE3_CONTENT_TABLES, assertMerge3JsonBudget, assertMerge3StorageTablesBudget, finishMerge3Table, merge3RowValues, prepareMerge3Table,
   type FinishedMerge3Table, type Merge3ContentTable, type Merge3Material, type Merge3RowDisposition, type Merge3SelectedRow,
   type PreparedMerge3Table } from '../src/main/database/restore-knowledge-merge3-storage'
 import { rawRestoreSqlCell, type RawRestoreSqlCell } from '../src/main/database/restore-knowledge-sql-cell'
+import { withV3Fixture } from './helpers/synced-backup-v3-fixture'
+import { withCapsule2RawCopy } from './helpers/capsule2-raw-fixture'
 
 test('bounded candidate encoding counts escaped text and complete surrogate pairs at the chunk boundary', () => {
   const text = 'a'.repeat(Math.floor((64 * 1024) / 6) - 1) + '😀\ud800\n"\\' + '文'.repeat(20_000)
@@ -60,6 +63,28 @@ const select = (row: PreparedMerge3Table['sourceRows'][number], replaced?: Prepa
   ({ rowKey: row.key, replaceCurrentRowKey: replaced?.key ?? null })
 const valueRow = (rowid: string, document: RawRestoreSqlCell, column: RawRestoreSqlCell, value: RawRestoreSqlCell, enc: Capsule2Encoding = 'UTF-8') =>
   ({ rowid, values: { document_id: document, column_id: column, value_text: value, updated_at: graph3Encode('literal clock', enc), entity_id: ['null'] as const } })
+
+test('merge3 shares only checked immutable SQL payloads through unchanged, rewritten and selected rows', () => withV3Fixture(async fixture => {
+  await withCapsule2RawCopy(fixture, db => db.transaction(() => {
+    const raw = readRawCapsule2ContentOwned(db), source = raw.tables.find(value => value.name === 'documents')!
+    assert.ok(source.rows.length >= 2)
+    const changedId = source.rows[0].sourceRowId, summary = source.columns.indexOf('summary'), title = source.columns.indexOf('title')
+    const candidate = graph3PatchTable(source, raw.encoding, (_, id): Record<string, string> => id === changedId ? { summary: 'Actual sparse rewrite' } : {})
+    assert.equal(candidate.rows[1], source.rows[1])
+    const p = prepare(source, { ...source, rows: [] }, candidate, raw.encoding, raw.encoding)
+    for (const [index, row] of p.sourceRows.entries()) assert.equal(row.originalCells, source.rows[index].cells)
+    assert.equal(p.sourceRows[0].cells[title], source.rows[0].cells[title])
+    assert.equal(graph3Text(p.sourceRows[0].cells[summary], raw.encoding), 'Actual sparse rewrite')
+    assert.notEqual(p.sourceRows[0].cells[summary], source.rows[0].cells[summary])
+    assert.equal(p.sourceRows[1].cells, source.rows[1].cells)
+    const selected = p.sourceRows.map(row => select(row))
+    const own = finishMerge3Table(p, selected, dispositions(p, selected)), clone = structuredClone(p)
+    const external = finishMerge3Table(clone, selected, dispositions(clone, selected))
+    assert.equal(own.table.rows[0].cells, p.sourceRows[0].cells)
+    assert.notEqual(external.table.rows[0].cells, clone.sourceRows[0].cells)
+    assert.deepEqual(external, own)
+  })())
+}))
 
 test('merge3 aligns every fixed content table by column name and never grants a DTO SQL authority', () => {
   const finished: FinishedMerge3Table[] = []

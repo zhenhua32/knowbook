@@ -8,6 +8,7 @@ import { TextDecoder } from 'node:util'
 import { assertSyncedShape } from '../../shared/syncedBlockValidation'
 import { capsuleBytesHash, capsuleJson } from './restore-knowledge-capsule-model'
 import type { Capsule2RawContent } from './restore-knowledge-capsule2-raw-model'
+import { readWorkingAssetOriginalTable5 } from './restore-knowledge-assets5-original-rows'
 import { graph3Rows, graph3Text } from './restore-knowledge-graph3-data'
 import * as M from '../sync/synced-exchange-model'
 import { publicationHash, publicationJson } from '../sync/synced-publication-model'
@@ -22,7 +23,8 @@ import { validateSyncedLogicalDeletionProof } from '../sync/synced-logical-delet
 import { validateSyncedLogicalDeletionChoiceProof } from '../sync/synced-logical-deletion-choice-model'
 import { validateSyncedRecoveryHistoryBoundary } from './synced-recovery-boundary-model'
 import { root3SupplementSourceContentHash3, root3SupplementOriginalRowHash3, root3CustomMergeParts3, type Root3MergeContextBytes3,
-  type Root3MergeContextBinary3, type Root3SettledWorkingEvidence3, type Root3SettledCandidateProjectorForMain3, type Root3MergeContextLocator3 } from './restore-knowledge-assets3-context'
+  type Root3MergeContextBinary3, type Root3SettledWorkingEvidence3, type Root3SettledCandidateProjectorForMain3, type Root3MergeContextLocator3,
+  type OriginalRowPointer3 } from './restore-knowledge-assets3-context'
 export interface Root5WorkingMergeLocator5 extends Omit<Root3MergeContextLocator3, 'version'> { readonly version: 2 | 3 | 4 | 5 | 6 | 7 }
 const fail=(reason:string):never=>{throw new Error('automatic working context5: '+reason)}
 const same=(a:unknown,b:unknown)=>publicationJson(a)===publicationJson(b)
@@ -83,7 +85,7 @@ export function deriveRoot5SettledWorkingEvidence5(raw: Capsule2RawContent, proj
       receipts.set(M.exchangeJobKey(receipt.request.operationId, receipt.provenance.attemptId), { row, receipt })
   }
   const originals = new Map<string, { record: SyncedProtocol5Snapshot['records'][number]['record']; source: readonly string[]; originalRowsHash: string; portableProjection?: unknown }>()
-  const add = (value: unknown, source: readonly string[], rows: readonly ReturnType<typeof graph3Rows>[number][]) => {
+  const add = (value: unknown, source: readonly string[], rows: readonly OriginalRowPointer3[]) => {
     const candidate = object(value), key = candidate.kind === 'document' ? 'doc:' + candidate.id : candidate.kind === 'synced-group' ? 'group:' + candidate.id : null
     if (!key) return
     let selected: unknown = candidate, portableProjection: unknown
@@ -169,31 +171,37 @@ export function deriveRoot5SettledWorkingEvidence5(raw: Capsule2RawContent, proj
   // file URLs to portable placeholders, and do not reject native outside-wire
   // ranges merely because they cannot supply this optional historical proof.
   const numeric = (value: unknown) => typeof value === 'bigint' && value >= BigInt(Number.MIN_SAFE_INTEGER) && value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : null
-  const blocksByOwner = (table: string, column: string, canonical: boolean) => {
-    const groups = new Map<string, Array<{ row: ReturnType<typeof graph3Rows>[number]; block: Record<string, unknown> }>>()
-    for (const row of graph3Rows(raw, table)) {
+  const readBlocksByOwner = (name: string, column: string, canonical: boolean) => {
+    const reader = readWorkingAssetOriginalTable5(raw, name)
+    const owners = new Map<string, Array<typeof reader.table.rows[number]>>()
+    for (const original of reader.table.rows) {
+      const id = String(reader.cell(original, column)), rows = owners.get(id) ?? []
+      rows.push(original); owners.set(id, rows)
+    }
+    return (owner: string) => (owners.get(owner) ?? []).flatMap(original => {
+      const row = reader.read(original)
       const value = row.value, depth = numeric(value.depth), checked = value.checked === 0n ? false : value.checked === 1n ? true : null
-      if (depth === null || checked === null) continue
+      if (depth === null || checked === null) return []
       const block = { id: value.id, type: value.type, content: value.content, checked, depth, parentBlockId: value.parent_block_id,
         ...(value.tags_json === null ? {} : { tags: M.parseExchangeStored(String(value.tags_json)) }),
         ...(value.language === null ? {} : { language: value.language }), ...(value.list_start === null ? {} : { listStart: numeric(value.list_start) }),
         ...(value.markdown_format_json === null ? {} : { markdownFormat: M.parseExchangeStored(String(value.markdown_format_json)) }),
         ...(value.highlight === null ? {} : { highlight: value.highlight }), ...(canonical ? { createdAt: value.created_at } : {}) }
-      const id = String(value[column]), list = groups.get(id) ?? []; list.push({ row, block }); groups.set(id, list)
-    }
-    for (const list of groups.values()) list.sort((a, b) => {
+      return [{ row, block }]
+    }).sort((a, b) => {
       const x = a.row.value.sort_order as bigint, y = b.row.value.sort_order as bigint
-      return x < y ? -1 : x > y ? 1 : String(a.block.id) < String(b.block.id) ? -1 : 1 })
-    return groups
+      return x < y ? -1 : x > y ? 1 : String(a.block.id) < String(b.block.id) ? -1 : 1
+    })
   }
-  const hosts = blocksByOwner('blocks', 'document_id', false), groups = blocksByOwner('synced_group_blocks', 'group_id', true)
-  for (const row of graph3Rows(raw, 'documents')) {
-    const value = row.value, sortOrder = numeric(value.sort_order), blocks = hosts.get(String(value.id)) ?? []
+  const hosts = readBlocksByOwner('blocks', 'document_id', false), groups = readBlocksByOwner('synced_group_blocks', 'group_id', true)
+  const documentRows = readWorkingAssetOriginalTable5(raw, 'documents'), groupRows = readWorkingAssetOriginalTable5(raw, 'synced_groups')
+  for (const original of documentRows.table.rows) {
+    const row = documentRows.read(original), value = row.value, sortOrder = numeric(value.sort_order), blocks = hosts(String(value.id))
     if (sortOrder !== null) add({ kind: 'document', id: value.id, parentId: value.parent_id, sortOrder, createdAt: value.created_at,
       content: { title: value.title, summary: value.summary, blocks: blocks.map(value => value.block) } }, ['documents', String(value.id), 'complete-original-protocol-record'], [row, ...blocks.map(value => value.row)])
   }
-  for (const row of graph3Rows(raw, 'synced_groups')) {
-    const value = row.value, blocks = groups.get(String(value.id)) ?? []
+  for (const original of groupRows.table.rows) {
+    const row = groupRows.read(original), value = row.value, blocks = groups(String(value.id))
     add({ kind: 'synced-group', id: value.id, creationId: value.creation_id, createdAt: value.created_at,
       origin: M.parseExchangeStored(String(value.origin_json)), bindings: M.parseExchangeStored(String(value.bindings_json)), blocks: blocks.map(value => value.block) },
     ['synced_groups', String(value.id), 'complete-original-protocol-record'], [row, ...blocks.map(value => value.row)])
@@ -259,7 +267,6 @@ function snapshot(value: unknown): SyncedProtocol5Snapshot {
 /** Authenticate every original byte/hash first, then run the SAME pure planner
  * and merge codec as the original service. Replaying today's SQL records is
  * forbidden: block role/skeleton/birth come exclusively from the sealed inputs. */
-type OriginalRowPointer3 = Pick<ReturnType<typeof graph3Rows>[number], 'table' | 'original'>
 function replayAutomaticContext5(raw: Capsule2RawContent, locator: Root5WorkingMergeLocator5, bytes: Root3MergeContextBytes3,
   originalRows: ReadonlyMap<string, readonly OriginalRowPointer3[]>) {
   if (bytes.operationId !== locator.operationId || bytes.attemptId !== locator.attemptId) return fail('context identity mismatch')

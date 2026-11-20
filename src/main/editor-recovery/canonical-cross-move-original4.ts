@@ -29,16 +29,20 @@ const groupHistoryFields = ['id', 'group_id', 'position', 'before_json', 'after_
 type GroupHistoryRow = { id: string; group_id: string; position: number; before_json: string; after_json: string;
   before_hash: string; after_hash: string; created_at: string }
 
-/** The V4 decoder already rederives every transfer and its birth. Identify
- * the unique moved reference using the original persisted source blocks. */
-export function matchesCanonicalV4CrossMoveForest(original: ReturnType<typeof decodeCrossHostJournal4>, instanceId: string): boolean {
+/** Identify the unique moved reference from the original persisted forest and
+ * prove that the decoded journal moved every selected descendant. */
+function readCanonicalCrossMoveForest(original: ReturnType<typeof decodeCrossHostJournal4>) {
   const { selection } = original.input.action, { selectedRootIds } = selection
-  if (original.crossMove.outsideIncoming.length) return false
   const source = original.persisted.find(page => page.documentId === selection.documentId)
-  if (!source || selectedRootIds.length === 1 && readProtectedCrossMoveReference(source.content.blocks, selectedRootIds)?.id !== instanceId) return false
+  if (!source) return undefined
   const selected = readProtectedCrossMoveSubtrees(source.content.blocks, selectedRootIds)
-  return selected?.reference.id === instanceId
-    && hostEqual(selected.movedIds, original.crossMove.transfers.map(transfer => transfer.blockId))
+  if (!selected || selectedRootIds.length === 1 && readProtectedCrossMoveReference(source.content.blocks, selectedRootIds)?.id !== selected.reference.id
+    || !hostEqual(selected.movedIds, original.crossMove.transfers.map(transfer => transfer.blockId))) return undefined
+  return selected
+}
+
+export function matchesCanonicalV4CrossMoveForest(original: ReturnType<typeof decodeCrossHostJournal4>, instanceId: string): boolean {
+  return !original.crossMove.outsideIncoming.length && readCanonicalCrossMoveForest(original)?.reference.id === instanceId
 }
 
 /** Data only for a future recovery adapter. The caller must still own the old
@@ -48,7 +52,7 @@ export function readCanonicalCrossMoveOriginal4Owned(db: Database.Database, inpu
   return readCanonicalCrossMoveOriginalOwned(db, input, false, movedReferenceId)
 }
 
-/** Uses only the closed single-move journals. Each decoder rederives the
+/** Uses only the closed single-source journals. Each decoder rederives the
  * appropriate dependency syntax, page set, original B and A. */
 export function readCanonicalLinkedCrossMoveJournal(row: Readonly<SyncedHostHistoryBranchRow>) {
   const action = hostJson(row.action_json)
@@ -59,18 +63,13 @@ export function readCanonicalLinkedCrossMoveJournal(row: Readonly<SyncedHostHist
     10: decodeCrossHostJournal10, 11: decodeCrossHostJournal11 }[version]
   const original = decode(row), ids = new Set(original.crossMove.outsideIncoming)
   const dependents = original.persisted.filter(page => ids.has(page.documentId))
-  const { selection, target } = original.input.action
-  const oldBlock = original.persisted.find(page => page.documentId === selection.documentId)?.content.blocks
-    .find(block => block.id === selection.selectedRootIds[0])
-  if (selection.selectedRootIds.length !== 1 || original.crossMove.transfers.length !== 1
-    || !dependents.length || dependents.length !== ids.size
-    || oldBlock?.type !== 'synced-block' || oldBlock.parentBlockId !== null || oldBlock.depth !== 0
-    || target.parentBlockId !== null || target.depth !== 0) throw new CrossMoveJournalError()
-  return { version, original, dependents }
+  const moved = readCanonicalCrossMoveForest(original)?.reference
+  if (!moved || !dependents.length || dependents.length !== ids.size) throw new CrossMoveJournalError()
+  return { version, original, dependents, instanceId: moved.id }
 }
 
-export function readCanonicalLinkedCrossMoveOriginalOwned(db: Database.Database, input: unknown) {
-  return readCanonicalCrossMoveOriginalOwned(db, input, true)
+export function readCanonicalLinkedCrossMoveOriginalOwned(db: Database.Database, input: unknown, movedReferenceId?: string) {
+  return readCanonicalCrossMoveOriginalOwned(db, input, true, movedReferenceId)
 }
 
 /** Only direct selected references can be the owner of the protected draft.
@@ -216,10 +215,11 @@ function readCanonicalCrossMoveOriginalOwned(db: Database.Database, input: unkno
   const batchSelection = batch?.references.find(reference => reference.instanceId === movedReferenceId && reference.groupId === groupId)
   if (batch ? !initiatingPage || !batchSelection || affected.size !== batch.references.length || batch.references.some(ref => !affected.has(ref.instanceId))
     || receipt.groups.length !== original.groups.length || original.groups.some(group => !receipt.groups.some(record => record.groupId === group.groupId))
-    : affected.size !== 1 || movedReferenceId !== undefined && !affected.has(movedReferenceId)) return fail()
+    : affected.size !== 1 || movedReferenceId !== undefined && !affected.has(movedReferenceId)
+      || linked !== undefined && !affected.has(linked.instanceId)) return fail()
   if (original.input.clientOperationId !== operationId || requestHash !== hostHash({ method: 'applySyncedHostCommand', input: original.input })
     || !crossMoveReceiptMatches(receipt, original, row.id) || !matchesCrossMovePlaceholder(db, original, true)
-    || movedReferenceId !== undefined && single && !matchesCanonicalV4CrossMoveForest(single, movedReferenceId)) return fail()
+    || movedReferenceId !== undefined && single && !linked && !matchesCanonicalV4CrossMoveForest(single, movedReferenceId)) return fail()
 
   const instanceId = batchSelection?.instanceId ?? receipt.affectedInstanceIds[0]
   const dependency = original.groups.find(group => group.groupId === groupId)
@@ -258,7 +258,7 @@ function readCanonicalCrossMoveOriginalOwned(db: Database.Database, input: unkno
       || !sameHostContent(current.content, after.content) || getSyncedHostHistory(db, { documentId: before.documentId }).undoToken !== row.id) return fail()
     currentHosts.set(before.documentId, current)
   }
-  if (single && single.input.action.selection.selectedRootIds.length > 1 && single.crossMove.transfers.some(transfer =>
+  if (single && single.crossMove.transfers.length > 1 && single.crossMove.transfers.some(transfer =>
     currentHosts.get(transfer.to)?.births.get(transfer.blockId) !== transfer.createdAt)) return fail()
   if (batch) {
     const transfers = new Map(batch.original.crossMove.transfers.map(move => [move.blockId, move]))
@@ -346,8 +346,7 @@ function readCanonicalCrossMoveOriginalOwned(db: Database.Database, input: unkno
     if (!single) return fail()
     const { selectedRootIds } = single.input.action.selection
     const direct = selectedRootIds.length === 1 && selectedRootIds[0] === instanceId && single.crossMove.transfers.length === 1
-    if (!direct && (linked || !matchesCanonicalV4CrossMoveForest(single, instanceId)
-      || single.crossMove.transfers.some(move => currentHosts.get(move.to)?.births.get(move.blockId) !== move.createdAt))) return fail()
+    if (!direct && !linked && !matchesCanonicalV4CrossMoveForest(single, instanceId)) return fail()
     retained = readCanonicalStationaryInstances(single, groupId, instanceId)
     const after = new Map(newGroup.instances.map(instance => [instance.instanceId, instance]))
     if (!retained || retained.length !== after.size - 1 || !retained.every(({ position, createdAt }) =>

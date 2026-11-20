@@ -81,9 +81,14 @@ async function verify(saved: Saved) {
   return { ...actual, source }
 }
 
-async function assertAliasBytes(saved: Saved, actual: ReturnType<typeof derive>) {
+type AliasFiles = Pick<ReturnType<typeof derive>, 'directory' | 'text' | 'files'>
+async function assertAliasBytes(saved: Saved, proof: AliasFiles) {
   await assertRootRestoreSqlAssetStageBytes5(saved.combined)
-  await assertOriginalFrameDirectory(actual.directory, actual.text, actual.files)
+  await assertOriginalFrameDirectory(proof.directory, proof.text, proof.files)
+}
+
+function aliasBytesCheck(saved: Saved, { directory, text, files }: AliasFiles) {
+  return () => assertAliasBytes(saved, { directory, text, files })
 }
 
 async function prepare(combined: RootRestoreSqlAssetStage5, scope?: RootRestoreStageInputs5) {
@@ -129,7 +134,7 @@ function transferCopies(saved: Saved, actual: ReturnType<typeof derive>) {
   return freezeCapsuleValue({ stageId: saved.stageId, manifestHash: actual.manifestHash,
     location: { profileRoot: actual.location.profileRoot, operationId: actual.location.operationId },
     assetClosureObservationHash: actual.value.assetClosureObservationHash, remaining: actual.value.remaining,
-    installPermit: false as const, assertOriginalBytes: () => assertAliasBytes(saved, actual),
+    installPermit: false as const, assertOriginalBytes: aliasBytesCheck(saved, actual),
     files: actual.value.aliases.map(({ hash, bytes, logicalName, path }) => ({ hash, bytes, logicalName, path,
       sourceRoot: actual.directory, sourcePath: join(actual.directory, referenceContextObjectPath([], path)) })) })
 }
@@ -145,21 +150,22 @@ export async function readRootRestoreAssetAliasSqlSource5(owner: RootRestoreAsse
 function sqlSource(saved: Saved, actual: Awaited<ReturnType<typeof verify>>) {
   return Object.freeze({ source: actual.source, aliases: actual.value.aliases, remaining: actual.value.remaining,
     stageId: saved.stageId, manifestHash: actual.manifestHash,
-    assertOriginalBytes: () => assertAliasBytes(saved, actual) })
+    assertOriginalBytes: aliasBytesCheck(saved, actual) })
 }
 
 /** Keep this invocation's authenticated input with the alias it produced.
  * Downstream writers still check the original and persisted bytes at their tails. */
 export async function prepareRootRestoreAssetAliasWithSqlSource5(combined: RootRestoreSqlAssetStage5, scope?: RootRestoreStageInputs5) {
   const { saved, actual } = await prepare(combined, scope)
-  const copies = transferCopies(saved, actual)
+  const copies = transferCopies(saved, actual), { directory, text, files } = actual
+  const { coverageOriginal } = actual.source
   const assertTransferBytes = async () => {
     const { assertCompleteOriginalVerificationBytes5 } = await import('./restore-knowledge-qualified-originals')
-    await assertCompleteOriginalVerificationBytes5(actual.source.coverageOriginal)
+    await assertCompleteOriginalVerificationBytes5(coverageOriginal)
     await copies.assertOriginalBytes()
   }
   return { aliases: mint(saved, actual), input: sqlSource(saved, actual), async readTransferCopies() {
-    await assertOriginalFrameDirectory(actual.directory, actual.text, actual.files)
+    await assertOriginalFrameDirectory(directory, text, files)
     await assertTransferBytes()
     return Object.freeze({ ...copies, assertOriginalBytes: assertTransferBytes })
   } }
