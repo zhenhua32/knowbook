@@ -7,6 +7,8 @@ import { durableSqlDagUuid } from './restore-knowledge-dag-model'
 import { assertCapsule2AssetDirectory, readCapsule2AssetManifest, readCapsule2AssetCopy, writeCapsule2AssetCopy } from './restore-knowledge-capsule2-assets-files'
 import { readSealedCapsule2SourceInputs, readSealedCapsule2SourceInputsWithWorking5, tryAssertSealedCapsule2Working5OriginalBytes5, readSealedCapsule2SourceWorkingOriginals5, assertSealedCapsule2SourceOriginalBytes, captureReopenedSealedCapsule2SourceWithWorking5, type SealedCapsule2Source } from './restore-knowledge-capsule2-source-seal'
 import { CAPSULE2_READER, type StoreCapsule2Archive6Blocks5 } from './restore-knowledge-capsule2-raw-model'
+import type { Capsule2PhysicalBodyStore } from './restore-knowledge-capsule2-physical-raw-read'
+import { withReferenceOriginalRows5 } from './restore-knowledge-reference-original-rows5'
 import { CAPSULE2_SOURCE_CERTIFICATE_MAX_BYTES, capsule2NoPriorSourceCertificateHash, parseCapsule2NoPriorSourceCertificate,
   sourceCertificateInvalid as bad, type Capsule2NoPriorSourceCertificate } from './restore-knowledge-capsule2-source-certificate-model'
 
@@ -28,14 +30,14 @@ function certificateFor(input: Inputs): Capsule2NoPriorSourceCertificate {
     sourceKnowledgeHash: value.knowledge.observationHash, requiredRoots: 0, originalReferenceDomain: 'unassigned',
     certified: true, semanticValidationComplete: true, acceptedCoverage: false, effective: false, permit: false, policyReplayAllowed: false })
 }
-async function verify(entry: Saved) {
+async function verify(entry: Saved, physicalBodies?: Capsule2PhysicalBodyStore) {
   const closure = async () => {
     await assertCapsule2AssetDirectory(entry.directory, entry.root)
     if (capsuleJson(await readdir(entry.directory)) !== capsuleJson(['certificate.json'])) return bad('来源证书目录闭集变化')
   }
   const path = join(entry.directory, 'certificate.json')
   await closure(); await readCapsule2AssetCopy(path, entry.root, entry.bytes.length, capsuleBytesHash(entry.bytes), CAPSULE2_SOURCE_CERTIFICATE_MAX_BYTES)
-  const input = await readSealedCapsule2SourceInputs(entry.source)
+  const input = await readSealedCapsule2SourceInputs(entry.source, physicalBodies)
   if (capsuleJson(certificateFor(input)) !== capsuleJson(entry.certificate)) return bad('证书与完整实际来源不符')
   await closure(); await readCapsule2AssetCopy(path, entry.root, entry.bytes.length, capsuleBytesHash(entry.bytes), CAPSULE2_SOURCE_CERTIFICATE_MAX_BYTES)
   return { info: freezeCapsuleValue({ certificate: entry.certificate, certificateHash: entry.certificateHash, directory: entry.directory }), value: input.value }
@@ -47,11 +49,17 @@ function mint(entry: Saved): CertifiedCapsule2NoPriorSource {
 /** Genuine complete sealed source only. Prior-C remains an explicit unresolved
  * result, never an empty proof, v1 fallback, caller origin or Root3 attestation. */
 export async function certifyCapsule2Source(source: SealedCapsule2Source): Promise<Capsule2SourceCertification> {
-  const input = await readSealedCapsule2SourceInputs(source), requiredRoots = input.value.priorCoverageRequirements.entries.length
-  if (requiredRoots) return Object.freeze({ status: 'requires-qualified-prior-coverage', requiredRoots })
+  const checked = await withReferenceOriginalRows5((_rows, _physical, _blocks, bodies) =>
+    readSealedCapsule2SourceInputs(source, bodies('source')), async input => {
+    const requiredRoots = input.value.priorCoverageRequirements.entries.length
+    return requiredRoots ? { requiredRoots } : { certificate: certificateFor(input), root: input.profileRoot, directory: input.info.directory }
+  })
+  if ('requiredRoots' in checked && checked.requiredRoots !== undefined)
+    return Object.freeze({ status: 'requires-qualified-prior-coverage', requiredRoots: checked.requiredRoots })
   if (started.has(source)) return bad('同一来源已开始，失败不覆盖重试')
   started.add(source)
-  const certificate = certificateFor(input), operation = dirname(dirname(input.info.directory)), root = input.profileRoot
+  const { certificate, root } = checked
+  const operation = dirname(dirname(checked.directory))
   const base = join(operation, 'knowledge-source-certificates-v2'), directory = join(base, certificate.capsuleId)
   await restoreDirectory(base, root); await restoreDirectory(directory, root, true)
   const bytes = Buffer.from(capsuleJson(certificate) + '\n')
@@ -59,7 +67,8 @@ export async function certifyCapsule2Source(source: SealedCapsule2Source): Promi
   await writeCapsule2AssetCopy(join(directory, 'certificate.json'), bytes, root)
   await syncRestoreDirectory(directory); await syncRestoreDirectory(base); await syncRestoreDirectory(operation)
   const entry: Saved = { source, root, directory, bytes, certificate, certificateHash: capsule2NoPriorSourceCertificateHash(certificate) }
-  await verify(entry); return Object.freeze({ status: 'certified-without-prior-coverage', source: mint(entry) })
+  await withReferenceOriginalRows5((_rows, _physical, _blocks, bodies) => verify(entry, bodies('source')), async () => undefined)
+  return Object.freeze({ status: 'certified-without-prior-coverage', source: mint(entry) })
 }
 export async function reopenCertifiedCapsule2Source(input: Parameters<typeof captureReopenedCertifiedCapsule2Source>[0]): Promise<CertifiedCapsule2NoPriorSource> {
   return (await captureReopenedCertifiedCapsule2Source(input)).source
@@ -73,7 +82,7 @@ export async function captureReopenedCertifiedCapsule2Source(input: { profileRoo
 }
 /** The actual cold certification and its Working5 result are one observation. */
 export async function captureReopenedCertifiedCapsule2SourceWithWorking5(input: { profileRoot: string; operationId: string; capsuleId: string; expectedCertificateHash: string },
-  blocks?: StoreCapsule2Archive6Blocks5) {
+  blocks?: StoreCapsule2Archive6Blocks5, physicalBodies?: Capsule2PhysicalBodyStore) {
   const row = capsuleRecord(input, ['profileRoot','operationId','capsuleId','expectedCertificateHash']), root = await canonicalRequiredSqlDagRoot(row.profileRoot)
   const operationId = durableSqlDagUuid(row.operationId), capsuleId = durableSqlDagUuid(row.capsuleId)
   const directory = join(root, 'backups', 'database-restore', operationId, 'knowledge-source-certificates-v2', capsuleId)
@@ -86,7 +95,8 @@ export async function captureReopenedCertifiedCapsule2SourceWithWorking5(input: 
   const certificate = parseCapsule2NoPriorSourceCertificate(text, operationId, capsuleId, row.expectedCertificateHash)
   const bytes = Buffer.from(text), path = join(directory, 'certificate.json')
   await readCapsule2AssetCopy(path, root, bytes.length, capsuleBytesHash(bytes), CAPSULE2_SOURCE_CERTIFICATE_MAX_BYTES)
-  const captured = await captureReopenedSealedCapsule2SourceWithWorking5({ profileRoot: root, operationId, capsuleId, expectedManifestHash: certificate.sourceManifestHash }, blocks)
+  const captured = await captureReopenedSealedCapsule2SourceWithWorking5({ profileRoot: root, operationId, capsuleId,
+    expectedManifestHash: certificate.sourceManifestHash }, blocks, physicalBodies)
   if (capsuleJson(certificateFor(captured)) !== capsuleJson(certificate)) return bad('证书与完整实际来源不符')
   await closure(); await readCapsule2AssetCopy(path, root, bytes.length, capsuleBytesHash(bytes), CAPSULE2_SOURCE_CERTIFICATE_MAX_BYTES)
   const entry: Saved = { source: captured.source, root, directory, certificate, certificateHash: capsule2NoPriorSourceCertificateHash(certificate), bytes }
@@ -143,23 +153,23 @@ export async function readCertifiedCapsule2SourceWorkingOriginals5(handle: Certi
   return working ?? null
 }
 
-async function verifyWithWorking5(entry: Saved) {
+async function verifyWithWorking5(entry: Saved, physicalBodies?: Capsule2PhysicalBodyStore) {
   const closure = async () => {
     await assertCapsule2AssetDirectory(entry.directory, entry.root)
     if (capsuleJson(await readdir(entry.directory)) !== capsuleJson(['certificate.json'])) return bad('来源证书目录闭集变化')
   }
   const path = join(entry.directory, 'certificate.json')
   await closure(); await readCapsule2AssetCopy(path, entry.root, entry.bytes.length, capsuleBytesHash(entry.bytes), CAPSULE2_SOURCE_CERTIFICATE_MAX_BYTES)
-  const input = await readSealedCapsule2SourceInputsWithWorking5(entry.source)
+  const input = await readSealedCapsule2SourceInputsWithWorking5(entry.source, physicalBodies)
   if (capsuleJson(certificateFor(input)) !== capsuleJson(entry.certificate)) return bad('证书与完整实际来源不符')
   await closure(); await readCapsule2AssetCopy(path, entry.root, entry.bytes.length, capsuleBytesHash(entry.bytes), CAPSULE2_SOURCE_CERTIFICATE_MAX_BYTES)
   return { info: freezeCapsuleValue({ certificate: entry.certificate, certificateHash: entry.certificateHash, directory: entry.directory }), value: input.value, working: input.working }
 }
 /** Registry-only joint dispatch. A full certificate/source verification
  * supplies Working originals from that same actual SQL/archive read. */
-export async function tryReadCertifiedCapsule2SourceInputsWithWorking5(handle: unknown) {
+export async function tryReadCertifiedCapsule2SourceInputsWithWorking5(handle: unknown, physicalBodies?: Capsule2PhysicalBodyStore) {
   const entry = certified.get(handle as CertifiedCapsule2NoPriorSource)
-  return entry ? { ...await verifyWithWorking5(entry), profileRoot: entry.root } : undefined
+  return entry ? { ...await verifyWithWorking5(entry, physicalBodies), profileRoot: entry.root } : undefined
 }
 
 /** Complete certificate/source byte tail only; this does not observe SQL/K,

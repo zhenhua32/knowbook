@@ -20,7 +20,7 @@ type Physical = Awaited<ReturnType<typeof reopenRootRestorePhysicalStage3>>
 type AliasNavigationEdit = Navigation3TextEdit & { uri: string; kind: MarkdownDestination['kind']; syntax?: MarkdownDestination['syntax']; destination?: string }
 export interface Stage4AliasNavigationInput {
   data: Graph3Inputs; allocation: Reference3Allocation
-  physical: Pick<Physical['value'], 'tables' | 'finalSyntaxIndexHash'>
+  physical: Pick<Physical['value'], 'finalSyntaxIndexHash'> & { tables: readonly Navigation3TableSource[] }
   tables: readonly Navigation3TableSource[]
   navigationEdits: readonly { table: 'blocks' | 'documents'; targetRowId: string; column: 'content' | 'summary'; edits: readonly AliasNavigationEdit[] }[]
 }

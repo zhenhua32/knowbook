@@ -28,20 +28,38 @@ function fail(code: 'identity' | 'binding' | 'forest', message: string): never {
  * retained-identity claims and authorized owner transitions in its transaction. */
 export function validateSyncedWorkspaceGraph(documents: readonly SyncedGraphDocument[], groups: readonly SyncedGroupWire[]): SyncedValidatedGraph {
   if (!Array.isArray(documents) || !Array.isArray(groups)) return fail('forest', '候选工作区必须包含完整的文档和同步组列表。')
+  const checkedDocuments: SyncedGraphDocument[] = [], checkedGroups: SyncedGroupWire[] = []
+  const topology = checkSyncedWorkspaceGraph(documents, groups, document => checkedDocuments.push(document), group => checkedGroups.push(group))
+  return { documents: checkedDocuments, groups: checkedGroups, ...topology }
+}
+
+/** Validate a complete graph from ordered, independently readable owners. */
+export function inspectSyncedWorkspaceGraphStream(documents: Iterable<SyncedGraphDocument>, groups: Iterable<SyncedGroupWire>) {
+  return checkSyncedWorkspaceGraph(documents, groups)
+}
+
+function checkSyncedWorkspaceGraph(documents: Iterable<SyncedGraphDocument>, groups: Iterable<SyncedGroupWire>,
+  keepDocument?: (document: SyncedGraphDocument) => void, keepGroup?: (group: SyncedGroupWire) => void) {
   const owners = new Map<string, SyncedGraphOwner>(), occurrences = new Map<string, SyncedGraphOccurrence[]>()
-  const groupMap = new Map<string, SyncedGroupWire>(), documentIds = new Set<string>()
+  const groupMap = new Map<string, { maxDepth: number; rootTypes: Set<SyncedCanonicalWire['type']> }>(), documentIds = new Set<string>()
   const claim = (id: string, owner: SyncedGraphOwner) => {
     if (owners.has(id)) fail('identity', '候选工作区中的块身份存在重复归属。')
     owners.set(id, owner)
   }
-  const checkedGroups = Array.from(groups, raw => {
+  for (const raw of groups) {
     const group = validateSyncedGroupWire(raw)
     if (groupMap.has(group.id)) return fail('identity', '候选工作区中的同步组重复。')
-    groupMap.set(group.id, group); occurrences.set(group.id, [])
-    for (const block of group.blocks) claim(block.id, { kind: 'group', id: group.id })
-    return group
-  })
-  const checkedDocuments = Array.from(documents, raw => {
+    const rootTypes = new Set<SyncedCanonicalWire['type']>()
+    let maxDepth = 0
+    for (const block of group.blocks) {
+      claim(block.id, { kind: 'group', id: group.id })
+      maxDepth = Math.max(maxDepth, block.depth)
+      if (block.depth === 0) rootTypes.add(block.type)
+    }
+    groupMap.set(group.id, { maxDepth, rootTypes }); occurrences.set(group.id, [])
+    keepGroup?.(group)
+  }
+  for (const raw of documents) {
     assertSyncedShape(raw, ['documentId', 'blocks'])
     if (!isSyncedBlockId(raw.documentId) || documentIds.has(raw.documentId)) return fail('identity', '候选工作区中的文档身份无效或重复。')
     documentIds.add(raw.documentId)
@@ -54,23 +72,23 @@ export function validateSyncedWorkspaceGraph(documents: readonly SyncedGraphDocu
       const parent = block.parentBlockId === null ? null : byId.get(block.parentBlockId)
       // The leaf reference is transparent. Its canonical roots must obey the
       // actual host parent's role as well as the combined depth bound.
-      if (parent && group.blocks.some(child => child.depth === 0 && !canBlockNestUnder(parent.type, child.type))) {
-        return fail('forest', '同步正文不能放入该宿主容器。')
+      if (parent) {
+        for (const type of group.rootTypes)
+          if (!canBlockNestUnder(parent.type, type)) return fail('forest', '同步正文不能放入该宿主容器。')
       }
       occurrences.get(groupId)!.push({ instanceId: block.id, hostDocumentId: raw.documentId, groupId,
         depth: block.depth, parentBlockId: block.parentBlockId, parentType: parent?.type ?? null })
     }
-    return { documentId: raw.documentId, blocks }
-  })
-  for (const group of checkedGroups) {
-    const maxDepth = group.blocks.reduce((maximum, block) => Math.max(maximum, block.depth), 0)
-    if (occurrences.get(group.id)!.some(occurrence => occurrence.depth + maxDepth > SYNCED_MAX_DEPTH)) {
+    keepDocument?.({ documentId: raw.documentId, blocks })
+  }
+  for (const [groupId, { maxDepth }] of groupMap) {
+    if (occurrences.get(groupId)!.some(occurrence => occurrence.depth + maxDepth > SYNCED_MAX_DEPTH)) {
       // No binding CAS is invented here. Main maps positions to the actual
       // guarded instance registry when producing a mutation failure response.
       throw new SyncedValidationError('depth', '同步正文在候选工作区的引用位置超过六层。')
     }
   }
-  return { documents: checkedDocuments, groups: checkedGroups, owners, occurrences }
+  return { owners, occurrences }
 }
 
 export interface SyncedExpandedBlock<Canonical extends SyncedCanonicalEdit = SyncedCanonicalWire> {

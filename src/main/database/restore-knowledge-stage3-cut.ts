@@ -8,14 +8,14 @@ import { createHash } from 'node:crypto'
 import { isSyncedUuid } from '../../shared/syncedBlockValidation'
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
-import type { readRootRestoreReferenceGraphInputs3 } from './restore-knowledge-reference3-read'
+import type { readRootRestoreStageInputs5 } from './restore-knowledge-reference3-read'
 import { freezeGraph3Tables, graph3Encode, graph3TablesHashInput, graph3Text } from './restore-knowledge-graph3-data'
 import { capsule2RawTableRows, type Capsule2Encoding, type Capsule2RawSqlTable } from './restore-knowledge-capsule2-raw-model'
 import { rawRestoreSqlCell, type RawRestoreSqlCell } from './restore-knowledge-sql-cell'
 import { assertMerge3JsonBudget } from './restore-knowledge-merge3-storage'
 import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-read'
 
-type Actual = Awaited<ReturnType<typeof readRootRestoreReferenceGraphInputs3>>
+type Actual = Awaited<ReturnType<typeof readRootRestoreStageInputs5>>['actual']
 type Row = Capsule2RawSqlTable['rows'][number]
 export interface RootRestoreStage3RetainedCutContext3 {
   readonly stageId: string
@@ -174,7 +174,7 @@ export function planRootRestoreStage3RetainedCut3(actual: Actual, physicalTables
     })
   hostAllocations.push(...retainedDeletedHosts)
   const oldGroups = original(actual, 'synced_groups'), beforeGroups = indexed(oldGroups, 'id', encoding)
-  const groupTable = tableNamed(physicalTables, 'synced_groups'), active = new Set(actual.candidate.activeGroupWires.map(group => group.id))
+  const groupTable = tableNamed(physicalTables, 'synced_groups'), active = new Set(Array.from(actual.candidate.activeGroupWires, group => group.id))
   const groupAllocations = [...indexed(groupTable, 'id', encoding)].sort(([a], [b]) => compare(a, b)).map(([id, row]) => {
     const before = beforeGroups.get(id), beforePhysical = guard(groupTable, row, encoding), current = before ? guard(oldGroups, before, encoding) : null
     if (!active.has(id) && (!before || beforePhysical.historyPosition !== '0')) return fail('inactive保留组不是原current的非执行状态')

@@ -17,7 +17,8 @@ import { prepareDurableSqlCapsuleOriginal } from './restore-knowledge-capsule-fi
 import { certifyDurableSqlCapsuleIfSupported, readCertifiedDurableSqlCapsule,
   type CertifiedDurableSqlCapsule } from './restore-knowledge-capsule-read'
 import { captureDurableSqlDag, readCertifiedDurableSqlDag } from './restore-knowledge-dag-read'
-import { openBackupV3RestoreSource, assertBackupV3RestoreSourceCurrent, readBackupV3RestoreIndex } from '../backup/v3-reader'
+import { openBackupV3RestoreSource, closeBackupV3RestoreSource, assertBackupV3RestoreSourceCurrent,
+  readBackupV3RestoreIndex, type BackupV3RestoreSource } from '../backup/v3-reader'
 import { prepareBackupV3RestoreCandidate } from '../backup/v3-restore-prepare'
 import { assertPriorV3SourceRetirements, assertRestoreKnowledgeInstalledSql, readRestoreKnowledgeInstallProof, readRestoreKnowledgePriorInstall,
   verifyRestoreKnowledgeInstalledDatabase }
@@ -435,6 +436,7 @@ export function restoreControlledBackupV3(input: ControlledV3RestoreInput, legac
 export async function restoreControlledBackupV3(input: ControlledV3RestoreInput, legacy: RestoreLegacyIdentityReader,
   confirm?: V3RestoreConfirmation): Promise<V3RestoreResult | null> {
   const root = await canonicalRestoreRoot(input.userDataRoot), release = acquire(root)
+  let openedArchive: BackupV3RestoreSource | undefined
   try {
     const requestId = input.requestId === undefined ? undefined : restoreUuid(input.requestId).toLowerCase()
     if (requestId !== undefined) {
@@ -446,7 +448,7 @@ export async function restoreControlledBackupV3(input: ControlledV3RestoreInput,
     if (containsPath(directory, root) || containsPath(join(root, 'storage'), directory)
       || containsPath(join(root, 'backups', 'database-restore'), directory))
       return restoreFail('V3 备份必须与工作区存储及恢复原件目录独立。')
-    const source = openBackupV3RestoreSource(directory)
+    const source = openedArchive = openBackupV3RestoreSource(directory)
     const { manifest, inventoryHash } = readBackupV3RestoreIndex(source)
     if (input.expectedInventoryHash !== undefined && inventoryHash !== input.expectedInventoryHash)
       return restoreFail('V3 备份在预检后发生变化，请重新选择。')
@@ -488,7 +490,10 @@ export async function restoreControlledBackupV3(input: ControlledV3RestoreInput,
       await candidate.assertRetirementCurrent?.()
     }))
     return Object.freeze({ ...result, stoppedPids, recoveryDirectory: paths.recovery })
-  } finally { release() }
+  } finally {
+    try { if (openedArchive) closeBackupV3RestoreSource(openedArchive) }
+    finally { release() }
+  }
 }
 export async function recoverControlledDatabaseRestore(userDataRoot:string,recoverLegacy:(root:string)=>Promise<boolean>):Promise<boolean>{
   const requested=resolve(userDataRoot)

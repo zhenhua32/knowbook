@@ -1,7 +1,7 @@
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { graph3Conflict, graph3Encode, graph3Key, graph3Rows, type Graph3Inputs } from './restore-knowledge-graph3-data'
 import { withStoredMerge3NavigationFinalIndex3, type Navigation3FinalIndex, type Navigation3FinalScope,
-  type Navigation3Table, type StoredNavigation3Index } from './restore-knowledge-navigation3-merge-context'
+  type StoredNavigation3Index } from './restore-knowledge-navigation3-merge-context'
 import type { ScopedNavigation3Rewrite } from './restore-knowledge-navigation3-rewrite-model'
 import { projectNavigation3TableRows, type Navigation3TableSource } from './restore-knowledge-navigation3-tables'
 import type { MergedRow3 } from './restore-knowledge-merge3-storage'
@@ -115,24 +115,30 @@ export function withSelectedPendingLocalBody5<Selection>(data: Graph3Inputs, ord
   })
 }
 
-export function assertPendingLocalCandidateCellOnly5(previous: readonly Navigation3Table[], next: readonly Navigation3Table[],
+export function assertPendingLocalCandidateCellOnly5(previous: readonly Navigation3TableSource[], next: readonly Navigation3TableSource[],
   proof: ReturnType<typeof withSelectedPendingLocalBody5>['proof']) {
   if (previous.length !== 12 || next.length !== previous.length) return fail('business-table-closure')
   let changed = false
   for (const [tableIndex, oldTable] of previous.entries()) {
     const { rows: oldRows, ...oldShape } = oldTable, { rows: newRows, ...newShape } = next[tableIndex]
     if (!same(oldShape, newShape) || oldRows.length !== newRows.length) return fail('business-table-shape')
-    for (const [rowIndex, oldRow] of oldRows.entries()) {
-      const { cells: oldCells, ...oldAddress } = oldRow, { cells: newCells, ...newAddress } = newRows[rowIndex]
-      if (!same(oldAddress, newAddress) || oldCells.length !== newCells.length) return fail('business-row-address')
-      for (const [cellIndex, before] of oldCells.entries()) {
-        const after = newCells[cellIndex]
-        if (before[0] === after[0] && before[1] === after[1]) continue
-        if (changed || oldTable.name !== 'blocks' || oldTable.columns[cellIndex] !== proof.column
-          || oldRow.targetRowId !== proof.targetRowId || !same(oldRow.sourceRef, proof.sourceRef)) return fail('extra-business-cell-diff')
-        changed = true
+    const selected = newRows[Symbol.iterator]()
+    try {
+      for (const oldRow of oldRows) {
+        const next = selected.next()
+        if (next.done) return fail('business-table-shape')
+        const { cells: oldCells, ...oldAddress } = oldRow, { cells: newCells, ...newAddress } = next.value
+        if (!same(oldAddress, newAddress) || oldCells.length !== newCells.length) return fail('business-row-address')
+        for (const [cellIndex, before] of oldCells.entries()) {
+          const after = newCells[cellIndex]
+          if (before[0] === after[0] && before[1] === after[1]) continue
+          if (changed || oldTable.name !== 'blocks' || oldTable.columns[cellIndex] !== proof.column
+            || oldRow.targetRowId !== proof.targetRowId || !same(oldRow.sourceRef, proof.sourceRef)) return fail('extra-business-cell-diff')
+          changed = true
+        }
       }
-    }
+      if (!selected.next().done) return fail('business-table-shape')
+    } finally { selected.return?.() }
   }
   if (!changed) return fail('missing-business-cell-diff')
 }

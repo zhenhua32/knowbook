@@ -3,7 +3,7 @@ import { capsuleJsonProjectedArray, capsuleJsonStoredArray, hashBoundedCapsuleJs
 import { CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-model'
 import { graph3Conflict, graph3Key } from './restore-knowledge-graph3-data'
 import { assertMerge3JsonBudget, type FinishedMerge3Table, type MergedRow3 } from './restore-knowledge-merge3-storage'
-import { withStoredRestoreScopes } from './restore-knowledge-stored-scopes'
+import { openStoredRestoreScopes } from './restore-knowledge-stored-scopes'
 
 export type Navigation3Table = FinishedMerge3Table['table']
 type Navigation3Rows = Iterable<MergedRow3> & {
@@ -34,6 +34,20 @@ export function readScopedNavigation3Rows(table: Navigation3TableSource): Naviga
   return scopedTables.has(table) ? table.rows : undefined
 }
 
+export function navigation3RowLookup(table: Navigation3TableSource, key: (row: MergedRow3) => string,
+  selected?: ReadonlySet<string>): (id: string) => MergedRow3 | undefined {
+  const ordinals = new Map<string, number>()
+  if (selected?.size !== 0) for (const [ordinal, row] of table.rows.entries()) {
+    const id = key(row)
+    if (!selected || selected.has(id)) ordinals.set(id, ordinal)
+    if (ordinals.size === selected?.size) break
+  }
+  return id => {
+    const ordinal = ordinals.get(id)
+    return ordinal === undefined ? undefined : table.rows.at(ordinal)
+  }
+}
+
 /** The producer finishes before the first consumer of the file. Its complete
  * input array is outside the read scope and only ordered row coordinates remain. */
 export function withStoredNavigation3Tables<Metadata, Result>(
@@ -52,7 +66,14 @@ export function withStoredNavigation3TableScan<Metadata, Result>(
   scan: (append: StoreNavigation3Table) => Metadata,
   read: (metadata: Metadata, tables: readonly Navigation3TableSource[]) => Result
 ): Result {
-  return withStoredRestoreScopes((append: (key: string, row: MergedRow3) => void) => {
+  const { metadata, tables, close } = openStoredNavigation3TableScan(scan)
+  try { return read(metadata, tables) }
+  finally { close() }
+}
+
+/** A caller that crosses an asynchronous boundary owns the returned close function. */
+export function openStoredNavigation3TableScan<Metadata>(scan: (append: StoreNavigation3Table) => Metadata) {
+  const { projection: { metadata, layouts }, store, close } = openStoredRestoreScopes((append: (key: string, row: MergedRow3) => void) => {
     const layouts: Array<{ layout: NavigationTableLayout; first: number; length: number }> = []
     let start = 0
     const metadata = scan((layout, rows) => {
@@ -63,13 +84,15 @@ export function withStoredNavigation3TableScan<Metadata, Result>(
       layouts.push({ layout, first, length })
     })
     return { metadata, layouts }
-  }, ({ metadata, layouts }, store) => read(metadata, layouts.map(({ layout, first, length }) => {
+  })
+  const tables = layouts.map(({ layout, first, length }) => {
     const encoded = () => store.iterateEncoded(first, first + length)
     const rows = rowSource(length, ordinal => ordinal >= 0 && ordinal < length ? store.byId(graph3Key(layout.name, ordinal)) : undefined,
       function* () { for (const row of encoded()) yield JSON.parse(row) as MergedRow3 })
     storedHashes.set(rows, capsuleJsonStoredArray(encoded))
     return scopedTable(layout, rows)
-  })))
+  })
+  return { metadata, tables, close }
 }
 
 export function projectNavigation3TableRows(table: Navigation3TableSource, project: (row: MergedRow3, ordinal: number) => MergedRow3): Navigation3TableSource {

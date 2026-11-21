@@ -11,11 +11,11 @@ import { mixedOriginCapsulePath } from './restore-knowledge-mixed-origin-bundle-
 import { assertMerge3JsonBudget } from './restore-knowledge-merge3-storage'
 import type { OriginalFrameCopy } from './restore-knowledge-original-frame-files'
 import { referenceContextFileKey } from './restore-knowledge-reference-context-model'
-import { assertRootRestoreReferenceOriginalBytes3, readRootRestoreReferenceInputsAndOriginals5, readRootRestoreStageInputs5,
+import { assertRootRestoreReferenceOriginalBytes3, readRootRestoreReferenceCopySource3, readRootRestoreStageInputs5, withRootRestoreStageInputs5,
   type RootRestoreReferencePlan3, type RootRestoreStageInputs5 } from './restore-knowledge-reference3-read'
 
 export interface RootRestoreWorkingAssetAuthority5 { readonly kind: 'main-root-restore-working-asset-authority5' }
-type ReferenceRead = Awaited<ReturnType<typeof readRootRestoreReferenceInputsAndOriginals5>>
+type ReferenceRead = Awaited<ReturnType<typeof readRootRestoreStageInputs5>>
 type Role = 'source' | 'current'
 type Working = NonNullable<ReferenceRead['working'][Role]>
 type Pending = Working['observation']['pendingPortableBindings'][number]
@@ -167,18 +167,29 @@ function observations(captured: ReferenceRead) {
 
 /** Fixed same-read input for Main's asset stage. A caller cannot supply any
  * observation, path or file selection to this original reader. */
-export async function readRootRestoreWorkingAssetSources5(reference: RootRestoreReferencePlan3, scope?: RootRestoreStageInputs5) {
-  const captured = scope ? await readRootRestoreStageInputs5(reference, scope) : await readRootRestoreReferenceInputsAndOriginals5(reference)
+export async function readRootRestoreWorkingAssetSources5(reference: RootRestoreReferencePlan3, scope: RootRestoreStageInputs5) {
+  const captured = await readRootRestoreStageInputs5(reference, scope)
   const observed = observations(captured)
   await assertRootRestoreReferenceOriginalBytes3(reference)
   const files: ReadonlyMap<string, OriginalFrameCopy> = observed.payloads
   return Object.freeze({ captured, value: observed.value, files })
 }
 
+async function withWorkingAssetObservation<T>(reference: RootRestoreReferencePlan3,
+  read: (observed: ReturnType<typeof observations>) => Promise<T>) {
+  const { pendingCellProofHash } = await readRootRestoreReferenceCopySource3(reference)
+  return withRootRestoreStageInputs5(reference, pendingCellProofHash, async scope => {
+    const observed = observations(await readRootRestoreStageInputs5(reference, scope))
+    const result = await read(observed)
+    await assertRootRestoreReferenceOriginalBytes3(reference)
+    return result
+  })
+}
+
 /** A genuine Reference3 plan is the only input. Occurrence or file DTOs never
  * mint an authority, and the private registry retains no runtime W/SQL/files. */
 export async function prepareRootRestoreWorkingAssetAuthority5(reference: RootRestoreReferencePlan3) {
-  const { value } = await readRootRestoreWorkingAssetSources5(reference)
+  const value = await withWorkingAssetObservation(reference, async ({ value }) => value)
   const authority: RootRestoreWorkingAssetAuthority5 = Object.freeze({ kind: 'main-root-restore-working-asset-authority5' })
   owners.set(authority, { reference, observationHash: value.observationHash })
   return Object.freeze({ authority, value })
@@ -189,10 +200,11 @@ export async function prepareRootRestoreWorkingAssetAuthority5(reference: RootRe
 export async function readRootRestoreWorkingAssetBlob5(authority: RootRestoreWorkingAssetAuthority5, occurrenceId: string) {
   const saved = owners.get(authority)
   if (!saved || typeof occurrenceId !== 'string' || !/^[a-f0-9]{64}$/.test(occurrenceId)) return fail('不是实际 owner 或确切 occurrence id')
-  const observed = observations(await readRootRestoreReferenceInputsAndOriginals5(saved.reference))
-  if (observed.value.observationHash !== saved.observationHash) return fail('原件或 occurrence 已变化')
-  const file = observed.payloads.get(occurrenceId)
-  const bytes = file ? await readCapsule2AssetCopy(file.sourcePath, file.sourceRoot, file.bytes, file.sha256, ATTACHMENT_MAX_FILE_BYTES) : null
-  await assertRootRestoreReferenceOriginalBytes3(saved.reference)
-  return bytes ? { status: 'original-blob' as const, bytes, file: describeFile(file!) } : { status: 'unavailable' as const }
+  return withWorkingAssetObservation(saved.reference, async observed => {
+    if (observed.value.observationHash !== saved.observationHash) return fail('原件或 occurrence 已变化')
+    const file = observed.payloads.get(occurrenceId)
+    if (!file) return { status: 'unavailable' as const }
+    const bytes = await readCapsule2AssetCopy(file.sourcePath, file.sourceRoot, file.bytes, file.sha256, ATTACHMENT_MAX_FILE_BYTES)
+    return { status: 'original-blob' as const, bytes, file: describeFile(file) }
+  })
 }

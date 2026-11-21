@@ -1,6 +1,6 @@
 import { expect, test, type Page } from '@playwright/test'
 import { markdownEngine, type MarkdownEnvironment } from '../src/shared/markdownEngine'
-import { openInlineHost, setInlineReading, withCanonicalInlineApp } from './helpers/canonical-inline'
+import { inlineInstance, openInlineHost, setInlineReading, withCanonicalInlineApp } from './helpers/canonical-inline'
 import { hasBuiltElectronApp, uiText } from './helpers/electron'
 
 async function undo(page: Page) {
@@ -76,22 +76,59 @@ test('mixed block toolbar copy and cut paste fresh real references, while extern
     const toolbar = page.locator('.block-selection-toolbar')
     const read = (documentId: string) => page.evaluate(id => window.knowbook.getDocumentDetail(id), documentId)
     const ids = async (id: string) => (await read(id))?.blocks.map(block => block.id)
-    const selectMixed = async () => {
-      const start = await row(ordinary.id).boundingBox(), end = await row(first.id).boundingBox()
-      if (!start || !end) throw new Error('Both host rows must be visible')
-      await page.mouse.move(start.x + 2, start.y + Math.min(10, start.height / 2)); await page.mouse.down()
-      await page.mouse.move(end.x + 2, end.y + Math.min(10, end.height / 2), { steps: 4 }); await page.mouse.up()
-      await expect(page.locator('.block-editor-row-selected')).toHaveCount(2)
+    const selectRows = async (firstId: string, secondId: string) => {
+      const rowIds = [firstId, secondId]
+      await row(firstId).evaluate(element => element.scrollIntoView({ block: 'center', behavior: 'instant' }))
+      const points = () => page.evaluate(async blockIds => {
+        const measure = () => blockIds.map(id => {
+          const element = document.querySelector(`.block-editor-row[data-block-id="${id}"]`)
+          if (!element) return null
+          const bounds = element.getBoundingClientRect()
+          // Use the host row's top padding above its buttons and embedded editor.
+          const x = bounds.x + 24, y = bounds.y + 2
+          return document.elementFromPoint(x, y) === element ? { x, y } : null
+        })
+        const before = measure()
+        await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+        return measure().map((point, index) => point && point.x === before[index]?.x && point.y === before[index]?.y ? point : null)
+      }, rowIds)
+      let endpoints: Awaited<ReturnType<typeof points>> = []
+      await expect.poll(async () => {
+        endpoints = await points()
+        return endpoints.every(point => point !== null)
+      }, { message: 'Both rows must accept the drag outside the sticky header' }).toBe(true)
+      const [start, end] = endpoints
+      if (!start || !end) throw new Error('Both rows must accept the drag')
+      const selectedIds = () => page.locator('.block-editor-row-selected').evaluateAll(rows => rows.map(row => row.getAttribute('data-block-id')))
+      await page.mouse.move(start.x, start.y)
+      await page.mouse.down()
+      try {
+        await page.mouse.move(end.x, end.y)
+        await expect.poll(selectedIds, { message: 'Select both host rows while the mouse button is held' }).toEqual(rowIds)
+      } finally {
+        await page.mouse.up()
+      }
+      await expect.poll(selectedIds).toEqual(rowIds)
     }
     await openInlineHost(page, host); await setInlineReading(page, false)
-    await selectMixed()
+    await selectRows(ordinary.id, first.id)
     await toolbar.getByRole('button', { name: uiText('Copy Blocks', '复制块'), exact: true }).click()
     const clipboard = () => app.evaluate(({ clipboard }) => ({ text: clipboard.readText(), html: clipboard.readHTML() }))
-    await expect.poll(async () => (await clipboard()).html).toContain('data-knowbook-synced-clipboard')
-    const copied = await clipboard()
-    expect(copied.text).toContain(ordinary.content)
-    expect(copied.text).toContain(seed.primaryText)
-    expect(copied.text).not.toContain(seed.groupId)
+    // A previous app process may have left the same HTML marker on the OS clipboard.
+    const waitForSyncedClipboard = async (expectedText: string) => {
+      let snapshot = { text: '', html: '' }
+      await expect.poll(async () => {
+        snapshot = await clipboard()
+        return snapshot
+      }).toEqual({
+        text: expect.stringContaining(expectedText),
+        html: expect.stringContaining('data-knowbook-synced-clipboard')
+      })
+      return snapshot.text
+    }
+    const copiedText = await waitForSyncedClipboard(seed.primaryText)
+    expect(copiedText).toContain(ordinary.content)
+    expect(copiedText).not.toContain(seed.groupId)
     expect(await ids(host.id)).toEqual([ordinary.id, first.id, second.id])
 
     await openInlineHost(page, peer); await setInlineReading(page, false)
@@ -124,17 +161,17 @@ test('mixed block toolbar copy and cut paste fresh real references, while extern
 
     // Replacing the native clipboard with byte-identical text removes the
     // original HTML marker. That paste must remain independent Markdown.
-    await app.evaluate(({ clipboard }, text) => clipboard.writeText(text), copied.text)
+    await app.evaluate(({ clipboard }, text) => clipboard.writeText(text), copiedText)
     await peerTextarea.click(); await peerTextarea.press('Control+a'); await peerTextarea.press('Control+v')
     await expect.poll(async () => (await read(peer.id))?.blocks.some(block => block.content === seed.primaryText)).toBe(true)
     expect((await read(peer.id))?.blocks.filter(block => block.type === 'synced-block').map(block => block.id)).toEqual([oldPeerIds[1]])
 
     await openInlineHost(page, host); await setInlineReading(page, false)
-    await selectMixed()
+    await selectRows(ordinary.id, first.id)
     await toolbar.getByRole('button', { name: uiText('Cut', '剪切'), exact: true }).click()
     await expect.poll(async () => await failureDialog.isVisible()
       ? failureDialog.getByRole('alert').textContent() : ids(host.id)).toEqual([second.id])
-    await expect.poll(async () => (await clipboard()).text).toContain(seed.primaryText)
+    await waitForSyncedClipboard(seed.primaryText)
     await undo(page)
     await expect.poll(() => ids(host.id)).toEqual([ordinary.id, first.id, second.id])
 
@@ -152,14 +189,13 @@ test('mixed block toolbar copy and cut paste fresh real references, while extern
       if (result.status !== 'saved') throw new Error('The actual shared definitions were not stored')
     }, { hostId: host.id, instanceId: first.id, groupId: seed.groupId, use: 'Canonical [target][same] [^note]',
       definitions: '[same]: https://example.test/shared\n\n[^note]: Shared note' })
-    const start = await row(first.id).boundingBox(), end = await row(second.id).boundingBox()
-    if (!start || !end) throw new Error('Both canonical instances must be visible')
-    await page.mouse.move(start.x + 2, start.y + Math.min(10, start.height / 2)); await page.mouse.down()
-    await page.mouse.move(end.x + 2, end.y + Math.min(10, end.height / 2), { steps: 4 }); await page.mouse.up()
-    await expect(page.locator('.block-editor-row-selected')).toHaveCount(2)
+    // The Main reply can arrive before both nested editors finish rendering the new group.
+    for (const instance of [first, second]) {
+      await expect(inlineInstance(page, instance.id).locator('.ProseMirror')).toContainText(/Canonical (?:\[target\]|target)/)
+    }
+    await selectRows(first.id, second.id)
     await toolbar.getByRole('button', { name: uiText('Copy Blocks', '复制块'), exact: true }).click()
-    await expect.poll(async () => (await clipboard()).text).toContain('Shared note')
-    const projection = (await clipboard()).text, env: MarkdownEnvironment = {}
+    const projection = await waitForSyncedClipboard('Shared note'), env: MarkdownEnvironment = {}
     const parsed = markdownEngine.parse(projection, env)
     expect(Object.values(env.references ?? {}).map(reference => reference.href)).toEqual(['https://example.test/shared', 'https://example.test/shared'])
     expect(Object.keys((env.footnotes as { refs?: Record<string, number> } | undefined)?.refs ?? {})).toHaveLength(2)

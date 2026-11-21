@@ -1,10 +1,12 @@
 import Database from 'better-sqlite3'
 import { capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
-import { capsule2RawInvalid, capsule2RawTableRows, scopedCapsule2RawSqlTable,
+import { capsuleJsonStoredArray } from './restore-knowledge-capsule-json-hash'
+import { CAPSULE2_RAW_MAX_JSON_BYTES, capsule2RawInvalid, capsule2RawTableRows, scopedCapsule2RawSqlTable,
   type Capsule2Encoding, type Capsule2RawContent, type Capsule2RawContentStream, type Capsule2RawSqlRow,
   type Capsule2RawSqlTable, type Capsule2RawStreamTable, type StoreCapsule2Archive6Blocks5 } from './restore-knowledge-capsule2-raw-model'
 import { graph3TableLayout, graph3Value } from './restore-knowledge-graph3-data'
-import { isOwnedCapsule2PhysicalGraph, type RawCapsule2PhysicalGraph } from './restore-knowledge-capsule2-physical-raw-read'
+import { hasStoredCapsule2PhysicalBodies, isOwnedCapsule2PhysicalGraph, type Capsule2PhysicalBodyStore,
+  type RawCapsule2PhysicalGraph } from './restore-knowledge-capsule2-physical-raw-read'
 import type { SyncedGroupSnapshot } from '../../shared/synced-blocks'
 
 type Side = 'source' | 'current'
@@ -21,24 +23,7 @@ export type ReferenceOriginalRows5 = Omit<Capsule2RawContentStream, 'tables'> & 
 const originalTableViews = new WeakMap<Capsule2RawSqlTable, { side: Side; table: OriginalTable }>()
 const scopedGroupGraphs = new WeakSet<RawCapsule2PhysicalGraph>()
 export function hasScopedReferenceGroupBodies5(graph: RawCapsule2PhysicalGraph): boolean {
-  return scopedGroupGraphs.has(graph)
-}
-
-function scopeDocumentBodies(db: Database.Database, side: Side, documents: RawCapsule2PhysicalGraph['documents'], assertActive: () => void) {
-  const write = db.prepare('INSERT INTO temp.reference_document_bodies VALUES (?,?,?)')
-  const read = db.prepare('SELECT encoded FROM temp.reference_document_bodies WHERE role=? AND document_id=?').pluck()
-  const scoped = db.transaction(() => documents.map(({ blocks, ...document }) => {
-    const key = Buffer.from(document.documentId, 'utf16le')
-    write.run(side, key, capsuleJson(blocks))
-    return Object.freeze({ ...document, get blocks() {
-      assertActive()
-      const encoded = read.get(side, key)
-      if (typeof encoded !== 'string') return capsule2RawInvalid('Reference3找不到实际原文档正文：' + document.documentId)
-      return freezeCapsuleValue(JSON.parse(encoded) as RawCapsule2PhysicalGraph['documents'][number]['blocks'])
-    } })
-  }))()
-  Object.freeze(scoped)
-  return scoped
+  return scopedGroupGraphs.has(graph) || hasStoredCapsule2PhysicalBodies(graph)
 }
 
 /** A cold Reference3 read admits rows only after the genuine original, both
@@ -47,7 +32,8 @@ function scopeDocumentBodies(db: Database.Database, side: Side, documents: RawCa
 export async function withReferenceOriginalRows5<Projection, Result>(
   produce: (store: (side: Side, original: Capsule2RawContent) => ReferenceOriginalRows5,
     storePhysical: (graph: RawCapsule2PhysicalGraph, side?: Side) => RawCapsule2PhysicalGraph,
-    storeArchive6Blocks: StoreCapsule2Archive6Blocks5) => Promise<Projection>,
+    storeArchive6Blocks: StoreCapsule2Archive6Blocks5,
+    physicalBodies: (side: Side) => Capsule2PhysicalBodyStore) => Promise<Projection>,
   read: (projection: Projection) => Promise<Result>
 ): Promise<Result> {
   const db = new Database(':memory:')
@@ -71,8 +57,12 @@ export async function withReferenceOriginalRows5<Projection, Result>(
       PRIMARY KEY (role, group_id)
     ) WITHOUT ROWID;
     CREATE TEMP TABLE reference_document_bodies (
-      role TEXT NOT NULL, document_id BLOB NOT NULL, encoded TEXT NOT NULL,
+      role TEXT NOT NULL, document_id BLOB NOT NULL, summary TEXT NOT NULL, encoded TEXT NOT NULL,
       PRIMARY KEY (role, document_id)
+    ) WITHOUT ROWID;
+    CREATE TEMP TABLE reference_workspace_history_rows (
+      scope_id INTEGER NOT NULL, ordinal INTEGER NOT NULL, encoded TEXT NOT NULL, sort_key BLOB,
+      PRIMARY KEY (scope_id, ordinal)
     ) WITHOUT ROWID`)
     const insert = db.prepare('INSERT INTO temp.reference_original_rows VALUES (?, ?, ?, ?, ?, ?)')
     const scan = 'SELECT encoded FROM temp.reference_original_rows WHERE role=? AND table_name=? ORDER BY source_rowid'
@@ -85,13 +75,99 @@ export async function withReferenceOriginalRows5<Projection, Result>(
     const physicalSides = new Set<Side>()
     const writeGroup = db.prepare('INSERT INTO temp.reference_group_bodies VALUES (?,?,?)')
     const readGroup = db.prepare('SELECT encoded FROM temp.reference_group_bodies WHERE role=? AND group_id=?').pluck()
+    const writeDocument = db.prepare('INSERT INTO temp.reference_document_bodies VALUES (?,?,?,?)')
+    const readDocument = db.prepare('SELECT encoded FROM temp.reference_document_bodies WHERE role=? AND document_id=?').pluck()
+    const readSummary = db.prepare('SELECT summary FROM temp.reference_document_bodies WHERE role=? AND document_id=?').pluck()
+    const writeHistory = db.prepare('INSERT INTO temp.reference_workspace_history_rows VALUES (?,?,?,?)')
+    const readHistory = db.prepare('SELECT encoded FROM temp.reference_workspace_history_rows WHERE scope_id=? ORDER BY ordinal').pluck()
+    const readSortedHistory = db.prepare('SELECT encoded FROM temp.reference_workspace_history_rows WHERE scope_id=? ORDER BY sort_key,ordinal').pluck()
+    const readHistoryRow = db.prepare('SELECT encoded FROM temp.reference_workspace_history_rows WHERE scope_id=? AND ordinal=?').pluck()
+    let nextHistoryScope = 0
+    function historyRowView<Row extends object>(scope: number, ordinal: number, row: Row, heavy: readonly (keyof Row)[]): Row {
+      for (const field of heavy) Reflect.deleteProperty(row, field)
+      for (const value of Object.values(row)) freezeCapsuleValue(value)
+      for (const field of heavy) Object.defineProperty(row, field, { enumerable: true, get() {
+        assertActive()
+        const encoded = readHistoryRow.get(scope, ordinal)
+        if (typeof encoded !== 'string') return capsule2RawInvalid('Reference3缺少已核K历史行')
+        return freezeCapsuleValue((JSON.parse(encoded) as Row)[field])
+      } })
+      return Object.freeze(row)
+    }
     function scopedGroupSnapshot(side: Side, id: string, header: Omit<SyncedGroupSnapshot, 'blocks'>): SyncedGroupSnapshot {
-      return Object.freeze({ ...header, get blocks() {
+      return Object.freeze({ ...freezeCapsuleValue(header), get blocks() {
         assertActive()
         const encoded = readGroup.get(side, id)
         if (typeof encoded !== 'string') return capsule2RawInvalid('Reference3找不到实际原组正文：' + id)
         return freezeCapsuleValue(JSON.parse(encoded) as SyncedGroupSnapshot['blocks'])
       } })
+    }
+    function physicalBodies(side: Side): Capsule2PhysicalBodyStore {
+      return {
+        rawBlocks: (layout, rows, encoding) => putObservedBlocks(side, layout, rows, encoding),
+        openKnowledgeHistoryRows<Row extends object>() {
+          assertActive()
+          const scope = nextHistoryScope++, rows: Row[] = []
+          let bytes = 0
+          return {
+            append(row: Row, heavy: readonly (keyof Row)[]) {
+              assertActive()
+              const encoded = capsuleJson(row), ordinal = rows.length
+              bytes += Buffer.byteLength(encoded) + Number(ordinal > 0)
+              if (bytes > CAPSULE2_RAW_MAX_JSON_BYTES) return capsule2RawInvalid('完整K历史行超原有限准备预算')
+              writeHistory.run(scope, ordinal, encoded, null)
+              rows.push(historyRowView(scope, ordinal, { ...row }, heavy))
+            },
+            finish(): readonly Row[] {
+              assertActive()
+              return capsuleJsonStoredArray(function* () {
+                assertActive()
+                yield* readHistory.iterate(scope) as IterableIterator<string>
+              }, rows)
+            }
+          }
+        },
+        openWorkspaceHistoryRows(order) {
+          assertActive()
+          const scope = nextHistoryScope++
+          const sorted = order === 'publication-json'
+          let ordinal = 0
+          return {
+            append(row) {
+              assertActive()
+              const encoded = capsuleJson(row)
+              // Match JavaScript's original canonical JSON code-unit order.
+              const sortKey = sorted ? Buffer.from(encoded, 'utf16le').swap16() : null
+              writeHistory.run(scope, ordinal++, encoded, sortKey)
+            },
+            hashInput: capsuleJsonStoredArray(function* () {
+              assertActive()
+              yield* (sorted ? readSortedHistory : readHistory).iterate(scope) as IterableIterator<string>
+            })
+          }
+        },
+        document({ summary, blocks, ...document }) {
+          assertActive()
+          const key = Buffer.from(document.documentId, 'utf16le')
+          writeDocument.run(side, key, capsuleJson(summary), capsuleJson(blocks))
+          return Object.freeze({ ...freezeCapsuleValue(document), get summary() {
+            assertActive()
+            const encoded = readSummary.get(side, key)
+            if (typeof encoded !== 'string') return capsule2RawInvalid('Reference3找不到实际原文档摘要：' + document.documentId)
+            return JSON.parse(encoded) as string
+          }, get blocks() {
+            assertActive()
+            const encoded = readDocument.get(side, key)
+            if (typeof encoded !== 'string') return capsule2RawInvalid('Reference3找不到实际原文档正文：' + document.documentId)
+            return freezeCapsuleValue(JSON.parse(encoded) as RawCapsule2PhysicalGraph['documents'][number]['blocks'])
+          } })
+        },
+        group({ blocks, ...header }) {
+          assertActive()
+          writeGroup.run(side, header.groupId, capsuleJson(blocks))
+          return scopedGroupSnapshot(side, header.groupId, header)
+        }
+      }
     }
     const putTable = (side: Side, layout: Omit<Capsule2RawSqlTable, 'rows'>, rows: Iterable<Capsule2RawSqlRow>,
       encoding: Capsule2Encoding): OriginalTable => {
@@ -151,16 +227,18 @@ export async function withReferenceOriginalRows5<Projection, Result>(
       })
       return Object.freeze({ ...header, tables: Object.freeze(stored) })
     })
-    const stagedBlocks = new Set<string>()
-    const putArchive6Blocks = db.transaction<StoreCapsule2Archive6Blocks5>((layout, rows, encoding) => {
-      if (sides.has('source') || stagedBlocks.has(layout.name)
+    const stagedBlocks = { source: new Set<string>(), current: new Set<string>() }
+    const putObservedBlocks = db.transaction((side: Side, layout: Parameters<StoreCapsule2Archive6Blocks5>[0],
+      rows: Parameters<StoreCapsule2Archive6Blocks5>[1], encoding: Parameters<StoreCapsule2Archive6Blocks5>[2]) => {
+      if (sides.has(side) || stagedBlocks[side].has(layout.name)
         || layout.name !== 'blocks' && layout.name !== 'synced_group_blocks') return capsule2RawInvalid('archive6原块表范围不符')
-      const stored = putTable('source', layout, rows, encoding)
-      stagedBlocks.add(layout.name)
+      const stored = putTable(side, layout, rows, encoding)
+      stagedBlocks[side].add(layout.name)
       const scoped = scopedCapsule2RawSqlTable({ ...layout, columns: Object.freeze(layout.columns), primaryKey: Object.freeze(layout.primaryKey) }, stored)
-      originalTableViews.set(scoped, { side: 'source', table: stored })
+      originalTableViews.set(scoped, { side, table: stored })
       return scoped
     })
+    const putArchive6Blocks: StoreCapsule2Archive6Blocks5 = (layout, rows, encoding) => putObservedBlocks('source', layout, rows, encoding)
     const projection = await produce((side, original) => {
       if (sides.has(side)) return capsule2RawInvalid('Reference3同次原件角色重复')
       const scoped = put(side, original)
@@ -169,21 +247,21 @@ export async function withReferenceOriginalRows5<Projection, Result>(
     }, (graph, side = 'source') => {
       assertActive()
       if (!isOwnedCapsule2PhysicalGraph(graph)) return capsule2RawInvalid('Reference3语义正文需要本次已验证的物理原件')
+      if (hasStoredCapsule2PhysicalBodies(graph)) return graph
       if (physicalSides.has(side)) return capsule2RawInvalid('Reference3同次语义正文角色重复')
+      const bodies = physicalBodies(side)
       const groups = db.transaction(() => graph.groups.map(group => {
         if (!group.snapshot) return group
-        const { blocks, ...snapshot } = group.snapshot
-        const id = group.groupId
-        writeGroup.run(side, id, capsuleJson(blocks))
-        return Object.freeze({ ...group, snapshot: scopedGroupSnapshot(side, id, snapshot) })
+        return Object.freeze({ ...group, snapshot: bodies.group(group.snapshot) })
       }))()
       Object.freeze(groups)
-      const documents = scopeDocumentBodies(db, side, graph.documents, assertActive)
+      const documents = db.transaction(() => graph.documents.map(bodies.document))()
+      Object.freeze(documents)
       physicalSides.add(side)
       const scoped = Object.freeze({ ...graph, documents, groups })
       scopedGroupGraphs.add(scoped)
       return scoped
-    }, putArchive6Blocks)
+    }, putArchive6Blocks, physicalBodies)
     return await read(projection)
   } finally { active = false; db.close() }
 }

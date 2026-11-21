@@ -9,7 +9,7 @@ import { readInstalledV3AssetContinuity, validateInstalledV3AssetArchiveProof,
 import { assertInstalledV3ManyFiles, CAPSULE_INSTALLED_TRANSFERS_DIRECTORY, validateInstalledV3Many,
   type InstalledV3Many } from './restore-knowledge-installed-v3-many'
 import { readOriginCatalogFile } from './restore-knowledge-origin-bundle-files'
-import { isBackupV3AssetPath, type ArchiveV3 } from '../backup/v3-format'
+import { isBackupV3AssetPath, type ScopedBackupV3Archive } from '../backup/v3-format'
 import type { BackupV3RestoreSource } from '../backup/v3-reader'
 import { assertBackupV3RestoreSqlArchiveProjection, assertBackupV3RestoreSqlStageOriginal,
   type BackupV3RestoreSqlStage } from '../backup/v3-restore-sql-stage'
@@ -21,6 +21,7 @@ import { capsuleBytesHash, capsuleJson, capsuleRecord, capsuleText, freezeCapsul
   validateDurableSqlCapsuleInventory, type DurableSqlCapsuleFile } from './restore-knowledge-capsule-model'
 import { CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-model'
 import { readRawCapsule2AssetReferencesOwned } from './restore-knowledge-capsule2-assets-read'
+import { withReferenceOriginalRows5 } from './restore-knowledge-reference-original-rows5'
 import { captureCapsule2ManagedTreeData, captureCapsule2ManagedTreeWithInstalledAssets, type Capsule2ManagedTreeData } from './restore-knowledge-capsule2-managed-assets-files'
 import { validateCapsule2ManagedTree } from './restore-knowledge-capsule2-assets-model'
 import { captureCapsule2AssetReferenceProvenanceOwned3, validateCapsule2AssetReferenceProvenance1,
@@ -30,7 +31,7 @@ import { captureCapsule2AssetReferenceProvenanceOwned3, validateCapsule2AssetRef
   captureCapsuleInstalledCombinedAssetProvenance, validateCapsuleInstalledCombinedAssetProvenance,
   type Capsule2AssetReferenceProvenance1, type Capsule2AssetReferenceProvenance2 } from './restore-knowledge-capsule2-asset-provenance'
 import { CAPSULE_V3_CONTENT_DIRECTORY, capsuleV3PortableManagedTree, copyCapsuleV3ArchiveOriginals,
-  readCapsuleV3ArchiveOriginals, validateCapsuleV3ArchiveProof, validateCapsuleV3ManagedTree,
+  withCapsuleV3ArchiveOriginals, validateCapsuleV3ArchiveProof, validateCapsuleV3ManagedTree,
   type CapsuleV3ArchiveProof } from './restore-knowledge-capsule-v3-assets'
 import { DURABLE_SQL_DAG_MAX_ORIGINAL_BYTES } from './restore-knowledge-dag-model'
 import { prepareCapsule2MergeContextOriginals3, reopenCapsule2MergeContextOriginals3, visitCapsule2MergeContextOriginals3, assertCapsule2MergeContextOriginalBytes3,
@@ -289,14 +290,14 @@ function parse(text: string, capsuleId: string, expectedHash: string): Capsule2A
     referenceProvenance: validateCapsule2AssetReferenceProvenance1(row.referenceProvenance, base, base.tree) })
 }
 
-async function source(original: OwnedRawCapsuleOriginal, backupV3?: Omit<ArchiveV3, 'assets'>,
+async function source(original: OwnedRawCapsuleOriginal, backupV3?: ScopedBackupV3Archive,
   installedV3?: Pick<InstalledV3AssetArchiveProof, 'root'>, expectedCoverage?: unknown) {
   const info = readOwnedRawCapsuleOriginal(original)
   await assertOwnedRawCapsuleScratchReady(original)
   const db = new Database(restoreSqliteFilename(info.databasePath), { readonly: true, fileMustExist: true })
   try {
     db.pragma('query_only=ON'); db.pragma('foreign_keys=ON')
-    const value = db.transaction(() => {
+    const value = await withReferenceOriginalRows5(async (_rows, _physical, _blocks, bodies) => db.transaction(() => {
       if (backupV3) assertBackupV3RestoreSqlArchiveProjection(db, backupV3)
       if (installedV3) {
         const { entries } = readRawPriorKnowledgeCoverageOwned(db)
@@ -305,8 +306,8 @@ async function source(original: OwnedRawCapsuleOriginal, backupV3?: Omit<Archive
           || db.prepare("SELECT 1 FROM app_settings WHERE lower(CAST(key AS TEXT)) GLOB 'sync.webdav.protocol5.exchange-job.*' LIMIT 1").get())
           return bad('已安装 V3 本机归档需要同次 SQLite 覆盖且无 Working5 任务')
       }
-      return readRawCapsule2AssetReferencesOwned(db)
-    })()
+      return readRawCapsule2AssetReferencesOwned(db, bodies('source'))
+    })(), async evidence => evidence)
     return { schemaVersion: db.pragma('user_version', { simple: true }) as 26 | 27,
       sourceContentHash: value.sourceContentHash, workspaceHistoryObservationHash: value.workspaceHistoryObservationHash,
       assetReferencesObservationHash: value.observationHash, referenceCount: value.scopes.reduce((count, scope) => count + scope.destinations.length, 0),
@@ -351,7 +352,7 @@ async function verifyBytes(value: Saved): Promise<Capsule2AssetArchiveInfo> {
   }
   await closure()
   await readExact(join(value.directory, 'manifest.json'), value.root, value.bytes.length, capsuleBytesHash(value.bytes), CAPSULE2_RAW_MAX_JSON_BYTES)
-  if (value.manifest.version === 6) await readCapsuleV3ArchiveOriginals(value.manifest.backupV3, value.manifest.tree, value.directory, value.root, false)
+  if (value.manifest.version === 6) await withCapsuleV3ArchiveOriginals(value.manifest.backupV3, value.manifest.tree, value.directory, value.root)
   else if (value.manifest.version === 7 || value.manifest.version === 8 || value.manifest.version === 9 || value.manifest.version === 10) for (const file of value.manifest.tree.files)
     await readOriginCatalogFile(join(files, file.hash), value.root, { path: file.hash, bytes: file.bytes, sha256: file.hash })
   else for (const file of value.manifest.tree.files) await readExact(join(files, file.hash), value.root, file.bytes, file.hash, ATTACHMENT_MAX_FILE_BYTES)
@@ -601,11 +602,10 @@ async function reopenArchive(original: OwnedRawCapsuleOriginal, expectedManifest
   const info = start(original), capsuleId = basename(info.capsuleDirectory), output = join(info.recoveryDirectory, 'knowledge-complete-assets-v2', capsuleId)
   await directory(output, info.profileRoot)
   const text = await readCapsule2AssetManifest(join(output, 'manifest.json'), info.profileRoot), manifest = parse(text, capsuleId, expectedManifestHash)
-  const v3 = manifest.version === 6
-    ? await readCapsuleV3ArchiveOriginals(manifest.backupV3, manifest.tree, output, info.profileRoot, true)
-    : undefined
   const installed = manifest.version === 7 ? manifest.installedV3 : manifest.version === 9 ? manifest.installedV3Many : undefined
-  const observed = await source(original, v3, installed)
+  const observed = manifest.version === 6
+    ? await withCapsuleV3ArchiveOriginals(manifest.backupV3, manifest.tree, output, info.profileRoot, archive => source(original, archive))
+    : await source(original, undefined, installed)
   if (capsuleJson(manifest.sourceInventory) !== capsuleJson(info.originalInventory)) return bad('原SQL清单不符')
   for (const key of ['schemaVersion','sourceContentHash','workspaceHistoryObservationHash','assetReferencesObservationHash','referenceCount','referenceUris'] as const)
     if (capsuleJson(manifest[key]) !== capsuleJson(observed[key])) return bad('完整实际SQL来源或原引用变化')

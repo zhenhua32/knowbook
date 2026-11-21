@@ -4,8 +4,9 @@ import { capsule2RawTableRows, scopedCapsule2TableIdLookup, type Capsule2Encodin
 import type { RawRestoreSqlCell } from './restore-knowledge-sql-cell'
 import type { Identity3Assignment, Identity3Inputs } from './restore-knowledge-identity3-model'
 import type { Reference3Allocation } from './restore-knowledge-reference3-model'
-import type { ColdRootRestoreReferenceInputs5 } from './restore-knowledge-reference3-read'
+import type { ScopedColdRootRestoreReferenceInputs5 } from './restore-knowledge-reference3-read'
 import type { ReferenceOriginalRows5 } from './restore-knowledge-reference-original-rows5'
+import type { Merge3OriginalRowRef } from './restore-knowledge-merge3-storage'
 
 type PriorEntry = Identity3Inputs['current']['priorCoverageRequirements']['entries'][number]
 type InstalledAssignment = { readonly key: string; readonly targetId: string; readonly targetCreationId: string | null }
@@ -40,18 +41,22 @@ function tableFor(assignment: Identity3Assignment | Reference3Allocation['assign
 
 /** Capture only the repeated install's identity evidence. Old original rows
  * are selected from the same cold reference read, after its graph is released. */
-export function projectV3RepeatReference5(prior: ColdRootRestoreReferenceInputs5,
+export function projectV3RepeatReference5(prior: ScopedColdRootRestoreReferenceInputs5,
   rows: Readonly<{ source: ReferenceOriginalRows5; current: ReferenceOriginalRows5 }>) {
   const archive = prior.data.inputs.source.assetArchive
   const assignments = prior.allocation.assignments.filter(assignment => assignment.physical && !assignment.ambiguous)
-  const installedRows = new Map(prior.candidate.tables.flatMap(table => {
-    if (!table.columns.includes('id')) return []
+  const targets = new Set(assignments.map(assignment => graph3Key(tableFor(assignment), assignment.targetId)))
+  const targetTables = new Set<string>(assignments.map(tableFor))
+  const installedRows = new Map<string, { value: Record<string, unknown>; ref: Merge3OriginalRowRef }>()
+  for (const table of prior.candidate.tables) {
+    if (!targetTables.has(table.name) || !table.columns.includes('id')) continue
     const readIdentity = identityReader(table.columns, table.encoding, 'id')
-    return table.rows.map(row => {
+    for (const row of table.rows) {
       const { id, value } = readIdentity(row.cells)
-      return [graph3Key(table.name, id), { value, ref: row.sourceRef }] as const
-    })
-  }))
+      const key = graph3Key(table.name, id)
+      if (targets.has(key)) installedRows.set(key, { value, ref: row.sourceRef })
+    }
+  }
   const backup = archive.version === 6 ? { snapshotId: archive.backupV3.snapshotId, inventoryHash: archive.backupV3.inventoryHash } : undefined
   return { archive: backup, oldSource: rows.source,
     currentWorkspaceScope: rows.current.workspaceScope, candidateConflictFree: prior.candidate.candidateConflictFree,

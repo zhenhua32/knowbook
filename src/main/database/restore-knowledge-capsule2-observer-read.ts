@@ -58,7 +58,7 @@ function assertPair(db: Database.Database, row: SyncedObservationOperationRow, p
 
 import { capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { readRawCapsule2ObserverContentOwned } from './restore-knowledge-capsule2-content-raw-read'
-import { readRawCapsule2PhysicalGraphOwned } from './restore-knowledge-capsule2-physical-raw-read'
+import { readRawCapsule2PhysicalCountsOwned } from './restore-knowledge-capsule2-physical-raw-read'
 import { readRawCapsule2CoverageSupportsOwned } from './restore-knowledge-capsule2-coverage-raw-read'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, type Capsule2RawCoverageSupports } from './restore-knowledge-capsule2-raw-model'
 import { coverageAnchorExpectation, parseSyncedKnowledgeCoverage, parseSyncedKnowledgeCoverageLink,
@@ -85,9 +85,7 @@ export function readRawCapsule2ObserverOwned(db: Database.Database): RawCapsule2
     || db.pragma('foreign_keys', { simple: true }) !== 1) return observationCorrupt('observer2要求readonly/query-only/FKON真实owned事务')
   // content preflights fixed full source before subsequent driver materialization.
   const { schemaVersion: schema, rawContentHash } = readRawCapsule2ObserverContentOwned(db)
-  const coverage = readRawCapsule2CoverageSupportsOwned(db), physical = readRawCapsule2PhysicalGraphOwned(db)
-  const physicalCounts = { documents: physical.documents.length, groups: physical.groups.length,
-    instances: physical.instances.length, identities: physical.identities.length }
+  const coverage = readRawCapsule2CoverageSupportsOwned(db), physicalCounts = readRawCapsule2PhysicalCountsOwned(db)
   const finish = (counts: { attempts: number; members: number; remoteMarkers: number; ordinaryAttempts: number;
     logicalDenials: number; recoveryBoundaries: number; pairedCoverageAnchors: number }): RawCapsule2ObserverObservation => {
     const value: RawCapsule2ObserverObservation = { kind: 'capsule2-observer-format-pairs', version: 2,

@@ -2,9 +2,12 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { capsuleBytesHash, capsuleJson } from '../src/main/database/restore-knowledge-capsule-model'
+import { readCanonical3Wire } from '../src/main/database/restore-knowledge-canonical3-model'
 import { graph3Text } from '../src/main/database/restore-knowledge-graph3-data'
 import { prepareRootRestoreIdentityPlan3, readRootRestoreIdentityPlan3 } from '../src/main/database/restore-knowledge-identity3-read'
-import { prepareRootRestoreReferencePlan3 } from '../src/main/database/restore-knowledge-reference3-read'
+import { finishRootRestoreStageInputReads5, prepareRootRestoreReferencePlan3, readRootRestoreStageInputs5,
+  withRootRestoreStageInputs5 } from '../src/main/database/restore-knowledge-reference3-read'
 import { parseSyncedBlockPayload } from '../src/shared/syncedBlockValidation'
 import type { DocumentBlockDraft } from '../src/shared/contracts'
 import { withReference3PolicyForkFixture } from './helpers/reference3-policy-fixture'
@@ -133,6 +136,26 @@ test('independent Main same-ID group births remain distinct and every incoming i
     assert.deepEqual(await readFile(join(base.directory, 'manifest.json')), baseBytes)
     assert.equal(candidate.referenceRewriteComplete, false); assert.equal(candidate.permit, false)
     assert.deepEqual(allTables(f.source.db), f.beforeSource); assert.deepEqual(allTables(f.current.db), f.beforeCurrent)
+
+    const { checkedCanonicalCandidateHash, ...hashBody } = candidate
+    assert.equal(checkedCanonicalCandidateHash,
+      capsuleBytesHash('knowbook.restore.canonical3.checked-candidate.v1\0' + capsuleJson(hashBody)))
+    await withRootRestoreStageInputs5(prepared.plan, undefined, async scope => {
+      const { actual: { candidate: scoped } } = await readRootRestoreStageInputs5(prepared.plan, scope)
+      assert.equal(scoped.checkedCanonicalCandidateHash, checkedCanonicalCandidateHash)
+      assert.equal(scoped.tables.length, candidate.tables.length)
+      for (const [index, table] of scoped.tables.entries()) {
+        assert.equal(Array.isArray(table.rows), false)
+        assert.deepEqual({ ...table, rows: Array.from(table.rows) }, candidate.tables[index])
+      }
+      assert.equal(Array.isArray(scoped.activeGroupWires), false)
+      assert.deepEqual(readCanonical3Wire(scoped.activeGroupWires, group.targetId), incomingWire)
+      assert.deepEqual(Array.from(scoped.activeGroupWires), candidate.activeGroupWires)
+      finishRootRestoreStageInputReads5(prepared.plan, scope)
+      assert.throws(() => scoped.tables.find(table => table.name === 'blocks')!.rows.at(0))
+      assert.throws(() => readCanonical3Wire(scoped.activeGroupWires, group.targetId))
+      await assert.rejects(readRootRestoreStageInputs5(prepared.plan, scope), /阶段认证/)
+    })
   }))
 
 test('the explicit exact-current-tuple policy keeps current Origin bytes without upgrading incoming typed hints or mutating the old identity owner', () =>

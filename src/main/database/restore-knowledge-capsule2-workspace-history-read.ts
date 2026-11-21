@@ -8,6 +8,8 @@ import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-kno
 import { readRawCapsule2OrdinaryPolicyEvidenceOwned, readRawCapsule2OrdinaryPolicySourceOwned } from './restore-knowledge-capsule2-policy-source-read'
 import { readRawCapsule2HistoricalEvidenceSourceOwned } from './restore-knowledge-capsule2-history-read'
 import { CAPSULE2_READER, CAPSULE2_RAW_MAX_JSON_BYTES, type StoreCapsule2Archive6Blocks5 } from './restore-knowledge-capsule2-raw-model'
+import type { Capsule2PhysicalBodyStore } from './restore-knowledge-capsule2-physical-raw-read'
+import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
 
 interface InitialIncomingIdentity { id: string; last_owner_kind: 'document' | 'group' | 'reserved'; last_owner_id: string; state: 'live' | 'retained'; created_at: string | null }
 export interface RawCapsule2WorkspaceHistoryObservation {
@@ -43,20 +45,22 @@ export function readRawCapsule2WorkspaceHistorySourceOwned(db: Database.Database
   return readRawCapsule2WorkspaceHistorySourceWithHeadingTitle3Owned(db).source
 }
 /** Fixed same-read handoff only; no serialized owner/map or caller skip. */
-export function readRawCapsule2WorkspaceHistorySourceWithHeadingTitle3Owned(db: Database.Database, blocks?: StoreCapsule2Archive6Blocks5) {
-  return observeWorkspaceHistory(db, readRawCapsule2OrdinaryPolicySourceOwned(db, blocks))
+export function readRawCapsule2WorkspaceHistorySourceWithHeadingTitle3Owned(db: Database.Database, blocks?: StoreCapsule2Archive6Blocks5,
+  physicalBodies?: Capsule2PhysicalBodyStore) {
+  return observeWorkspaceHistory(db, readRawCapsule2OrdinaryPolicySourceOwned(db, blocks, physicalBodies), physicalBodies)
 }
 
 /** The archive observer consumes the verified source evidence in this same transaction. */
-export function readRawCapsule2WorkspaceHistoryEvidenceOwned(db: Database.Database) {
-  return observeWorkspaceHistory(db, readRawCapsule2OrdinaryPolicyEvidenceOwned(db))
+export function readRawCapsule2WorkspaceHistoryEvidenceOwned(db: Database.Database, physicalBodies?: Capsule2PhysicalBodyStore) {
+  return observeWorkspaceHistory(db, readRawCapsule2OrdinaryPolicyEvidenceOwned(db, physicalBodies), physicalBodies)
 }
 
 function observeWorkspaceHistory<Source extends ReturnType<typeof readRawCapsule2OrdinaryPolicyEvidenceOwned>>(
-  db: Database.Database, source: Source) {
+  db: Database.Database, source: Source, bodyStore?: Capsule2PhysicalBodyStore) {
   const { physical, policy } = source
   const sourceContentHash = policy.sourceContentHash
-  const physicalObservationHash = capsuleBytesHash('knowbook.capsule2.workspace-history-physical-observation.v1\0' + capsuleJson(physical))
+  const physicalObservationHash = hashBoundedCapsuleJson(physical, Number.MAX_SAFE_INTEGER, 'knowbook.capsule2.workspace-history-physical-observation.v1\0')
+    ?? publicationInvalid('incoming 物理观察超过原可计数长度。')
   const rawIdentities = db.prepare('SELECT id,last_owner_kind,last_owner_id,state,created_at FROM block_identities ORDER BY id').all() as InitialIncomingIdentity[]
   const identities = new Map<string, InitialIncomingIdentity>()
   for (const row of rawIdentities) {
@@ -69,6 +73,21 @@ function observeWorkspaceHistory<Source extends ReturnType<typeof readRawCapsule
   }
   const historyDocuments = new Set<string>(), historyBlocks = new Set<string>(), historyRows: unknown[] = []
   const unregisteredTemplateBlocks = new Set<string>()
+  function historyTable<T>(sql: string): Iterable<T> {
+    const rows = bodyStore?.openWorkspaceHistoryRows?.(), statement = db.prepare(sql)
+    if (!rows) {
+      const result = statement.all() as T[]
+      historyRows.push(result)
+      return result
+    }
+    historyRows.push(rows.hashInput)
+    return { *[Symbol.iterator]() {
+      for (const row of statement.iterate() as Iterable<T>) {
+        rows.append(row)
+        yield row
+      }
+    } }
+  }
   for (const proof of physical.deletions) if (proof.before.kind === 'document') historyDocuments.add(proof.before.id)
   for (const row of rawIdentities) if (row.last_owner_kind === 'document') historyDocuments.add(row.last_owner_id)
   const document = (value: unknown): string => { const key = id(value); historyDocuments.add(key); return key }
@@ -81,18 +100,17 @@ function observeWorkspaceHistory<Source extends ReturnType<typeof readRawCapsule
     if (!syncedPlainRecord(value) || !Array.isArray(value.blocks)) return publicationInvalid('incoming 本机历史正文损坏。')
     for (const item of value.blocks) { if (!syncedPlainRecord(item)) return publicationInvalid('incoming 历史块不是对象。'); if (item.id !== undefined) block(item.id) }
   }
-  const histories = db.prepare('SELECT * FROM document_history ORDER BY id').all() as Array<{ id: string; document_id: string; content_json: string }>
-  historyRows.push(histories)
+  const histories = historyTable<{ id: string; document_id: string; content_json: string }>('SELECT * FROM document_history ORDER BY id')
   for (const row of histories) { document(row.document_id); content(json(row.content_json)) }
-  const trash = db.prepare('SELECT * FROM document_trash ORDER BY id').all() as Array<{ id: string; snapshot_json: string }>
-  historyRows.push(trash)
+  const trash = historyTable<{ id: string; snapshot_json: string }>('SELECT * FROM document_trash ORDER BY id')
   for (const row of trash) {
     document(row.id); const value = json(row.snapshot_json)
     if (!syncedPlainRecord(value) || !syncedPlainRecord(value.document) || value.document.id !== row.id) return publicationInvalid('incoming 回收站文档归属损坏。')
     content(value.content)
   }
-  const moves = db.prepare('SELECT * FROM document_block_moves ORDER BY id').all() as Array<{ id: string; source_document_id: string; target_document_id: string; state: string; moved_ids_json: string; before_json: string; after_json: string; expected_versions_json: string; created_at: string; updated_at: string }>
-  historyRows.push(moves)
+  const moves = historyTable<{ id: string; source_document_id: string; target_document_id: string; state: string;
+    moved_ids_json: string; before_json: string; after_json: string; expected_versions_json: string; created_at: string; updated_at: string }>(
+    'SELECT * FROM document_block_moves ORDER BY id')
   for (const row of moves) {
     document(row.source_document_id); document(row.target_document_id)
     if (row.state !== 'applied' && row.state !== 'undone' || row.source_document_id === row.target_document_id || !isSyncedUuid(row.id)
@@ -130,8 +148,7 @@ function observeWorkspaceHistory<Source extends ReturnType<typeof readRawCapsule
     // A legitimate undo/redo advances this map without changing frozen side timestamps. Never compare either to today's DB.
   }
   if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='document_templates'").get()) {
-    const templates = db.prepare('SELECT id,blocks_json FROM document_templates ORDER BY id').all() as Array<{ id: string; blocks_json: string }>
-    historyRows.push(templates)
+    const templates = historyTable<{ id: string; blocks_json: string }>('SELECT id,blocks_json FROM document_templates ORDER BY id')
     for (const row of templates) {
       // The complete ordinary-template leaf already checked this exact row.
       // Saved JSON follows its writer's JSON.parse semantics, including the
@@ -147,8 +164,8 @@ function observeWorkspaceHistory<Source extends ReturnType<typeof readRawCapsule
       }
     }
   }
-  const restore = db.prepare('SELECT * FROM backup_restore_identities ORDER BY lineage,kind,source_database_id,source_id,state').all() as Array<{ kind: string; state: string; target_id: string }>
-  historyRows.push(restore)
+  const restore = historyTable<{ kind: string; state: string; target_id: string }>(
+    'SELECT * FROM backup_restore_identities ORDER BY lineage,kind,source_database_id,source_id,state')
   for (const row of restore) {
     if (row.kind === 'block' && row.state === 'missing' && !identities.has(row.target_id)) {
       // V2 deliberately reserves a missing reference in its lineage journal
@@ -161,10 +178,10 @@ function observeWorkspaceHistory<Source extends ReturnType<typeof readRawCapsule
     } else if (row.kind === 'block') block(row.target_id)
     else if (row.kind === 'document') document(row.target_id)
   }
-  const routes = db.prepare('SELECT document_path,block_id FROM document_block_routes ORDER BY document_path,block_id').all() as Array<{ block_id: string }>
-  historyRows.push(routes); for (const row of routes) block(row.block_id)
-  const hostRows = db.prepare('SELECT id,action_json,before_json,after_json,before_hash,after_hash,created_at FROM synced_host_history ORDER BY id').all() as SyncedHostHistoryBranchRow[]
-  historyRows.push(hostRows)
+  const routes = historyTable<{ block_id: string }>('SELECT document_path,block_id FROM document_block_routes ORDER BY document_path,block_id')
+  for (const row of routes) block(row.block_id)
+  const hostRows = historyTable<SyncedHostHistoryBranchRow>(
+    'SELECT id,action_json,before_json,after_json,before_hash,after_hash,created_at FROM synced_host_history ORDER BY id')
   const participants = new Map<string, Set<string>>()
   for (const row of hostRows) {
     const kind = hostJournalKind(row)
@@ -180,10 +197,16 @@ function observeWorkspaceHistory<Source extends ReturnType<typeof readRawCapsule
       if (publicationHash(publicationJson(json(row.before_json))) !== row.before_hash || publicationHash(publicationJson(json(row.after_json))) !== row.after_hash) return publicationInvalid('incoming 原 bare create side/hash 损坏。')
     }
   }
-  const mappings = db.prepare('SELECT * FROM synced_host_history_documents ORDER BY document_id,position').all() as Array<{ history_id: string; document_id: string; position: number }>
-  const states = db.prepare('SELECT * FROM synced_host_history_state ORDER BY document_id').all() as Array<{ document_id: string; cursor: string; position: number }>
-  historyRows.push(mappings, states)
-  const chains = new Map<string, { position: number; count: number }>(states.map(row => { document(row.document_id); if (!isSyncedUuid(row.cursor) || !Number.isSafeInteger(row.position) || row.position < 0) return publicationInvalid('incoming 原宿主 history state 损坏。'); return [row.document_id, { position: row.position, count: 0 }] as const }))
+  const mappings = historyTable<{ history_id: string; document_id: string; position: number }>(
+    'SELECT * FROM synced_host_history_documents ORDER BY document_id,position')
+  const states = historyTable<{ document_id: string; cursor: string; position: number }>(
+    'SELECT * FROM synced_host_history_state ORDER BY document_id')
+  const chains = new Map<string, { position: number; count: number }>()
+  for (const row of states) {
+    document(row.document_id)
+    if (!isSyncedUuid(row.cursor) || !Number.isSafeInteger(row.position) || row.position < 0) return publicationInvalid('incoming 原宿主 history state 损坏。')
+    chains.set(row.document_id, { position: row.position, count: 0 })
+  }
   const historyMapped = new Map<string, Set<string>>()
   for (const row of mappings) {
     document(row.document_id); const state = chains.get(row.document_id)
@@ -193,8 +216,8 @@ function observeWorkspaceHistory<Source extends ReturnType<typeof readRawCapsule
   for (const state of chains.values()) if (state.position > state.count) return publicationInvalid('incoming 原宿主历史位置越界。')
   // Detached/pruned immutable journals may legitimately have no mapping. A remaining mapping is always complete.
   for (const [key, mapped] of historyMapped) if (mapped.size !== participants.get(key)?.size) return publicationInvalid('incoming 原共享日志残留部分映射。')
-  const groupHistory = db.prepare('SELECT * FROM synced_group_history ORDER BY group_id,position').all() as Array<{ group_id: string; before_json: string; after_json: string; before_hash: string; after_hash: string }>
-  historyRows.push(groupHistory)
+  const groupHistory = historyTable<{ group_id: string; before_json: string; after_json: string; before_hash: string; after_hash: string }>(
+    'SELECT * FROM synced_group_history ORDER BY group_id,position')
   for (const row of groupHistory) for (const [source, hash] of [[row.before_json, row.before_hash], [row.after_json, row.after_hash]]) {
     const wire = validateSyncedGroupWire(json(source))
     if (wire.id !== row.group_id || publicationHash(publicationJson(wire)) !== hash) return publicationInvalid('incoming 原 canonical history side/hash 损坏。')
@@ -205,8 +228,14 @@ function observeWorkspaceHistory<Source extends ReturnType<typeof readRawCapsule
   const lifecycleTables = db.pragma('user_version', { simple: true }) === 27
     ? ['synced_group_lifecycle', 'synced_group_retirements', 'synced_exposure_attempts', 'synced_group_exposure_members'] : []
   for (const table of lifecycleTables) {
-    const rows = db.prepare('SELECT * FROM ' + table).all()
-    historyRows.push(rows.sort((a, b) => publicationJson(a) < publicationJson(b) ? -1 : publicationJson(a) > publicationJson(b) ? 1 : 0))
+    const stored = bodyStore?.openWorkspaceHistoryRows?.('publication-json'), statement = db.prepare('SELECT * FROM ' + table)
+    if (stored) {
+      for (const row of statement.iterate()) stored.append(row)
+      historyRows.push(stored.hashInput)
+    } else {
+      const rows = statement.all()
+      historyRows.push(rows.sort((a, b) => publicationJson(a) < publicationJson(b) ? -1 : publicationJson(a) > publicationJson(b) ? 1 : 0))
+    }
   }
   const groupIds = new Set((db.prepare('SELECT id FROM synced_groups ORDER BY id').all() as Array<{ id: string }>).map(row => row.id))
   // The kernel above preserves all rows, but does not classify reserved
@@ -224,8 +253,14 @@ function observeWorkspaceHistory<Source extends ReturnType<typeof readRawCapsule
     groupIds: [...groupIds].sort(compare), unregisteredTemplateBlocks: [...unregisteredTemplateBlocks].sort(compare), historyRows,
     unresolved: ['ordinary-document-tree-and-legacy-compatibility', 'complete-ordinary-history-codecs', 'ordinary-catalog-and-derived-semantics',
       'source-policy-and-assets', 'required-root-resolution', 'streaming-source-adapter', 'complete-private-capsule2-certifier-and-installer'] }
-  const result = { ...body, observationHash: capsuleBytesHash('knowbook.capsule2.workspace-identity-history-observation.v1\0' + capsuleJson(body)) }
-  if (Buffer.byteLength(capsuleJson(result)) > CAPSULE2_RAW_MAX_JSON_BYTES) return publicationInvalid('workspace history2完整JSON超准备预算，不截断。')
+  const domain = 'knowbook.capsule2.workspace-identity-history-observation.v1\0'
+  const scoped = Boolean(bodyStore?.openWorkspaceHistoryRows)
+  const observationHash = scoped ? hashBoundedCapsuleJson(body, CAPSULE2_RAW_MAX_JSON_BYTES, domain)
+    : capsuleBytesHash(domain + capsuleJson(body))
+  if (!observationHash) return publicationInvalid('workspace history2完整JSON超准备预算，不截断。')
+  const result = { ...body, observationHash }
+  if (scoped ? !hashBoundedCapsuleJson(result, CAPSULE2_RAW_MAX_JSON_BYTES) : Buffer.byteLength(capsuleJson(result)) > CAPSULE2_RAW_MAX_JSON_BYTES)
+    return publicationInvalid('workspace history2完整JSON超准备预算，不截断。')
   const history: RawCapsule2WorkspaceHistoryObservation = freezeCapsuleValue(result)
   return Object.freeze({source:Object.freeze({ ...source, history, total }),headingTitleOriginals:totalRead.headingTitleOriginals})
 }

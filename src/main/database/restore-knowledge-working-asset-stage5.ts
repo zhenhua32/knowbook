@@ -9,12 +9,12 @@ import { CAPSULE_V3_ASSET_MAX_FILE_BYTES } from './restore-knowledge-capsule-v3-
 import { durableSqlDagHash, durableSqlDagUuid } from './restore-knowledge-dag-model'
 import { graph3Text } from './restore-knowledge-graph3-data'
 import { assertMerge3JsonBudget, type Merge3OriginalRowRef, type MergedRow3 } from './restore-knowledge-merge3-storage'
-import { createNavigation3DocumentBlockReader } from './restore-knowledge-navigation3-merge-context'
+import { createNavigation3DocumentBlockReader, createNavigation3RowLookup } from './restore-knowledge-navigation3-merge-context'
 import { applyNavigation3TextEdits, createNavigation3RangeProjection } from './restore-knowledge-navigation3-rewrite-cells'
 import { syncOriginCatalogAncestors } from './restore-knowledge-origin-bundle-files'
 import { assertOriginalFrameDirectory, writeOriginalFrameDirectory, type OriginalFrameCopy } from './restore-knowledge-original-frame-files'
 import { pendingLocalCellTextHash5 } from './restore-knowledge-pending-local-cell5'
-import { assertRootRestoreReferenceOriginalBytes3, readRootRestoreReferenceCopySource3,
+import { assertRootRestoreReferenceOriginalBytes3, readRootRestoreReferenceCopySource3, withRootRestoreStageInputs5,
   type RootRestoreReferencePlan3, type RootRestoreStageInputs5 } from './restore-knowledge-reference3-read'
 import { readRootRestoreWorkingAssetSources5 } from './restore-knowledge-working-asset-authority5'
 import { projectWorkingAssetBodyCells5, workingAssetCellPosition5, workingAssetPosition5 } from './restore-knowledge-working-asset-cells5'
@@ -59,10 +59,10 @@ function selectAssets(actual: Actual, format: Format) {
     return fail('需要同次通过原校验的候选')
   const documents = candidate.tables.find(table => table.name === 'documents') ?? fail('候选缺实际 documents 表')
   const blocks = candidate.tables.find(table => table.name === 'blocks') ?? fail('候选缺实际 blocks 表')
-  const address = (row: MergedRow3) => capsuleJson([row.sourceRef.side, row.sourceRef.sourceRowId])
-  const selectedRows = by(documents.rows, address), selectedBlocks = by(blocks.rows, address)
+  const address = ({ side, sourceRowId }: Merge3OriginalRowRef) => capsuleJson([side, sourceRowId])
+  const readDocument = createNavigation3RowLookup(documents, row => address(row.sourceRef))
+  const readBlock = createNavigation3RowLookup(blocks, row => address(row.sourceRef))
   const readFinalDocumentBlocks = createNavigation3DocumentBlockReader(blocks, actual.captured.cells.physicalLocations)
-  const finalBody = new Map<string, ReturnType<typeof projectWorkingAssetBodyCells5>>()
   const finalBlocks = by(actual.captured.cells.physicalLocations, row => row.rowKey)
   const editGroups = new Map<string, Array<Actual['captured']['cells']['ordinaryEdits'][number]>>()
   for (const edit of actual.captured.cells.ordinaryEdits) {
@@ -131,7 +131,7 @@ function selectAssets(actual: Actual, format: Format) {
       if (!original || !scope) continue
       const originalSummary = originalDocuments.cell(original, 'summary')
       if (typeof originalSummary !== 'string') continue
-      const target = selectedRows.get(capsuleJson([role.role, original.sourceRowId]))
+      const target = readDocument(capsuleJson([role.role, original.sourceRowId]))
       const mappings = new Map<string, string>(), nativeItems: Sealed[] = []
       for (const item of items) {
         if (item.evidence.kind !== 'settled-captured-base-alias') continue
@@ -188,6 +188,7 @@ function selectAssets(actual: Actual, format: Format) {
         return cell ? [{ item, cell }] : []
       })
       const oldContent = originalBlocks.cachedCell('content')
+      let finalBody: { documentId: string; projected: ReturnType<typeof projectWorkingAssetBodyCells5> } | undefined
       for (const destination of scope.destinations.filter(item => item.section === 'body')) {
         const cell = originalBody.byBodyPosition.get(workingAssetPosition5(destination))
         if (!cell || cell.raw !== destination.raw) continue
@@ -195,7 +196,7 @@ function selectAssets(actual: Actual, format: Format) {
         if (!originalBlock || !workingBlock || originalBlocks.cell(originalBlock, 'document_id') !== record.id) continue
         const originalText = oldContent(originalBlock)
         if (typeof originalText !== 'string') continue
-        const chosen = selectedBlocks.get(capsuleJson([role.role, originalBlock.sourceRowId]))
+        const chosen = readBlock(capsuleJson([role.role, originalBlock.sourceRowId]))
         if (!chosen || chosen.sourceRef.materialHash !== packet.materialHash) continue
         const finalText = graph3Text(chosen.cells[blocks.columns.indexOf('content')], blocks.encoding)
         if (originalText.slice(cell.from, cell.to) !== cell.raw) return fail('原正文资产坐标与实际 SQL cell 不符')
@@ -205,26 +206,24 @@ function selectAssets(actual: Actual, format: Format) {
         const matched = workingCells.filter(({ item, cell: workingCell }) => workingCell.blockId === cell.blockId
           && fromOriginal(item, destination.uri) && workingCell.from >= portable.from && workingCell.to <= portable.to)
         if (matched.length !== 1) continue
-        let projectedFinal = finalBody.get(finalBlock.documentId)
-        if (!projectedFinal) {
-          projectedFinal = projectWorkingAssetBodyCells5(readFinalDocumentBlocks(finalBlock.documentId), 'base')
-          finalBody.set(finalBlock.documentId, projectedFinal)
-        }
-        const finalOccurrence = projectedFinal.byCellPosition.get(workingAssetCellPosition5(finalBlock.id, { ...final, uri: destination.uri }))
+        if (finalBody?.documentId !== finalBlock.documentId)
+          finalBody = { documentId: finalBlock.documentId, projected: projectWorkingAssetBodyCells5(readFinalDocumentBlocks(finalBlock.documentId), 'base') }
+        const finalOccurrence = finalBody.projected.byCellPosition.get(workingAssetCellPosition5(finalBlock.id, { ...final, uri: destination.uri }))
         if (finalOccurrence?.raw === cell.raw && finalOccurrence.kind === cell.kind && finalOccurrence.syntax === cell.syntax)
           add(chosen, 'content', cell, final, finalText, matched[0].item)
       }
     }
   }
 
-  if (format !== 2) for (const asset of selectRootRestoreNativeAssetScopes5(actual))
+  if (format !== 2) for (const asset of selectRootRestoreNativeAssetScopes5(actual, readDocument, readBlock, readFinalDocumentBlocks))
     addFile(asset.target, asset.column, asset.original, asset.final, asset.finalText, asset.proof.id, asset.proof.logicalName,
       asset.proof.file, asset.context, asset.proof.backupV3)
   const pending = candidate.pendingLocalBody
   if (pending) {
     if (format !== 4) return fail('旧附件格式无法携带入选 pending 正文')
-    const target = blocks.rows.find(row => row.targetRowId === pending.targetRowId)
-    if (!target || capsuleJson(target.sourceRef) !== capsuleJson(pending.sourceRef)) return fail('pending 缺确切入选业务行')
+    const target = readBlock(address(pending.sourceRef))
+    if (!target || target.targetRowId !== pending.targetRowId || capsuleJson(target.sourceRef) !== capsuleJson(pending.sourceRef))
+      return fail('pending 缺确切入选业务行')
     const content = graph3Text(target.cells[blocks.columns.indexOf('content')], blocks.encoding)
     if (pendingLocalCellTextHash5(content) !== pending.afterHash) return fail('pending 候选正文哈希不相符')
     const role = actual.value.roles.find(value => value.role === pending.sourceRef.side) ?? fail('pending 缺实际原件角色')
@@ -278,15 +277,18 @@ function manifest(actual: Actual, stageId: string, selection: ReturnType<typeof 
 
 async function readStageInputs(reference: RootRestoreReferencePlan3, stageId: string, savedFormat?: Format, scope?: RootRestoreStageInputs5) {
   const source = await readRootRestoreReferenceCopySource3(reference)
-  const actual = await readRootRestoreWorkingAssetSources5(reference, scope), pending = actual.captured.actual.candidate.pendingLocalBody
-  if (source.pendingCellProofHash !== pending?.proofHash) return fail('附件与 Reference 的 pending 选择不同')
-  const format = savedFormat ?? (pending ? 4 : 3), selection = selectAssets(actual, format)
-  // An empty selection can still have retained original occurrences. The
-  // final closure independently enumerates every scope and reports gaps.
-  if (!selection.value.selected.length && (format === 2 || format === 4)) return fail('没有具备确切原件证明的入选原生附件')
-  const value = manifest(actual, stageId, selection.value, format), text = capsuleJson(value) + '\n'
-  return { value, text, manifestHash: capsuleBytesHash(text), files: selection.copies,
-    location: source.location, directory: join(collection(source.location), stageId), sources: actual }
+  const read = async (readScope: RootRestoreStageInputs5) => {
+    const actual = await readRootRestoreWorkingAssetSources5(reference, readScope), pending = actual.captured.actual.candidate.pendingLocalBody
+    if (source.pendingCellProofHash !== pending?.proofHash) return fail('附件与 Reference 的 pending 选择不同')
+    const format = savedFormat ?? (pending ? 4 : 3), selection = selectAssets(actual, format)
+    // An empty selection can still have retained original occurrences. The
+    // final closure independently enumerates every scope and reports gaps.
+    if (!selection.value.selected.length && (format === 2 || format === 4)) return fail('没有具备确切原件证明的入选原生附件')
+    const value = manifest(actual, stageId, selection.value, format), text = capsuleJson(value) + '\n'
+    return { value, text, manifestHash: capsuleBytesHash(text), files: selection.copies,
+      location: source.location, directory: join(collection(source.location), stageId), sources: scope ? actual : undefined }
+  }
+  return scope ? read(scope) : withRootRestoreStageInputs5(reference, source.pendingCellProofHash, read)
 }
 
 async function verify(saved: Locator, scope?: RootRestoreStageInputs5) {
@@ -326,10 +328,11 @@ export async function readRootRestoreWorkingAssetStage5(stage: RootRestoreWorkin
 
 /** Same fresh observation and exact original frames used by this asset stage.
  * A closure audit does not need another semantic source read. */
-export async function readRootRestoreWorkingAssetStageAndSources5(stage: RootRestoreWorkingAssetStage5, scope?: RootRestoreStageInputs5) {
+export async function readRootRestoreWorkingAssetStageAndSources5(stage: RootRestoreWorkingAssetStage5, scope: RootRestoreStageInputs5) {
   const saved = stages.get(stage)
   if (!saved) return fail('不是实际附件暂存 owner')
   const { value, sources, directory } = await verify(saved, scope)
+  if (!sources) return fail('原件读取须在同次附件阶段范围内')
   return Object.freeze({ value, sources, directory })
 }
 

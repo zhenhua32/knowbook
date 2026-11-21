@@ -85,8 +85,15 @@ function origin(row: Record<string, unknown>) {
     return capsuleInvalid('schema版本与原scope/epoch不闭合')
   return { schemaVersion, workspaceScope, recoveryEpoch }
 }
+const capsuleArrayViews = new WeakSet<readonly unknown[]>()
+export function freezeCapsuleArrayView<T>(value: readonly T[]): readonly T[] {
+  capsuleArrayViews.add(value)
+  return Object.freeze(value)
+}
+
 export function freezeCapsuleValue<T>(value: T): T {
   if (value && typeof value === 'object') {
+    if (Array.isArray(value) && capsuleArrayViews.has(value)) return value
     for (const child of Object.values(value)) freezeCapsuleValue(child)
     Object.freeze(value)
   }

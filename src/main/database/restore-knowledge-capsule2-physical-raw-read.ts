@@ -1,16 +1,16 @@
 import type Database from 'better-sqlite3'
 import type { SyncedGroupSnapshot, SyncedStableBlockDraft } from '../../shared/synced-blocks'
 import { isSyncedBlockId, isSyncedUuid, SYNCED_MAX_BLOCKS } from '../../shared/syncedBlockValidation'
-import { validateSyncedWorkspaceGraph } from '../../shared/syncedBlockGraph'
+import { inspectSyncedWorkspaceGraphStream } from '../../shared/syncedBlockGraph'
 import { assertSyncedBlockSchema } from './synced-schema'
 import { assertSyncedLifecycleSchemaMetadata } from './synced-lifecycle-schema-metadata'
 import { assertSyncedLifecycleCoverage, readSyncedGroupLifecycles, type SyncedGroupLifecycle } from './synced-lifecycle-state'
-import { readRawSyncedGroupSnapshotsOwned } from './synced-blocks-raw-read'
+import { readRawSyncedGroupSnapshotScopeOwned } from './synced-blocks-raw-read'
 import { assertSyncedLogicalDeletionRecords } from './synced-logical-deletion-read'
-import { readV3SourceGroupRetirementsOwned } from './v3-source-group-retirement'
 import { readRawCapsule2HostDocumentOwned } from './synced-host-document-read'
 import { assertSyncedStoredBindings } from './synced-stored-binding-read'
 import { assertRawCapsule2CatalogOwned } from './restore-knowledge-capsule2-catalog-read'
+import type { StoreCapsule2Archive6Blocks5 } from './restore-knowledge-capsule2-raw-model'
 
 type IdentityRow = { id: string; last_owner_kind: 'document' | 'group' | 'reserved'; last_owner_id: string;
   state: 'live' | 'retained'; created_at: string | null }
@@ -21,6 +21,17 @@ type DocumentFact = { documentId: string; title: string; path: string; summary: 
 type GroupFact = { groupId: string; lifecycle: SyncedGroupLifecycle | null; snapshot: SyncedGroupSnapshot | null;
   absence: 'retired-create' | 'logical-deleted' | 'source-retired' | null;
   retirementOrigin?: { groupId: string; creationId: string; createdAt: string } }
+
+export interface Capsule2PhysicalBodyStore {
+  document(fact: DocumentFact): DocumentFact
+  group(snapshot: SyncedGroupSnapshot): SyncedGroupSnapshot
+  readonly rawBlocks?: StoreCapsule2Archive6Blocks5
+  openWorkspaceHistoryRows?(order?: 'publication-json'): { append(row: unknown): void; readonly hashInput: readonly unknown[] }
+  openKnowledgeHistoryRows?<Row extends object>(): {
+    append(row: Row, heavy: readonly (keyof Row)[]): void
+    finish(): readonly Row[]
+  }
+}
 
 /** Main-internal semantic observation. Original typed cells and bytes belong to
  * the separate content raw reader/original owner. This is not a capsule2 seal,
@@ -33,9 +44,13 @@ export interface RawCapsule2PhysicalGraph {
   unresolved: ['ordinary-content-semantics2', 'observer2', 'total-historical2', 'source-assets', 'complete-private-capsule2-certifier']
 }
 const ownedPhysicalGraphs = new WeakSet<RawCapsule2PhysicalGraph>()
+const storedPhysicalGraphs = new WeakSet<RawCapsule2PhysicalGraph>()
 
 export function isOwnedCapsule2PhysicalGraph(graph: RawCapsule2PhysicalGraph): boolean {
   return ownedPhysicalGraphs.has(graph)
+}
+export function hasStoredCapsule2PhysicalBodies(graph: RawCapsule2PhysicalGraph): boolean {
+  return storedPhysicalGraphs.has(graph)
 }
 const invalid = (message: string): never => { throw new Error('capsule2 physical raw无效：' + message + '；不授认证或安装权。') }
 const compare = (a: string, b: string): number => a < b ? -1 : a > b ? 1 : 0
@@ -51,7 +66,8 @@ function freeze<T>(value: T): T {
  * Historical paths may be empty, duplicated or drifted by the former astral
  * prefix SQL. They remain literal source data, never tree identity or a value
  * to normalize while observing an immutable source. */
-function assertDocumentTree(documents: readonly DocumentFact[]): void {
+type DocumentParent = Pick<DocumentFact, 'documentId' | 'parentId' | 'title'>
+function assertDocumentTree(documents: readonly DocumentParent[]): void {
   const byId = new Map(documents.map(document => [document.documentId, document]))
   if (byId.size !== documents.length) return invalid('文档身份重复')
   const siblings = new Map<string | null, Set<string>>()
@@ -70,7 +86,7 @@ function assertDocumentTree(documents: readonly DocumentFact[]): void {
   const complete = new Set<string>()
   for (const document of documents) {
     const chain = new Set<string>()
-    let next: DocumentFact | undefined = document
+    let next: DocumentParent | undefined = document
     while (next && !complete.has(next.documentId)) {
       if (chain.has(next.documentId)) return invalid('文档父身份形成环')
       chain.add(next.documentId)
@@ -85,7 +101,20 @@ function assertDocumentTree(documents: readonly DocumentFact[]): void {
  * no observer/guard/effective/K/public reader is called. The legacy readers and
  * their exact fingerprint preimages remain unchanged. Caller supplies only an
  * actual readonly query-only/FKON SQL transaction, never ids/roots/a mode. */
-export function readRawCapsule2PhysicalGraphOwned(db: Database.Database): RawCapsule2PhysicalGraph {
+export function readRawCapsule2PhysicalGraphOwned(db: Database.Database, store?: Capsule2PhysicalBodyStore): RawCapsule2PhysicalGraph {
+  const { observation } = readPhysicalOwned(db, true, store)
+  const result = store ? freezeStoredPhysicalObservation(observation) : freeze(observation)
+  if (store) storedPhysicalGraphs.add(result)
+  ownedPhysicalGraphs.add(result)
+  return result
+}
+
+/** The historical observer uses the exact checks and only keeps its counts. */
+export function readRawCapsule2PhysicalCountsOwned(db: Database.Database) {
+  return readPhysicalOwned(db, false).counts
+}
+
+function readPhysicalOwned(db: Database.Database, keep: boolean, store?: Capsule2PhysicalBodyStore) {
   if (!db.open || !db.readonly || !db.inTransaction || db.pragma('query_only', { simple: true }) !== 1
     || db.pragma('foreign_keys', { simple: true }) !== 1) return invalid('要求独立readonly/query-only/FKON真实owned事务')
   const version = db.pragma('user_version', { simple: true })
@@ -98,50 +127,61 @@ export function readRawCapsule2PhysicalGraphOwned(db: Database.Database): RawCap
   if (!context || !isSyncedUuid(context.workspace_scope) || !isSyncedUuid(context.recovery_epoch)) return invalid('原workspace/recovery身份无效')
   // This is the old finite denial reader, not the old schema observer. It must
   // keep every original proof/receipt relation; C/Receipt2 is a separate owner.
-  const deleted = version === 27 ? assertSyncedLogicalDeletionRecords(db) : new Map()
-  const retired = readV3SourceGroupRetirementsOwned(db)
+  const snapshots = readRawSyncedGroupSnapshotScopeOwned(db)
+  const deleted = snapshots.deleted ?? new Map(), retired = snapshots.retired
   const ids = (db.prepare('SELECT id FROM synced_groups ORDER BY id').all() as Array<{ id: unknown }>).map(row => {
     if (!isSyncedUuid(row.id)) return invalid('真实组身份无效'); return row.id
   })
-  const groups: GroupFact[] = [], snapshots: SyncedGroupSnapshot[] = []
-  for (let from = 0; from < ids.length; from += SYNCED_MAX_BLOCKS) {
-    const batch = ids.slice(from, from + SYNCED_MAX_BLOCKS)
-    const life = version === 27 ? readSyncedGroupLifecycles(db, batch) : new Map<string, SyncedGroupLifecycle>()
-    const raw = readRawSyncedGroupSnapshotsOwned(db, batch)
-    for (const groupId of batch) {
-      const lifecycle = life.get(groupId) ?? null, snapshot = raw.get(groupId) ?? null
-      if (version === 27 && lifecycle === null) return invalid('真实组缺准确lifecycle')
-      if (snapshot) {
-        if (deleted.has('group:' + groupId) || retired.has(groupId) || lifecycle && lifecycle.state !== 'active') return invalid('ready组与原退场或lifecycle矛盾')
-        // The same full Key parser and retained physical target rules are used
-        // by the raw publication reader, without rewriting targets from paths.
-        assertSyncedStoredBindings(db, snapshot.origin, snapshot.blocks, snapshot.bindings)
-        snapshots.push(snapshot); groups.push({ groupId, lifecycle, snapshot, absence: null })
-      } else {
-        const retirement = retired.get(groupId)
-        const absence = retirement ? 'source-retired' as const : deleted.has('group:' + groupId) ? 'logical-deleted' as const
-          : lifecycle?.state === 'retired-create' ? 'retired-create' as const : null
-        if (absence === null) return invalid('真实活动组不能丢成missing')
-        groups.push({ groupId, lifecycle, snapshot: null, absence, ...(retirement ? { retirementOrigin: { groupId: retirement.sourceGroupId,
-          creationId: retirement.sourceCreationId, createdAt: retirement.group.createdAt } } : {}) })
+  const groups: GroupFact[] = []
+  const expected = new Map<string, SyncedGroupSnapshot['instances'][number] & { groupId: string }>()
+  const wires = function* () {
+    const pageSize = store || !keep ? 16 : SYNCED_MAX_BLOCKS
+    for (let from = 0; from < ids.length; from += pageSize) {
+      const batch = ids.slice(from, from + pageSize)
+      const life = version === 27 ? readSyncedGroupLifecycles(db, batch) : new Map<string, SyncedGroupLifecycle>()
+      const raw = snapshots.read(batch)
+      for (const groupId of batch) {
+        const lifecycle = life.get(groupId) ?? null, snapshot = raw.get(groupId) ?? null
+        if (version === 27 && lifecycle === null) return invalid('真实组缺准确lifecycle')
+        if (snapshot) {
+          if (deleted.has('group:' + groupId) || retired.has(groupId) || lifecycle && lifecycle.state !== 'active') return invalid('ready组与原退场或lifecycle矛盾')
+          // Use the original Key parser and retained targets without rewriting from paths.
+          assertSyncedStoredBindings(db, snapshot.origin, snapshot.blocks, snapshot.bindings)
+          for (const item of snapshot.instances) expected.set(item.instanceId, { groupId, ...item })
+          if (keep) groups.push({ groupId, lifecycle, snapshot: store ? store.group(snapshot) : snapshot, absence: null })
+          yield { kind: 'synced-group' as const, id: snapshot.groupId, creationId: snapshot.creationId, createdAt: snapshot.createdAt,
+            origin: snapshot.origin, bindings: snapshot.bindings, blocks: snapshot.blocks }
+        } else {
+          const retirement = retired.get(groupId)
+          const absence = retirement ? 'source-retired' as const : deleted.has('group:' + groupId) ? 'logical-deleted' as const
+            : lifecycle?.state === 'retired-create' ? 'retired-create' as const : null
+          if (absence === null) return invalid('真实活动组不能丢成missing')
+          if (keep) groups.push({ groupId, lifecycle, snapshot: null, absence, ...(retirement ? { retirementOrigin: { groupId: retirement.sourceGroupId,
+            creationId: retirement.sourceCreationId, createdAt: retirement.group.createdAt } } : {}) })
+        }
       }
     }
-  }
-  const documents: DocumentFact[] = (db.prepare('SELECT id FROM documents ORDER BY id').all() as Array<{ id: unknown }>).map(row => {
-    if (!isSyncedBlockId(row.id)) return invalid('真实宿主身份无效')
-    const host = readRawCapsule2HostDocumentOwned(db, row.id)
-    if (!host) return invalid('真实宿主缺失')
-    return { documentId: row.id, title: host.content.title, path: host.detail.path, summary: host.content.summary,
-      createdAt: host.createdAt, updatedAt: host.detail.updatedAt, parentId: host.parentId, sortOrder: host.sortOrder,
-      blocks: host.content.blocks, births: [...host.births].sort(([a], [b]) => compare(a, b)) }
-  })
-  assertDocumentTree(documents)
-  const wires = snapshots.map(item => ({ kind: 'synced-group' as const, id: item.groupId, creationId: item.creationId,
-    createdAt: item.createdAt, origin: item.origin, bindings: item.bindings, blocks: item.blocks }))
-  // validateSyncedWorkspaceGraph has no document title/publication-record rule.
-  // It still proves complete forests, unique owners, every physical occurrence,
-  // canonical-parent role and the transparent combined depth bound.
-  const graph = validateSyncedWorkspaceGraph(documents.map(({ documentId, blocks }) => ({ documentId, blocks })), wires)
+  }()
+  const documents: DocumentFact[] = [], documentParents: DocumentParent[] = []
+  const hostForests = function* () {
+    for (const { id: documentId } of db.prepare('SELECT id FROM documents ORDER BY id').all() as Array<{ id: unknown }>) {
+      if (!isSyncedBlockId(documentId)) return invalid('真实宿主身份无效')
+      const host = readRawCapsule2HostDocumentOwned(db, documentId)
+      if (!host) return invalid('真实宿主缺失')
+      const parent = { documentId, title: host.content.title, parentId: host.parentId }
+      documentParents.push(parent)
+      if (keep) {
+        const document = { ...parent, path: host.detail.path, summary: host.content.summary, createdAt: host.createdAt,
+          updatedAt: host.detail.updatedAt, sortOrder: host.sortOrder, blocks: host.content.blocks,
+          births: [...host.births].sort(([a], [b]) => compare(a, b)) }
+        documents.push(store ? store.document(document) : document)
+      }
+      yield { documentId, blocks: host.content.blocks }
+    }
+    assertDocumentTree(documentParents)
+  }()
+  // Prove complete forests, unique owners, occurrences and combined depth without holding every body.
+  const graph = inspectSyncedWorkspaceGraphStream(hostForests, wires)
   const identities = db.prepare('SELECT id,last_owner_kind,last_owner_id,state,created_at FROM block_identities ORDER BY id').all() as IdentityRow[]
   const seen = new Set<string>(), live = new Map<string, IdentityRow>()
   for (const row of identities) {
@@ -157,11 +197,9 @@ export function readRawCapsule2PhysicalGraphOwned(db: Database.Database): RawCap
     const owner = graph.owners.get(id)
     if (!owner || owner.kind !== row.last_owner_kind || owner.id !== row.last_owner_id) return invalid('ledger与实际唯一owner不一致')
     // Known birth equality is independently checked in both raw SQL physical
-    // joins (readRawCapsule2HostDocumentOwned/readRawSyncedGroupSnapshotsOwned), not guessed.
+    // joins for the document and group snapshots, not guessed.
   }
   const instances = db.prepare('SELECT instance_id,group_id,host_document_id,binding_version,parent_block_id,depth FROM synced_instances ORDER BY instance_id').all() as InstanceRow[]
-  const expected = new Map(snapshots.flatMap(snapshot => snapshot.instances.map(item => [item.instanceId,
-    { groupId: snapshot.groupId, ...item }] as const)))
   if (expected.size !== instances.length) return invalid('全部实例登记不是实际叶闭集')
   for (const row of instances) {
     const item = expected.get(row.instance_id)
@@ -175,7 +213,18 @@ export function readRawCapsule2PhysicalGraphOwned(db: Database.Database): RawCap
     semanticValidationComplete: false, schemaVersion: version, workspaceScope: context.workspace_scope, recoveryEpoch: context.recovery_epoch,
     documents, groups, identities, instances, deletions: [...deleted.values()],
     unresolved: ['ordinary-content-semantics2', 'observer2', 'total-historical2', 'source-assets', 'complete-private-capsule2-certifier'] }
-  const result = freeze(observation)
-  ownedPhysicalGraphs.add(result)
-  return result
+  const counts = { documents: documentParents.length, groups: ids.length, instances: instances.length, identities: identities.length }
+  return { observation, counts }
+}
+
+function freezeStoredPhysicalObservation(observation: RawCapsule2PhysicalGraph): RawCapsule2PhysicalGraph {
+  const { documents, groups, ...metadata } = observation
+  Object.freeze(documents)
+  for (const group of groups) {
+    freeze(group.lifecycle)
+    freeze(group.retirementOrigin)
+    Object.freeze(group)
+  }
+  Object.freeze(groups)
+  return Object.freeze({ ...freeze(metadata), documents, groups })
 }

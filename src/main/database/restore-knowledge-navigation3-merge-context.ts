@@ -220,9 +220,9 @@ function blockSyntax({ table, row, value }: FinalEntry): SyncedStableBlockDraft 
 
 /** Decode one document from the same checked candidate rows after the
  * temporary navigation index has closed. */
-export function createNavigation3DocumentBlockReader(table: Navigation3Table, locations: StoredNavigation3Index['physicalLocations']) {
+export function createNavigation3DocumentBlockReader(table: Navigation3TableSource, locations: StoredNavigation3Index['physicalLocations']) {
   if (table.name !== 'blocks') return graph3Conflict('navigation-final-document-block-table', table.name)
-  const rows = new Map(table.rows.map(row => [row.key, row]))
+  const readRow = createNavigation3RowLookup(table, row => row.key)
   const columns = table.columns.flatMap((key, index) => key !== 'content' && finalFields.blocks!.includes(key) ? [{ key, index }] : [])
   const sortColumn = table.columns.indexOf('sort_order')
   const owners = new Map<string, Navigation3PhysicalLocation[]>()
@@ -231,7 +231,7 @@ export function createNavigation3DocumentBlockReader(table: Navigation3Table, lo
     list.push(location); owners.set(location.documentId, list)
   }
   return (documentId: string) => (owners.get(documentId) ?? []).map(location => {
-    const row = rows.get(location.rowKey), sort = row?.cells[sortColumn]
+    const row = readRow(location.rowKey), sort = row?.cells[sortColumn]
     if (!row || row.targetRowId !== location.targetRowId || row.sourceRef !== location.sourceRef && !same(row.sourceRef, location.sourceRef)
       || row.replaces !== location.replaces && !same(row.replaces, location.replaces) || sort?.[0] !== 'integer')
       return graph3Conflict('navigation-final-document-block-row', location.rowKey)
@@ -243,6 +243,15 @@ export function createNavigation3DocumentBlockReader(table: Navigation3Table, lo
       return graph3Conflict('navigation-final-document-block-owner', location.rowKey)
     return blockSyntax({ table, row, value })
   })
+}
+
+export function createNavigation3RowLookup(table: Navigation3TableSource, keyOf: (row: MergedRow3) => string) {
+  const positions = new Map<string, number>()
+  for (const [ordinal, row] of table.rows.entries()) positions.set(keyOf(row), ordinal)
+  return (key: string) => {
+    const ordinal = positions.get(key)
+    return ordinal === undefined ? undefined : table.rows.at(ordinal)
+  }
 }
 
 function cell(entry: FinalEntry<RowAddress>, column: 'content' | 'summary', content: string): Navigation3Cell {

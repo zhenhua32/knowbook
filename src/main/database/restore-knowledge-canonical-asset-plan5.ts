@@ -13,7 +13,7 @@ import { workingAssetSelectedCellHash5 } from './restore-knowledge-working-asset
 import { syncedLifecycleSemanticHash } from './synced-lifecycle-state'
 import { parseSyncedBindingOccurrences } from '../sync/synced-binding-occurrences'
 import type { readRootRestoreAssetAliasSqlSource5 } from './restore-knowledge-asset-alias-stage5'
-import type { Navigation3Table } from './restore-knowledge-navigation3-merge-context'
+import { navigation3RowLookup, projectNavigation3TableRows, type Navigation3TableSource } from './restore-knowledge-navigation3-tables'
 
 type Source = Awaited<ReturnType<typeof readRootRestoreAssetAliasSqlSource5>>
 const fail = (reason: string): never => { throw new Error('非执行同步正文附件改写失败：' + reason) }
@@ -21,8 +21,8 @@ const same = (left: unknown, right: unknown) => capsuleJson(left) === capsuleJso
 const occurrence = (id: string, from: number, to: number) => capsuleJson([id, from, to])
 const opaque = new Set(['code', 'code-block', 'math', 'frontmatter', 'divider', 'columns', 'column', 'database-view', 'synced-block'])
 export interface RootRestoreCanonicalAssetPlan5 {
-  readonly tables: readonly Navigation3Table[]
-  readonly wires: readonly SyncedGroupWire[]
+  readonly tables: readonly Navigation3TableSource[]
+  readonly wires: Iterable<SyncedGroupWire> & { readonly length: number }
   readonly facts: { readonly aliasStageId: string; readonly aliasManifestHash: string; readonly basePhysicalObservationHash: string
     readonly assetClosureObservationHash: string; readonly groups: readonly { groupId: string; creationId: string; activationHash: string }[]
     readonly rewrittenOccurrences: number; readonly alreadyLocalOccurrences?: number
@@ -43,8 +43,18 @@ export function deriveRootRestoreCanonicalAssetPlan5(input: Source): RootRestore
   const ledger = new Map(graph3Rows({ encoding: current.encoding, tables: [physical.ledger] }, 'block_identities').map(row => [row.value.id, row.value]))
   const headerTable = physical.tables.find(table => table.name === 'synced_groups') ?? fail('实际 SQL 缺组表')
   const bodyTable = physical.tables.find(table => table.name === 'synced_group_blocks') ?? fail('实际 SQL 缺正文表')
-  const headers = new Map(headerTable.rows.map(row => [row.targetRowId, row])), bodies = new Map(bodyTable.rows.map(row => [row.targetRowId, row]))
-  const text = (table: typeof headerTable, entry: typeof headerTable.rows[number], column: string) =>
+  const coordinates = new Map<string, Set<string>>([[headerTable.name, new Set()], [bodyTable.name, new Set()]])
+  for (const { entry, selection } of matched) {
+    const context = selection?.context
+    if (entry.domain === 'final-sql' && entry.scope[0] === 'synced_groups' && entry.cell?.column === 'content'
+      && entry.proof.kind === 'staged' && context?.kind === 'canonical') {
+      coordinates.get(headerTable.name)!.add(context.owner.targetRowId)
+      coordinates.get(bodyTable.name)!.add(entry.cell.targetRowId)
+    }
+  }
+  const readHeader = navigation3RowLookup(headerTable, row => row.targetRowId, coordinates.get(headerTable.name)!)
+  const readBody = navigation3RowLookup(bodyTable, row => row.targetRowId, coordinates.get(bodyTable.name)!)
+  const text = (table: Navigation3TableSource, entry: NonNullable<ReturnType<typeof readHeader>>, column: string) =>
     graph3Text(entry.cells[table.columns.indexOf(column)], table.encoding)
   const aliases = new Map(input.aliases.map(alias => [capsuleJson([alias.hash, alias.logicalName]), alias]))
   const conflicts = new Set(input.remaining.aliasPathConflicts.flat()), assetRoot = join(location.profileRoot, 'storage', 'assets')
@@ -58,8 +68,8 @@ export function deriveRootRestoreCanonicalAssetPlan5(input: Source): RootRestore
     if (entry.domain !== 'final-sql' || scope[0] !== 'synced_groups' || !selection || context?.kind !== 'canonical' || !cell
       || cell.column !== 'content' || entry.proof.kind !== 'staged') continue
     const { owner } = context, groupId = owner.groupId
-    const body = bodies.get(cell.targetRowId) ?? fail('缺实际 canonical 正文 rowid')
-    const header = headers.get(owner.targetRowId) ?? fail('缺实际 canonical 属主 rowid')
+    const body = readBody(cell.targetRowId) ?? fail('缺实际 canonical 正文 rowid')
+    const header = readHeader(owner.targetRowId) ?? fail('缺实际 canonical 属主 rowid')
     const id = text(bodyTable, body, 'id'), birth = text(bodyTable, body, 'created_at'), identity = ledger.get(id)
     const content = text(bodyTable, body, 'content'), { from, to, raw } = cell.range
     if (!same(body.sourceRef, cell.sourceRef) || !same(header.sourceRef, owner.sourceRef) || scope[1] !== groupId
@@ -153,15 +163,19 @@ export function deriveRootRestoreCanonicalAssetPlan5(input: Source): RootRestore
     const changes = table.name === 'synced_group_blocks' ? bodyChanges : table.name === 'synced_groups' ? bindingChanges : undefined
     if (!changes?.size) return table
     const idColumn = table.columns.indexOf('id'), column = table.columns.indexOf(table.name === 'synced_groups' ? 'bindings_json' : 'content')
-    return { ...table, rows: table.rows.map(row => {
+    return projectNavigation3TableRows(table, row => {
       const value = changes.get(graph3Text(row.cells[idColumn], table.encoding))
       return value === undefined ? row : { ...row, cells: row.cells.map((cell, index) => index === column ? graph3Encode(value, table.encoding) : cell) }
-    }) }
+    })
   })
   const groups = [...localized.values()].map(wire => ({ groupId: wire.id, creationId: wire.creationId, activationHash: syncedLifecycleSemanticHash(wire) }))
   const facts = { aliasStageId: input.stageId, aliasManifestHash: input.manifestHash, basePhysicalObservationHash: physical.physicalObservationHash,
     assetClosureObservationHash: audit.observationHash, groups, rewrittenOccurrences,
     ...(alreadyLocalOccurrences ? { alreadyLocalOccurrences } : {}), remainingCanonicalOccurrences }
-  return freezeCapsuleValue({ tables, wires: actual.candidate.activeGroupWires.map(wire => localized.get(wire.id) ?? wire),
-    facts: { ...facts, planHash: capsuleBytesHash('knowbook.restore.canonical-asset-plan.v1\0' + capsuleJson(facts)) } })
+  const originalWires = actual.candidate.activeGroupWires
+  const wires = Object.freeze({ length: originalWires.length, *[Symbol.iterator]() {
+    for (const wire of originalWires) yield localized.get(wire.id) ?? wire
+  } })
+  return Object.freeze({ tables: Object.freeze(tables), wires,
+    facts: freezeCapsuleValue({ ...facts, planHash: capsuleBytesHash('knowbook.restore.canonical-asset-plan.v1\0' + capsuleJson(facts)) }) })
 }

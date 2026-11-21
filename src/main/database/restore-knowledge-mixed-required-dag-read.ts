@@ -19,6 +19,7 @@ import { DURABLE_SQL_DAG_MAX_CAPSULES, DURABLE_SQL_DAG_MAX_NODES, DURABLE_SQL_DA
   DURABLE_SQL_DAG_MAX_TOTAL_NODE_BYTES } from './restore-knowledge-dag-model'
 import { knowledgeHash, knowledgePayloadHash } from './restore-knowledge-payload-model'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_READER } from './restore-knowledge-capsule2-raw-model'
+import type { Capsule2PhysicalBodyStore } from './restore-knowledge-capsule2-physical-raw-read'
 
 type Source = CertifiedDurableSqlCapsule | CertifiedCapsule2NoPriorSource
 export interface ActualFirstRequiredSqlDag { readonly kind: 'actual-first-mixed-required-sql-dag' }
@@ -253,13 +254,13 @@ export async function readActualNoPriorOriginalInputWithContent3(profileRoot: st
 
 /** Genuine no-prior input plus same-read Working5 originals. Unknown objects
  * still reach the original v1 registry without caller property inspection. */
-export async function readActualNoPriorOriginalInputWithWorking5(profileRoot: string, source: Source) {
-  const { packet: _packet, ...captured } = await readActualNoPriorOriginalContentAndWorking5(profileRoot, source)
+export async function readActualNoPriorOriginalInputWithWorking5(profileRoot: string, source: Source, physicalBodies?: Capsule2PhysicalBodyStore) {
+  const { packet: _packet, ...captured } = await readActualNoPriorOriginalContentAndWorking5(profileRoot, source, physicalBodies)
   return captured
 }
-export async function readActualNoPriorOriginalContentAndWorking5(profileRoot: string, source: Source) {
+export async function readActualNoPriorOriginalContentAndWorking5(profileRoot: string, source: Source, physicalBodies?: Capsule2PhysicalBodyStore) {
   const profile = await canonicalRequiredSqlDagRoot(profileRoot)
-  const captured = await tryReadCertifiedCapsule2SourceInputsWithWorking5(source)
+  const captured = await tryReadCertifiedCapsule2SourceInputsWithWorking5(source, physicalBodies)
   if (captured) return { input: capsule2Input(profile, source, captured), packet: captured.value, working: captured.working }
   return { input: await readInput(profile, source), packet: null, working: undefined }
 }

@@ -3,6 +3,7 @@ import test from 'node:test'
 import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { readRootKnowledgeConservationContentAndOriginals5 } from '../src/main/database/restore-knowledge-root3-read'
+import { materializeNavigation3Tables } from '../src/main/database/restore-knowledge-navigation3-tables'
 import { prepareRootRestoreIdentityPlan3, readRootRestoreIdentityInputsAndOriginals5 } from '../src/main/database/restore-knowledge-identity3-read'
 import { prepareRootRestoreReferencePlan3, readRootRestoreReferenceGraphInputs3,
   readRootRestoreReferenceInputsAndOriginals5, readRootRestoreStageInputs5, withRootRestoreStageInputs5,
@@ -45,7 +46,10 @@ test('same-read runtime originals reject copied DTO accessor owners changed dura
     let expired: RootRestoreStageInputs5 | undefined
     await withRootRestoreStageInputs5(reference.plan, undefined, async scope => {
       expired = scope
-      assert.deepEqual((await readRootRestoreStageInputs5(reference.plan, scope)).actual, genuine.actual)
+      const { actual } = await readRootRestoreStageInputs5(reference.plan, scope)
+      const candidate = { ...actual.candidate, tables: materializeNavigation3Tables(actual.candidate.tables),
+        activeGroupWires: Array.from(actual.candidate.activeGroupWires) }
+      assert.deepEqual({ ...actual, candidate, value: { ...actual.value, candidate } }, genuine.actual)
       await assert.rejects(readRootRestoreStageInputs5({ ...reference.plan }, scope), /不是本次同一genuine reference/)
       assert.ok(await tamperContent3VerificationOriginals(f.receiver.userDataRoot) >= 2)
       await assert.rejects(readRootRestoreStageInputs5(reference.plan, scope), /原件|capsule|hash/)

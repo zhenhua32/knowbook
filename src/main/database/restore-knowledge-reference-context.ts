@@ -22,6 +22,7 @@ import { validateCapsule2BoundSourceManifest, capsule2BoundSourceHash, BOUND_SOU
 import { qualifiedOriginalSide, type QualifiedOriginalSide } from './restore-knowledge-qualified-original-model'
 import { CAPSULE2_READER } from './restore-knowledge-capsule2-raw-model'
 import type { OriginalSourceInput } from './restore-knowledge-original-input-types'
+import type { Capsule2PhysicalBodyStore } from './restore-knowledge-capsule2-physical-raw-read'
 
 export interface OwnedOriginalReferenceContext { readonly kind: 'owned-original-reference-context' }
 export interface BoundCapsule2OriginalInputs { readonly kind: 'bound-capsule2-original-inputs' }
@@ -73,12 +74,15 @@ export async function captureOriginalReferenceContext(input: { source: SealedCap
 }
 /** The initial data belongs solely to this same complete source/copy capture.
  * It is never stored as an authority cache or accepted on a later handle read. */
-export async function captureOriginalReferenceContextWithInitialInputs(input: Parameters<typeof captureOriginalReferenceContext>[0]) {
-  const row = capsuleRecord(input, ['source','parents']), source = await readSealedCapsule2SourceInputs(row.source as SealedCapsule2Source)
+export async function captureOriginalReferenceContextWithInitialInputs(input: Parameters<typeof captureOriginalReferenceContext>[0],
+  physicalBodies?: Capsule2PhysicalBodyStore) {
+  const row = capsuleRecord(input, ['source','parents']), source = await readSealedCapsule2SourceInputs(row.source as SealedCapsule2Source, physicalBodies)
   const handles = durableSqlDagList(row.parents, DURABLE_SQL_DAG_MAX_PARENTS) as readonly CompleteOriginalBundle[], roots = requiredReferenceRoots(source.value.priorCoverageRequirements)
   if (!roots.length || handles.length !== roots.length || new Set(handles).size !== handles.length) return bad('必须提供非空原SQL引用全集及独立原件句柄')
   const originals: Awaited<ReturnType<typeof readCompleteOriginalPackage>>[] = []
-  await settleOriginCatalogBatch(handles.map((handle, index) => ({ handle, index })), async item => { originals[item.index] = await readCompleteOriginalPackage(item.handle) })
+  await settleOriginCatalogBatch(handles.map((handle, index) => ({ handle, index })), async item => {
+    originals[item.index] = await readCompleteOriginalPackage(item.handle, physicalBodies?.openKnowledgeHistoryRows)
+  })
   if (new Set(originals.map(original => original.directory)).size !== originals.length) return bad('不同原引用不能复用同一物理原件域')
   await independentParents(originals)
   const descriptor = validateCapsule2ReferenceContext({ kind: 'capsule2-original-reference-context', version: 1,
@@ -130,8 +134,9 @@ export async function captureBoundCapsule2OriginalInputs(context: OwnedOriginalR
 }
 /** Only a newly captured complete context supplies this initial binding input.
  * No existing handle or caller snapshot can bypass its later full read. */
-export async function captureBoundOriginalInputsFromReferences(input: Parameters<typeof captureOriginalReferenceContext>[0]) {
-  const captured = await captureOriginalReferenceContextWithInitialInputs(input)
+export async function captureBoundOriginalInputsFromReferences(input: Parameters<typeof captureOriginalReferenceContext>[0],
+  physicalBodies?: Capsule2PhysicalBodyStore) {
+  const captured = await captureOriginalReferenceContextWithInitialInputs(input, physicalBodies)
   const bound = await bindCapturedContext(captured.context, captured.value)
   return Object.freeze({ ...bound, context: captured.context, contextData: captured.value })
 }
@@ -172,11 +177,11 @@ export async function tryAssertBoundCapsule2OriginalBytes(profile: string, handl
 }
 /** Fixed registry dispatch only. A true handle must still reread its complete
  * source, every referenced original, its binding and all source metadata. */
-export async function tryReadBoundCapsule2OriginalInputs(profile: string, handle: unknown) {
+export async function tryReadBoundCapsule2OriginalInputs(profile: string, handle: unknown, physicalBodies?: Capsule2PhysicalBodyStore) {
   const entry = bindings.get(handle as BoundCapsule2OriginalInputs); if (!entry) return null
   const root = await canonicalRequiredSqlDagRoot(profile), context = contexts.get(entry.context)
   if (!context) return bad('bound context不在Main私有registry')
-  const captured = await verifyWithWorking5(context)
+  const captured = await verifyWithWorking5(context, physicalBodies)
   return readBoundInputWithWorking5(root, entry, captured)
 }
 async function readBoundInput(root: string, entry: NonNullable<ReturnType<typeof bindings.get>>, actual: Awaited<ReturnType<typeof readOriginalReferenceContext>>) {
@@ -207,16 +212,17 @@ async function readBoundInput(root: string, entry: NonNullable<ReturnType<typeof
     sourcePath: join(actual.directory, ...referenceContextObjectPath([parent.mountId, ...file.frame], file.path).split('/')) }))) }
 }
 
-async function verifyWithWorking5(entry: Context) {
+async function verifyWithWorking5(entry: Context, physicalBodies?: Capsule2PhysicalBodyStore) {
   if (!entry.descriptor.requirements.entries.length || !entry.descriptor.parents.length) return bad('完整引用context必须对应非空原SQL要求')
-  const captured = await readSealedCapsule2SourceInputsWithWorking5(entry.source)
+  const captured = await readSealedCapsule2SourceInputsWithWorking5(entry.source, physicalBodies)
   const { working, ...source } = captured
   if (source.profileRoot !== entry.profileRoot || !same(sourcePins(source), entry.descriptor.source)
     || !same(source.value.priorCoverageRequirements, entry.descriptor.requirements)) return bad('实际来源SQL、完整prior-C或上下文绑定变化')
   const text = await readCapsule2AssetManifest(join(entry.directory, 'descriptor.json'), entry.profileRoot)
   if (text !== entry.text) return bad('实际context原字节变化')
   const descriptor = parseCapsule2ReferenceContext(text, entry.hash)
-  const originals = await readReferenceContextOriginals({ profileRoot: entry.profileRoot, directory: entry.directory, descriptor })
+  const originals = await readReferenceContextOriginals({ profileRoot: entry.profileRoot, directory: entry.directory, descriptor },
+    physicalBodies?.openKnowledgeHistoryRows)
   await assertSealedCapsule2SourceOriginalBytes(entry.source)
   return { working, actual: { source, ...originals, descriptor, contextHash: entry.hash, contextText: text, profileRoot: entry.profileRoot, directory: entry.directory } }
 }

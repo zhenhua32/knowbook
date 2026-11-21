@@ -10,7 +10,7 @@ import { parseBackupV3Blocks, serializeBackupV3Blocks } from '../../shared/markd
 import { collectMarkdownDestinations, escapeMarkdownDestination, relativeMarkdownPath, type MarkdownDestination } from '../../shared/markdownLinks'
 import { collectSyncedMarkdownAssetDestinations, parseSyncedPortableAssetUri, buildSyncedPortableAssetUri,
   syncedPortableAssetBackupPath, canonicalSyncedPortableJson, measureSyncedPortableGroup, rewriteSyncedGroupAssets } from '../../shared/syncedBlockPortable'
-import { validateSyncedWorkspaceGraph, type SyncedValidatedGraph } from '../../shared/syncedBlockGraph'
+import { inspectSyncedWorkspaceGraphStream, type SyncedValidatedGraph } from '../../shared/syncedBlockGraph'
 import { isSyncedUuid, parseSyncedBlockPayload, validateSyncedGroupWire, validateSyncedHostForest,
   SYNCED_MAX_BLOCKS, SYNCED_PROJECTED_MAX_BYTES } from '../../shared/syncedBlockValidation'
 import { collectSyncedBindingOccurrences } from '../sync/synced-binding-occurrences'
@@ -25,6 +25,19 @@ export interface BackupV3Group { wire: SyncedGroupWire; sourceRevision: string }
 interface ArchiveV3Content {
   documents: ExportDocument[]; catalog: ExportStandaloneDatabase; standaloneDatabases: ExportStandaloneDatabase[]
   groups: BackupV3Group[]
+}
+export interface BackupV3ContentSource {
+  readonly documents: Iterable<ExportDocument>
+  readonly catalog: ExportStandaloneDatabase
+  readonly standaloneDatabases: Iterable<ExportStandaloneDatabase>
+  readonly groups: Iterable<BackupV3Group>
+}
+export type BackupV3DocumentLocation = Readonly<Pick<ExportDocument, 'id' | 'path'>>
+export interface ScopedBackupV3Archive extends BackupV3ContentSource {
+  readonly manifest: BackupV3Manifest
+  readonly documentLocations: readonly BackupV3DocumentLocation[]
+  readDocument(id: string): ExportDocument | undefined
+  readGroup(id: string): BackupV3Group | undefined
 }
 export interface ArchiveV3Snapshot extends ArchiveV3Content { assets: BackupV3AssetFile[] }
 export interface BackupV3SyncedGroup { id: string; creationId: string; sourceRevision: string; recordHash: string }
@@ -241,10 +254,24 @@ function normalizedGroup(value: unknown): BackupV3Group {
   measureSyncedPortableGroup(wire)
   return { wire, sourceRevision: uuid(item.sourceRevision) }
 }
-function missingCatalog(snapshot: ArchiveV3Content): MissingReferences {
-  const sources = [snapshot.catalog, ...snapshot.standaloneDatabases], byId = new Map(sources.map(source => [source.id, source]))
+function* definitions(snapshot: BackupV3ContentSource) {
+  yield snapshot.catalog
+  yield* snapshot.standaloneDatabases
+}
+
+function* documentBlocks(snapshot: BackupV3ContentSource) {
+  for (const doc of snapshot.documents) yield* doc.blocks
+}
+
+function* groupBlocks(snapshot: BackupV3ContentSource) {
+  for (const group of snapshot.groups) yield* group.wire.blocks
+}
+
+function missingCatalog(snapshot: BackupV3ContentSource): MissingReferences {
+  const databaseIds = new Set<string>()
   const views = new Map<string, string>(), fields = new Map<string, string>(), systemFields = new Set<string>(Object.values(DATABASE_SYSTEM_FIELD_IDS))
-  for (const source of sources) {
+  for (const source of definitions(snapshot)) {
+    databaseIds.add(source.id)
     for (const view of source.savedViews) { if (views.has(view.id)) invalid('duplicate global view'); views.set(view.id, source.id) }
     for (const column of source.columns) { if (fields.has(column.id)) invalid('duplicate global column'); fields.set(column.id, source.id) }
   }
@@ -257,14 +284,14 @@ function missingCatalog(snapshot: ArchiveV3Content): MissingReferences {
       if (!owner) missing.fields.push({ databaseId, fieldId })
     }
   }
-  for (const source of sources) for (const view of source.savedViews) {
+  for (const source of definitions(snapshot)) for (const view of source.savedViews) {
     inspect(source.id, collectDatabaseViewConfigFieldIds(view.config))
     if (view.filterScope && !['all', 'title', 'path', 'summary'].includes(view.filterScope)) inspect(source.id, [view.filterScope])
   }
-  const blocks = [...snapshot.documents.flatMap(doc => doc.blocks), ...snapshot.groups.flatMap(group => group.wire.blocks)]
-  for (const block of blocks) if (block.type === 'database-view') {
+  function* blocks() { yield* documentBlocks(snapshot); yield* groupBlocks(snapshot) }
+  for (const block of blocks()) if (block.type === 'database-view') {
     const payload = parseDatabaseViewPayload(block.content)
-    if (!byId.has(payload.databaseId)) missing.databaseIds.push(payload.databaseId)
+    if (!databaseIds.has(payload.databaseId)) missing.databaseIds.push(payload.databaseId)
     if (payload.viewId !== null) {
       const owner = views.get(payload.viewId)
       if (owner && owner !== payload.databaseId) invalid('view belongs to a different database')
@@ -277,11 +304,12 @@ function missingCatalog(snapshot: ArchiveV3Content): MissingReferences {
   missing.fields = sorted([...new Map(missing.fields.map(item => [json(item), item])).values()])
   return missing
 }
-function missingSynced(snapshot: ArchiveV3Content, graph: SyncedValidatedGraph): BackupV3MissingReferences {
-  const documents = new Set(snapshot.documents.map(doc => doc.id)), instanceIds = new Set(snapshot.documents.flatMap(doc => doc.blocks.filter(block => block.type === 'synced-block').map(block => block.id)))
+function missingSynced(groups: Iterable<BackupV3Group>, graph: Pick<SyncedValidatedGraph, 'owners'>,
+  documentIds: readonly string[], instances: readonly BackupV3SyncedInstance[]): BackupV3MissingReferences {
+  const documents = new Set(documentIds), instanceIds = new Set(instances.map(instance => instance.id))
   const missing = { documentIds: new Set<string>(), blockIds: new Set<string>(), instanceIds: new Set<string>() }
   const doc = (id: string) => { if (!documents.has(id)) missing.documentIds.add(id) }
-  for (const { wire } of snapshot.groups) {
+  for (const { wire } of groups) {
     doc(wire.origin.documentId)
     if (!instanceIds.has(wire.origin.firstInstanceId)) missing.instanceIds.add(wire.origin.firstInstanceId)
     for (const binding of wire.bindings) {
@@ -302,37 +330,62 @@ function missingSynced(snapshot: ArchiveV3Content, graph: SyncedValidatedGraph):
 function validateArchiveContent(value: ArchiveV3Content, assets: readonly Pick<BackupV3FileDigest, 'relativePath' | 'bytes'>[]) {
   const snapshot: ArchiveV3Content = { documents: list(value.documents).map(document), catalog: definition(value.catalog),
     standaloneDatabases: list(value.standaloneDatabases).map(definition), groups: list(value.groups).map(normalizedGroup) }
-  const sources = [snapshot.catalog, ...snapshot.standaloneDatabases], docs = new Map(snapshot.documents.map(doc => [doc.id, doc.path]))
-  if (docs.size !== snapshot.documents.length || new Set(snapshot.documents.map(doc => doc.path)).size !== docs.size || new Set(sources.map(source => source.id)).size !== sources.length) invalid('duplicate document/database')
-  if (new Set(sources.flatMap(source => source.entities.map(entity => entity.id))).size !== sources.reduce((n, source) => n + source.entities.length, 0)) invalid('duplicate global entity')
-  for (const doc of snapshot.documents) same(doc.documentDatabaseColumns, snapshot.catalog.columns, 'catalog column projection differs')
-  for (const source of sources) for (const entity of source.entities) if (entity.documentId !== null && docs.get(entity.documentId) !== entity.documentPath) invalid('missing entity document')
-  const paths = new Set(snapshot.documents.map(doc => doc.path))
-  for (const doc of snapshot.documents) {
+  return { snapshot, ...validateArchiveSources(snapshot, snapshot.documents, assets) }
+}
+
+function validateArchiveSources(snapshot: BackupV3ContentSource, locations: readonly BackupV3DocumentLocation[],
+  assets: readonly Pick<BackupV3FileDigest, 'relativePath' | 'bytes'>[]) {
+  const docs = new Map(locations.map(doc => [doc.id, doc.path])), paths = new Set(locations.map(doc => doc.path))
+  if (docs.size !== locations.length || paths.size !== docs.size) invalid('duplicate document/database')
+  for (const doc of locations) {
     const parent = doc.path.includes('/') ? doc.path.slice(0, doc.path.lastIndexOf('/')) : null
     if (parent && !paths.has(parent)) invalid('missing document parent')
   }
-  const graph = validateSyncedWorkspaceGraph(snapshot.documents.map(doc => ({ documentId: doc.id, blocks: coreBlocks(doc.blocks) })), snapshot.groups.map(group => group.wire))
+  const databaseIds = new Set<string>(), entityIds = new Set<string>()
+  for (const source of definitions(snapshot)) {
+    if (databaseIds.has(source.id)) invalid('duplicate document/database')
+    databaseIds.add(source.id)
+    for (const entity of source.entities) {
+      if (entityIds.has(entity.id)) invalid('duplicate global entity')
+      entityIds.add(entity.id)
+      if (entity.documentId !== null && docs.get(entity.documentId) !== entity.documentPath) invalid('missing entity document')
+    }
+  }
   const actualAssets = new Set(assets.map(asset => asset.relativePath)), expectedAssets = new Set<string>()
   if (actualAssets.size !== assets.length || assets.length > 5000 || assets.reduce((n, asset) => n + asset.bytes, 0) > maxAssetTotal) invalid('asset set/budget')
   const capture = (uri: string): string => { const expected = syncedPortableAssetBackupPath(uri); if (!actualAssets.has(expected)) invalid('missing actual asset alias'); expectedAssets.add(expected); return uri }
   const inspect = (source: string): string => { for (const link of collectSyncedMarkdownAssetDestinations(source)) capture(link.url); return source }
-  snapshot.documents.forEach(doc => mapDocumentAssets(doc, inspect))
-  snapshot.groups.forEach(group => rewriteSyncedGroupAssets(group.wire, capture))
+  function* graphDocuments() {
+    for (const doc of snapshot.documents) {
+      same(doc.documentDatabaseColumns, snapshot.catalog.columns, 'catalog column projection differs')
+      mapDocumentAssets(doc, inspect)
+      yield { documentId: doc.id, blocks: coreBlocks(doc.blocks) }
+    }
+  }
+  function* graphGroups() {
+    for (const group of snapshot.groups) {
+      rewriteSyncedGroupAssets(group.wire, capture)
+      yield group.wire
+    }
+  }
+  const graph = inspectSyncedWorkspaceGraphStream(graphDocuments(), graphGroups())
   if (expectedAssets.size !== actualAssets.size) invalid('unreferenced asset file')
-  missingCatalog(snapshot)
-  return { snapshot, graph }
+  return { graph, databaseIds, missing: missingCatalog(snapshot) }
 }
-function groupIndex(snapshot: ArchiveV3Content): BackupV3SyncedGroup[] {
-  return sorted(snapshot.groups.map(({ wire, sourceRevision }) => ({ id: wire.id, creationId: wire.creationId, sourceRevision, recordHash: hash(json(wire)) })))
+function groupIndex(snapshot: BackupV3ContentSource): BackupV3SyncedGroup[] {
+  return sorted(Array.from(snapshot.groups, ({ wire, sourceRevision }) => ({ id: wire.id, creationId: wire.creationId, sourceRevision, recordHash: hash(json(wire)) })))
 }
-function instances(snapshot: ArchiveV3Content, groups: BackupV3SyncedGroup[]): BackupV3SyncedInstance[] {
+function instances(snapshot: BackupV3ContentSource, groups: BackupV3SyncedGroup[]): BackupV3SyncedInstance[] {
   const byId = new Map(groups.map(group => [group.id, group]))
-  return snapshot.documents.flatMap(doc => doc.blocks.filter(block => block.type === 'synced-block').map(block => {
-    const groupId = parseSyncedBlockPayload(block.content).groupId, group = byId.get(groupId)
-    if (!group) return invalid('missing instance group')
-    return { id: block.id, ownerDocumentId: doc.id, groupId, sourceGroupRevision: group.sourceRevision, sourceGroupHash: group.recordHash }
-  })).sort((a, b) => compare(a.ownerDocumentId, b.ownerDocumentId) || compare(a.id, b.id))
+  const result: BackupV3SyncedInstance[] = []
+  for (const doc of snapshot.documents) {
+    for (const block of doc.blocks) if (block.type === 'synced-block') {
+      const groupId = parseSyncedBlockPayload(block.content).groupId, group = byId.get(groupId)
+      if (!group) return invalid('missing instance group')
+      result.push({ id: block.id, ownerDocumentId: doc.id, groupId, sourceGroupRevision: group.sourceRevision, sourceGroupHash: group.recordHash })
+    }
+  }
+  return result.sort((a, b) => compare(a.ownerDocumentId, b.ownerDocumentId) || compare(a.id, b.id))
 }
 function safeSegment(segment: string, first: boolean): string {
   if (first && (segment.toLowerCase() === '__knowbook' || segment.toLowerCase().startsWith('__knowbook-document-'))) return '__knowbook-document-' + hash(segment).slice(0, 16)
@@ -354,13 +407,15 @@ function docHeader(doc: ExportDocument, snapshotId: string, catalogId: string): 
     documentDatabaseColumns: json(doc.documentDatabaseColumns), documentDatabaseFieldValues: json(doc.documentDatabaseFieldValues), documentDatabaseId: catalogId,
     backupFormatVersion: '3', backupSnapshotId: snapshotId }
 }
-function archiveProjectionBudget(snapshot: ArchiveV3Content, documentBytes: Map<string, number>): void {
-  const groups = new Map(snapshot.groups.map(group => [group.wire.id, group.wire]))
+function archiveProjectionBudget(snapshot: BackupV3ContentSource, documentBytes: Map<string, number>,
+  readGroup: (id: string) => BackupV3Group | undefined): void {
   for (const doc of snapshot.documents) {
     let bytes = documentBytes.get(doc.id) ?? invalid('document envelope size missing'), count = 0
+    let group: SyncedGroupWire | undefined
     for (const block of doc.blocks) {
       if (block.type !== 'synced-block') { if (++count > SYNCED_MAX_BLOCKS) invalid('expanded host block budget'); continue }
-      const group = groups.get(parseSyncedBlockPayload(block.content).groupId) ?? invalid('missing group')
+      const { groupId } = parseSyncedBlockPayload(block.content)
+      if (group?.id !== groupId) group = readGroup(groupId)?.wire ?? invalid('missing group')
       for (const { createdAt: _createdAt, ...child } of group.blocks) {
         if (++count > SYNCED_MAX_BLOCKS) invalid('expanded host block budget')
         bytes += encoder.encode(json({ ...child, depth: block.depth + child.depth, parentBlockId: child.parentBlockId ?? block.parentBlockId })).byteLength + 1
@@ -370,14 +425,16 @@ function archiveProjectionBudget(snapshot: ArchiveV3Content, documentBytes: Map<
     if (bytes > SYNCED_PROJECTED_MAX_BYTES) invalid('V3 archive projection budget')
   }
 }
-function policy(documents: ExportDocument[], files: Map<string, string>): BackupV3DeletionPolicy {
+function policy(documents: readonly BackupV3DocumentLocation[], files: Map<string, string>): BackupV3DeletionPolicy {
   return { documents: documents.length ? { mode: 'scopes', paths: [...new Set(documents.map(doc => backupScope(doc.path, files.get(doc.id)!.slice(0, -3))))].sort(compare) } : { mode: 'none' },
     customDatabases: { mode: 'complete' }, catalog: { mode: 'source-owned' }, syncedGroups: { mode: 'source-owned-unreferenced' } }
 }
-function manifest(snapshot: ArchiveV3Content, graph: SyncedValidatedGraph, snapshotId: string, files: Map<string, string>): BackupV3Manifest {
-  const groups = groupIndex(snapshot)
-  return { snapshotId: uuid(snapshotId), catalogId: snapshot.catalog.id, databaseIds: snapshot.standaloneDatabases.map(source => source.id).sort(compare), documentIds: snapshot.documents.map(doc => doc.id).sort(compare),
-    missing: missingCatalog(snapshot), deletion: policy(snapshot.documents, files), syncedGroups: groups, syncedInstances: instances(snapshot, groups), syncedMissingReferences: missingSynced(snapshot, graph) }
+function manifest(snapshot: BackupV3ContentSource, validation: ReturnType<typeof validateArchiveSources>, snapshotId: string,
+  locations: readonly BackupV3DocumentLocation[], files: Map<string, string>, groups = groupIndex(snapshot)): BackupV3Manifest {
+  const documentIds = locations.map(doc => doc.id).sort(compare), syncedInstances = instances(snapshot, groups)
+  return { snapshotId: uuid(snapshotId), catalogId: snapshot.catalog.id, databaseIds: [...validation.databaseIds].filter(id => id !== snapshot.catalog.id).sort(compare),
+    documentIds, missing: validation.missing, deletion: policy(locations, files), syncedGroups: groups, syncedInstances,
+    syncedMissingReferences: missingSynced(snapshot.groups, validation.graph, documentIds, syncedInstances) }
 }
 export function buildBackupV3Files(value: ArchiveV3Snapshot, snapshotId: string, predecessor?: BackupV3PublicationIdentity): BackupV3File[] {
   data(value); object(value, ['documents', 'catalog', 'standaloneDatabases', 'groups', 'assets'])
@@ -390,8 +447,8 @@ export function buildBackupV3Files(value: ArchiveV3Snapshot, snapshotId: string,
     if (hash(bytes) !== asset.hash) return invalid('asset alias bytes/hash/path mismatch')
     return { relativePath: validateBackupV3ArchiveFilePath(asset.relativePath), bytes }
   })
-  const { snapshot, graph } = validateArchiveContent(value, assets.map(file => ({ relativePath: file.relativePath, bytes: file.bytes.byteLength })))
-  const files = documentFiles(snapshot.documents), declaration = manifest(snapshot, graph, snapshotId, files), output: BackupV3File[] = []
+  const { snapshot, ...validation } = validateArchiveContent(value, assets.map(file => ({ relativePath: file.relativePath, bytes: file.bytes.byteLength })))
+  const files = documentFiles(snapshot.documents), declaration = manifest(snapshot, validation, snapshotId, snapshot.documents, files), output: BackupV3File[] = []
   const add = (relativePath: string, content: string) => output.push({ relativePath, bytes: encoder.encode(content) })
   add(indexPath, envelope({ kind: indexKind, backupFormatVersion: '3', backupSnapshotId: declaration.snapshotId, catalogDatabaseId: declaration.catalogId,
     databaseIds: json(declaration.databaseIds), documentIds: json(declaration.documentIds), databaseMissingReferences: json(declaration.missing), restoreDeletionPolicy: json(declaration.deletion),
@@ -440,8 +497,32 @@ export function isBackupV3AssetPath(relativePath: string): boolean { return rela
 
 /** Verify the same content and aliases using digests captured from actual asset files. */
 export function parseCapturedBackupV3Inventory(contents: readonly BackupV3File[], assets: readonly BackupV3FileDigest[]) {
+  const files = new Map(contents.map(file => [file.relativePath, file.bytes]))
+  const documents: ExportDocument[] = [], standaloneDatabases: ExportStandaloneDatabase[] = [], groups: BackupV3Group[] = []
+  const byGroup = new Map<string, BackupV3Group>()
+  const { catalog, manifest } = scanCapturedBackupV3Inventory(contents.map(file => ({ relativePath: file.relativePath, bytes: file.bytes.byteLength })),
+    assets, path => files.get(path)!, {
+      documents, standaloneDatabases, groups, readGroup: id => byGroup.get(id),
+      addDocument: doc => { documents.push(doc) },
+      addDatabase: database => { standaloneDatabases.push(database) },
+      addGroup: group => { groups.push(group); byGroup.set(group.wire.id, group) }
+    })
+  return { documents, catalog, standaloneDatabases, groups: sorted(groups), manifest }
+}
+
+export interface BackupV3RecordSink extends Omit<BackupV3ContentSource, 'catalog'> {
+  addDocument(doc: ExportDocument): void
+  addDatabase(database: ExportStandaloneDatabase): void
+  addGroup(group: BackupV3Group): void
+  readGroup(id: string): BackupV3Group | undefined
+}
+
+/** The records are emitted once and then re-read through the supplied store.
+ * The codec does not need to own all file bytes or parsed bodies together. */
+export function scanCapturedBackupV3Inventory(contents: readonly Pick<BackupV3FileDigest, 'relativePath' | 'bytes'>[],
+  assets: readonly BackupV3FileDigest[], readBytes: (relativePath: string) => Uint8Array, records: BackupV3RecordSink) {
   const allPaths = [...contents, ...assets].map(file => validateBackupV3ArchiveFilePath(file.relativePath))
-  const byPath = new Map(contents.map(file => [file.relativePath, file])), folded = new Set(allPaths.map(path => path.toLowerCase()))
+  const byPath = new Map(contents.map(file => [file.relativePath, file.bytes])), folded = new Set(allPaths.map(path => path.toLowerCase()))
   const directories = new Set(allPaths.flatMap(path => path.split('/').slice(0, -1).map((_part, index) => path.split('/').slice(0, index + 1).join('/'))))
   if (folded.size !== allPaths.length || allPaths.length + directories.size > 20000) invalid('duplicate paths/entry budget')
   const foldedDirectories = new Map<string, string>()
@@ -451,15 +532,22 @@ export function parseCapturedBackupV3Inventory(contents: readonly BackupV3File[]
     foldedDirectories.set(key, directory)
   }
   for (const path of allPaths) if (foldedDirectories.has(path.toLowerCase())) invalid('file/directory collision')
-  if (contents.length > 5000 || contents.some(file => isBackupV3AssetPath(file.relativePath) || file.bytes.byteLength > maxContent)
-    || contents.reduce((n, file) => n + file.bytes.byteLength, 0) > maxContentTotal) invalid('content file budget')
-  const read = (relativePath: string): string => { const file = byPath.get(relativePath); if (!file) return invalid('required file missing: ' + relativePath); return decoder.decode(file.bytes) }
+  if (contents.length > 5000 || contents.some(file => isBackupV3AssetPath(file.relativePath)
+    || !Number.isSafeInteger(file.bytes) || file.bytes < 0 || file.bytes > maxContent)
+    || contents.reduce((n, file) => n + file.bytes, 0) > maxContentTotal) invalid('content file budget')
+  const read = (relativePath: string): string => {
+    const expected = byPath.get(relativePath)
+    if (expected === undefined) return invalid('required file missing: ' + relativePath)
+    const bytes = readBytes(relativePath)
+    if (bytes.byteLength !== expected) return invalid('content file size changed: ' + relativePath)
+    return decoder.decode(bytes)
+  }
   const index = header(read(indexPath))
   object(index.fields, ['kind', 'backupFormatVersion', 'backupSnapshotId', 'catalogDatabaseId', 'databaseIds', 'documentIds', 'databaseMissingReferences', 'restoreDeletionPolicy', 'syncedGroups', 'syncedInstances', 'syncedMissingReferences'], ['previousPublication'])
   if (index.fields.kind !== indexKind || index.body.trim()) invalid('index kind/body')
   const snapshotId = uuid(index.fields.backupSnapshotId), catalogHeader = header(read(catalogPath))
   if (catalogHeader.fields.kind !== catalogKind || catalogHeader.fields.backupSnapshotId !== snapshotId || catalogHeader.body.trim()) invalid('catalog kind/body/snapshot')
-  const catalog = readDefinition(catalogHeader.fields), databases: ExportStandaloneDatabase[] = [], documents: ExportDocument[] = [], groups: BackupV3Group[] = []
+  const catalog = readDefinition(catalogHeader.fields), documentLocations: BackupV3DocumentLocation[] = []
   const expected = new Set([indexPath, catalogPath]), documentPaths = new Map<string, string>(), documentBytes = new Map<string, number>()
   const rawGroups = list(parse(index.fields.syncedGroups)).map(value => {
     const item = object(value, ['id', 'creationId', 'sourceRevision', 'recordHash'])
@@ -467,19 +555,20 @@ export function parseCapturedBackupV3Inventory(contents: readonly BackupV3File[]
   })
   for (const entry of rawGroups) {
     const relativePath = groupPath(entry.id), source = read(relativePath), wire = validateSyncedGroupWire(parse(source)), normalized = normalizedGroup({ wire, sourceRevision: entry.sourceRevision })
-    if (wire.id !== entry.id || wire.creationId !== entry.creationId || json(wire) !== source || hash(source) !== entry.recordHash) invalid('group canonical bytes/index mismatch')
-    expected.add(relativePath); groups.push(normalized)
+    if (expected.has(relativePath) || wire.id !== entry.id || wire.creationId !== entry.creationId
+      || json(wire) !== source || hash(source) !== entry.recordHash) invalid('group canonical bytes/index mismatch')
+    expected.add(relativePath); records.addGroup(normalized)
   }
   for (const file of contents) {
     if (expected.has(file.relativePath)) continue
     if (!file.relativePath.endsWith('.md')) invalid('unknown content file')
-    const content = header(decoder.decode(file.bytes)), fields = content.fields
+    const content = header(read(file.relativePath)), fields = content.fields
     if (fields.backupSnapshotId !== snapshotId) invalid('mixed snapshot')
     if (fields.kind !== undefined) {
       if (fields.kind !== databaseKind || content.body.trim()) invalid('unknown definition kind/body')
       const source = readDefinition(fields)
       if (file.relativePath !== databasePath(source.id)) invalid('database definition path')
-      databases.push(source)
+      records.addDatabase(source)
     } else {
       if (file.relativePath.startsWith('__knowbook/')) invalid('document in reserved path')
       object(fields, ['id', 'title', 'path', 'updatedAt', 'summary', 'documentDatabaseColumns', 'documentDatabaseFieldValues', 'documentDatabaseId', 'backupFormatVersion', 'backupSnapshotId'])
@@ -487,8 +576,10 @@ export function parseCapturedBackupV3Inventory(contents: readonly BackupV3File[]
       const blocks = parseBackupV3Blocks(content.body).map((block, sortOrder) => ({ ...block, sortOrder }))
       const archived = document({ id: fields.id, title: fields.title, path: fields.path, updatedAt: fields.updatedAt, summary: fields.summary,
         documentDatabaseColumns: parse(fields.documentDatabaseColumns), documentDatabaseFieldValues: parse(fields.documentDatabaseFieldValues), blocks })
-      documents.push(mapDocumentAssets(archived, source => relativeToPortable(source, file.relativePath)))
-      documentPaths.set(archived.id, file.relativePath); documentBytes.set(archived.id, file.bytes.byteLength)
+      const portable = document(mapDocumentAssets(archived, source => relativeToPortable(source, file.relativePath)))
+      records.addDocument(portable)
+      documentLocations.push(Object.freeze({ id: portable.id, path: portable.path }))
+      documentPaths.set(portable.id, file.relativePath); documentBytes.set(portable.id, file.bytes)
     }
     expected.add(file.relativePath)
   }
@@ -500,8 +591,11 @@ export function parseCapturedBackupV3Inventory(contents: readonly BackupV3File[]
     expected.add(file.relativePath)
   }
   if (expected.size !== allPaths.length) invalid('extra/missing file')
-  const { snapshot, graph } = validateArchiveContent({ documents, catalog, standaloneDatabases: databases, groups }, assets)
-  const declaration = manifest(snapshot, graph, snapshotId, documentPaths)
+  const { documents, standaloneDatabases, groups } = records
+  const snapshot = { documents, catalog, standaloneDatabases, groups }
+  const validation = validateArchiveSources(snapshot, documentLocations, assets)
+  // Each group declaration was matched to canonical bytes when its file was read.
+  const declaration = manifest(snapshot, validation, snapshotId, documentLocations, documentPaths, sorted([...rawGroups]))
   same(index.fields.catalogDatabaseId, declaration.catalogId, 'catalog index')
   same(parse(index.fields.databaseIds), declaration.databaseIds, 'database exact set')
   same(parse(index.fields.documentIds), declaration.documentIds, 'document exact set')
@@ -511,6 +605,6 @@ export function parseCapturedBackupV3Inventory(contents: readonly BackupV3File[]
   same(parse(index.fields.syncedInstances), declaration.syncedInstances, 'instance identity/hash/revision closure')
   same(parse(index.fields.syncedMissingReferences), declaration.syncedMissingReferences, 'typed missing identity closure')
   if (index.fields.previousPublication !== undefined) declaration.previousPublication = previousPublication(parse(index.fields.previousPublication), declaration)
-  archiveProjectionBudget(snapshot, documentBytes)
-  return { ...snapshot, groups: sorted(snapshot.groups), manifest: declaration }
+  archiveProjectionBudget(snapshot, documentBytes, id => records.readGroup(id))
+  return { catalog, documentLocations, manifest: declaration }
 }

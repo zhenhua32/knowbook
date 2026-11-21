@@ -21,10 +21,12 @@ import { readHistoricalRowLocator } from './synced-history-evidence-support'
 import { hashRestoreSqlRowSet, readRawRestoreSqlInventoryOwned, type RawSqlInventory } from './restore-knowledge-sql-inventory'
 import { readRawCapsule2AssetReferenceSourceOwned } from './restore-knowledge-capsule2-assets-read'
 import { CAPSULE2_READER, CAPSULE2_RAW_MAX_JSON_BYTES, type StoreCapsule2Archive6Blocks5 } from './restore-knowledge-capsule2-raw-model'
+import type { Capsule2PhysicalBodyStore } from './restore-knowledge-capsule2-physical-raw-read'
 import { COVERAGE_ANCHOR_CHANNEL } from './restore-knowledge-coverage-model'
 import type { RawHistoricalEvidenceFact } from './synced-history-evidence-model'
 import { rawRestoreSqlCell } from './restore-knowledge-sql-cell'
 import { capsuleInvalid, capsuleJson, freezeCapsuleValue, type DurableSqlCapsuleDraft } from './restore-knowledge-capsule-model'
+import { hashBoundedKnowledgeJson } from './restore-knowledge-capsule-json-hash'
 import { knowledgeDocumentComparisonKey, knowledgeGroupComparisonKey, knowledgeHash,
   type CapsuleKnowledgePayload, type KnowledgeCapsuleRef, type KnowledgeSqlCell, type KnowledgeOriginalTable,
   type KnowledgeOriginalRow, type KnowledgeRowRef, type KnowledgeOccupancy, type KnowledgeGroup, type KnowledgeExposure,
@@ -211,7 +213,7 @@ export function readRawCapsuleKnowledgePayloadOwned(db: Database.Database, capsu
 /** Data from the fixed owned readers above/below only. No callback, read mode,
  * caller projection, certificate factory or effective source enters this core. */
 function readKnowledgeProjectionOwned(db: Database.Database, schemaVersion: 26 | 27,
-  original: ReturnType<typeof originals>, facts: readonly RawHistoricalEvidenceFact[]) {
+  original: ReturnType<typeof originals>, facts: readonly RawHistoricalEvidenceFact[], physicalBodies?: Capsule2PhysicalBodyStore) {
   // The private owner already ran the exact original full draft validation in
   // this transaction. Ordinary historical strings retain that legacy JSON.parse
   // rule; synchronized formats already passed their stricter finite codecs.
@@ -414,9 +416,14 @@ function readKnowledgeProjectionOwned(db: Database.Database, schemaVersion: 26 |
     return { lineage: text(row.value.lineage), kind, sourceDatabaseId: text(row.value.source_database_id),
       sourceId: text(row.value.source_id), state, targetId: text(row.value.target_id), source }
   })
-  const hostJournals = Array.from(original.rows('synced_host_history'), row => {
+  type HostJournal = CapsuleKnowledgePayload['hostJournals'][number]
+  type GroupHistory = CapsuleKnowledgePayload['groupHistories'][number]
+  type ArchivedHistory = CapsuleKnowledgePayload['archivedGroupHistories'][number]
+  const hostJournals: HostJournal[] = [], journalRows = physicalBodies?.openKnowledgeHistoryRows?.<HostJournal>()
+  for (const row of original.rows('synced_host_history')) {
     const value = row.value as unknown as SyncedHostHistoryBranchRow, source = sourceOnly(row.source), kind = hostJournalKind(value)
-    const decoded = kind === 'bare-create' ? { before: validateHostSides(json(value.before_json)), after: validateHostSides(json(value.after_json)) } : decodeHostJournal(value)
+    const finite = kind === 'bare-create' ? null : decodeHostJournal(value)
+    const decoded = finite ?? { before: validateHostSides(json(value.before_json)), after: validateHostSides(json(value.after_json)) }
     for (const side of [...decoded.before, ...decoded.after]) { occupy('document', side.documentId, 'history', source); content(side.content, source, side.documentId, 'history') }
     if ('groups' in decoded) for (const group of decoded.groups) {
       occupy('group', group.groupId, 'history', source, null, null, group.createdAt, knowledgeGroupComparisonKey(group))
@@ -429,19 +436,29 @@ function readKnowledgeProjectionOwned(db: Database.Database, schemaVersion: 26 |
       occupy('group', action.groupId, 'history', source); occupy('instance', action.instanceId, 'history', source)
     }
     const documentIds = [...new Set(decoded.before.map(side => side.documentId))].sort(publicationCompare)
-    const typedDecoded = kind === 'bare-create' ? { kind: 'bare-create' as const, before: decoded.before, after: decoded.after }
-      : { kind: 'finite' as const, value: decodeHostJournal(value) }
-    return { historyToken: value.id, kind, documentIds, source, decoded: typedDecoded,
+    const typedDecoded = finite ? { kind: 'finite' as const, value: finite }
+      : { kind: 'bare-create' as const, before: decoded.before, after: decoded.after }
+    const journal: HostJournal = { historyToken: value.id, kind, documentIds, source, decoded: typedDecoded,
       mappings: Array.from(original.rows('synced_host_history_documents', ['history_id', value.id]), mapping => sourceOnly(mapping.source)) }
-  })
-  const groupHistories = Array.from(original.rows('synced_group_history'), row => {
+    if (journalRows) journalRows.append(journal, ['decoded'])
+    else hostJournals.push(journal)
+  }
+  const groupHistories: GroupHistory[] = [], groupRows = physicalBodies?.openKnowledgeHistoryRows?.<GroupHistory>()
+  for (const row of original.rows('synced_group_history')) {
     const before = validateSyncedGroupWire(json(text(row.value.before_json))), after = validateSyncedGroupWire(json(text(row.value.after_json))), source = sourceOnly(row.source)
     for (const wire of [before, after]) for (const block of wire.blocks) { occupy('block', block.id, 'history', source, 'group', wire.id, block.createdAt); databaseReference(block.type, block.content, source) }
     capturedBindings(before.bindings, source, 'group-history'); capturedBindings(after.bindings, source, 'group-history')
-    return { historyId: text(row.value.id), groupId: text(row.value.group_id), position: integer(row.value.position), before, after, source }
-  })
+    const history: GroupHistory = { historyId: text(row.value.id), groupId: text(row.value.group_id),
+      position: integer(row.value.position), before, after, source }
+    if (groupRows) groupRows.append(history, ['before', 'after'])
+    else groupHistories.push(history)
+  }
   const boundaries = schemaVersion === 27 ? [...assertSyncedRecoveryBoundaryRecords(db).boundaries.values()] : []
-  const archivedGroupHistories: Array<CapsuleKnowledgePayload['archivedGroupHistories'][number]> = []
+  const archivedGroupHistories: ArchivedHistory[] = [], archivedRows = physicalBodies?.openKnowledgeHistoryRows?.<ArchivedHistory>()
+  const keepArchive = (row: ArchivedHistory) => {
+    if (archivedRows) archivedRows.append(row, ['before', 'after'])
+    else archivedGroupHistories.push(row)
+  }
   for (const proof of denials) {
     const before = proof.proof.before
     if (before.kind === 'document') { occupy('document', before.id, 'history', proof.source, null, null, before.createdAt, proof.comparisonKey); content(before.content, proof.source, before.id, 'history') }
@@ -455,7 +472,7 @@ function readKnowledgeProjectionOwned(db: Database.Database, schemaVersion: 26 |
     const before = validateSyncedGroupWire(json(row.before_json)), after = validateSyncedGroupWire(json(row.after_json))
     for (const wire of [before, after]) for (const block of wire.blocks) { occupy('block', block.id, 'history', source, 'group', wire.id, block.createdAt); databaseReference(block.type, block.content, source) }
     capturedBindings(before.bindings, source, 'archive-history'); capturedBindings(after.bindings, source, 'archive-history')
-    archivedGroupHistories.push({ archive: 'recovery', operationId: boundary.operationId, archivedAt: boundary.acceptedAt,
+    keepArchive({ archive: 'recovery', operationId: boundary.operationId, archivedAt: boundary.acceptedAt,
       historyId: row.id, groupId: group.groupId, position: row.position, before, after, source })
   }
   for (const item of material) if (item.fact.family === 'exchange-history-row') {
@@ -464,7 +481,7 @@ function readKnowledgeProjectionOwned(db: Database.Database, schemaVersion: 26 |
     const row = envelope.row, before = validateSyncedGroupWire(json(text(row.before_json))), after = validateSyncedGroupWire(json(text(row.after_json)))
     for (const wire of [before, after]) for (const block of wire.blocks) { occupy('block', block.id, 'history', item.primary, 'group', wire.id, block.createdAt); databaseReference(block.type, block.content, item.primary) }
     capturedBindings(before.bindings, item.primary, 'archive-history'); capturedBindings(after.bindings, item.primary, 'archive-history')
-    archivedGroupHistories.push({ archive: 'exchange', operationId: text(envelope.operationId), archivedAt: text(envelope.archivedAt),
+    keepArchive({ archive: 'exchange', operationId: text(envelope.operationId), archivedAt: text(envelope.archivedAt),
       historyId: text(row.id), groupId: text(row.group_id), position: integer(row.position), before, after, source: item.primary })
   }
   const exchangeCuts = schemaVersion === 27 ? [...assertSyncedExchangeHostCutRecords(db).values()].map(cut => ({ cut,
@@ -479,22 +496,25 @@ function readKnowledgeProjectionOwned(db: Database.Database, schemaVersion: 26 |
     cursor: text(row.value.cursor), position: integer(row.value.position), source: sourceOnly(row.source) }))
   const pins = Array.from(original.rows('synced_group_pins'), row => ({ groupId: text(row.value.group_id), kind: text(row.value.kind),
     pinId: text(row.value.pin_id), createdAt: text(row.value.created_at), source: sourceOnly(row.source) }))
-  return freezeCapsuleValue({ originals: original.tables, groups, exposures, observations, denials, occupancy, identities, instances, hostStates, pins, bindings, databaseViewReferences, hostJournals, groupHistories, archivedGroupHistories, exchangeCuts,
+  return freezeCapsuleValue({ originals: original.tables, groups, exposures, observations, denials, occupancy, identities, instances, hostStates, pins,
+    bindings, databaseViewReferences, hostJournals: journalRows?.finish() ?? hostJournals, groupHistories: groupRows?.finish() ?? groupHistories,
+    archivedGroupHistories: archivedRows?.finish() ?? archivedGroupHistories, exchangeCuts,
     recoveryBoundaries, restoreLineage, historicalMaterial: material })
 }
 
 /** Complete typed K inputs from the same actual capsule2 source transaction.
  * Prior-C is retained as unresolved original rows, never reclassified as an
  * ordinary member attempt, accepted coverage, empty K or a v1 capsule. */
-export function readRawCapsule2SourceKnowledgeOwned(db: Database.Database, blocks?: StoreCapsule2Archive6Blocks5) {
-  const source = readRawCapsule2AssetReferenceSourceOwned(db, blocks), content = source.sourceContent
+export function readRawCapsule2SourceKnowledgeOwned(db: Database.Database, blocks?: StoreCapsule2Archive6Blocks5,
+  physicalBodies?: Capsule2PhysicalBodyStore) {
+  const source = readRawCapsule2AssetReferenceSourceOwned(db, blocks, physicalBodies), content = source.sourceContent
   const inventory = readRawRestoreSqlInventoryOwned(db)
   if (inventory.schemaHash !== content.schemaHash || inventory.inventoryHash !== content.legacyInventoryHash)
     return capsuleInvalid('capsule2 K与同一实际SQL完整typed清单不一致')
   const references = source.total.originalReferences
   const metadataKeys = new Set(references.filter(row => row.table === 'app_settings').map(row => text(row.key[0])))
   const original = originals(db, inventory, metadataKeys)
-  const projection = readKnowledgeProjectionOwned(db, content.schemaVersion, original, source.total.legacyFacts)
+  const projection = readKnowledgeProjectionOwned(db, content.schemaVersion, original, source.total.legacyFacts, physicalBodies)
   const reference = (table: string, key: readonly (string | number)[]) => sourceOnly(original.lookup(table, key))
   const coverageMaterial = source.total.coverageSyntaxFacts.map(fact => ({ fact,
     primary: reference(fact.locator.table, fact.locator.key), supports: fact.supports.map(row => reference(row.table, row.key)) }))
@@ -513,8 +533,7 @@ export function readRawCapsule2SourceKnowledgeOwned(db: Database.Database, block
     certified: false as const, acceptedCoverage: false as const, semanticValidationComplete: false as const,
     effective: false as const, permit: false as const,
     unresolved: ['qualified-origin-and-prior-root-resolution','streaming-source-adapter','complete-private-capsule2-certifier-and-installer'] as const }
-  const encoded = capsuleJson(body)
-  if (Buffer.byteLength(encoded) > CAPSULE2_RAW_MAX_JSON_BYTES) return capsuleInvalid('capsule2完整K输入超有限准备预算，不截断')
-  return Object.freeze({ source, knowledge: freezeCapsuleValue({ ...body,
-    observationHash: knowledgeHash('knowbook.capsule2.source-knowledge-projection.v1', body) }) })
+  const observationHash = hashBoundedKnowledgeJson('knowbook.capsule2.source-knowledge-projection.v1', body, CAPSULE2_RAW_MAX_JSON_BYTES)
+    ?? capsuleInvalid('capsule2完整K输入超有限准备预算，不截断')
+  return Object.freeze({ source, knowledge: freezeCapsuleValue({ ...body, observationHash }) })
 }

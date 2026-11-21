@@ -4,9 +4,11 @@ import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_RAW_MAX_VALUE_BYTES } from './res
 import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
 import { findGraph3OriginalRow, graph3Conflict, graph3Encode, graph3Value, type Graph3Inputs } from './restore-knowledge-graph3-data'
 import type { RawRestoreSqlCell } from './restore-knowledge-sql-cell'
-import { assertMerge3JsonBudget, type FinishedMerge3Table, type MergedRow3 } from './restore-knowledge-merge3-storage'
+import { assertMerge3JsonBudget, type MergedRow3 } from './restore-knowledge-merge3-storage'
+import { materializeNavigation3Tables, navigation3TableHashInput, withStoredNavigation3TableScan,
+  type Navigation3TableSource } from './restore-knowledge-navigation3-tables'
 
-type Table = FinishedMerge3Table['table']
+type Table = Navigation3TableSource
 export interface Merge3LayoutConflict {
   readonly code: string; readonly table: 'documents'; readonly rowKeys: readonly string[]; readonly detail: unknown
 }
@@ -72,7 +74,7 @@ function layoutForest(db: Database.Database, documents: Table, blocks: Table, co
   if (count !== documents.rows.length) {
     const ordinals = db.prepare('SELECT ordinal FROM layout_document WHERE path IS NULL ORDER BY ordinal').pluck().iterate() as IterableIterator<number>
     conflicts.push({ code: 'cyclic-or-unreachable-document-layout', table: 'documents',
-      rowKeys: Array.from(ordinals, ordinal => documents.rows[ordinal].key), detail: null })
+      rowKeys: Array.from(ordinals, ordinal => documents.rows.at(ordinal)!.key), detail: null })
   }
 }
 
@@ -100,18 +102,18 @@ function appendDuplicates(db: Database.Database, rows: Table['rows'], conflicts:
       rowKeys = []
       conflicts.push({ code: 'duplicate-document-' + column, table: 'documents', rowKeys, detail: { [column]: fromKey(item.value) } })
     }
-    rowKeys.push(rows[item.ordinal].key)
+    rowKeys.push(rows.at(item.ordinal)!.key)
   }
 }
 
-function layoutRows(db: Database.Database, data: Graph3Inputs, documents: Table, conflicts: Merge3LayoutConflict[]) {
+function* layoutRows(db: Database.Database, data: Graph3Inputs, documents: Table, conflicts: Merge3LayoutConflict[],
+  changes: Change[]): IterableIterator<MergedRow3> {
   const readId = readColumn(documents, 'id'), readSlug = readColumn(documents, 'slug'), previousSlug = retainedSlug(data)
-  const changes: Change[] = []
   const layout = db.prepare(`SELECT path,(SELECT count(*) FROM layout_document child WHERE child.parent=doc.id) AS childCount,
     coalesce((SELECT count FROM layout_block_count WHERE owner=doc.id),0) AS blockCount FROM layout_document doc WHERE ordinal=?`)
   const setSlug = db.prepare('UPDATE layout_document SET slug=? WHERE ordinal=?')
   let changeBytes = 0
-  const changedRows = documents.rows.map((row, ordinal): MergedRow3 => {
+  for (const [ordinal, row] of documents.rows.entries()) {
     const id = text(readId(row))
     const planned = layout.get(ordinal) as { path: Buffer | null; childCount: number; blockCount: number }
     const next: Record<string, string | bigint> = {
@@ -136,33 +138,42 @@ function layoutRows(db: Database.Database, data: Graph3Inputs, documents: Table,
       changeBytes += bytes; changes.push(change); return after
     })
     setSlug.run(sortKey(typeof next.slug === 'string' ? next.slug : text(readSlug(row))), ordinal)
-    return { ...row, cells }
-  })
+    yield { ...row, cells }
+  }
   appendDuplicates(db, documents.rows, conflicts, 'slug')
   appendDuplicates(db, documents.rows, conflicts, 'path')
-  return { changedRows, changes }
 }
 
 /** Layout the selected forest, including current descendants. The file-backed
  * index holds only layout fields, while exact original cells stay with their rows. */
 export function applyMerge3DocumentLayout3(data: Graph3Inputs, tables: readonly Table[]) {
+  return withMerge3DocumentLayout3(data, tables, result => freezeCapsuleValue({ ...result, tables: materializeNavigation3Tables(result.tables) }))
+}
+
+export function withMerge3DocumentLayout3<Result>(data: Graph3Inputs, tables: readonly Table[],
+  read: (result: ReturnType<typeof layoutResult>) => Result): Result {
   const documents = tables.find(table => table.name === 'documents') ?? graph3Conflict('merge-layout-missing-documents', null)
   const blocks = tables.find(table => table.name === 'blocks') ?? graph3Conflict('merge-layout-missing-blocks', null)
-  const db = new Database(':memory:'), conflicts: Merge3LayoutConflict[] = []
-  const { changedRows, changes } = (() => {
+  return withStoredNavigation3TableScan(append => {
+    const db = new Database(':memory:'), conflicts: Merge3LayoutConflict[] = [], changes: Change[] = []
     try {
       db.pragma('temp_store=FILE')
       if (db.pragma('temp_store', { simple: true }) !== 1) return graph3Conflict('merge-layout-file-index-unavailable', null)
       return db.transaction(() => {
         layoutForest(db, documents, blocks, conflicts)
-        return layoutRows(db, data, documents, conflicts)
+        const { rows: _rows, ...layout } = documents
+        append(layout, layoutRows(db, data, documents, conflicts, changes))
+        return { changes, conflicts }
       })()
     } finally { db.close() }
-  })()
-  const result = tables.map(table => table.name === 'documents' ? { ...table, rows: changedRows } : table)
+  }, ({ changes, conflicts }, [laidOut]) => read(layoutResult(tables, laidOut, changes, conflicts)))
+}
+
+function layoutResult(tables: readonly Table[], laidOut: Table, changes: Change[], conflicts: Merge3LayoutConflict[]) {
+  const result = tables.map(table => table.name === 'documents' ? laidOut : table)
   const body = { changes, conflicts, documentHierarchyLaidOut: conflicts.length === 0, navigationRewritten: false as const,
     sourceHistoryReplayed: false as const, permit: false as const }
-  const hashInput = { ...body, documents: result.find(table => table.name === 'documents')! }
+  const hashInput = { ...body, documents: navigation3TableHashInput([laidOut])[0] }
   assertMerge3JsonBudget(hashInput)
   const layoutHash = hashBoundedCapsuleJson(hashInput, CAPSULE2_RAW_MAX_JSON_BYTES, 'knowbook.restore.merge3.document-layout.v1\0')
   if (layoutHash === null) return graph3Conflict('merge-layout-complete-json-budget', null)

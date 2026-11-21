@@ -5,14 +5,14 @@ import { capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-mod
 import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_RAW_MAX_VALUE_BYTES } from './restore-knowledge-capsule2-raw-model'
 import { graph3Conflict, graph3Encode, graph3Key, type Graph3Inputs } from './restore-knowledge-graph3-data'
-import { deriveRootRestoreMergedContent3 } from './restore-knowledge-merge3-model'
+import { withRootRestoreMergedContent3, type deriveRootRestoreMergedContent3 } from './restore-knowledge-merge3-model'
 import type { RootRestoreMergedContentChoices3 } from './restore-knowledge-merge3-read'
 import { assertMerge3JsonBudget, type Merge3OriginalRowRef } from './restore-knowledge-merge3-storage'
 import { resolveFinalNavigation3, withStoredRootRestoreNavigationMergeContext3, withStoredMerge3NavigationFinalIndex3,
   type Navigation3Cell, type Navigation3ContextScope, type Navigation3FinalScope,
   type StoredNavigation3Index, type StoredNavigation3MergeContext } from './restore-knowledge-navigation3-merge-context'
 import { materializeNavigation3Tables, navigation3TableHashInput, projectNavigation3TableRows,
-  withNavigation3TextPatches, withStoredNavigation3Tables, type Navigation3TableSource } from './restore-knowledge-navigation3-tables'
+  withNavigation3TextPatches, type Navigation3TableSource } from './restore-knowledge-navigation3-tables'
 import { applyNavigation3TextEdits, createNavigation3RangeProjection, renderNavigation3Destination,
   type Navigation3FinalTarget, type Navigation3TextEdit } from './restore-knowledge-navigation3-rewrite-cells'
 
@@ -46,13 +46,11 @@ export function deriveRootRestoreNavigationRewrite3(data: Graph3Inputs, choices?
 /** Canonical restore consumes the checked ordinary rows inside their file scope. */
 export function withRootRestoreNavigationRewrite3<Result>(data: Graph3Inputs, choices: RootRestoreMergedContentChoices3 | undefined,
   read: (ordinary: ScopedNavigation3Rewrite) => Result): Result {
-  return withStoredNavigation3Tables(() => {
+  return withRootRestoreMergedContent3(data, choices, candidate => {
     const { mergedContentHash, conservationHash, identityAllocationHash, sourceMaterialHash, currentMaterialHash,
-      choices: selected, targetEncoding, conflicts, tables } = deriveRootRestoreMergedContent3(data, choices)
-    return { metadata: { mergedContentHash, conservationHash, identityAllocationHash, sourceMaterialHash,
-      currentMaterialHash, choices: selected, targetEncoding, conflicts }, tables }
-  }, (metadata, tables) => {
-    const merged = { ...metadata, tables }
+      choices: selected, targetEncoding, conflicts, tables } = candidate
+    const merged = { mergedContentHash, conservationHash, identityAllocationHash, sourceMaterialHash,
+      currentMaterialHash, choices: selected, targetEncoding, conflicts, tables }
     return withNavigation3TextPatches((write, readText) =>
       withStoredRootRestoreNavigationMergeContext3(data, merged, context => rewriteOrdinaryNavigation(data, merged, context, write, readText)), read)
   })

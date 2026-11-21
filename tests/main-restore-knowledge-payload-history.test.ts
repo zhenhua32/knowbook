@@ -3,10 +3,16 @@ import test from 'node:test'
 import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
 import { advanceSyncedRecoveryEpoch } from '../src/main/database/synced-recovery-boundary'
+import { capsuleBytesHash, capsuleJson } from '../src/main/database/restore-knowledge-capsule-model'
+import { hashBoundedCapsuleJson, hashBoundedKnowledgeJson } from '../src/main/database/restore-knowledge-capsule-json-hash'
+import { CAPSULE2_RAW_MAX_JSON_BYTES } from '../src/main/database/restore-knowledge-capsule2-raw-model'
+import { readRawCapsule2SourceKnowledgeOwned } from '../src/main/database/restore-knowledge-payload-raw-read'
+import { withReferenceOriginalRows5 } from '../src/main/database/restore-knowledge-reference-original-rows5'
 import { unionCertifiedCapsuleKnowledge, readCertifiedKnowledgeUnion } from '../src/main/database/restore-knowledge-payload-read'
 import { withV3Fixture } from './helpers/synced-backup-v3-fixture'
 import { editCreatedGroup } from './helpers/synced-host-command-create-fixture'
 import { captureKnowledgeOriginal, extractKnowledge } from './helpers/restore-knowledge-payload-fixture'
+import { withObserver2Copy } from './helpers/capsule2-observer-fixture'
 
 test('K retains exact old group rows and shared host cuts across real recovery and a later valid new content branch', () => withV3Fixture(async f => {
   editCreatedGroup(f.db, f.groupId)
@@ -22,6 +28,26 @@ test('K retains exact old group rows and shared host cuts across real recovery a
     expectedRecoveryEpoch: before.recovery_epoch, workspaceScope: before.workspace_scope, recoveryEpoch: randomUUID(),
     acceptedAt: '2041-01-01T00:00:00.000Z', documentBoundary: '2041-01-01T00:00:00.000Z' })).immediate()
   const edited = editCreatedGroup(f.db, f.groupId)
+  const closed = await withReferenceOriginalRows5((_rows, _physical, _blocks, bodies) => withObserver2Copy(f.db, f.file, db => {
+    const legacy = db.transaction(() => readRawCapsule2SourceKnowledgeOwned(db))().knowledge
+    const stored = db.transaction(() => readRawCapsule2SourceKnowledgeOwned(db, undefined, bodies('current')))().knowledge
+    const { observationHash, ...body } = legacy
+    const domain = 'knowbook.capsule2.source-knowledge-projection.v1', size = Buffer.byteLength(capsuleJson(body))
+    assert.equal(observationHash, capsuleBytesHash(capsuleJson({ domain, value: body })))
+    assert.equal(hashBoundedKnowledgeJson(domain, body, size), observationHash)
+    assert.equal(hashBoundedKnowledgeJson(domain, body, size - 1), null)
+    return { legacy, stored }
+  }), async ({ legacy, stored }) => {
+    assert.equal(stored.observationHash, legacy.observationHash)
+    assert.equal(hashBoundedCapsuleJson(stored, CAPSULE2_RAW_MAX_JSON_BYTES), capsuleBytesHash(capsuleJson(legacy)))
+    assert.deepEqual(stored.hostJournals[0].decoded, legacy.hostJournals[0].decoded)
+    assert.deepEqual(stored.groupHistories[0].after, legacy.groupHistories[0].after)
+    assert.deepEqual(stored.archivedGroupHistories[0].before, legacy.archivedGroupHistories[0].before)
+    return stored
+  })
+  assert.throws(() => closed.hostJournals[0].decoded, /读取范围已结束/)
+  assert.throws(() => closed.groupHistories[0].before, /读取范围已结束/)
+  assert.throws(() => closed.archivedGroupHistories[0].after, /读取范围已结束/)
   const current = await extractKnowledge(await captureKnowledgeOriginal(f.userDataRoot, dirname(f.file)))
   const boundary = current.payload.recoveryBoundaries.find(item => item.boundary.operationId === operationId)
   assert.ok(boundary)

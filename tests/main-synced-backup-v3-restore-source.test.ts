@@ -4,8 +4,8 @@ import { closeSync, createReadStream, existsSync, mkdirSync, openSync, readFileS
 import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { buildBackupV3Files } from '../src/main/backup/v3-format'
-import { assertBackupV3RestoreSourceCurrent, copyBackupV3RestoreAsset, openBackupV3RestoreSource,
-  readBackupV3RestoreSource, verifyBackupV3Archive } from '../src/main/backup/v3-reader'
+import { assertBackupV3RestoreSourceCurrent, closeBackupV3RestoreSource, copyBackupV3RestoreAsset, openBackupV3RestoreSource,
+  readBackupV3RestoreSource, readScopedBackupV3RestoreSource, verifyBackupV3Archive } from '../src/main/backup/v3-reader'
 import { captureSyncedBackupV3, readSyncedBackupV3Capture } from '../src/main/database/synced-backup-v3'
 import { buildSyncedPortableAssetUri, syncedPortableAssetBackupPath } from '../src/shared/syncedBlockPortable'
 import { allTables, randomUUID, withV3Fixture } from './helpers/synced-backup-v3-fixture'
@@ -40,6 +40,15 @@ test('V3 restore source pins the parsed graph and stages an original 50 MiB alia
   assert.deepEqual(inspected.assets, [{ relativePath, bytes: bytes.byteLength, hash }])
   assert.ok(inspected.archive.documents.some(doc => doc.summary.includes(uri)))
   assert.equal(inspected.archive.groups.length, snapshot.groups.length)
+  const { archive: scoped } = readScopedBackupV3RestoreSource(owner)
+  assert.equal(Array.isArray(scoped.documents), false)
+  assert.equal(Array.isArray(scoped.groups), false)
+  assert.deepEqual(Array.from(scoped.documents), inspected.archive.documents)
+  const location = scoped.documentLocations[0], groupId = inspected.archive.groups[0].wire.id
+  const readDocument = () => scoped.readDocument(location.id)
+  const readGroup = () => scoped.readGroup(groupId)
+  assert.deepEqual(readDocument(), inspected.archive.documents[0])
+  assert.deepEqual(readGroup(), inspected.archive.groups[0])
   inspected.archive.documents.length = 0
   inspected.assets[0].hash = '0'.repeat(64)
   assert.deepEqual(readBackupV3RestoreSource(owner).assets, [{ relativePath, bytes: bytes.byteLength, hash }])
@@ -68,4 +77,7 @@ test('V3 restore source pins the parsed graph and stages an original 50 MiB alia
   await assert.rejects(copyBackupV3RestoreAsset(owner, relativePath, rejected), /archive directory inventory changed|original V3 asset changed/)
   assert.equal(existsSync(rejected), false)
   assert.deepEqual(allTables(f.db), before)
+  closeBackupV3RestoreSource(owner)
+  assert.throws(readDocument)
+  assert.throws(readGroup)
 }))

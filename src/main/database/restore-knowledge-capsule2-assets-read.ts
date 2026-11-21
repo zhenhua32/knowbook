@@ -8,6 +8,7 @@ import { serializeMarkdownWithBlockRanges } from '../../shared/markdown'
 import { collectStoredMarkdownAssetDestinations } from '../../shared/syncedBlockPortable'
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, type StoreCapsule2Archive6Blocks5 } from './restore-knowledge-capsule2-raw-model'
+import type { Capsule2PhysicalBodyStore } from './restore-knowledge-capsule2-physical-raw-read'
 import { readRawCapsule2WorkspaceHistoryEvidenceOwned, readRawCapsule2WorkspaceHistorySourceWithHeadingTitle3Owned } from './restore-knowledge-capsule2-workspace-history-read'
 import { decodeHostJournal, hostJournalKind, validateHostSides } from './synced-host-journal'
 import type { SyncedHostHistoryBranchRow } from './synced-host-history-branch'
@@ -61,14 +62,15 @@ function* operationRows(db: Database.Database): IterableIterator<AssetOperationR
  * roots, group DTOs or filesystem capability are accepted. Only the validated
  * formats' explicit bodies are visited, never arbitrary JSON strings/paths.
  * Remaining policy and all file authority stay explicitly uncertified. */
-export function readRawCapsule2AssetReferencesOwned(db: Database.Database): RawCapsule2AssetReferences {
-  return observeAssetReferences(db, readRawCapsule2WorkspaceHistoryEvidenceOwned(db))
+export function readRawCapsule2AssetReferencesOwned(db: Database.Database, physicalBodies?: Capsule2PhysicalBodyStore): RawCapsule2AssetReferences {
+  return observeAssetReferences(db, readRawCapsule2WorkspaceHistoryEvidenceOwned(db, physicalBodies))
 }
 
 /** One fixed same-transaction source pipeline for the material owner; the
  * public raw observation above keeps its exact original DTO/hash domain. */
-export function readRawCapsule2AssetReferenceSourceOwned(db: Database.Database, blocks?: StoreCapsule2Archive6Blocks5) {
-  const captured = readRawCapsule2WorkspaceHistorySourceWithHeadingTitle3Owned(db, blocks)
+export function readRawCapsule2AssetReferenceSourceOwned(db: Database.Database, blocks?: StoreCapsule2Archive6Blocks5,
+  physicalBodies?: Capsule2PhysicalBodyStore) {
+  const captured = readRawCapsule2WorkspaceHistorySourceWithHeadingTitle3Owned(db, blocks, physicalBodies)
   return Object.freeze({ ...captured.source, assets: observeAssetReferences(db, captured) })
 }
 

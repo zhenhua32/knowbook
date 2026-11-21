@@ -153,44 +153,47 @@ export function validateInitialRecord(value: unknown, key: string): InitialPubli
     if (databases.id !== 'databases') return publicationInvalid('数据库原子记录身份无效。')
     assertSyncedShape(databases.tables, SYNC_TABLES)
     const tables = {} as SyncDatabases['tables']
-    for (const table of SYNC_TABLES) {
-      const columns: readonly string[] = SYNC_TABLE_COLUMNS[table]
-      tables[table] = array(databases.tables[table], raw => {
-        assertSyncedShape(raw, columns)
-        const row: SyncRow = {}
-        for (const column of columns) {
-          const field = raw[column]
-          const nullable = column === 'value_text' || table === 'database_entities' && column === 'document_id' || table === 'document_database_values' && (column === 'document_id' || column === 'entity_id')
-          if (column === 'sort_order' || column === 'config_version') integer(field)
-          else if (typeof field !== 'string' && !(nullable && field === null)) return publicationInvalid('数据库列不是原 schema 的 TEXT/nullable 类型。')
-          if ((column === 'id' || column.endsWith('_id')) && field !== null) id(field)
-          row[column] = column === 'sort_order' || column === 'config_version' ? integer(field)
-            : typeof field === 'string' || field === null ? field : publicationInvalid('数据库列类型无效。')
-        }
-        if ('sort_order' in row) integer(row.sort_order)
-        if ('created_at' in row) time(row.created_at)
-        if (table === 'document_database_columns') {
-          if (!['text', 'select', 'multi-select', 'checkbox', 'date'].includes(string(row.type))) return publicationInvalid('数据库列类型无效。')
-          const options = parseStrictJson(string(row.options_json), { maxBytes: PUBLICATION_RECORD_MAX_BYTES, maxDepth: 32 })
-          if (!Array.isArray(options) || options.some(item => typeof item !== 'string')) return publicationInvalid('数据库选项无效。')
-        }
-        if (table === 'database_saved_views') {
-          if (row.config_version !== 1) return publicationInvalid('保存视图版本无效。')
-          const config = parseStrictJson(string(row.config_json), { maxBytes: PUBLICATION_RECORD_MAX_BYTES, maxDepth: 32 })
-          if (!config || typeof config !== 'object' || Array.isArray(config)) return publicationInvalid('保存视图配置无效。')
-        }
-        return row
-      }, 200_000)
-    }
+    for (const table of SYNC_TABLES) tables[table] = array(databases.tables[table], raw => validatePublicationCatalogRow(table, raw), 200_000)
     if (key !== 'databases') return publicationInvalid('数据库记录键无效。')
     return { kind: 'databases', id: 'databases', tables }
   }
   return publicationInvalid('本初始快照不支持 tombstone 或未知记录类型。')
 }
 
+export function validatePublicationCatalogRow(table: SyncTable, raw: unknown): SyncRow {
+  const columns: readonly string[] = SYNC_TABLE_COLUMNS[table]
+  assertSyncedShape(raw, columns)
+  const row: SyncRow = {}
+  for (const column of columns) {
+    const field = raw[column]
+    if (column === 'sort_order' || column === 'config_version') {
+      row[column] = integer(field)
+      continue
+    }
+    const nullable = column === 'value_text' || table === 'database_entities' && column === 'document_id'
+      || table === 'document_database_values' && (column === 'document_id' || column === 'entity_id')
+    if (typeof field !== 'string' && !(nullable && field === null)) return publicationInvalid('数据库列不是原 schema 的 TEXT/nullable 类型。')
+    if ((column === 'id' || column.endsWith('_id')) && field !== null) id(field)
+    row[column] = field as string | null
+  }
+  if ('created_at' in row) time(row.created_at)
+  if (table === 'document_database_columns') {
+    if (!['text', 'select', 'multi-select', 'checkbox', 'date'].includes(string(row.type))) return publicationInvalid('数据库列类型无效。')
+    const options = parseStrictJson(string(row.options_json), { maxBytes: PUBLICATION_RECORD_MAX_BYTES, maxDepth: 32 })
+    if (!Array.isArray(options) || options.some(item => typeof item !== 'string')) return publicationInvalid('数据库选项无效。')
+  }
+  if (table === 'database_saved_views') {
+    if (row.config_version !== 1) return publicationInvalid('保存视图版本无效。')
+    const config = parseStrictJson(string(row.config_json), { maxBytes: PUBLICATION_RECORD_MAX_BYTES, maxDepth: 32 })
+    if (!config || typeof config !== 'object' || Array.isArray(config)) return publicationInvalid('保存视图配置无效。')
+  }
+  return row
+}
+
 export function validatePublicationCatalog(records: InitialPublicationRecord[]): void {
   const catalogs = records.filter((record): record is SyncDatabases => record.kind === 'databases')
   if (catalogs.length !== 1) return publicationInvalid('完整快照必须恰有数据库原子记录。')
+  const documents = new Set(records.filter(record => record.kind === 'document').map(record => record.id))
   const tables = catalogs[0].tables
   const uniqueRows = (table: SyncTable, key: (row: SyncRow) => string): Map<string, SyncRow> => {
     const rows = tables[table], result = new Map(rows.map(row => [key(row), row]))
@@ -199,7 +202,6 @@ export function validatePublicationCatalog(records: InitialPublicationRecord[]):
   }
   const databases = uniqueRows('databases', row => id(row.id)), columns = uniqueRows('document_database_columns', row => id(row.id))
   const views = uniqueRows('database_saved_views', row => id(row.id)), entities = uniqueRows('database_entities', row => id(row.id))
-  const documents = new Set(records.filter(record => record.kind === 'document').map(record => record.id))
   const asciiCasefold = (value: string): string => value.replace(/[A-Z]/g, letter => letter.toLowerCase())
   const viewNames = new Set<string>()
   for (const view of views.values()) {

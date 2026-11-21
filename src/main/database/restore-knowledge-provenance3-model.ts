@@ -112,15 +112,17 @@ export function deriveRootRestoreProvenanceSources3(data: Graph3Inputs) {
     const token = text(original, 'id')
     if (!group.lifecycle.createHistoryId || token !== group.lifecycle.createHistoryId) return bad('create-history-id')
     const captured = journalsBySource.get(capsuleJson(group.createJournalSource)) ?? []
-    if (captured.length !== 1 || captured[0].historyToken !== token || captured[0].kind !== 'host-command'
-      || captured[0].decoded.kind !== 'finite' || !('create' in captured[0].decoded.value)) return bad('finite-create-source')
+    if (captured.length !== 1 || captured[0].historyToken !== token || captured[0].kind !== 'host-command')
+      return bad('finite-create-source')
+    const decoded = captured[0].decoded
+    if (decoded.kind !== 'finite' || !('create' in decoded.value)) return bad('finite-create-source')
     let journal: HostCreateJournal
     try {
       journal = decodeHostCreateJournal({ id: token, action_json: text(original, 'action_json'),
         before_json: text(original, 'before_json'), after_json: text(original, 'after_json'),
         before_hash: text(original, 'before_hash'), after_hash: text(original, 'after_hash'), created_at: text(original, 'created_at') })
     } catch { return bad('invalid-original-create-journal') }
-    if (!same(journal, captured[0].decoded.value)) return bad('decoded-source-mismatch')
+    if (!same(journal, decoded.value)) return bad('decoded-source-mismatch')
     const wire = journal.create.wire
     if (!same({ groupId: wire.id, creationId: wire.creationId, createdAt: wire.createdAt, origin: wire.origin }, group.tuple)
       || journal.input.action.documentId !== group.tuple.origin.documentId

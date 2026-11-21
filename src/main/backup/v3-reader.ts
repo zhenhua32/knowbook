@@ -2,8 +2,10 @@ import { createHash } from 'node:crypto'
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, readdirSync, realpathSync, type BigIntStats } from 'node:fs'
 import { lstat, open, unlink } from 'node:fs/promises'
 import { dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
-import { BACKUP_V3_MAX_ASSET_BYTES, backupV3FileDigest, backupV3InventoryHash, isBackupV3AssetPath, parseCapturedBackupV3Files, parseCapturedBackupV3Inventory,
+import { BACKUP_V3_MAX_ASSET_BYTES, backupV3InventoryHash, isBackupV3AssetPath, parseCapturedBackupV3Files,
   type BackupV3File, type BackupV3FileDigest } from './v3-format'
+import { openScopedBackupV3Inventory } from './v3-archive-scope'
+import { canonicalSyncedPortableJson } from '../../shared/syncedBlockPortable'
 
 // JSON group files share the existing Markdown content count and byte budgets.
 const limits = { entries: 20_000, depth: 32, contentFiles: 5_000,
@@ -204,30 +206,59 @@ export function captureBackupV3PublicationFiles(root: string) {
   return publicationFiles(captured, backupV3InventoryHash(captured.files))
 }
 
-function captureVerifiedArchive(root: string) {
-  const buffer = allocateDigestBuffer(), contents: BackupV3File[] = [], assets: BackupV3FileDigest[] = []
-  const capture = captureArchiveFiles<BackupV3File | BackupV3FileDigest>(root, (fd, size, path) =>
-    isBackupV3AssetPath(path) ? readFileDigest(fd, size, path, buffer) : readFileBytes(fd, size, path))
-  for (const entry of capture.files) {
-    if ('hash' in entry) assets.push(entry)
-    else contents.push(entry)
-  }
-  const archive = parseCapturedBackupV3Inventory(contents, assets)
-  return { root: capture.root, originals: capture.originals, directories: capture.directories,
-    archive, files: [...contents.map(backupV3FileDigest), ...assets], assets }
+export function readVerifiedBackupV3ContentFile(path: string, expected: BackupV3FileDigest, pinned?: BigIntStats): Uint8Array {
+  safeAncestors(path)
+  const before = lstatSync(path, { bigint: true })
+  if (!independentFile(before) || before.size !== BigInt(expected.bytes) || expected.bytes > limits.contentFileBytes
+    || (pinned && !samePathFile(before, pinned))) return invalid('original V3 content file changed before read')
+  const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+  try {
+    const opened = fstatSync(fd, { bigint: true })
+    if (!samePathFile(before, opened)) return invalid('original V3 content descriptor changed')
+    const { bytes } = readFileBytes(fd, expected.bytes, expected.relativePath)
+    const after = fstatSync(fd, { bigint: true })
+    if (!samePathFile(opened, after) || !samePathFile(lstatSync(path, { bigint: true }), after))
+      return invalid('original V3 content file changed during read')
+    if (createHash('sha256').update(bytes).digest('hex') !== expected.hash) return invalid('原字节hash不符')
+    return bytes
+  } finally { closeSync(fd) }
 }
 
-/** Whole-archive verification for publication, without materializing asset payloads. */
+function captureVerifiedArchive(root: string) {
+  const contents: BackupV3FileDigest[] = [], assets: BackupV3FileDigest[] = []
+  const capture = captureArchiveDigests(root)
+  for (const entry of capture.files) {
+    if (isBackupV3AssetPath(entry.relativePath)) assets.push(entry)
+    else contents.push(entry)
+  }
+  const files = [...contents, ...assets], digestByPath = new Map(files.map(file => [file.relativePath, file]))
+  const opened = openScopedBackupV3Inventory(contents, assets, path => {
+    const file = capture.originals.get(path) ?? invalid('content file is outside the captured inventory')
+    return readVerifiedBackupV3ContentFile(file.path, digestByPath.get(path)!, file.stat)
+  })
+  try {
+    assertArchiveOriginalPaths(capture)
+    return { ...capture, ...opened, files, assets, digestByPath }
+  } catch (error) {
+    opened.close()
+    throw error
+  }
+}
+
+/** Whole-archive verification using disk-backed content and streamed assets. */
 export function verifyBackupV3Archive(root: string) {
-  const { archive, files } = captureVerifiedArchive(root)
-  return { manifest: archive.manifest, files }
+  const { archive, files, close } = captureVerifiedArchive(root)
+  try { return { manifest: archive.manifest, files } }
+  finally { close() }
 }
 
 /** Parse the archive and obtain its publication witness from one capture. */
 export function verifyBackupV3ArchiveForPublication(root: string) {
   const captured = captureVerifiedArchive(root)
-  return { manifest: captured.archive.manifest, files: captured.files,
-    ...publicationFiles(captured, backupV3InventoryHash(captured.files)) }
+  try {
+    const { root, originals, directories, files, archive } = captured
+    return { manifest: archive.manifest, files, ...publicationFiles({ root, originals, directories }, backupV3InventoryHash(files)) }
+  } finally { captured.close() }
 }
 
 /** Strict read-only inspection. It never opens a database or stages assets. */
@@ -236,16 +267,20 @@ export function readBackupV3Archive(root: string): ReturnType<typeof parseCaptur
 }
 
 export interface BackupV3RestoreSource { readonly kind: 'verified-v3-restore-source' }
-type RestoreSource = ReturnType<typeof captureVerifiedArchive> & { inventoryHash: string; digestByPath: Map<string, BackupV3FileDigest> }
+type RestoreSource = ReturnType<typeof captureVerifiedArchive> & { inventoryHash: string }
 const restoreSources = new WeakMap<BackupV3RestoreSource, RestoreSource>()
 
-/** Pin the archive parsed during this capture and the physical identity of each
- * original. No descriptors or asset payloads are retained across calls. */
+/** Pin the verified physical originals and the file-backed content scope. */
 export function openBackupV3RestoreSource(root: string): BackupV3RestoreSource {
   const capture = captureVerifiedArchive(root), owner = Object.freeze({ kind: 'verified-v3-restore-source' as const })
-  restoreSources.set(owner, { ...capture, inventoryHash: backupV3InventoryHash(capture.files),
-    digestByPath: new Map(capture.files.map(file => [file.relativePath, file])) })
+  restoreSources.set(owner, { ...capture, inventoryHash: backupV3InventoryHash(capture.files) })
   return owner
+}
+
+export function closeBackupV3RestoreSource(owner: BackupV3RestoreSource) {
+  const source = restoreSources.get(owner)
+  restoreSources.delete(owner)
+  source?.close()
 }
 
 function restoreSource(owner: BackupV3RestoreSource): RestoreSource {
@@ -255,7 +290,16 @@ function restoreSource(owner: BackupV3RestoreSource): RestoreSource {
 /** The caller can plan from these values but cannot mutate the captured source. */
 export function readBackupV3RestoreSource(owner: BackupV3RestoreSource) {
   const { root, archive, files, assets, inventoryHash } = restoreSource(owner)
-  return structuredClone({ root, archive, files, assets, inventoryHash })
+  const groups = Array.from(archive.groups, group => ({ group, json: canonicalSyncedPortableJson(group) }))
+    .sort((a, b) => a.json < b.json ? -1 : a.json > b.json ? 1 : 0).map(item => item.group)
+  return { root, archive: { catalog: structuredClone(archive.catalog), manifest: structuredClone(archive.manifest),
+    documents: Array.from(archive.documents), standaloneDatabases: Array.from(archive.standaloneDatabases), groups },
+    files: structuredClone(files), assets: structuredClone(assets), inventoryHash }
+}
+
+export function readScopedBackupV3RestoreSource(owner: BackupV3RestoreSource) {
+  const { root, archive, files, inventoryHash } = restoreSource(owner)
+  return { root, archive, files, inventoryHash }
 }
 
 export function readBackupV3RestoreIndex(owner: BackupV3RestoreSource) {

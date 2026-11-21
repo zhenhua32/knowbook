@@ -8,6 +8,7 @@ import { DURABLE_SQL_DAG_MAX_DEPTH } from './restore-knowledge-dag-model'
 import { graph3Encode, graph3TableLayout, graph3Text } from './restore-knowledge-graph3-data'
 import type { Root3Witness } from './restore-knowledge-root3-model'
 import { assertRawRestoreSqlTextRoundtrip, type RawRestoreSqlCell } from './restore-knowledge-sql-cell'
+import type { Navigation3TableSource } from './restore-knowledge-navigation3-tables'
 
 /** This is a pure storage transform. A witness/DTO/hash is not a Main owner,
  * SQL reader, merge policy, foreign-key proof or installation capability. */
@@ -288,11 +289,12 @@ export function prepareMerge3Table(input: PrepareMerge3TableInput): PreparedMerg
     const sameEncoding = originalEncoding === currentEncoding
     const columnOrder = targetColumns.map(name => incoming.columns.indexOf(name))
     const sameLayout = sameEncoding && columnOrder.every((index, targetIndex) => index === targetIndex)
-    const append = (row: Capsule2RawSqlRow, incomingRow: Capsule2RawSqlRow): Merge3InputRow => {
-      const aligned = sameLayout ? incomingRow.cells : columnOrder.map(position => {
-        const value = incomingRow.cells[position]
+    const align = (incomingCells: readonly RawRestoreSqlCell[]) => sameLayout ? incomingCells : columnOrder.map(position => {
+        const value = incomingCells[position]
         return value[0] === 'text' && !sameEncoding ? graph3Encode(graph3Text(value, originalEncoding), currentEncoding) : value
-      })
+    })
+    const append = (row: Capsule2RawSqlRow, incomingRow: Capsule2RawSqlRow): Merge3InputRow => {
+      const aligned = align(incomingRow.cells)
       const targetCells = sameEncoding ? accountCells(aligned, targetColumns.length, b)
         : cells(aligned, targetColumns.length, currentEncoding, b)
       const ref: Merge3OriginalRowRef = { ...meta, side, table: source.name, sourceRowId: row.sourceRowId,
@@ -324,16 +326,12 @@ export function prepareMerge3Table(input: PrepareMerge3TableInput): PreparedMerg
       const originalCells = cells(row.cells, original.columns.length, originalEncoding, sourceBudget)
       const candidateCells = changed === row ? accountCells(originalCells, incoming.columns.length, candidateBudget)
         : cells(changed.cells, incoming.columns.length, originalEncoding, candidateBudget, originalCells)
-      const { originalCells: _original, cells: targetCells, ...prepared } = append({ sourceRowId: id, cells: originalCells },
+      const { originalCells: _original, cells: _target, ...prepared } = append({ sourceRowId: id, cells: originalCells },
         { sourceRowId: id, cells: candidateCells })
       const loadOriginal = () => originalLookup(id)?.cells ?? fail('原件行在作用域中消失：' + side)
-      if (sameLayout) {
-        const loadCandidate = raw === rawCandidate ? loadOriginal
-          : () => candidateLookup(id)?.cells ?? fail('候选行在作用域中消失：' + side)
-        ordered.push({ ...prepared, get originalCells() { return loadOriginal() }, get cells() { return loadCandidate() } })
-      } else {
-        ordered.push({ ...prepared, get originalCells() { return loadOriginal() }, cells: targetCells })
-      }
+      const loadCandidate = raw === rawCandidate ? loadOriginal
+        : () => candidateLookup(id)?.cells ?? fail('候选行在作用域中消失：' + side)
+      ordered.push({ ...prepared, get originalCells() { return loadOriginal() }, get cells() { return align(loadCandidate()) } })
     }
     if (ordered.length !== capsule2RawTableRowCount(raw)) return fail('原行数变化：' + side)
     return ordered
@@ -400,6 +398,14 @@ function preparedTable(input: PreparedMerge3Table): PreparedMerge3Table {
 
 export function finishMerge3Table(input: PreparedMerge3Table, selectedRows: readonly Merge3SelectedRow[],
   dispositions: readonly Merge3RowDisposition[]): FinishedMerge3Table {
+  const { table: { rows, ...layout }, ...selection } = scanMerge3Table(input, selectedRows, dispositions)
+  const body = { ...selection, table: { ...layout, rows: [...rows] } }
+  return freezeCapsuleValue({ ...body, storageHash: hash('knowbook.restore.merge3.selected-table.v1', body, CAPSULE2_RAW_MAX_JSON_BYTES) })
+}
+
+/** Hold only selected coordinates until their checked cells are emitted in signed rowid order. */
+export function scanMerge3Table(input: PreparedMerge3Table, selectedRows: readonly Merge3SelectedRow[],
+  dispositions: readonly Merge3RowDisposition[]) {
   const prepared = preparedTable(input), all = [...prepared.sourceRows, ...prepared.currentRows], rows = new Map(all.map(row => [row.key, row]))
   const choices = new Map<string, Merge3SelectedRow>()
   for (const input of array(selectedRows, CAPSULE2_RAW_MAX_ROWS)) {
@@ -423,7 +429,7 @@ export function finishMerge3Table(input: PreparedMerge3Table, selectedRows: read
   if (seen.size !== rows.size) return fail('存在无disposition原行')
   const byDisposition = new Map(checkedDispositions.map(row => [row.rowKey, row]))
   const occupied = new Set(prepared.currentRows.map(row => row.ref.sourceRowId)), targetRowIds = new Set<string>(), targetKeys = new Set<string>()
-  const output: MergedRow3[] = [], b = budget()
+  const output: Array<{ row: Merge3InputRow; target: Omit<MergedRow3, 'cells'> }> = [], b = budget()
   let next = 1n
   const selected = all.filter(row => choices.has(row.key)) // stable original rowid order, independent of caller choice order
   for (const row of selected) {
@@ -448,20 +454,20 @@ export function finishMerge3Table(input: PreparedMerge3Table, selectedRows: read
       if (targetKeys.has(identity)) return fail('目标非NULL PK重复，storage不自动upsert')
       targetKeys.add(identity)
     }
-    const targetCells = accountCells(row.cells, prepared.columns.length, b)
-    const target: MergedRow3 = { key: row.key, targetRowId, cells: targetCells, sourceRef: row.ref, replaces: replaced?.ref ?? null }
-    const { cells: _cells, ...targetMetadata } = target
-    take(b, 'jsonBytes', Buffer.byteLength(capsuleJson(targetMetadata)))
-    output.push(target)
+    accountCells(row.cells, prepared.columns.length, b)
+    const target = { key: row.key, targetRowId, sourceRef: row.ref, replaces: replaced?.ref ?? null }
+    take(b, 'jsonBytes', Buffer.byteLength(capsuleJson(target)))
+    output.push({ row, target })
   }
-  output.sort((a, b) => BigInt(a.targetRowId) < BigInt(b.targetRowId) ? -1 : 1)
+  output.sort((a, b) => BigInt(a.target.targetRowId) < BigInt(b.target.targetRowId) ? -1 : 1)
   const orderedDispositions = all.map(row => ({ ...byDisposition.get(row.key)!, sourceRef: row.ref }))
   const conflicts = orderedDispositions.filter(row => row.status === 'conflict')
-  const body = { kind: 'restore-merge3-selected-content-table' as const, version: 1 as const, preparedHash: prepared.preparedHash,
+  return { kind: 'restore-merge3-selected-content-table' as const, version: 1 as const, preparedHash: prepared.preparedHash,
     table: { name: prepared.name, role: 'content' as const, columns: prepared.columns, primaryKey: prepared.primaryKey,
-      encoding: prepared.currentEncoding, rows: output }, dispositions: orderedDispositions, conflicts, complete: conflicts.length === 0,
+      encoding: prepared.currentEncoding, rows: (function* (): IterableIterator<MergedRow3> {
+        for (const { row, target } of output) yield { ...target, cells: row.cells }
+      })() }, dispositions: orderedDispositions, conflicts, complete: conflicts.length === 0,
     semanticValidationComplete: false as const, permit: false as const }
-  return freezeCapsuleValue({ ...body, storageHash: hash('knowbook.restore.merge3.selected-table.v1', body, CAPSULE2_RAW_MAX_JSON_BYTES) })
 }
 
 /** Decode selected values without putting BigInts or Buffers into a DTO or hash.
@@ -505,4 +511,13 @@ export function assertMerge3StorageTablesBudget(tables: readonly FinishedMerge3T
   }
   if (names.size !== MERGE3_CONTENT_TABLES.length) return fail('完整目标必须包含固定12张content表')
   jsonBudget(tables)
+}
+
+/** Recount actual emitted cells together after layout changes. */
+export function assertMerge3ScopedStorageRowsBudget(tables: readonly Navigation3TableSource[]): void {
+  const b = budget()
+  for (const table of tables) for (const row of table.rows) {
+    if (!int64(row.targetRowId)) return fail('目标rowid无效')
+    cells(row.cells, table.columns.length, table.encoding, b)
+  }
 }

@@ -5,7 +5,8 @@ import { CAPSULE2_RAW_MAX_JSON_BYTES, capsule2RawTableRowCount, hashValidatedCap
   type Capsule2RawSqlRow, type Capsule2RawSqlTable } from './restore-knowledge-capsule2-raw-model'
 import { findGraph3OriginalRow, graph3Conflict, graph3Text, graph3Value } from './restore-knowledge-graph3-data'
 import type { MergedRow3 } from './restore-knowledge-merge3-storage'
-import { withStoredMerge3NavigationFinalIndex3, type Navigation3Table, type StoredNavigation3Index } from './restore-knowledge-navigation3-merge-context'
+import { withStoredMerge3NavigationFinalIndex3, type StoredNavigation3Index } from './restore-knowledge-navigation3-merge-context'
+import type { Navigation3TableSource } from './restore-knowledge-navigation3-tables'
 import { applyNavigation3TextEdits, createNavigation3RangeProjection } from './restore-knowledge-navigation3-rewrite-cells'
 import { toReference3GraphInputs } from './restore-knowledge-reference3-model'
 import { bindRootRestoreBaseAssetBlobs5, type VerifiedBackupV3Asset5 } from './restore-knowledge-selected-native-assets5'
@@ -32,7 +33,7 @@ const fail = (reason: string): never => { throw new Error('最终附件审计失
 const same = (left: unknown, right: unknown) => capsuleJson(left) === capsuleJson(right)
 const hash = (domain: string, value: unknown) => capsuleBytesHash(domain + '\0' + capsuleJson(value))
 const by = <T>(items: readonly T[], key: (item: T) => string) => new Map(items.map(item => [key(item), item]))
-const text = (table: Navigation3Table, row: MergedRow3, column: string) => graph3Text(row.cells[table.columns.indexOf(column)], table.encoding)
+const text = (table: Navigation3TableSource, row: MergedRow3, column: string) => graph3Text(row.cells[table.columns.indexOf(column)], table.encoding)
 export const rootRestoreFinalAssetCellKey5 = (cell: NonNullable<Address['cell']>) => capsuleJson([cell.sourceRef, cell.targetRowId, cell.column,
   cell.range.from, cell.range.to, cell.range.raw, cell.token ? [cell.token.from, cell.token.to] : null])
 
@@ -149,7 +150,6 @@ export function observeRootRestoreFinalAssetClosure5(physical: Physical, stage: 
 
 function observeFinalAssetScopes(physical: Physical, stage: Assets, index: Pick<StoredNavigation3Index, 'physicalLocations' | 'physicalBlock'>) {
   const { value: sql } = physical, { sources, value: staged } = stage, { captured } = sources
-  const rows = new Map(sql.tables.flatMap(table => table.rows.map(row => [row.key, row] as const)))
   const table = (name: string) => sql.tables.find(value => value.name === name) ?? fail('缺最终表 ' + name)
   const stagedRows = new Map<string, Array<Proof>>()
   const aliases = by(staged.aliases, value => capsuleJson([value.hash, value.logicalName]))
@@ -204,17 +204,25 @@ function observeFinalAssetScopes(physical: Physical, stage: Assets, index: Pick<
   }
   type Location = typeof index.physicalLocations[number]
   const byDocument = new Map<string, Location[]>(), byGroup = new Map<string, Location[]>()
-  const order = new Map<string, bigint>()
+  const rowPositions = new Map<string, { table: Navigation3TableSource; ordinal: number; order: bigint }>()
   for (const name of ['blocks', 'synced_group_blocks']) {
     const blockTable = table(name), column = blockTable.columns.indexOf('sort_order')
-    for (const row of blockTable.rows) { const value = row.cells[column]; if (value?.[0] !== 'integer') return fail('缺实际正文排序'); order.set(row.key, BigInt(value[1])) }
+    for (const [ordinal, row] of blockTable.rows.entries()) {
+      const value = row.cells[column]
+      if (value?.[0] !== 'integer') return fail('缺实际正文排序')
+      rowPositions.set(row.key, { table: blockTable, ordinal, order: BigInt(value[1]) })
+    }
+  }
+  const readRow = (key: string | undefined) => {
+    const position = key && rowPositions.get(key)
+    return position ? position.table.rows.at(position.ordinal) : undefined
   }
   for (const block of index.physicalLocations) {
     const map = block.groupId === null ? byDocument : byGroup, id = block.groupId ?? block.documentId!
     const list = map.get(id) ?? []; list.push(block); map.set(id, list)
   }
   const readOrderedBlocks = (items: readonly Location[]) => [...items].sort((left, right) => {
-    const a = order.get(left.rowKey)!, b = order.get(right.rowKey)!
+    const a = rowPositions.get(left.rowKey)!.order, b = rowPositions.get(right.rowKey)!.order
     return a < b ? -1 : a > b ? 1 : left.id < right.id ? -1 : left.id > right.id ? 1 : 0
   }).map(location => index.physicalBlock(location.id) ?? fail('缺最终正文行'))
   const documents = table('documents')
@@ -223,11 +231,11 @@ function observeFinalAssetScopes(physical: Physical, stage: Assets, index: Pick<
     for (const destination of summaryAssets(summary)) finalCell(scope, destination, row, 'summary', destination, undefined,
       () => original(row, row, 'summary', destination, destination, summary))
     const blocks = readOrderedBlocks(byDocument.get(id) ?? []), lookup = by(blocks, block => block.id)
-    finalBody(scope, blocks.map(block => block.block), blockId => rows.get(lookup.get(blockId)?.rowKey ?? ''), row)
+    finalBody(scope, blocks.map(block => block.block), blockId => readRow(lookup.get(blockId)?.rowKey), row)
   }
   for (const [groupId, values] of byGroup) {
     const blocks = readOrderedBlocks(values), lookup = by(blocks, block => block.id)
-    finalBody(['synced_groups', groupId], blocks.map(block => block.block), blockId => rows.get(lookup.get(blockId)?.rowKey ?? ''))
+    finalBody(['synced_groups', groupId], blocks.map(block => block.block), blockId => readRow(lookup.get(blockId)?.rowKey))
   }
   const templates = table('document_templates')
   for (const row of templates.rows) {

@@ -15,7 +15,9 @@ import { withReopenedRootKnowledgeConservationInputs5 } from './restore-knowledg
 import { assertCompleteOriginalVerificationBytes5 } from './restore-knowledge-qualified-originals'
 import { deriveRootRestoreReferenceAllocation3, normalizeReference3Choices, validateReference3Kernel,
   type Reference3Allocation, type Reference3Choices, type Reference3Kernel } from './restore-knowledge-reference3-model'
-import { deriveRootRestoreCanonicalCandidateWithCells3 } from './restore-knowledge-canonical3-model'
+import { canonical3WireHashInput, deriveRootRestoreCanonicalCandidateWithCells3, openRootRestoreCanonicalCandidateWithCells3,
+  type Canonical3WireSource } from './restore-knowledge-canonical3-model'
+import { navigation3TableHashInput, type Navigation3TableSource } from './restore-knowledge-navigation3-tables'
 import { checkMerge3NativeStorage3 } from './restore-knowledge-merge3-native'
 import { assertMerge3JsonBudget } from './restore-knowledge-merge3-storage'
 import { deriveSelectedPendingLocalBody5, parsePendingLocalComponentLocator5,
@@ -28,18 +30,26 @@ type BaseLocation = Awaited<ReturnType<typeof readRootRestoreIdentityPlanLocatio
 type Location = BaseLocation['location']
 type Data = Awaited<ReturnType<typeof readRootRestoreIdentityGraphInputs3>>
 type Candidate = ReturnType<typeof checkedCandidate>
-export interface ColdRootRestoreReferenceInputs5 {
+type ScopedCandidate = Omit<Candidate, 'tables' | 'activeGroupWires'> & {
+  readonly tables: readonly Navigation3TableSource[]
+  readonly activeGroupWires: Canonical3WireSource
+}
+interface ColdReferenceInputs<C extends ScopedCandidate> {
   readonly data: Data
   readonly allocation: Reference3Allocation
-  readonly candidate: Candidate
-  readonly value: Reference3Value
+  readonly candidate: C
+  readonly value: ReferenceValue<C>
   readonly kernel: Reference3Kernel
   readonly choices: Reference3Choices
   readonly referencePlanId: string
   readonly referenceManifestHash: string
   assertPlanManifests(): Promise<void>
 }
-export interface Reference3Value { readonly allocation: Reference3Allocation; readonly candidate: Candidate }
+interface ReferenceValue<C extends ScopedCandidate> { readonly allocation: Reference3Allocation; readonly candidate: C }
+export type ColdRootRestoreReferenceInputs5 = ColdReferenceInputs<Candidate>
+export type ScopedColdRootRestoreReferenceInputs5 = ColdReferenceInputs<ScopedCandidate>
+export type Reference3Value = ReferenceValue<Candidate>
+export type ScopedReference3Value = ReferenceValue<ScopedCandidate>
 type Manifest = ReturnType<typeof manifestBody>
 type Pending = { choice: PendingLocalComponentLocator5; baseCandidateHash: string }
 type Captured = Pick<Awaited<ReturnType<typeof readRootRestoreIdentityInputsAndOriginals5>>, 'pair' | 'working'>
@@ -63,31 +73,71 @@ function checkedCandidate(data: Data, allocation: Reference3Allocation, choices:
   return checkedCandidateWithCells(data, allocation, choices).candidate
 }
 function checkedCandidateWithCells(data: Data, allocation: Reference3Allocation, choices: Reference3Choices, pending?: SelectedPendingLocalBody5) {
-  const { candidate: model, tableInspection: nativeStorageChecks, ...cells } = deriveRootRestoreCanonicalCandidateWithCells3(data, allocation,
-    checkMerge3NativeStorage3, { anonymousValues: choices.anonymousValues }, pending)
+  const checked = checkCanonicalResult(deriveRootRestoreCanonicalCandidateWithCells3(data, allocation,
+    checkMerge3NativeStorage3, { anonymousValues: choices.anonymousValues }, pending))
+  assertMerge3JsonBudget(checked.candidate)
+  return checked
+}
+
+type KeepResource = (close: () => void) => void
+function scopedCandidateBuilder(retain: KeepResource) {
+  return (data: Data, allocation: Reference3Allocation, choices: Reference3Choices, pending?: SelectedPendingLocalBody5) => {
+    const opened = openRootRestoreCanonicalCandidateWithCells3(data, allocation, checkMerge3NativeStorage3,
+      { anonymousValues: choices.anonymousValues }, pending)
+    try {
+      const checked = checkCanonicalResult(opened.value)
+      retain(opened.close)
+      return checked
+    } catch (error) {
+      opened.close()
+      throw error
+    }
+  }
+}
+
+type CanonicalResult = ReturnType<typeof openRootRestoreCanonicalCandidateWithCells3<ReturnType<typeof checkMerge3NativeStorage3>>>['value']
+function checkCanonicalResult<C extends CanonicalResult['candidate']>(
+  { candidate: model, tableInspection: nativeStorageChecks, ...cells }: Omit<CanonicalResult, 'candidate'> & { candidate: C }) {
   const conflicts = [...model.conflicts, ...nativeStorageChecks.conflicts]
   const body = { ...model, nativeStorageChecks, conflicts, candidateConflictFree: conflicts.length === 0,
     catalogNameNativeCheckPending: false as const, finalCurrentRetainedCutComplete: false as const,
     referenceRewriteComplete: false as const, semanticValidationComplete: false as const,
     acceptedCoverage: false as const, effective: false as const, permit: false as const }
-  assertMerge3JsonBudget(body)
-  const checkedCanonicalCandidateHash = hashBoundedCapsuleJson(body, CAPSULE2_RAW_MAX_JSON_BYTES, 'knowbook.restore.canonical3.checked-candidate.v1\0')
+  assertMerge3JsonBudget({ ...body, tables: [], activeGroupWires: [] })
+  const checkedCanonicalCandidateHash = hashBoundedCapsuleJson(candidateHashInput(body), CAPSULE2_RAW_MAX_JSON_BYTES,
+    'knowbook.restore.canonical3.checked-candidate.v1\0')
     ?? invalid('完整候选超过原JSON预算，不能截断')
   const value = { ...body, checkedCanonicalCandidateHash }
-  assertMerge3JsonBudget(value)
   return Object.freeze({ ...cells, candidate: freezeCapsuleValue(value) })
 }
-function checkedPendingCandidateWithCells(captured: Captured, data: Data, allocation: Reference3Allocation, choices: Reference3Choices,
-  original: Candidate, choice: PendingLocalComponentLocator5) {
+
+function candidateHashInput<C extends Pick<CanonicalResult['candidate'], 'tables' | 'activeGroupWires'>>(candidate: C) {
+  return { ...candidate, tables: navigation3TableHashInput(candidate.tables), activeGroupWires: canonical3WireHashInput(candidate.activeGroupWires) }
+}
+
+function assertReferenceBudget(value: ScopedReference3Value) {
+  const { allocation, candidate } = value
+  assertMerge3JsonBudget({ allocation })
+  if (!hashBoundedCapsuleJson({ allocation, candidate: candidateHashInput(candidate) }, CAPSULE2_RAW_MAX_JSON_BYTES))
+    return invalid('完整候选超过原JSON预算，不能截断')
+}
+
+type CandidateBuildResult<C extends ScopedCandidate> = Omit<ReturnType<typeof checkedCandidateWithCells>, 'candidate'> & { readonly candidate: C }
+type CandidateBuilder<C extends ScopedCandidate> = (data: Data, allocation: Reference3Allocation,
+  choices: Reference3Choices, pending?: SelectedPendingLocalBody5) => CandidateBuildResult<C>
+
+function checkedPendingCandidateWithCells<C extends ScopedCandidate>(
+  captured: Captured, data: Data, allocation: Reference3Allocation, choices: Reference3Choices,
+  original: C, choice: PendingLocalComponentLocator5, buildCandidate: CandidateBuilder<C>) {
   if (original.pendingLocalBody || !original.candidateConflictFree || !original.finalForestValidated) return invalid('原候选未通过整表校验')
   const pending = deriveSelectedPendingLocalBody5(captured, choice)
-  const cells = checkedCandidateWithCells(data, allocation, choices, pending), { candidate } = cells
+  const cells = buildCandidate(data, allocation, choices, pending), { candidate } = cells
   if (!candidate.pendingLocalBody || !candidate.candidateConflictFree || !candidate.finalForestValidated) return invalid('pending候选未通过整表校验')
   assertPendingLocalCandidateCellOnly5(original.tables, candidate.tables, candidate.pendingLocalBody)
   return cells
 }
 function manifestBody(base: BaseLocation, planId: string, data: Data, kernel: Reference3Kernel,
-  choices: Reference3Choices, value: Reference3Allocation, candidate: Candidate, pending?: Pending) {
+  choices: Reference3Choices, value: Reference3Allocation, candidate: ScopedCandidate, pending?: Pending) {
   const fields = { kind: 'prepared-root-restore-reference-plan' as const, policyVersion: kernel.policyVersion, purposeVersion: 1 as const,
     planId, baseIdentityPlanId: base.planId, baseIdentityManifestHash: base.manifestHash,
     baseIdentityAllocationHash: data.value.allocationHash, originalDescriptorHash: base.location.descriptorHash,
@@ -145,7 +195,7 @@ async function readBaseLocation(saved: Saved): Promise<BaseLocation> {
 }
 async function reconstruct(saved: Saved) {
   const before = await readManifest(saved), base = await readBaseLocation(saved)
-  if (before.version === 2) return (await reconstructWithOriginals(saved, before, base)).actual
+  if (before.version === 2) return (await reconstructWithOriginals(saved, before, base, checkedCandidateWithCells)).actual
   // Exactly one fresh complete SQL/K read per fixed public call. Metadata and
   // tail-byte checks do not reread SQL or turn a DTO into an authority.
   const data = await readRootRestoreIdentityGraphInputs3(saved.identity)
@@ -171,10 +221,11 @@ function mint(saved: Saved): RootRestoreReferencePlan3 {
  * The durable base manifest and old public DTO/hash are never rewritten. */
 export async function prepareRootRestoreReferencePlan3(identity: RootRestoreIdentityPlan3, inputChoices?: Reference3Choices,
   scope?: PreparedRootIdentityInputs5) {
-  return (await prepareReference3(identity, inputChoices, scope)).prepared
+  return (await prepareReference3(identity, inputChoices, checkedCandidateWithCells, scope)).prepared
 }
 
-async function prepareReference3(identity: RootRestoreIdentityPlan3, inputChoices?: Reference3Choices,
+async function prepareReference3<C extends ScopedCandidate>(identity: RootRestoreIdentityPlan3, inputChoices: Reference3Choices | undefined,
+  buildCandidate: CandidateBuilder<C>,
   scope?: PreparedRootIdentityInputs5) {
   const choices = normalizeReference3Choices(inputChoices), base = await readRootRestoreIdentityPlanLocation3(identity)
   const captured = scope ? await readPreparedRootRestoreIdentityInputs5(identity, scope) : undefined
@@ -183,8 +234,8 @@ async function prepareReference3(identity: RootRestoreIdentityPlan3, inputChoice
     seed: randomBytes(32).toString('hex'), preparedAt: new Date().toISOString() }
   const planId = randomUUID(), allocation = deriveRootRestoreReferenceAllocation3(data, kernel, choices)
   if (allocation.purposes.some(purpose => purpose.targetId === planId)) return invalid('引用plan locator与新分配身份碰撞')
-  const { candidate, ordinaryEdits, physicalLocations } = checkedCandidateWithCells(data, allocation, choices)
-  const value: Reference3Value = Object.freeze({ allocation, candidate })
+  const { candidate, ordinaryEdits, physicalLocations } = buildCandidate(data, allocation, choices)
+  const value = Object.freeze({ allocation, candidate })
   const prepared = await persistReference3(identity, base, planId, data, kernel, choices, value)
   if (scope) await readPreparedRootRestoreIdentityInputs5(identity, scope)
   const actual = Object.freeze({ data, allocation, candidate, value, kernel, choices, referencePlanId: planId,
@@ -197,32 +248,34 @@ type ReferenceAddress = Omit<Awaited<ReturnType<typeof prepareRootRestoreReferen
  * owned by this invocation's prepared identity scope. */
 export async function withPreparedRootRestoreReferenceInputs5<Preview, T>(identity: RootRestoreIdentityPlan3, inputChoices: Reference3Choices | undefined,
   identityScope: PreparedRootIdentityInputs5,
-  review: (address: ReferenceAddress, value: Reference3Value, scope: RootRestoreStageInputs5) => Promise<Preview>,
+  review: (address: ReferenceAddress, value: ScopedReference3Value, scope: RootRestoreStageInputs5) => Promise<Preview>,
   run: (address: ReferenceAddress, scope: RootRestoreStageInputs5, preview: Preview) => Promise<T>): Promise<T> {
-  let staged: Promise<T>, reference: RootRestoreReferencePlan3
-  {
-    const { prepared, captured } = await prepareReference3(identity, inputChoices, identityScope)
-    if (!captured) return invalid('联合阶段需要本次准备的真实身份规划')
-    const { plan, planId, manifestHash, directory } = prepared
-    const address = Object.freeze({ plan, planId, manifestHash, directory })
-    let previewValue: Reference3Value | undefined = prepared.value
-    reference = plan
-    staged = runRootRestoreStageInputs5(reference, undefined, async scope => {
-      if (!previewValue) return invalid('本次预览引用已释放')
-      const reviewed = review(address, previewValue, scope)
-      previewValue = undefined
-      return run(address, scope, await reviewed)
-    }, captured)
-  }
-  const result = await staged
-  await readPreparedRootRestoreIdentityInputs5(identity, identityScope)
-  await assertRootRestoreReferenceOriginalBytes3(reference)
-  return result
+  return withReferenceResources(async resources => {
+    let staged: Promise<T>, reference: RootRestoreReferencePlan3
+    {
+      const { prepared, captured } = await prepareReference3(identity, inputChoices, scopedCandidateBuilder(close => resources.push(close)), identityScope)
+      if (!captured) return invalid('联合阶段需要本次准备的真实身份规划')
+      const { plan, planId, manifestHash, directory } = prepared
+      const address = Object.freeze({ plan, planId, manifestHash, directory })
+      let previewValue: ScopedReference3Value | undefined = prepared.value
+      reference = plan
+      staged = runRootRestoreStageInputs5(reference, undefined, async scope => {
+        if (!previewValue) return invalid('本次预览引用已释放')
+        const reviewed = review(address, previewValue, scope)
+        previewValue = undefined
+        return run(address, scope, await reviewed)
+      }, captured, resources)
+    }
+    const result = await staged
+    await readPreparedRootRestoreIdentityInputs5(identity, identityScope)
+    await assertRootRestoreReferenceOriginalBytes3(reference)
+    return result
+  })
 }
 
-async function persistReference3(identity: RootRestoreIdentityPlan3, base: BaseLocation, planId: string, data: Data,
-  kernel: Reference3Kernel, choices: Reference3Choices, value: Reference3Value, pending?: Pending) {
-  assertMerge3JsonBudget(value)
+async function persistReference3<C extends ScopedCandidate>(identity: RootRestoreIdentityPlan3, base: BaseLocation, planId: string, data: Data,
+  kernel: Reference3Kernel, choices: Reference3Choices, value: ReferenceValue<C>, pending?: Pending) {
+  assertReferenceBudget(value)
   const body = manifestBody(base, planId, data, kernel, choices, value.allocation, value.candidate, pending), location = base.location
   const target = directory(location, planId), collection = join(location.profileRoot, 'backups', 'database-restore',
     location.operationId, 'restore-reference-plans-v3')
@@ -307,15 +360,18 @@ async function withCheckedRootRestoreReferenceFromQualified5<T>(
   qualified: Parameters<typeof withReopenedRootKnowledgeConservationInputs5>[0],
   identity: Parameters<typeof withReopenedRootRestoreIdentityInputs5>[2],
   reference: Parameters<typeof reopenRootRestoreReferencePlan3>[1],
-  read: (checked: ColdRootRestoreReferenceInputs5) => Promise<T>) {
+  read: (checked: ScopedColdRootRestoreReferenceInputs5) => Promise<T>) {
   return withReopenedRootKnowledgeConservationInputs5(qualified, (knowledge, knowledgeScope) =>
     withReopenedRootRestoreIdentityInputs5(knowledge, knowledgeScope, identity, async (plan, scope) => {
       const saved = await reopenSaved(plan, reference)
-      const { actual } = await reconstructWithOriginals(saved, await readManifest(saved), await readBaseLocation(saved), scope)
-      return read(Object.freeze({ ...actual, async assertPlanManifests() {
-        await readManifest(saved)
-        await readBaseLocation(saved)
-      } }))
+      return withReferenceResources(async resources => {
+        const { actual } = await reconstructWithOriginals(saved, await readManifest(saved), await readBaseLocation(saved),
+          scopedCandidateBuilder(close => resources.push(close)), scope)
+        return read(Object.freeze({ ...actual, async assertPlanManifests() {
+          await readManifest(saved)
+          await readBaseLocation(saved)
+        } }))
+      })
     }))
 }
 
@@ -325,7 +381,7 @@ export async function withRootRestoreReferenceOriginalRowsFromQualified5<Project
   qualified: Parameters<typeof withCheckedRootRestoreReferenceFromQualified5>[0],
   identity: Parameters<typeof withCheckedRootRestoreReferenceFromQualified5>[1],
   reference: Parameters<typeof withCheckedRootRestoreReferenceFromQualified5>[2],
-  project: (checked: ColdRootRestoreReferenceInputs5,
+  project: (checked: ScopedColdRootRestoreReferenceInputs5,
     rows: Readonly<{ source: ReferenceOriginalRows5; current: ReferenceOriginalRows5 }>) => Projection,
   read: (projection: Projection) => Promise<Result>) {
   return withCheckedRootRestoreReferenceFromQualified5(qualified, identity, reference, checked =>
@@ -366,7 +422,7 @@ async function reopenPendingReferenceInputs<T>(
       const saved = await reopenSaved(plan, reference)
       const before = await readManifest(saved), base = await readBaseLocation(saved)
       if (before.version !== 2) return invalid('联合冷重开要求实际pending引用清单')
-      const captured = await reconstructWithOriginals(saved, before, base, scope)
+      const captured = await reconstructWithOriginals(saved, before, base, checkedCandidateWithCells, scope)
       const opened = reopenedReference(saved, captured.actual.value)
       return run(opened, captured, before.pendingCellProofHash)
     }))
@@ -380,14 +436,26 @@ export async function readRootRestoreReferenceInputsAndOriginals5(plan: RootRest
   const saved = owners.get(plan)
   if (!saved) return invalid('不是实际Main持久引用规划句柄')
   const before = await readManifest(saved), base = await readBaseLocation(saved)
-  return reconstructWithOriginals(saved, before, base)
+  return reconstructWithOriginals(saved, before, base, checkedCandidateWithCells)
 }
 
 export interface RootRestoreStageInputs5 { readonly kind: 'main-root-restore-stage-inputs' }
 type ReferenceInputs = Awaited<ReturnType<typeof readRootRestoreReferenceInputsAndOriginals5>>
+type ScopedReferenceInputs = Awaited<ReturnType<typeof reconstructWithOriginals<ScopedCandidate>>>
 const stageInputs = new WeakMap<RootRestoreStageInputs5, {
-  reference: RootRestoreReferencePlan3; pendingCellProofHash: string | undefined; read?: Promise<ReferenceInputs>
+  reference: RootRestoreReferencePlan3; pendingCellProofHash: string | undefined
+  resources: Array<() => void>; read?: Promise<ScopedReferenceInputs>
 }>()
+
+function releaseReferenceResources(resources: Array<() => void>) {
+  for (const close of resources.splice(0).reverse()) close()
+}
+
+async function withReferenceResources<T>(run: (resources: Array<() => void>) => Promise<T>): Promise<T> {
+  const resources: Array<() => void> = []
+  try { return await run(resources) }
+  finally { releaseReferenceResources(resources) }
+}
 
 /** A combined SQL/asset call can share one actual Reference3 reconstruction.
  * No SQL observation is cached on the reference or kept after the combined call. */
@@ -397,31 +465,49 @@ export async function withRootRestoreStageInputs5<T>(reference: RootRestoreRefer
 }
 
 async function runRootRestoreStageInputs5<T>(reference: RootRestoreReferencePlan3, pendingCellProofHash: string | undefined,
-  run: (scope: RootRestoreStageInputs5) => Promise<T>, captured?: ReferenceInputs): Promise<T> {
+  run: (scope: RootRestoreStageInputs5) => Promise<T>,
+  captured?: ScopedReferenceInputs, resources: Array<() => void> = []): Promise<T> {
   const scope: RootRestoreStageInputs5 = Object.freeze({ kind: 'main-root-restore-stage-inputs' })
   if (captured && captured.actual.candidate.pendingLocalBody?.proofHash !== pendingCellProofHash)
     return invalid('联合阶段与实际持久pending选择不符')
-  stageInputs.set(scope, { reference, pendingCellProofHash, read: captured && Promise.resolve(captured) })
+  stageInputs.set(scope, { reference, pendingCellProofHash, resources, read: captured && Promise.resolve(captured) })
   captured = undefined
   try { return await run(scope) }
-  finally { stageInputs.delete(scope) }
+  finally {
+    stageInputs.delete(scope)
+    releaseReferenceResources(resources)
+  }
 }
 
 /** No later stage can borrow the SQL read after the verified alias boundary. */
 export function finishRootRestoreStageInputReads5(reference: RootRestoreReferencePlan3, scope: RootRestoreStageInputs5) {
-  if (stageInputs.get(scope)?.reference !== reference) return invalid('不是本次同一genuine reference的阶段认证')
+  const saved = getStageInputs(reference, scope)
   stageInputs.delete(scope)
+  releaseReferenceResources(saved.resources)
+}
+
+export function retainRootRestoreStageResource5(reference: RootRestoreReferencePlan3, scope: RootRestoreStageInputs5, close: () => void) {
+  getStageInputs(reference, scope).resources.push(close)
+}
+
+function getStageInputs(reference: RootRestoreReferencePlan3, scope: RootRestoreStageInputs5) {
+  const saved = stageInputs.get(scope)
+  return saved?.reference === reference ? saved : invalid('不是本次同一genuine reference的阶段认证')
 }
 
 export async function readRootRestoreStageInputs5(reference: RootRestoreReferencePlan3, scope: RootRestoreStageInputs5) {
-  const saved = stageInputs.get(scope)
-  if (!saved || saved.reference !== reference) return invalid('不是本次同一genuine reference的阶段认证')
+  const saved = getStageInputs(reference, scope)
   const previous = saved.read
-  saved.read ??= readRootRestoreReferenceInputsAndOriginals5(reference).then(result => {
+  saved.read ??= (async () => {
+    const owner = owners.get(reference)
+    if (!owner) return invalid('不是实际Main持久引用规划句柄')
+    const before = await readManifest(owner), base = await readBaseLocation(owner)
+    const result = await reconstructWithOriginals(owner, before, base,
+      scopedCandidateBuilder(close => retainRootRestoreStageResource5(reference, scope, close)))
     if (result.actual.candidate.pendingLocalBody?.proofHash !== saved.pendingCellProofHash)
       return invalid('联合阶段与实际持久pending选择不符')
     return result
-  })
+  })()
   const result = await saved.read
   // A sibling stage may have copied or written its own output in between.
   // Authenticate the actual source/reference bytes again before reusing SQL.
@@ -433,7 +519,8 @@ export async function readRootRestoreStageInputs5(reference: RootRestoreReferenc
   return result
 }
 
-async function reconstructWithOriginals(saved: Saved, before: Manifest, base: BaseLocation,
+async function reconstructWithOriginals<C extends ScopedCandidate>(saved: Saved, before: Manifest, base: BaseLocation,
+  buildCandidate: CandidateBuilder<C>,
   scope?: ReopenedRootIdentityInputs5 | PreparedRootIdentityInputs5) {
   const captured = scope?.kind === 'main-prepared-root-identity-inputs'
     ? await readPreparedRootRestoreIdentityInputs5(saved.identity, scope)
@@ -441,15 +528,15 @@ async function reconstructWithOriginals(saved: Saved, before: Manifest, base: Ba
   const data = captured.actual
   const allocation = deriveRootRestoreReferenceAllocation3(data, before.kernel, before.choices)
   if (allocation.purposes.some(purpose => purpose.targetId === saved.planId)) return invalid('引用plan locator与新分配身份碰撞')
-  const original = checkedCandidateWithCells(data, allocation, before.choices)
+  const original = buildCandidate(data, allocation, before.choices)
   const pending = before.version === 2 ? { choice: before.pendingSelection, baseCandidateHash: before.pendingBaseCandidateHash } : undefined
   if (pending && original.candidate.checkedCanonicalCandidateHash !== pending.baseCandidateHash) return invalid('pending基准候选变化')
   const { candidate, ordinaryEdits, physicalLocations } = pending
-    ? checkedPendingCandidateWithCells(captured, data, allocation, before.choices, original.candidate, pending.choice) : original
+    ? checkedPendingCandidateWithCells(captured, data, allocation, before.choices, original.candidate, pending.choice, buildCandidate) : original
   const actual = manifestBody(base, saved.planId, data, before.kernel, before.choices, allocation, candidate, pending)
   if (!same(actual, before)) return invalid('完整原件、base allocation或引用派生不等于持久清单')
-  const value: Reference3Value = Object.freeze({ allocation, candidate })
-  assertMerge3JsonBudget(value)
+  const value = Object.freeze({ allocation, candidate })
+  assertReferenceBudget(value)
   await readManifest(saved)
   await assertRootRestoreIdentityOriginalBytes3(saved.identity)
   await readManifest(saved)
@@ -465,7 +552,7 @@ export async function previewRootRestorePendingLocalBody5(plan: RootRestoreRefer
   const choice = parsePendingLocalComponentLocator5(locator)
   const captured = await readRootRestoreReferenceInputsAndOriginals5(plan)
   const { data, allocation, choices, candidate: original } = captured.actual
-  const { candidate } = checkedPendingCandidateWithCells(captured, data, allocation, choices, original, choice)
+  const { candidate } = checkedPendingCandidateWithCells(captured, data, allocation, choices, original, choice, checkedCandidateWithCells)
   await assertRootRestoreReferenceOriginalBytes3(plan)
   return freezeCapsuleValue({ referencePlanId: captured.actual.referencePlanId, referenceManifestHash: captured.actual.referenceManifestHash,
     originalCandidateHash: original.checkedCanonicalCandidateHash, candidate })
@@ -496,9 +583,9 @@ async function preparePendingReference(plan: RootRestoreReferencePlan3, locator:
   const choice = parsePendingLocalComponentLocator5(locator), saved = owners.get(plan)
   if (!saved) return invalid('不是实际Main持久引用规划句柄')
   const before = await readManifest(saved), base = await readBaseLocation(saved)
-  const captured = await reconstructWithOriginals(saved, before, base, identityScope)
+  const captured = await reconstructWithOriginals(saved, before, base, checkedCandidateWithCells, identityScope)
   const { data, allocation, kernel, choices, candidate: original } = captured.actual
-  const { candidate, ordinaryEdits, physicalLocations } = checkedPendingCandidateWithCells(captured, data, allocation, choices, original, choice)
+  const { candidate, ordinaryEdits, physicalLocations } = checkedPendingCandidateWithCells(captured, data, allocation, choices, original, choice, checkedCandidateWithCells)
   const planId = randomUUID()
   if (allocation.purposes.some(purpose => purpose.targetId === planId)) return invalid('引用plan locator与新分配身份碰撞')
   await readBaseLocation(saved)

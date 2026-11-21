@@ -2,15 +2,16 @@ import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import { isSyncedUuid } from '../../shared/syncedBlockValidation'
 import { buildSyncedPortableAssetUri, syncedPortableAssetBackupPath } from '../../shared/syncedBlockPortable'
-import { backupV3InventoryHash, isBackupV3AssetPath, parseCapturedBackupV3Inventory, validateBackupV3ArchiveFilePath,
-  type BackupV3File, type BackupV3FileDigest } from '../backup/v3-format'
-import { copyBackupV3RestoreAsset, copyBackupV3RestoreContent, readBackupV3RestoreSource, type BackupV3RestoreSource } from '../backup/v3-reader'
+import { backupV3InventoryHash, isBackupV3AssetPath, validateBackupV3ArchiveFilePath,
+  type BackupV3FileDigest, type ScopedBackupV3Archive } from '../backup/v3-format'
+import { openScopedBackupV3Inventory } from '../backup/v3-archive-scope'
+import { copyBackupV3RestoreAsset, copyBackupV3RestoreContent, readScopedBackupV3RestoreSource, readVerifiedBackupV3ContentFile,
+  type BackupV3RestoreSource } from '../backup/v3-reader'
 import { capsuleJson, capsuleRecord, freezeCapsuleValue } from './restore-knowledge-capsule-model'
-import { readCapsule2AssetCopy } from './restore-knowledge-capsule2-assets-files'
 import { CAPSULE_V3_ASSET_MAX_FILE_BYTES, validateCapsuleV3ManagedTree } from './restore-knowledge-capsule2-assets-model'
 import type { Capsule2ManagedTreeData } from './restore-knowledge-capsule2-managed-assets-files'
 import { assertOriginCatalogDirectory, readOriginCatalogFile } from './restore-knowledge-origin-bundle-files'
-import { restoreDirectory, syncRestoreDirectory } from './restore-safety-files'
+import { assertRestorePath, restoreDirectory, syncRestoreDirectory } from './restore-safety-files'
 
 export { CAPSULE_V3_ASSET_MAX_FILE_BYTES, validateCapsuleV3ManagedTree }
 export { validateCapsuleV3PortableAssetProvenance } from './restore-knowledge-capsule2-asset-provenance'
@@ -101,7 +102,7 @@ function contentDirectories(root: string, files: readonly BackupV3FileDigest[]) 
 }
 
 export async function copyCapsuleV3ArchiveOriginals(owner: BackupV3RestoreSource, directory: string, root: string) {
-  const verified = readBackupV3RestoreSource(owner), contentRoot = join(directory, CAPSULE_V3_CONTENT_DIRECTORY), blobs = join(directory, 'files')
+  const verified = readScopedBackupV3RestoreSource(owner), contentRoot = join(directory, CAPSULE_V3_CONTENT_DIRECTORY), blobs = join(directory, 'files')
   const proof = validateCapsuleV3ArchiveProof({ snapshotId: verified.archive.manifest.snapshotId, inventoryHash: verified.inventoryHash,
     files: [...verified.files].sort((a, b) => compare(a.relativePath, b.relativePath)) })
   const tree = capsuleV3PortableManagedTree(proof), { content, assets } = splitProof(proof)
@@ -119,10 +120,13 @@ export async function copyCapsuleV3ArchiveOriginals(owner: BackupV3RestoreSource
   return { proof, tree, archive: verified.archive }
 }
 
-/** Bound attachment checks use the existing fixed-size streaming leaf. Only
- * V3 text/group originals are collected, inside the exact V3 content budget. */
-export async function readCapsuleV3ArchiveOriginals(proof: CapsuleV3ArchiveProof, tree: Capsule2ManagedTreeData,
-  directory: string, root: string, parseContent: boolean) {
+/** Parse sealed V3 originals into a temporary reader only when SQL must be checked against them. */
+export function withCapsuleV3ArchiveOriginals(proof: CapsuleV3ArchiveProof, tree: Capsule2ManagedTreeData,
+  directory: string, root: string): Promise<void>
+export function withCapsuleV3ArchiveOriginals<Result>(proof: CapsuleV3ArchiveProof, tree: Capsule2ManagedTreeData,
+  directory: string, root: string, read: (archive: ScopedBackupV3Archive) => Promise<Result>): Promise<Result>
+export async function withCapsuleV3ArchiveOriginals<Result>(proof: CapsuleV3ArchiveProof, tree: Capsule2ManagedTreeData,
+  directory: string, root: string, read?: (archive: ScopedBackupV3Archive) => Promise<Result>) {
   const original = validateCapsuleV3ArchiveProof(proof), physicalTree = capsuleV3PortableManagedTree(original)
   if (capsuleJson(tree) !== capsuleJson(physicalTree)) return bad('V3实际原件树不属于库存')
   const contentRoot = join(directory, CAPSULE_V3_CONTENT_DIRECTORY), blobs = join(directory, 'files'), { content, assets } = splitProof(original)
@@ -137,18 +141,23 @@ export async function readCapsuleV3ArchiveOriginals(proof: CapsuleV3ArchiveProof
     }
   }
   await closure()
-  const originals: BackupV3File[] = []
+  const byName = new Map<string, { file: BackupV3FileDigest; path: string }>()
   for (const file of content) {
     const path = join(contentRoot, ...file.relativePath.split('/'))
-    if (parseContent) {
-      const bytes = await readCapsule2AssetCopy(path, root, file.bytes, file.hash, maxContentFile)
-      originals.push({ relativePath: file.relativePath, bytes })
+    if (read) {
+      await assertRestorePath(path, root)
+      byName.set(file.relativePath, { file, path })
     } else await readOriginCatalogFile(path, root, { path: file.relativePath, bytes: file.bytes, sha256: file.hash })
   }
   for (const file of physicalTree.files) await readOriginCatalogFile(join(blobs, file.hash), root, { path: file.hash, bytes: file.bytes, sha256: file.hash })
-  await closure()
-  if (!parseContent) return
-  const archive = parseCapturedBackupV3Inventory(originals, assets)
-  if (archive.manifest.snapshotId !== original.snapshotId) return bad('实际V3原件和声明snapshot不同')
-  return archive
+  if (!read) return closure()
+  const { archive, close } = openScopedBackupV3Inventory(content, assets, name => {
+    const { file, path } = byName.get(name) ?? bad('V3 内容不在原库存中')
+    return readVerifiedBackupV3ContentFile(path, file)
+  })
+  try {
+    await closure()
+    if (archive.manifest.snapshotId !== original.snapshotId) return bad('实际V3原件和声明snapshot不同')
+    return await read(archive)
+  } finally { close() }
 }

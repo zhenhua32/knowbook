@@ -3,7 +3,10 @@ import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import test from 'node:test'
 import Database from 'better-sqlite3'
-import { readRawCapsule2PhysicalGraphOwned } from '../src/main/database/restore-knowledge-capsule2-physical-raw-read'
+import { hasStoredCapsule2PhysicalBodies, readRawCapsule2PhysicalCountsOwned,
+  readRawCapsule2PhysicalGraphOwned } from '../src/main/database/restore-knowledge-capsule2-physical-raw-read'
+import { capsuleJson } from '../src/main/database/restore-knowledge-capsule-model'
+import { withReferenceOriginalRows5 } from '../src/main/database/restore-knowledge-reference-original-rows5'
 import { readRawInitialIncomingWorkspaceOwned } from '../src/main/database/synced-initial-incoming-raw-read'
 import { readRawSyncedPersistentPublicationSnapshotOwned } from '../src/main/database/synced-publication-raw-read'
 import { readStrictHostDocument } from '../src/main/database/synced-host-document-read'
@@ -64,6 +67,32 @@ test('physical raw2 keeps a true Main group plus unrelated legal ordinary501 whi
     assert.deepEqual(db.prepare('SELECT total_changes() AS count').get(), before)
   })
   assert.deepEqual(f.db.prepare('SELECT * FROM synced_operations WHERE client_operation_id=?').get(f.created.operationId), beforeAck)
+}))
+
+test('owned row storage preserves actual physical graph bytes and releases each document and group body with its scope', () => withV3Fixture(async f => {
+  const document = unrelatedOrdinary501(f)
+  await withRawPhysicalCopy(f, async db => {
+    const legacy = db.transaction(() => readRawCapsule2PhysicalGraphOwned(db))()
+    const scoped = await withReferenceOriginalRows5((_rows, _physical, _blocks, bodies) => {
+      const stored = db.transaction(() => readRawCapsule2PhysicalGraphOwned(db, bodies('source')))()
+      return Promise.resolve(stored)
+    }, async stored => {
+      assert.ok(hasStoredCapsule2PhysicalBodies(stored))
+      assert.equal(capsuleJson(stored), capsuleJson(legacy))
+      assert.deepEqual(db.transaction(() => readRawCapsule2PhysicalCountsOwned(db))(), {
+        documents: legacy.documents.length, groups: legacy.groups.length,
+        instances: legacy.instances.length, identities: legacy.identities.length
+      })
+      return stored
+    })
+    const scopedDocument = scoped.documents.find(item => item.documentId === document.id)!
+    const scopedGroup = scoped.groups.find(item => item.groupId === f.groupId)!.snapshot!
+    assert.equal(scopedDocument.title, document.title)
+    assert.throws(() => scopedDocument.summary, /范围已结束/)
+    assert.throws(() => scopedDocument.blocks, /范围已结束/)
+    assert.throws(() => scopedGroup.blocks, /范围已结束/)
+    assert.deepEqual(db.prepare('SELECT total_changes() AS count').get(), { count: 0 })
+  })
 }))
 
 test('physical raw2 preserves immutable Origin after real Main first-instance removal and actual Store origin-document deletion', () => withV3Fixture(async f => {

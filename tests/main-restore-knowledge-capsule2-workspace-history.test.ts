@@ -2,7 +2,11 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { randomUUID } from 'node:crypto'
 import type { DocumentBlockDraft } from '../src/shared/contracts'
-import { readRawCapsule2WorkspaceHistoryOwned } from '../src/main/database/restore-knowledge-capsule2-workspace-history-read'
+import { readRawCapsule2WorkspaceHistoryEvidenceOwned, readRawCapsule2WorkspaceHistoryOwned } from '../src/main/database/restore-knowledge-capsule2-workspace-history-read'
+import { capsuleBytesHash, capsuleJson } from '../src/main/database/restore-knowledge-capsule-model'
+import { hashBoundedCapsuleJson } from '../src/main/database/restore-knowledge-capsule-json-hash'
+import { CAPSULE2_RAW_MAX_JSON_BYTES } from '../src/main/database/restore-knowledge-capsule2-raw-model'
+import { withReferenceOriginalRows5 } from '../src/main/database/restore-knowledge-reference-original-rows5'
 import { readRawInitialIncomingWorkspaceOwned } from '../src/main/database/synced-initial-incoming-raw-read'
 import { withV3Fixture, type V3Fixture } from './helpers/synced-backup-v3-fixture'
 import { editCreatedGroup } from './helpers/synced-host-command-create-fixture'
@@ -23,7 +27,7 @@ function ordinaryDocument(f: V3Fixture, title: string, text: string) {
 test('workspace history2 keeps genuine Main history plus untrusted C syntax and Store ordinary501 checkpoint trash template and move undo redo without publication admission', () => withV3Fixture(async f => {
   editCreatedGroup(f.db, f.groupId)
   const syntax = actualHistorySyntax(f.db, '2052-01-02T03:04:05.006Z')
-  const long = ordinaryDocument(f, '史'.repeat(501), 'source ordinary body')
+  const long = ordinaryDocument(f, '史'.repeat(501), '历史😀正文 "\\"\n'.repeat(8000))
   const target = ordinaryDocument(f, 'History target', 'target body')
   f.store.documentRecovery.checkpoint(long.id, 'edit', true)
   const sourceDetail = f.store.getDocumentDetail(long.id), targetDetail = f.store.getDocumentDetail(target.id)
@@ -41,9 +45,10 @@ test('workspace history2 keeps genuine Main history plus untrusted C syntax and 
   ] })
   assert.equal(f.db.prepare('SELECT 1 FROM block_identities WHERE id=?').get(templateBlock), undefined)
   insertCoverageSyntax(f.db, syntax)
-  await withObserver2Copy(f.db, f.file, db => {
+  const closed = await withReferenceOriginalRows5((_rows, _physical, _blocks, bodies) => withObserver2Copy(f.db, f.file, db => {
     const before = db.prepare('SELECT total_changes() AS n').get()
-    const value = db.transaction(() => readRawCapsule2WorkspaceHistoryOwned(db))()
+    const { value, stored } = db.transaction(() => ({ value: readRawCapsule2WorkspaceHistoryOwned(db),
+      stored: readRawCapsule2WorkspaceHistoryEvidenceOwned(db, bodies('current')).source.history }))()
     assert.ok(value.historyDocuments.includes(long.id)); assert.ok(value.historyDocuments.includes(trashed.id))
     assert.ok(value.historyBlocks.includes(long.blockId)); assert.ok(value.historyBlocks.includes(trashed.blockId))
     assert.ok(value.unregisteredTemplateBlocks.includes(templateBlock)); assert.ok(value.groupIds.includes(f.groupId))
@@ -56,7 +61,13 @@ test('workspace history2 keeps genuine Main history plus untrusted C syntax and 
     assert.equal(value.accepted, false); assert.equal(value.effective, false); assert.equal(value.permit, false)
     assert.deepEqual(db.prepare('SELECT total_changes() AS n').get(), before)
     assert.throws(() => db.transaction(() => readRawInitialIncomingWorkspaceOwned(db))(), /文档标题无效/)
+    assert.equal(stored.observationHash, value.observationHash)
+    return { stored, expected: capsuleBytesHash(capsuleJson(value)) }
+  }), async ({ stored, expected }) => {
+    assert.equal(hashBoundedCapsuleJson(stored, CAPSULE2_RAW_MAX_JSON_BYTES), expected, 'Read identical history bytes after the original SQL connection closes')
+    return stored
   })
+  assert.throws(() => hashBoundedCapsuleJson(closed, CAPSULE2_RAW_MAX_JSON_BYTES), /读取范围已结束/)
 }))
 
 test('workspace history2 keeps a genuine detached shared Main journal after redo pruning and refuses partial participants of a later real shared journal', () => withV3Fixture(async f => {

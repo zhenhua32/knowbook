@@ -11,6 +11,7 @@ import { assertJointRestoreInstalledResult4, readJointRestoreFence4, readJointRe
 import { readRestoreKnowledgeInstallProof, readRestoreKnowledgePriorInstall, readVerifiedPriorInstallAssetTransfer,
   verifyRestoreKnowledgeInstalledDatabase } from './restore-knowledge-install-proof'
 import { captureReopenedQualifiedOriginalContent5 } from './restore-knowledge-qualified-originals'
+import { withReferenceOriginalRows5 } from './restore-knowledge-reference-original-rows5'
 import { mixedOriginCapsulePath } from './restore-knowledge-mixed-origin-bundle-model'
 import { copyOriginCatalogFile } from './restore-knowledge-origin-bundle-files'
 import { referenceContextObjectPath } from './restore-knowledge-reference-context-model'
@@ -102,18 +103,21 @@ async function readInstalled(profileRoot: string, operationId: string) {
   await assertJointRestoreInstalledResult4(intent)
   const proof = await readRestoreKnowledgeInstallProof(profileRoot, operationId, intent.installationProofHash)
   const { requirements } = await verifyRestoreKnowledgeInstalledDatabase(profileRoot, operationId, intent.installationProofHash, 'steady')
-  const reopened = await captureReopenedQualifiedOriginalContent5({ profileRoot, operationId, mountId: proof.mountId,
-    expectedDescriptorHash: proof.descriptorHash })
-  if (!same(reopened.value.root, proof.coverage.root) || reopened.value.materialHash !== proof.rootMaterialHash
-    || !requirements.entries.some(entry => same(entry, proof.coverage)) || await read(p.fence) !== activeHash
-    || (await readJointRestoreFence4(fencePath)).hash !== fenceHash)
-    return bad('实际 SQLite、安装凭据、qualified 原件或 fence 不是同次安装')
-  const aliases = installedV3AliasOrigins(reopened.pair.source, reopened.pair.current)
-  const bases = {
-    source: mixedOriginCapsulePath(reopened.value.node.source, 'knowledge-complete-assets-v2'),
-    current: mixedOriginCapsulePath(reopened.value.node.current, 'knowledge-complete-assets-v2')
-  }
-  const files = new Map(reopened.originalPackage.files.filter(file => !file.frame.length).map(file => [file.path, file]))
+  const { aliases, bases, files, directory } = await withReferenceOriginalRows5((_rows, _physical, blocks, bodies) =>
+    captureReopenedQualifiedOriginalContent5({ profileRoot, operationId, mountId: proof.mountId,
+      expectedDescriptorHash: proof.descriptorHash }, blocks, [bodies('source'), bodies('current')]), async reopened => {
+    if (!same(reopened.value.root, proof.coverage.root) || reopened.value.materialHash !== proof.rootMaterialHash
+      || !requirements.entries.some(entry => same(entry, proof.coverage)) || await read(p.fence) !== activeHash
+      || (await readJointRestoreFence4(fencePath)).hash !== fenceHash)
+      return bad('实际 SQLite、安装凭据、qualified 原件或 fence 不是同次安装')
+    const aliases = installedV3AliasOrigins(reopened.pair.source, reopened.pair.current)
+    const bases = {
+      source: mixedOriginCapsulePath(reopened.value.node.source, 'knowledge-complete-assets-v2'),
+      current: mixedOriginCapsulePath(reopened.value.node.current, 'knowledge-complete-assets-v2')
+    }
+    const files = new Map(reopened.originalPackage.files.filter(file => !file.frame.length).map(file => [file.path, file]))
+    return { aliases, bases, files, directory: reopened.originalPackage.directory }
+  })
   const transfer = { operationId, transferId: intent.assetTransferId, manifestHash: intent.assetManifestHash }
   const history = requirements.entries.filter(entry => entry.operationId !== operationId)
     .sort((left, right) => right.acceptedAt.localeCompare(left.acceptedAt) || left.operationId.localeCompare(right.operationId))
@@ -128,7 +132,7 @@ async function readInstalled(profileRoot: string, operationId: string) {
   return { p, assertFence: async () => {
     if (await read(p.fence) !== activeHash || (await readJointRestoreFence4(fencePath)).hash !== fenceHash || await restoreExists(p.journal))
       return bad('核验时已安装 fence 变化')
-  }, transfer, history, readPriorTransfer, requirement: proof.coverage, aliases, files, bases, directory: reopened.originalPackage.directory,
+  }, transfer, history, readPriorTransfer, requirement: proof.coverage, aliases, files, bases, directory,
     pins: { root: proof.coverage.root, qualifiedDescriptorHash: proof.descriptorHash, installationProofHash: intent.installationProofHash,
       transferId: intent.assetTransferId, transferManifestHash: intent.assetManifestHash } }
 }

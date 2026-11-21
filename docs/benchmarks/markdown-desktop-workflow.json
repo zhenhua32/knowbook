@@ -1,0 +1,3071 @@
+{
+  "recordedOn": "2026-11-21",
+  "environment": {
+    "os": "Ubuntu 22.04 under WSL2",
+    "kernel": "5.15.133.1-microsoft-standard-WSL2",
+    "cpu": "12th Gen Intel(R) Core(TM) i9-12900K",
+    "logicalCpus": 24,
+    "display": "private Xvfb 1.21.1.4",
+    "screen": [
+      1600,
+      900
+    ],
+    "dpi": 96,
+    "window": [
+      1600,
+      870
+    ],
+    "hardwareAcceleration": false
+  },
+  "sampling": {
+    "visible": "XTest gesture to the first of three matching Xvfb readings, polled at 5 ms intervals. Each reading uses a fixed region or a fixed-width glyph probe in an editor scroll band.",
+    "persistence": "XTest operation to independent exact readback, polled at 5 ms intervals",
+    "warmups": 2,
+    "samples": 7,
+    "p95": "nearest rank"
+  },
+  "runs": [
+    {
+      "app": "Joplin",
+      "version": "3.7.18",
+      "fixtureSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+      "inputBytes": 122369,
+      "workspace": "Linux-5.15.133.1-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+      "region": [
+        530,
+        112,
+        280,
+        100
+      ],
+      "metrics": {
+        "open": {
+          "warmups": [
+            {
+              "gesture": "click:294,125",
+              "beforeSha256": "2418924c8fe636ce8f4bb9ceec2d66cab31118677f7926db5d2a0b05863579ad",
+              "afterSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "pollIntervalMs": 5,
+              "ms": 57.48754
+            },
+            {
+              "gesture": "click:294,125",
+              "beforeSha256": "2418924c8fe636ce8f4bb9ceec2d66cab31118677f7926db5d2a0b05863579ad",
+              "afterSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "pollIntervalMs": 5,
+              "ms": 52.433842
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "click:294,125",
+              "beforeSha256": "2418924c8fe636ce8f4bb9ceec2d66cab31118677f7926db5d2a0b05863579ad",
+              "afterSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "pollIntervalMs": 5,
+              "ms": 57.731336
+            },
+            {
+              "gesture": "click:294,125",
+              "beforeSha256": "2418924c8fe636ce8f4bb9ceec2d66cab31118677f7926db5d2a0b05863579ad",
+              "afterSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "pollIntervalMs": 5,
+              "ms": 52.080775
+            },
+            {
+              "gesture": "click:294,125",
+              "beforeSha256": "2418924c8fe636ce8f4bb9ceec2d66cab31118677f7926db5d2a0b05863579ad",
+              "afterSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "pollIntervalMs": 5,
+              "ms": 57.850244
+            },
+            {
+              "gesture": "click:294,125",
+              "beforeSha256": "2418924c8fe636ce8f4bb9ceec2d66cab31118677f7926db5d2a0b05863579ad",
+              "afterSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "pollIntervalMs": 5,
+              "ms": 52.471499
+            },
+            {
+              "gesture": "click:294,125",
+              "beforeSha256": "2418924c8fe636ce8f4bb9ceec2d66cab31118677f7926db5d2a0b05863579ad",
+              "afterSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "pollIntervalMs": 5,
+              "ms": 52.337689
+            },
+            {
+              "gesture": "click:294,125",
+              "beforeSha256": "2418924c8fe636ce8f4bb9ceec2d66cab31118677f7926db5d2a0b05863579ad",
+              "afterSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "pollIntervalMs": 5,
+              "ms": 52.208112
+            },
+            {
+              "gesture": "click:294,125",
+              "beforeSha256": "2418924c8fe636ce8f4bb9ceec2d66cab31118677f7926db5d2a0b05863579ad",
+              "afterSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "pollIntervalMs": 5,
+              "ms": 61.225362
+            }
+          ],
+          "samples": 7,
+          "medianMs": 52.471499,
+          "p95Ms": 61.225362
+        },
+        "input": {
+          "warmups": [
+            {
+              "gesture": "7",
+              "beforeSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "afterSha256": "e777b98cc5f7a4b361481f2bee89151d5a2c47e7e22e9956c93e7f43db92e518",
+              "pollIntervalMs": 5,
+              "ms": 21.465467
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "afterSha256": "e777b98cc5f7a4b361481f2bee89151d5a2c47e7e22e9956c93e7f43db92e518",
+              "pollIntervalMs": 5,
+              "ms": 16.253264
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "7",
+              "beforeSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "afterSha256": "e777b98cc5f7a4b361481f2bee89151d5a2c47e7e22e9956c93e7f43db92e518",
+              "pollIntervalMs": 5,
+              "ms": 16.106169
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "afterSha256": "e777b98cc5f7a4b361481f2bee89151d5a2c47e7e22e9956c93e7f43db92e518",
+              "pollIntervalMs": 5,
+              "ms": 21.143316
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "afterSha256": "e777b98cc5f7a4b361481f2bee89151d5a2c47e7e22e9956c93e7f43db92e518",
+              "pollIntervalMs": 5,
+              "ms": 21.085452
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "afterSha256": "e777b98cc5f7a4b361481f2bee89151d5a2c47e7e22e9956c93e7f43db92e518",
+              "pollIntervalMs": 5,
+              "ms": 15.990598
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "afterSha256": "e777b98cc5f7a4b361481f2bee89151d5a2c47e7e22e9956c93e7f43db92e518",
+              "pollIntervalMs": 5,
+              "ms": 16.048538
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "afterSha256": "e777b98cc5f7a4b361481f2bee89151d5a2c47e7e22e9956c93e7f43db92e518",
+              "pollIntervalMs": 5,
+              "ms": 15.880518
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "afterSha256": "e777b98cc5f7a4b361481f2bee89151d5a2c47e7e22e9956c93e7f43db92e518",
+              "pollIntervalMs": 5,
+              "ms": 21.175851
+            }
+          ],
+          "samples": 7,
+          "medianMs": 16.106169,
+          "p95Ms": 21.175851
+        },
+        "format": {
+          "warmups": [
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": "3b38f22cf1004a62dc5dca9b4cd4c86a0a295065de099d8fa236db55dbd523f3",
+              "afterSha256": "387343781cff311dcea3c31390eec163eff23b25c70fe1ba5485560e2e01de00",
+              "pollIntervalMs": 5,
+              "ms": 15.790029
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": "3b38f22cf1004a62dc5dca9b4cd4c86a0a295065de099d8fa236db55dbd523f3",
+              "afterSha256": "387343781cff311dcea3c31390eec163eff23b25c70fe1ba5485560e2e01de00",
+              "pollIntervalMs": 5,
+              "ms": 21.201278
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": "3b38f22cf1004a62dc5dca9b4cd4c86a0a295065de099d8fa236db55dbd523f3",
+              "afterSha256": "387343781cff311dcea3c31390eec163eff23b25c70fe1ba5485560e2e01de00",
+              "pollIntervalMs": 5,
+              "ms": 21.066502
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": "3b38f22cf1004a62dc5dca9b4cd4c86a0a295065de099d8fa236db55dbd523f3",
+              "afterSha256": "387343781cff311dcea3c31390eec163eff23b25c70fe1ba5485560e2e01de00",
+              "pollIntervalMs": 5,
+              "ms": 20.968468
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": "3b38f22cf1004a62dc5dca9b4cd4c86a0a295065de099d8fa236db55dbd523f3",
+              "afterSha256": "387343781cff311dcea3c31390eec163eff23b25c70fe1ba5485560e2e01de00",
+              "pollIntervalMs": 5,
+              "ms": 20.972717
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": "3b38f22cf1004a62dc5dca9b4cd4c86a0a295065de099d8fa236db55dbd523f3",
+              "afterSha256": "387343781cff311dcea3c31390eec163eff23b25c70fe1ba5485560e2e01de00",
+              "pollIntervalMs": 5,
+              "ms": 21.131626
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": "3b38f22cf1004a62dc5dca9b4cd4c86a0a295065de099d8fa236db55dbd523f3",
+              "afterSha256": "387343781cff311dcea3c31390eec163eff23b25c70fe1ba5485560e2e01de00",
+              "pollIntervalMs": 5,
+              "ms": 15.84456
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": "3b38f22cf1004a62dc5dca9b4cd4c86a0a295065de099d8fa236db55dbd523f3",
+              "afterSha256": "387343781cff311dcea3c31390eec163eff23b25c70fe1ba5485560e2e01de00",
+              "pollIntervalMs": 5,
+              "ms": 21.288913
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": "3b38f22cf1004a62dc5dca9b4cd4c86a0a295065de099d8fa236db55dbd523f3",
+              "afterSha256": "387343781cff311dcea3c31390eec163eff23b25c70fe1ba5485560e2e01de00",
+              "pollIntervalMs": 5,
+              "ms": 21.164258
+            }
+          ],
+          "samples": 7,
+          "medianMs": 21.066502,
+          "p95Ms": 21.288913
+        },
+        "paste": {
+          "warmups": [
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "afterSha256": "3ca55ca83b68d860ace4d3e5c2e0acf8161f39da2b9683ca3c7aa73a6dc9ccec",
+              "pollIntervalMs": 5,
+              "ms": 15.831042
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "afterSha256": "3ca55ca83b68d860ace4d3e5c2e0acf8161f39da2b9683ca3c7aa73a6dc9ccec",
+              "pollIntervalMs": 5,
+              "ms": 15.915455
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "afterSha256": "3ca55ca83b68d860ace4d3e5c2e0acf8161f39da2b9683ca3c7aa73a6dc9ccec",
+              "pollIntervalMs": 5,
+              "ms": 15.841035
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "afterSha256": "3ca55ca83b68d860ace4d3e5c2e0acf8161f39da2b9683ca3c7aa73a6dc9ccec",
+              "pollIntervalMs": 5,
+              "ms": 15.768544
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "afterSha256": "3ca55ca83b68d860ace4d3e5c2e0acf8161f39da2b9683ca3c7aa73a6dc9ccec",
+              "pollIntervalMs": 5,
+              "ms": 21.190283
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "afterSha256": "3ca55ca83b68d860ace4d3e5c2e0acf8161f39da2b9683ca3c7aa73a6dc9ccec",
+              "pollIntervalMs": 5,
+              "ms": 21.122788
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "afterSha256": "3ca55ca83b68d860ace4d3e5c2e0acf8161f39da2b9683ca3c7aa73a6dc9ccec",
+              "pollIntervalMs": 5,
+              "ms": 21.127027
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "afterSha256": "3ca55ca83b68d860ace4d3e5c2e0acf8161f39da2b9683ca3c7aa73a6dc9ccec",
+              "pollIntervalMs": 5,
+              "ms": 21.028861
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "afterSha256": "3ca55ca83b68d860ace4d3e5c2e0acf8161f39da2b9683ca3c7aa73a6dc9ccec",
+              "pollIntervalMs": 5,
+              "ms": 20.984509
+            }
+          ],
+          "samples": 7,
+          "medianMs": 21.028861,
+          "p95Ms": 21.190283
+        },
+        "save": {
+          "warmups": [
+            {
+              "gesture": "7",
+              "beforeSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+              "afterSha256": "81813077d1184b1177458c06703ebb3fdbdce7ca23932deca00cdfe617609514",
+              "pollIntervalMs": 5,
+              "ms": 370.540431
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+              "afterSha256": "81813077d1184b1177458c06703ebb3fdbdce7ca23932deca00cdfe617609514",
+              "pollIntervalMs": 5,
+              "ms": 379.286092
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "7",
+              "beforeSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+              "afterSha256": "81813077d1184b1177458c06703ebb3fdbdce7ca23932deca00cdfe617609514",
+              "pollIntervalMs": 5,
+              "ms": 376.275095
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+              "afterSha256": "81813077d1184b1177458c06703ebb3fdbdce7ca23932deca00cdfe617609514",
+              "pollIntervalMs": 5,
+              "ms": 374.794116
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+              "afterSha256": "81813077d1184b1177458c06703ebb3fdbdce7ca23932deca00cdfe617609514",
+              "pollIntervalMs": 5,
+              "ms": 384.420425
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+              "afterSha256": "81813077d1184b1177458c06703ebb3fdbdce7ca23932deca00cdfe617609514",
+              "pollIntervalMs": 5,
+              "ms": 374.583678
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+              "afterSha256": "81813077d1184b1177458c06703ebb3fdbdce7ca23932deca00cdfe617609514",
+              "pollIntervalMs": 5,
+              "ms": 376.214694
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+              "afterSha256": "81813077d1184b1177458c06703ebb3fdbdce7ca23932deca00cdfe617609514",
+              "pollIntervalMs": 5,
+              "ms": 380.71918
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+              "afterSha256": "81813077d1184b1177458c06703ebb3fdbdce7ca23932deca00cdfe617609514",
+              "pollIntervalMs": 5,
+              "ms": 375.964792
+            }
+          ],
+          "samples": 7,
+          "medianMs": 376.214694,
+          "p95Ms": 384.420425
+        }
+      },
+      "format": {
+        "boldDelimiterInsertions": 2,
+        "sha256": "8617bc8b484e5234cf3fdea715d9230e70dfd44542073ff0b78ce148a7a2a399"
+      },
+      "blocks": 800,
+      "launchFlags": [
+        "--no-sandbox",
+        "--disable-gpu",
+        "--remote-debugging-port=9792"
+      ],
+      "editor": "Markdown editor only; inline formatting rendering disabled",
+      "persistence": "Auto-save; edit to whole SQLite note-body readback",
+      "open": "Switch from standby note via a note-list click",
+      "fixtureInput": "Exact UTF-8 body in an isolated real notes database"
+    },
+    {
+      "app": "Joplin",
+      "version": "3.7.18",
+      "fixtureSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+      "inputBytes": 615089,
+      "workspace": "Linux-5.15.133.1-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+      "region": [
+        530,
+        112,
+        280,
+        100
+      ],
+      "metrics": {
+        "format": {
+          "warmups": [
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": null,
+              "afterSha256": "7b1a2d108d5e86b507d662bd8568f2aee64002c710349db36940594083751175",
+              "pollIntervalMs": 5,
+              "ms": 41.745841
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": null,
+              "afterSha256": "7b1a2d108d5e86b507d662bd8568f2aee64002c710349db36940594083751175",
+              "pollIntervalMs": 5,
+              "ms": 36.657956
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": null,
+              "afterSha256": "7b1a2d108d5e86b507d662bd8568f2aee64002c710349db36940594083751175",
+              "pollIntervalMs": 5,
+              "ms": 36.904821
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": null,
+              "afterSha256": "7b1a2d108d5e86b507d662bd8568f2aee64002c710349db36940594083751175",
+              "pollIntervalMs": 5,
+              "ms": 36.556058
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": null,
+              "afterSha256": "7b1a2d108d5e86b507d662bd8568f2aee64002c710349db36940594083751175",
+              "pollIntervalMs": 5,
+              "ms": 36.611956
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": null,
+              "afterSha256": "7b1a2d108d5e86b507d662bd8568f2aee64002c710349db36940594083751175",
+              "pollIntervalMs": 5,
+              "ms": 36.482614
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": null,
+              "afterSha256": "7b1a2d108d5e86b507d662bd8568f2aee64002c710349db36940594083751175",
+              "pollIntervalMs": 5,
+              "ms": 41.952974
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": null,
+              "afterSha256": "7b1a2d108d5e86b507d662bd8568f2aee64002c710349db36940594083751175",
+              "pollIntervalMs": 5,
+              "ms": 36.635518
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": null,
+              "afterSha256": "7b1a2d108d5e86b507d662bd8568f2aee64002c710349db36940594083751175",
+              "pollIntervalMs": 5,
+              "ms": 36.682955
+            }
+          ],
+          "samples": 7,
+          "medianMs": 36.635518,
+          "p95Ms": 41.952974
+        },
+        "paste": {
+          "warmups": [
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "afterSha256": "3ca55ca83b68d860ace4d3e5c2e0acf8161f39da2b9683ca3c7aa73a6dc9ccec",
+              "pollIntervalMs": 5,
+              "ms": 161.705497
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "afterSha256": "3ca55ca83b68d860ace4d3e5c2e0acf8161f39da2b9683ca3c7aa73a6dc9ccec",
+              "pollIntervalMs": 5,
+              "ms": 150.890793
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "afterSha256": "3ca55ca83b68d860ace4d3e5c2e0acf8161f39da2b9683ca3c7aa73a6dc9ccec",
+              "pollIntervalMs": 5,
+              "ms": 161.424342
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "58a047c31d6aa3015ea39fce0bad5caa177dfd49609719c78966c5f09a35458c",
+              "afterSha256": "3ca55ca83b68d860ace4d3e5c2e0acf8161f39da2b9683ca3c7aa73a6dc9ccec",
+              "pollIntervalMs": 5,
+              "ms": 151.332919
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "afterSha256": "3ca55ca83b68d860ace4d3e5c2e0acf8161f39da2b9683ca3c7aa73a6dc9ccec",
+              "pollIntervalMs": 5,
+              "ms": 151.163988
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "afterSha256": "3ca55ca83b68d860ace4d3e5c2e0acf8161f39da2b9683ca3c7aa73a6dc9ccec",
+              "pollIntervalMs": 5,
+              "ms": 150.894036
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "afterSha256": "3ca55ca83b68d860ace4d3e5c2e0acf8161f39da2b9683ca3c7aa73a6dc9ccec",
+              "pollIntervalMs": 5,
+              "ms": 156.561567
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "afterSha256": "3ca55ca83b68d860ace4d3e5c2e0acf8161f39da2b9683ca3c7aa73a6dc9ccec",
+              "pollIntervalMs": 5,
+              "ms": 151.012383
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "2ccbae04161d963cdb68f294bf34efdfa405c651d23acee2dccc319180632d04",
+              "afterSha256": "3ca55ca83b68d860ace4d3e5c2e0acf8161f39da2b9683ca3c7aa73a6dc9ccec",
+              "pollIntervalMs": 5,
+              "ms": 151.165404
+            }
+          ],
+          "samples": 7,
+          "medianMs": 151.165404,
+          "p95Ms": 161.424342
+        },
+        "save": {
+          "warmups": [
+            {
+              "gesture": "7",
+              "beforeSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+              "afterSha256": "cc2e5ecbd271eb96d3db884c4214b68f95f4b668993098ec7d5016b42ef1a3a9",
+              "pollIntervalMs": 5,
+              "ms": 525.037309
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+              "afterSha256": "cc2e5ecbd271eb96d3db884c4214b68f95f4b668993098ec7d5016b42ef1a3a9",
+              "pollIntervalMs": 5,
+              "ms": 531.047666
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "7",
+              "beforeSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+              "afterSha256": "cc2e5ecbd271eb96d3db884c4214b68f95f4b668993098ec7d5016b42ef1a3a9",
+              "pollIntervalMs": 5,
+              "ms": 545.934732
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+              "afterSha256": "cc2e5ecbd271eb96d3db884c4214b68f95f4b668993098ec7d5016b42ef1a3a9",
+              "pollIntervalMs": 5,
+              "ms": 535.756373
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+              "afterSha256": "cc2e5ecbd271eb96d3db884c4214b68f95f4b668993098ec7d5016b42ef1a3a9",
+              "pollIntervalMs": 5,
+              "ms": 538.526763
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+              "afterSha256": "cc2e5ecbd271eb96d3db884c4214b68f95f4b668993098ec7d5016b42ef1a3a9",
+              "pollIntervalMs": 5,
+              "ms": 550.719113
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+              "afterSha256": "cc2e5ecbd271eb96d3db884c4214b68f95f4b668993098ec7d5016b42ef1a3a9",
+              "pollIntervalMs": 5,
+              "ms": 536.53859
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+              "afterSha256": "cc2e5ecbd271eb96d3db884c4214b68f95f4b668993098ec7d5016b42ef1a3a9",
+              "pollIntervalMs": 5,
+              "ms": 511.858284
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+              "afterSha256": "cc2e5ecbd271eb96d3db884c4214b68f95f4b668993098ec7d5016b42ef1a3a9",
+              "pollIntervalMs": 5,
+              "ms": 555.309069
+            }
+          ],
+          "samples": 7,
+          "medianMs": 538.526763,
+          "p95Ms": 555.309069
+        },
+        "open": {
+          "warmups": [
+            {
+              "gesture": "click:298,295",
+              "beforeSha256": "2418924c8fe636ce8f4bb9ceec2d66cab31118677f7926db5d2a0b05863579ad",
+              "afterSha256": "1af0a48edf08bd95d05d94da3b3e2d5952dce72ee50539b45770d4b3bb34dfb0",
+              "pollIntervalMs": 5,
+              "ms": 62.838168
+            },
+            {
+              "gesture": "click:298,295",
+              "beforeSha256": "2418924c8fe636ce8f4bb9ceec2d66cab31118677f7926db5d2a0b05863579ad",
+              "afterSha256": "1af0a48edf08bd95d05d94da3b3e2d5952dce72ee50539b45770d4b3bb34dfb0",
+              "pollIntervalMs": 5,
+              "ms": 62.663282
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "click:298,295",
+              "beforeSha256": "2418924c8fe636ce8f4bb9ceec2d66cab31118677f7926db5d2a0b05863579ad",
+              "afterSha256": "1af0a48edf08bd95d05d94da3b3e2d5952dce72ee50539b45770d4b3bb34dfb0",
+              "pollIntervalMs": 5,
+              "ms": 57.656814
+            },
+            {
+              "gesture": "click:298,295",
+              "beforeSha256": "2418924c8fe636ce8f4bb9ceec2d66cab31118677f7926db5d2a0b05863579ad",
+              "afterSha256": "1af0a48edf08bd95d05d94da3b3e2d5952dce72ee50539b45770d4b3bb34dfb0",
+              "pollIntervalMs": 5,
+              "ms": 62.92386
+            },
+            {
+              "gesture": "click:298,295",
+              "beforeSha256": "2418924c8fe636ce8f4bb9ceec2d66cab31118677f7926db5d2a0b05863579ad",
+              "afterSha256": "1af0a48edf08bd95d05d94da3b3e2d5952dce72ee50539b45770d4b3bb34dfb0",
+              "pollIntervalMs": 5,
+              "ms": 57.54543
+            },
+            {
+              "gesture": "click:298,295",
+              "beforeSha256": "2418924c8fe636ce8f4bb9ceec2d66cab31118677f7926db5d2a0b05863579ad",
+              "afterSha256": "1af0a48edf08bd95d05d94da3b3e2d5952dce72ee50539b45770d4b3bb34dfb0",
+              "pollIntervalMs": 5,
+              "ms": 57.517485
+            },
+            {
+              "gesture": "click:298,295",
+              "beforeSha256": "2418924c8fe636ce8f4bb9ceec2d66cab31118677f7926db5d2a0b05863579ad",
+              "afterSha256": "1af0a48edf08bd95d05d94da3b3e2d5952dce72ee50539b45770d4b3bb34dfb0",
+              "pollIntervalMs": 5,
+              "ms": 62.908461
+            },
+            {
+              "gesture": "click:298,295",
+              "beforeSha256": "2418924c8fe636ce8f4bb9ceec2d66cab31118677f7926db5d2a0b05863579ad",
+              "afterSha256": "1af0a48edf08bd95d05d94da3b3e2d5952dce72ee50539b45770d4b3bb34dfb0",
+              "pollIntervalMs": 5,
+              "ms": 63.214184
+            },
+            {
+              "gesture": "click:298,295",
+              "beforeSha256": "2418924c8fe636ce8f4bb9ceec2d66cab31118677f7926db5d2a0b05863579ad",
+              "afterSha256": "1af0a48edf08bd95d05d94da3b3e2d5952dce72ee50539b45770d4b3bb34dfb0",
+              "pollIntervalMs": 5,
+              "ms": 63.165912
+            }
+          ],
+          "samples": 7,
+          "medianMs": 62.908461,
+          "p95Ms": 63.214184
+        },
+        "input": {
+          "warmups": [
+            {
+              "gesture": "7",
+              "beforeSha256": "1af0a48edf08bd95d05d94da3b3e2d5952dce72ee50539b45770d4b3bb34dfb0",
+              "afterSha256": "a50fb2a8b9e4e12209a499eb9f06f6663430701fd1bcec2eabc76559688a2e6d",
+              "pollIntervalMs": 5,
+              "ms": 16.135422
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "1af0a48edf08bd95d05d94da3b3e2d5952dce72ee50539b45770d4b3bb34dfb0",
+              "afterSha256": "a50fb2a8b9e4e12209a499eb9f06f6663430701fd1bcec2eabc76559688a2e6d",
+              "pollIntervalMs": 5,
+              "ms": 21.328645
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "7",
+              "beforeSha256": "1af0a48edf08bd95d05d94da3b3e2d5952dce72ee50539b45770d4b3bb34dfb0",
+              "afterSha256": "a50fb2a8b9e4e12209a499eb9f06f6663430701fd1bcec2eabc76559688a2e6d",
+              "pollIntervalMs": 5,
+              "ms": 21.285148
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "1af0a48edf08bd95d05d94da3b3e2d5952dce72ee50539b45770d4b3bb34dfb0",
+              "afterSha256": "a50fb2a8b9e4e12209a499eb9f06f6663430701fd1bcec2eabc76559688a2e6d",
+              "pollIntervalMs": 5,
+              "ms": 15.937204
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "1af0a48edf08bd95d05d94da3b3e2d5952dce72ee50539b45770d4b3bb34dfb0",
+              "afterSha256": "a50fb2a8b9e4e12209a499eb9f06f6663430701fd1bcec2eabc76559688a2e6d",
+              "pollIntervalMs": 5,
+              "ms": 15.917262
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "1af0a48edf08bd95d05d94da3b3e2d5952dce72ee50539b45770d4b3bb34dfb0",
+              "afterSha256": "a50fb2a8b9e4e12209a499eb9f06f6663430701fd1bcec2eabc76559688a2e6d",
+              "pollIntervalMs": 5,
+              "ms": 16.083418
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "1af0a48edf08bd95d05d94da3b3e2d5952dce72ee50539b45770d4b3bb34dfb0",
+              "afterSha256": "a50fb2a8b9e4e12209a499eb9f06f6663430701fd1bcec2eabc76559688a2e6d",
+              "pollIntervalMs": 5,
+              "ms": 16.157235
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "1af0a48edf08bd95d05d94da3b3e2d5952dce72ee50539b45770d4b3bb34dfb0",
+              "afterSha256": "a50fb2a8b9e4e12209a499eb9f06f6663430701fd1bcec2eabc76559688a2e6d",
+              "pollIntervalMs": 5,
+              "ms": 21.179604
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "1af0a48edf08bd95d05d94da3b3e2d5952dce72ee50539b45770d4b3bb34dfb0",
+              "afterSha256": "a50fb2a8b9e4e12209a499eb9f06f6663430701fd1bcec2eabc76559688a2e6d",
+              "pollIntervalMs": 5,
+              "ms": 21.395514
+            }
+          ],
+          "samples": 7,
+          "medianMs": 16.157235,
+          "p95Ms": 21.395514
+        }
+      },
+      "format": {
+        "boldDelimiterInsertions": 2,
+        "sha256": "1bc1c61614e3ca83c44669ce957aa097d533f3cf07e27229ef30fbba83bc2543"
+      },
+      "blocks": 4000,
+      "launchFlags": [
+        "--no-sandbox",
+        "--disable-gpu",
+        "--remote-debugging-port=9792"
+      ],
+      "editor": "Markdown editor only; inline formatting rendering disabled",
+      "persistence": "Auto-save; edit to whole SQLite note-body readback",
+      "open": "Switch from standby note via a note-list click",
+      "fixtureInput": "Exact UTF-8 body in an isolated real notes database",
+      "formatProbe": {
+        "type": "ink",
+        "region": [
+          509,
+          114,
+          56,
+          170
+        ],
+        "anchor": "Leading bold delimiters in the visible source"
+      }
+    },
+    {
+      "app": "KnowBook",
+      "version": "0.2.0",
+      "fixtureSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+      "inputBytes": 122369,
+      "workspace": "Linux-5.15.133.1-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+      "region": [
+        378,
+        249,
+        290,
+        105
+      ],
+      "metrics": {
+        "open": {
+          "warmups": [
+            {
+              "gesture": "click:1360,260",
+              "beforeSha256": "080565889d4975f7a0db6d751cc23109081bba439b07a5fea20acfe1afce4fbe",
+              "afterSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "pollIntervalMs": 5,
+              "ms": 94.68842
+            },
+            {
+              "gesture": "click:1360,260",
+              "beforeSha256": "6b19955688c30820b52082c0607a0fa34921b6806279cdfcfaba64f46c2396e4",
+              "afterSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "pollIntervalMs": 5,
+              "ms": 88.910931
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "click:1360,260",
+              "beforeSha256": "080565889d4975f7a0db6d751cc23109081bba439b07a5fea20acfe1afce4fbe",
+              "afterSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "pollIntervalMs": 5,
+              "ms": 89.102019
+            },
+            {
+              "gesture": "click:1360,260",
+              "beforeSha256": "080565889d4975f7a0db6d751cc23109081bba439b07a5fea20acfe1afce4fbe",
+              "afterSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "pollIntervalMs": 5,
+              "ms": 89.450664
+            },
+            {
+              "gesture": "click:1360,260",
+              "beforeSha256": "080565889d4975f7a0db6d751cc23109081bba439b07a5fea20acfe1afce4fbe",
+              "afterSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "pollIntervalMs": 5,
+              "ms": 84.382269
+            },
+            {
+              "gesture": "click:1360,260",
+              "beforeSha256": "080565889d4975f7a0db6d751cc23109081bba439b07a5fea20acfe1afce4fbe",
+              "afterSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "pollIntervalMs": 5,
+              "ms": 88.950649
+            },
+            {
+              "gesture": "click:1360,260",
+              "beforeSha256": "080565889d4975f7a0db6d751cc23109081bba439b07a5fea20acfe1afce4fbe",
+              "afterSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "pollIntervalMs": 5,
+              "ms": 89.115327
+            },
+            {
+              "gesture": "click:1360,260",
+              "beforeSha256": "080565889d4975f7a0db6d751cc23109081bba439b07a5fea20acfe1afce4fbe",
+              "afterSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "pollIntervalMs": 5,
+              "ms": 89.241487
+            },
+            {
+              "gesture": "click:1360,260",
+              "beforeSha256": "080565889d4975f7a0db6d751cc23109081bba439b07a5fea20acfe1afce4fbe",
+              "afterSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "pollIntervalMs": 5,
+              "ms": 89.02387
+            }
+          ],
+          "samples": 7,
+          "medianMs": 89.102019,
+          "p95Ms": 89.450664
+        },
+        "input": {
+          "warmups": [
+            {
+              "gesture": "7",
+              "beforeSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "afterSha256": "21e756a52e8b2bef1cfd39c949636eb9b787d5312acb2253efb0a3bb8306d98a",
+              "pollIntervalMs": 5,
+              "ms": 16.167332
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "afterSha256": "21e756a52e8b2bef1cfd39c949636eb9b787d5312acb2253efb0a3bb8306d98a",
+              "pollIntervalMs": 5,
+              "ms": 16.011093
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "7",
+              "beforeSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "afterSha256": "21e756a52e8b2bef1cfd39c949636eb9b787d5312acb2253efb0a3bb8306d98a",
+              "pollIntervalMs": 5,
+              "ms": 16.084839
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "afterSha256": "21e756a52e8b2bef1cfd39c949636eb9b787d5312acb2253efb0a3bb8306d98a",
+              "pollIntervalMs": 5,
+              "ms": 21.109013
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "afterSha256": "21e756a52e8b2bef1cfd39c949636eb9b787d5312acb2253efb0a3bb8306d98a",
+              "pollIntervalMs": 5,
+              "ms": 15.97396
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "afterSha256": "21e756a52e8b2bef1cfd39c949636eb9b787d5312acb2253efb0a3bb8306d98a",
+              "pollIntervalMs": 5,
+              "ms": 15.959088
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "afterSha256": "21e756a52e8b2bef1cfd39c949636eb9b787d5312acb2253efb0a3bb8306d98a",
+              "pollIntervalMs": 5,
+              "ms": 21.255947
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "afterSha256": "21e756a52e8b2bef1cfd39c949636eb9b787d5312acb2253efb0a3bb8306d98a",
+              "pollIntervalMs": 5,
+              "ms": 16.013503
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "afterSha256": "21e756a52e8b2bef1cfd39c949636eb9b787d5312acb2253efb0a3bb8306d98a",
+              "pollIntervalMs": 5,
+              "ms": 15.955296
+            }
+          ],
+          "samples": 7,
+          "medianMs": 16.013503,
+          "p95Ms": 21.255947
+        },
+        "format": {
+          "warmups": [
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": null,
+              "afterSha256": "de5f0269843f684b6ef8e11f74c585a7cbe5c79b0bda4c0d65bf3e71225e36b2",
+              "pollIntervalMs": 5,
+              "ms": 37.432146
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": null,
+              "afterSha256": "de5f0269843f684b6ef8e11f74c585a7cbe5c79b0bda4c0d65bf3e71225e36b2",
+              "pollIntervalMs": 5,
+              "ms": 37.630361
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": null,
+              "afterSha256": "de5f0269843f684b6ef8e11f74c585a7cbe5c79b0bda4c0d65bf3e71225e36b2",
+              "pollIntervalMs": 5,
+              "ms": 37.202898
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": null,
+              "afterSha256": "de5f0269843f684b6ef8e11f74c585a7cbe5c79b0bda4c0d65bf3e71225e36b2",
+              "pollIntervalMs": 5,
+              "ms": 42.725799
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": null,
+              "afterSha256": "de5f0269843f684b6ef8e11f74c585a7cbe5c79b0bda4c0d65bf3e71225e36b2",
+              "pollIntervalMs": 5,
+              "ms": 37.225175
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": null,
+              "afterSha256": "de5f0269843f684b6ef8e11f74c585a7cbe5c79b0bda4c0d65bf3e71225e36b2",
+              "pollIntervalMs": 5,
+              "ms": 50.455583
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": null,
+              "afterSha256": "de5f0269843f684b6ef8e11f74c585a7cbe5c79b0bda4c0d65bf3e71225e36b2",
+              "pollIntervalMs": 5,
+              "ms": 42.962704
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": null,
+              "afterSha256": "de5f0269843f684b6ef8e11f74c585a7cbe5c79b0bda4c0d65bf3e71225e36b2",
+              "pollIntervalMs": 5,
+              "ms": 37.597473
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": null,
+              "afterSha256": "de5f0269843f684b6ef8e11f74c585a7cbe5c79b0bda4c0d65bf3e71225e36b2",
+              "pollIntervalMs": 5,
+              "ms": 37.366938
+            }
+          ],
+          "samples": 7,
+          "medianMs": 37.597473,
+          "p95Ms": 50.455583
+        },
+        "paste": {
+          "warmups": [
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "59448f6daa88dcba308addff9697a8deb4909817072bfeff65150cfa3fb595a1",
+              "afterSha256": "beaed6db230cf0b66993a76c3c9a5351059f5555edb2337c21ab4c7fcbf8b953",
+              "pollIntervalMs": 5,
+              "ms": 26.308162
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "59448f6daa88dcba308addff9697a8deb4909817072bfeff65150cfa3fb595a1",
+              "afterSha256": "beaed6db230cf0b66993a76c3c9a5351059f5555edb2337c21ab4c7fcbf8b953",
+              "pollIntervalMs": 5,
+              "ms": 21.101663
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "59448f6daa88dcba308addff9697a8deb4909817072bfeff65150cfa3fb595a1",
+              "afterSha256": "beaed6db230cf0b66993a76c3c9a5351059f5555edb2337c21ab4c7fcbf8b953",
+              "pollIntervalMs": 5,
+              "ms": 21.561348
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "59448f6daa88dcba308addff9697a8deb4909817072bfeff65150cfa3fb595a1",
+              "afterSha256": "beaed6db230cf0b66993a76c3c9a5351059f5555edb2337c21ab4c7fcbf8b953",
+              "pollIntervalMs": 5,
+              "ms": 26.404638
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "59448f6daa88dcba308addff9697a8deb4909817072bfeff65150cfa3fb595a1",
+              "afterSha256": "beaed6db230cf0b66993a76c3c9a5351059f5555edb2337c21ab4c7fcbf8b953",
+              "pollIntervalMs": 5,
+              "ms": 26.278949
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "59448f6daa88dcba308addff9697a8deb4909817072bfeff65150cfa3fb595a1",
+              "afterSha256": "beaed6db230cf0b66993a76c3c9a5351059f5555edb2337c21ab4c7fcbf8b953",
+              "pollIntervalMs": 5,
+              "ms": 21.07282
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "59448f6daa88dcba308addff9697a8deb4909817072bfeff65150cfa3fb595a1",
+              "afterSha256": "beaed6db230cf0b66993a76c3c9a5351059f5555edb2337c21ab4c7fcbf8b953",
+              "pollIntervalMs": 5,
+              "ms": 26.170906
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "59448f6daa88dcba308addff9697a8deb4909817072bfeff65150cfa3fb595a1",
+              "afterSha256": "beaed6db230cf0b66993a76c3c9a5351059f5555edb2337c21ab4c7fcbf8b953",
+              "pollIntervalMs": 5,
+              "ms": 26.367947
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "59448f6daa88dcba308addff9697a8deb4909817072bfeff65150cfa3fb595a1",
+              "afterSha256": "beaed6db230cf0b66993a76c3c9a5351059f5555edb2337c21ab4c7fcbf8b953",
+              "pollIntervalMs": 5,
+              "ms": 26.202778
+            }
+          ],
+          "samples": 7,
+          "medianMs": 26.202778,
+          "p95Ms": 26.404638
+        },
+        "save": {
+          "warmups": [
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "fd9de39b5215f20908c84753d470df02c1e0e7b27e5f5c428dd0022bbab88eaa",
+              "afterSha256": "c5d58c0dc43b74e3be67b6cf6f9d049cc02aa4b87abf9fdf7191428326df8a03",
+              "pollIntervalMs": 5,
+              "ms": 936.468878
+            },
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "fd9de39b5215f20908c84753d470df02c1e0e7b27e5f5c428dd0022bbab88eaa",
+              "afterSha256": "c5d58c0dc43b74e3be67b6cf6f9d049cc02aa4b87abf9fdf7191428326df8a03",
+              "pollIntervalMs": 5,
+              "ms": 914.641841
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "fd9de39b5215f20908c84753d470df02c1e0e7b27e5f5c428dd0022bbab88eaa",
+              "afterSha256": "c5d58c0dc43b74e3be67b6cf6f9d049cc02aa4b87abf9fdf7191428326df8a03",
+              "pollIntervalMs": 5,
+              "ms": 913.81892
+            },
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "fd9de39b5215f20908c84753d470df02c1e0e7b27e5f5c428dd0022bbab88eaa",
+              "afterSha256": "c5d58c0dc43b74e3be67b6cf6f9d049cc02aa4b87abf9fdf7191428326df8a03",
+              "pollIntervalMs": 5,
+              "ms": 912.275088
+            },
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "fd9de39b5215f20908c84753d470df02c1e0e7b27e5f5c428dd0022bbab88eaa",
+              "afterSha256": "c5d58c0dc43b74e3be67b6cf6f9d049cc02aa4b87abf9fdf7191428326df8a03",
+              "pollIntervalMs": 5,
+              "ms": 913.312587
+            },
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "fd9de39b5215f20908c84753d470df02c1e0e7b27e5f5c428dd0022bbab88eaa",
+              "afterSha256": "c5d58c0dc43b74e3be67b6cf6f9d049cc02aa4b87abf9fdf7191428326df8a03",
+              "pollIntervalMs": 5,
+              "ms": 919.38967
+            },
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "fd9de39b5215f20908c84753d470df02c1e0e7b27e5f5c428dd0022bbab88eaa",
+              "afterSha256": "c5d58c0dc43b74e3be67b6cf6f9d049cc02aa4b87abf9fdf7191428326df8a03",
+              "pollIntervalMs": 5,
+              "ms": 912.998232
+            },
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "fd9de39b5215f20908c84753d470df02c1e0e7b27e5f5c428dd0022bbab88eaa",
+              "afterSha256": "c5d58c0dc43b74e3be67b6cf6f9d049cc02aa4b87abf9fdf7191428326df8a03",
+              "pollIntervalMs": 5,
+              "ms": 907.195285
+            },
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "fd9de39b5215f20908c84753d470df02c1e0e7b27e5f5c428dd0022bbab88eaa",
+              "afterSha256": "c5d58c0dc43b74e3be67b6cf6f9d049cc02aa4b87abf9fdf7191428326df8a03",
+              "pollIntervalMs": 5,
+              "ms": 912.608307
+            }
+          ],
+          "samples": 7,
+          "medianMs": 912.998232,
+          "p95Ms": 919.38967
+        }
+      },
+      "format": {
+        "boldDelimiterInsertions": 1520,
+        "sha256": "1752e3b27a993751ab3a61c85216d954fa6504f086951031117cd8f1dfca1cd1"
+      },
+      "blocks": 800,
+      "launchFlags": [
+        "--no-sandbox",
+        "--disable-gpu",
+        "--force-device-scale-factor=1",
+        "--lang=en-US",
+        "--remote-debugging-port=9793"
+      ],
+      "rendererSourceCommit": "7531ad3423cfdc334773246a25f9bd10f727ff98",
+      "editor": "Edit host body source dialog, opened from the rich editor",
+      "persistence": "Explicit apply; Ctrl+S to first changed block readback, followed by reopening and whole-source verification",
+      "open": "Document already loaded; open full source editor from More menu",
+      "formatProbe": {
+        "type": "ink",
+        "region": [
+          353,
+          239,
+          48,
+          470
+        ],
+        "anchor": "Bold prefix on a visible source paragraph"
+      }
+    },
+    {
+      "app": "KnowBook",
+      "version": "0.2.0",
+      "fixtureSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+      "inputBytes": 615089,
+      "workspace": "Linux-5.15.133.1-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+      "region": [
+        378,
+        249,
+        290,
+        105
+      ],
+      "metrics": {
+        "open": {
+          "warmups": [
+            {
+              "gesture": "click:1360,260",
+              "beforeSha256": "080565889d4975f7a0db6d751cc23109081bba439b07a5fea20acfe1afce4fbe",
+              "afterSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "pollIntervalMs": 5,
+              "ms": 349.858522
+            },
+            {
+              "gesture": "click:1360,260",
+              "beforeSha256": "6b19955688c30820b52082c0607a0fa34921b6806279cdfcfaba64f46c2396e4",
+              "afterSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "pollIntervalMs": 5,
+              "ms": 360.921194
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "click:1360,260",
+              "beforeSha256": "6b19955688c30820b52082c0607a0fa34921b6806279cdfcfaba64f46c2396e4",
+              "afterSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "pollIntervalMs": 5,
+              "ms": 356.36236
+            },
+            {
+              "gesture": "click:1360,260",
+              "beforeSha256": "6b19955688c30820b52082c0607a0fa34921b6806279cdfcfaba64f46c2396e4",
+              "afterSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "pollIntervalMs": 5,
+              "ms": 350.899933
+            },
+            {
+              "gesture": "click:1360,260",
+              "beforeSha256": "6b19955688c30820b52082c0607a0fa34921b6806279cdfcfaba64f46c2396e4",
+              "afterSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "pollIntervalMs": 5,
+              "ms": 339.636901
+            },
+            {
+              "gesture": "click:1360,260",
+              "beforeSha256": "6b19955688c30820b52082c0607a0fa34921b6806279cdfcfaba64f46c2396e4",
+              "afterSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "pollIntervalMs": 5,
+              "ms": 339.909823
+            },
+            {
+              "gesture": "click:1360,260",
+              "beforeSha256": "6b19955688c30820b52082c0607a0fa34921b6806279cdfcfaba64f46c2396e4",
+              "afterSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "pollIntervalMs": 5,
+              "ms": 352.788781
+            },
+            {
+              "gesture": "click:1360,260",
+              "beforeSha256": "6b19955688c30820b52082c0607a0fa34921b6806279cdfcfaba64f46c2396e4",
+              "afterSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "pollIntervalMs": 5,
+              "ms": 351.120317
+            },
+            {
+              "gesture": "click:1360,260",
+              "beforeSha256": "6b19955688c30820b52082c0607a0fa34921b6806279cdfcfaba64f46c2396e4",
+              "afterSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "pollIntervalMs": 5,
+              "ms": 346.033521
+            }
+          ],
+          "samples": 7,
+          "medianMs": 350.899933,
+          "p95Ms": 356.36236
+        },
+        "input": {
+          "warmups": [
+            {
+              "gesture": "7",
+              "beforeSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "afterSha256": "21e756a52e8b2bef1cfd39c949636eb9b787d5312acb2253efb0a3bb8306d98a",
+              "pollIntervalMs": 5,
+              "ms": 57.867054
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "afterSha256": "21e756a52e8b2bef1cfd39c949636eb9b787d5312acb2253efb0a3bb8306d98a",
+              "pollIntervalMs": 5,
+              "ms": 57.777109
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "7",
+              "beforeSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "afterSha256": "21e756a52e8b2bef1cfd39c949636eb9b787d5312acb2253efb0a3bb8306d98a",
+              "pollIntervalMs": 5,
+              "ms": 57.990794
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "afterSha256": "21e756a52e8b2bef1cfd39c949636eb9b787d5312acb2253efb0a3bb8306d98a",
+              "pollIntervalMs": 5,
+              "ms": 57.951285
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "afterSha256": "21e756a52e8b2bef1cfd39c949636eb9b787d5312acb2253efb0a3bb8306d98a",
+              "pollIntervalMs": 5,
+              "ms": 57.986166
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "afterSha256": "21e756a52e8b2bef1cfd39c949636eb9b787d5312acb2253efb0a3bb8306d98a",
+              "pollIntervalMs": 5,
+              "ms": 58.348528
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "afterSha256": "21e756a52e8b2bef1cfd39c949636eb9b787d5312acb2253efb0a3bb8306d98a",
+              "pollIntervalMs": 5,
+              "ms": 58.071674
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "afterSha256": "21e756a52e8b2bef1cfd39c949636eb9b787d5312acb2253efb0a3bb8306d98a",
+              "pollIntervalMs": 5,
+              "ms": 52.608471
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "751ea129f02ec33a6c0c57a36342262b3cb4db79af79c10cb1e8733fd8fd48ca",
+              "afterSha256": "21e756a52e8b2bef1cfd39c949636eb9b787d5312acb2253efb0a3bb8306d98a",
+              "pollIntervalMs": 5,
+              "ms": 52.395999
+            }
+          ],
+          "samples": 7,
+          "medianMs": 57.986166,
+          "p95Ms": 58.348528
+        },
+        "format": {
+          "warmups": [
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": null,
+              "afterSha256": "de5f0269843f684b6ef8e11f74c585a7cbe5c79b0bda4c0d65bf3e71225e36b2",
+              "pollIntervalMs": 5,
+              "ms": 138.06889
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": null,
+              "afterSha256": "de5f0269843f684b6ef8e11f74c585a7cbe5c79b0bda4c0d65bf3e71225e36b2",
+              "pollIntervalMs": 5,
+              "ms": 127.306971
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": null,
+              "afterSha256": "de5f0269843f684b6ef8e11f74c585a7cbe5c79b0bda4c0d65bf3e71225e36b2",
+              "pollIntervalMs": 5,
+              "ms": 127.096386
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": null,
+              "afterSha256": "de5f0269843f684b6ef8e11f74c585a7cbe5c79b0bda4c0d65bf3e71225e36b2",
+              "pollIntervalMs": 5,
+              "ms": 132.831323
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": null,
+              "afterSha256": "de5f0269843f684b6ef8e11f74c585a7cbe5c79b0bda4c0d65bf3e71225e36b2",
+              "pollIntervalMs": 5,
+              "ms": 132.850811
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": null,
+              "afterSha256": "de5f0269843f684b6ef8e11f74c585a7cbe5c79b0bda4c0d65bf3e71225e36b2",
+              "pollIntervalMs": 5,
+              "ms": 127.58897
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": null,
+              "afterSha256": "de5f0269843f684b6ef8e11f74c585a7cbe5c79b0bda4c0d65bf3e71225e36b2",
+              "pollIntervalMs": 5,
+              "ms": 127.751412
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": null,
+              "afterSha256": "de5f0269843f684b6ef8e11f74c585a7cbe5c79b0bda4c0d65bf3e71225e36b2",
+              "pollIntervalMs": 5,
+              "ms": 127.853083
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": null,
+              "afterSha256": "de5f0269843f684b6ef8e11f74c585a7cbe5c79b0bda4c0d65bf3e71225e36b2",
+              "pollIntervalMs": 5,
+              "ms": 132.852325
+            }
+          ],
+          "samples": 7,
+          "medianMs": 127.853083,
+          "p95Ms": 132.852325
+        },
+        "paste": {
+          "warmups": [
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "59448f6daa88dcba308addff9697a8deb4909817072bfeff65150cfa3fb595a1",
+              "afterSha256": "beaed6db230cf0b66993a76c3c9a5351059f5555edb2337c21ab4c7fcbf8b953",
+              "pollIntervalMs": 5,
+              "ms": 73.329964
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "59448f6daa88dcba308addff9697a8deb4909817072bfeff65150cfa3fb595a1",
+              "afterSha256": "beaed6db230cf0b66993a76c3c9a5351059f5555edb2337c21ab4c7fcbf8b953",
+              "pollIntervalMs": 5,
+              "ms": 73.534798
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "59448f6daa88dcba308addff9697a8deb4909817072bfeff65150cfa3fb595a1",
+              "afterSha256": "beaed6db230cf0b66993a76c3c9a5351059f5555edb2337c21ab4c7fcbf8b953",
+              "pollIntervalMs": 5,
+              "ms": 73.136298
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "59448f6daa88dcba308addff9697a8deb4909817072bfeff65150cfa3fb595a1",
+              "afterSha256": "beaed6db230cf0b66993a76c3c9a5351059f5555edb2337c21ab4c7fcbf8b953",
+              "pollIntervalMs": 5,
+              "ms": 73.239253
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "59448f6daa88dcba308addff9697a8deb4909817072bfeff65150cfa3fb595a1",
+              "afterSha256": "beaed6db230cf0b66993a76c3c9a5351059f5555edb2337c21ab4c7fcbf8b953",
+              "pollIntervalMs": 5,
+              "ms": 73.175087
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "59448f6daa88dcba308addff9697a8deb4909817072bfeff65150cfa3fb595a1",
+              "afterSha256": "beaed6db230cf0b66993a76c3c9a5351059f5555edb2337c21ab4c7fcbf8b953",
+              "pollIntervalMs": 5,
+              "ms": 73.303622
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "59448f6daa88dcba308addff9697a8deb4909817072bfeff65150cfa3fb595a1",
+              "afterSha256": "beaed6db230cf0b66993a76c3c9a5351059f5555edb2337c21ab4c7fcbf8b953",
+              "pollIntervalMs": 5,
+              "ms": 73.255977
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "59448f6daa88dcba308addff9697a8deb4909817072bfeff65150cfa3fb595a1",
+              "afterSha256": "beaed6db230cf0b66993a76c3c9a5351059f5555edb2337c21ab4c7fcbf8b953",
+              "pollIntervalMs": 5,
+              "ms": 73.466949
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "59448f6daa88dcba308addff9697a8deb4909817072bfeff65150cfa3fb595a1",
+              "afterSha256": "beaed6db230cf0b66993a76c3c9a5351059f5555edb2337c21ab4c7fcbf8b953",
+              "pollIntervalMs": 5,
+              "ms": 73.185283
+            }
+          ],
+          "samples": 7,
+          "medianMs": 73.239253,
+          "p95Ms": 73.466949
+        },
+        "save": {
+          "warmups": [
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "fd9de39b5215f20908c84753d470df02c1e0e7b27e5f5c428dd0022bbab88eaa",
+              "afterSha256": "c5d58c0dc43b74e3be67b6cf6f9d049cc02aa4b87abf9fdf7191428326df8a03",
+              "pollIntervalMs": 5,
+              "ms": 1604.530798
+            },
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "fd9de39b5215f20908c84753d470df02c1e0e7b27e5f5c428dd0022bbab88eaa",
+              "afterSha256": "c5d58c0dc43b74e3be67b6cf6f9d049cc02aa4b87abf9fdf7191428326df8a03",
+              "pollIntervalMs": 5,
+              "ms": 1467.056356
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "fd9de39b5215f20908c84753d470df02c1e0e7b27e5f5c428dd0022bbab88eaa",
+              "afterSha256": "c5d58c0dc43b74e3be67b6cf6f9d049cc02aa4b87abf9fdf7191428326df8a03",
+              "pollIntervalMs": 5,
+              "ms": 1488.660829
+            },
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "fd9de39b5215f20908c84753d470df02c1e0e7b27e5f5c428dd0022bbab88eaa",
+              "afterSha256": "c5d58c0dc43b74e3be67b6cf6f9d049cc02aa4b87abf9fdf7191428326df8a03",
+              "pollIntervalMs": 5,
+              "ms": 1484.626394
+            },
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "fd9de39b5215f20908c84753d470df02c1e0e7b27e5f5c428dd0022bbab88eaa",
+              "afterSha256": "c5d58c0dc43b74e3be67b6cf6f9d049cc02aa4b87abf9fdf7191428326df8a03",
+              "pollIntervalMs": 5,
+              "ms": 1488.056386
+            },
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "fd9de39b5215f20908c84753d470df02c1e0e7b27e5f5c428dd0022bbab88eaa",
+              "afterSha256": "c5d58c0dc43b74e3be67b6cf6f9d049cc02aa4b87abf9fdf7191428326df8a03",
+              "pollIntervalMs": 5,
+              "ms": 1493.149083
+            },
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "fd9de39b5215f20908c84753d470df02c1e0e7b27e5f5c428dd0022bbab88eaa",
+              "afterSha256": "c5d58c0dc43b74e3be67b6cf6f9d049cc02aa4b87abf9fdf7191428326df8a03",
+              "pollIntervalMs": 5,
+              "ms": 1465.278047
+            },
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "fd9de39b5215f20908c84753d470df02c1e0e7b27e5f5c428dd0022bbab88eaa",
+              "afterSha256": "c5d58c0dc43b74e3be67b6cf6f9d049cc02aa4b87abf9fdf7191428326df8a03",
+              "pollIntervalMs": 5,
+              "ms": 1521.853914
+            },
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "fd9de39b5215f20908c84753d470df02c1e0e7b27e5f5c428dd0022bbab88eaa",
+              "afterSha256": "c5d58c0dc43b74e3be67b6cf6f9d049cc02aa4b87abf9fdf7191428326df8a03",
+              "pollIntervalMs": 5,
+              "ms": 1503.350885
+            }
+          ],
+          "samples": 7,
+          "medianMs": 1488.660829,
+          "p95Ms": 1521.853914
+        }
+      },
+      "format": {
+        "boldDelimiterInsertions": 7600,
+        "sha256": "6f427bf01cee057e78d7d7b7da2f953b2b2866577db9c3214d303268c15aaabc"
+      },
+      "blocks": 4000,
+      "launchFlags": [
+        "--no-sandbox",
+        "--disable-gpu",
+        "--force-device-scale-factor=1",
+        "--lang=en-US",
+        "--remote-debugging-port=9793"
+      ],
+      "rendererSourceCommit": "7531ad3423cfdc334773246a25f9bd10f727ff98",
+      "editor": "Edit host body source dialog, opened from the rich editor",
+      "persistence": "Explicit apply; Ctrl+S to first changed block readback, followed by reopening and whole-source verification",
+      "open": "Document already loaded; open full source editor from More menu",
+      "formatProbe": {
+        "type": "ink",
+        "region": [
+          353,
+          239,
+          48,
+          470
+        ],
+        "anchor": "Bold prefix on a visible source paragraph"
+      }
+    },
+    {
+      "app": "Obsidian",
+      "version": "1.13.7",
+      "fixtureSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+      "inputBytes": 122369,
+      "workspace": "Linux-5.15.133.1-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+      "region": [
+        625,
+        155,
+        300,
+        110
+      ],
+      "metrics": {
+        "open": {
+          "warmups": [
+            {
+              "gesture": "click:125,98",
+              "beforeSha256": "9b3bd700a2520c705e9ee09077cec2cd8706df500bde2f40ba0cc8b9790af7e5",
+              "afterSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "pollIntervalMs": 5,
+              "ms": 21.233207
+            },
+            {
+              "gesture": "click:125,98",
+              "beforeSha256": "9b3bd700a2520c705e9ee09077cec2cd8706df500bde2f40ba0cc8b9790af7e5",
+              "afterSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "pollIntervalMs": 5,
+              "ms": 42.038387
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "click:125,98",
+              "beforeSha256": "9b3bd700a2520c705e9ee09077cec2cd8706df500bde2f40ba0cc8b9790af7e5",
+              "afterSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "pollIntervalMs": 5,
+              "ms": 42.271877
+            },
+            {
+              "gesture": "click:125,98",
+              "beforeSha256": "9b3bd700a2520c705e9ee09077cec2cd8706df500bde2f40ba0cc8b9790af7e5",
+              "afterSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "pollIntervalMs": 5,
+              "ms": 31.500915
+            },
+            {
+              "gesture": "click:125,98",
+              "beforeSha256": "9b3bd700a2520c705e9ee09077cec2cd8706df500bde2f40ba0cc8b9790af7e5",
+              "afterSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "pollIntervalMs": 5,
+              "ms": 26.334541
+            },
+            {
+              "gesture": "click:125,98",
+              "beforeSha256": "9b3bd700a2520c705e9ee09077cec2cd8706df500bde2f40ba0cc8b9790af7e5",
+              "afterSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "pollIntervalMs": 5,
+              "ms": 21.376127
+            },
+            {
+              "gesture": "click:125,98",
+              "beforeSha256": "9b3bd700a2520c705e9ee09077cec2cd8706df500bde2f40ba0cc8b9790af7e5",
+              "afterSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "pollIntervalMs": 5,
+              "ms": 26.462445
+            },
+            {
+              "gesture": "click:125,98",
+              "beforeSha256": "9b3bd700a2520c705e9ee09077cec2cd8706df500bde2f40ba0cc8b9790af7e5",
+              "afterSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "pollIntervalMs": 5,
+              "ms": 21.129601
+            },
+            {
+              "gesture": "click:125,98",
+              "beforeSha256": "9b3bd700a2520c705e9ee09077cec2cd8706df500bde2f40ba0cc8b9790af7e5",
+              "afterSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "pollIntervalMs": 5,
+              "ms": 41.974053
+            }
+          ],
+          "samples": 7,
+          "medianMs": 26.462445,
+          "p95Ms": 42.271877
+        },
+        "input": {
+          "warmups": [
+            {
+              "gesture": "7",
+              "beforeSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "afterSha256": "042fe9120c6ce1210b3838c03ac36eb53ea8704a4bb4b5cf05443228896f4cbf",
+              "pollIntervalMs": 5,
+              "ms": 10.899585
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "afterSha256": "042fe9120c6ce1210b3838c03ac36eb53ea8704a4bb4b5cf05443228896f4cbf",
+              "pollIntervalMs": 5,
+              "ms": 10.697691
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "7",
+              "beforeSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "afterSha256": "042fe9120c6ce1210b3838c03ac36eb53ea8704a4bb4b5cf05443228896f4cbf",
+              "pollIntervalMs": 5,
+              "ms": 10.822773
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "afterSha256": "042fe9120c6ce1210b3838c03ac36eb53ea8704a4bb4b5cf05443228896f4cbf",
+              "pollIntervalMs": 5,
+              "ms": 10.812907
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "afterSha256": "042fe9120c6ce1210b3838c03ac36eb53ea8704a4bb4b5cf05443228896f4cbf",
+              "pollIntervalMs": 5,
+              "ms": 10.853744
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "afterSha256": "042fe9120c6ce1210b3838c03ac36eb53ea8704a4bb4b5cf05443228896f4cbf",
+              "pollIntervalMs": 5,
+              "ms": 10.752116
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "afterSha256": "042fe9120c6ce1210b3838c03ac36eb53ea8704a4bb4b5cf05443228896f4cbf",
+              "pollIntervalMs": 5,
+              "ms": 10.75981
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "afterSha256": "042fe9120c6ce1210b3838c03ac36eb53ea8704a4bb4b5cf05443228896f4cbf",
+              "pollIntervalMs": 5,
+              "ms": 10.806095
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "afterSha256": "042fe9120c6ce1210b3838c03ac36eb53ea8704a4bb4b5cf05443228896f4cbf",
+              "pollIntervalMs": 5,
+              "ms": 10.751149
+            }
+          ],
+          "samples": 7,
+          "medianMs": 10.806095,
+          "p95Ms": 10.853744
+        },
+        "format": {
+          "warmups": [
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": "e579eb04f9564df750f6526bc083d9fc1d37748b1279311b00db0fe9a8366ffa",
+              "afterSha256": "a715a30d352a590f9adb5229e8dd72de51139109286fdb1b2cf88508ba279732",
+              "pollIntervalMs": 5,
+              "ms": 26.539124
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": "e579eb04f9564df750f6526bc083d9fc1d37748b1279311b00db0fe9a8366ffa",
+              "afterSha256": "a715a30d352a590f9adb5229e8dd72de51139109286fdb1b2cf88508ba279732",
+              "pollIntervalMs": 5,
+              "ms": 26.492748
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": "e579eb04f9564df750f6526bc083d9fc1d37748b1279311b00db0fe9a8366ffa",
+              "afterSha256": "a715a30d352a590f9adb5229e8dd72de51139109286fdb1b2cf88508ba279732",
+              "pollIntervalMs": 5,
+              "ms": 21.144316
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": "e579eb04f9564df750f6526bc083d9fc1d37748b1279311b00db0fe9a8366ffa",
+              "afterSha256": "a715a30d352a590f9adb5229e8dd72de51139109286fdb1b2cf88508ba279732",
+              "pollIntervalMs": 5,
+              "ms": 21.051524
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": "e579eb04f9564df750f6526bc083d9fc1d37748b1279311b00db0fe9a8366ffa",
+              "afterSha256": "a715a30d352a590f9adb5229e8dd72de51139109286fdb1b2cf88508ba279732",
+              "pollIntervalMs": 5,
+              "ms": 21.163496
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": "e579eb04f9564df750f6526bc083d9fc1d37748b1279311b00db0fe9a8366ffa",
+              "afterSha256": "a715a30d352a590f9adb5229e8dd72de51139109286fdb1b2cf88508ba279732",
+              "pollIntervalMs": 5,
+              "ms": 21.002956
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": "e579eb04f9564df750f6526bc083d9fc1d37748b1279311b00db0fe9a8366ffa",
+              "afterSha256": "a715a30d352a590f9adb5229e8dd72de51139109286fdb1b2cf88508ba279732",
+              "pollIntervalMs": 5,
+              "ms": 21.190984
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": "e579eb04f9564df750f6526bc083d9fc1d37748b1279311b00db0fe9a8366ffa",
+              "afterSha256": "a715a30d352a590f9adb5229e8dd72de51139109286fdb1b2cf88508ba279732",
+              "pollIntervalMs": 5,
+              "ms": 21.181845
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": "e579eb04f9564df750f6526bc083d9fc1d37748b1279311b00db0fe9a8366ffa",
+              "afterSha256": "a715a30d352a590f9adb5229e8dd72de51139109286fdb1b2cf88508ba279732",
+              "pollIntervalMs": 5,
+              "ms": 21.082966
+            }
+          ],
+          "samples": 7,
+          "medianMs": 21.144316,
+          "p95Ms": 21.190984
+        },
+        "paste": {
+          "warmups": [
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "13b779a92ce54e15201cf23d523111e9700716f3b3c2ac5e4de0e4738d1c3db0",
+              "afterSha256": "f6e815117a89edea48ce14acc00598d956738992308baec11f774ae410ad8a03",
+              "pollIntervalMs": 5,
+              "ms": 10.672898
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "13b779a92ce54e15201cf23d523111e9700716f3b3c2ac5e4de0e4738d1c3db0",
+              "afterSha256": "f6e815117a89edea48ce14acc00598d956738992308baec11f774ae410ad8a03",
+              "pollIntervalMs": 5,
+              "ms": 15.976229
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "13b779a92ce54e15201cf23d523111e9700716f3b3c2ac5e4de0e4738d1c3db0",
+              "afterSha256": "f6e815117a89edea48ce14acc00598d956738992308baec11f774ae410ad8a03",
+              "pollIntervalMs": 5,
+              "ms": 15.914719
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "13b779a92ce54e15201cf23d523111e9700716f3b3c2ac5e4de0e4738d1c3db0",
+              "afterSha256": "f6e815117a89edea48ce14acc00598d956738992308baec11f774ae410ad8a03",
+              "pollIntervalMs": 5,
+              "ms": 10.652736
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "13b779a92ce54e15201cf23d523111e9700716f3b3c2ac5e4de0e4738d1c3db0",
+              "afterSha256": "f6e815117a89edea48ce14acc00598d956738992308baec11f774ae410ad8a03",
+              "pollIntervalMs": 5,
+              "ms": 15.900844
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "13b779a92ce54e15201cf23d523111e9700716f3b3c2ac5e4de0e4738d1c3db0",
+              "afterSha256": "f6e815117a89edea48ce14acc00598d956738992308baec11f774ae410ad8a03",
+              "pollIntervalMs": 5,
+              "ms": 10.663981
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "13b779a92ce54e15201cf23d523111e9700716f3b3c2ac5e4de0e4738d1c3db0",
+              "afterSha256": "f6e815117a89edea48ce14acc00598d956738992308baec11f774ae410ad8a03",
+              "pollIntervalMs": 5,
+              "ms": 10.668961
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "13b779a92ce54e15201cf23d523111e9700716f3b3c2ac5e4de0e4738d1c3db0",
+              "afterSha256": "f6e815117a89edea48ce14acc00598d956738992308baec11f774ae410ad8a03",
+              "pollIntervalMs": 5,
+              "ms": 15.842611
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "13b779a92ce54e15201cf23d523111e9700716f3b3c2ac5e4de0e4738d1c3db0",
+              "afterSha256": "f6e815117a89edea48ce14acc00598d956738992308baec11f774ae410ad8a03",
+              "pollIntervalMs": 5,
+              "ms": 10.595396
+            }
+          ],
+          "samples": 7,
+          "medianMs": 10.668961,
+          "p95Ms": 15.914719
+        },
+        "save": {
+          "warmups": [
+            {
+              "gesture": "7",
+              "beforeSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+              "afterSha256": "81813077d1184b1177458c06703ebb3fdbdce7ca23932deca00cdfe617609514",
+              "pollIntervalMs": 5,
+              "ms": 2015.975383
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+              "afterSha256": "81813077d1184b1177458c06703ebb3fdbdce7ca23932deca00cdfe617609514",
+              "pollIntervalMs": 5,
+              "ms": 2007.836606
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "7",
+              "beforeSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+              "afterSha256": "81813077d1184b1177458c06703ebb3fdbdce7ca23932deca00cdfe617609514",
+              "pollIntervalMs": 5,
+              "ms": 2006.290191
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+              "afterSha256": "81813077d1184b1177458c06703ebb3fdbdce7ca23932deca00cdfe617609514",
+              "pollIntervalMs": 5,
+              "ms": 2008.96584
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+              "afterSha256": "81813077d1184b1177458c06703ebb3fdbdce7ca23932deca00cdfe617609514",
+              "pollIntervalMs": 5,
+              "ms": 2007.260966
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+              "afterSha256": "81813077d1184b1177458c06703ebb3fdbdce7ca23932deca00cdfe617609514",
+              "pollIntervalMs": 5,
+              "ms": 2009.906316
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+              "afterSha256": "81813077d1184b1177458c06703ebb3fdbdce7ca23932deca00cdfe617609514",
+              "pollIntervalMs": 5,
+              "ms": 2008.550102
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+              "afterSha256": "81813077d1184b1177458c06703ebb3fdbdce7ca23932deca00cdfe617609514",
+              "pollIntervalMs": 5,
+              "ms": 2008.52952
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+              "afterSha256": "81813077d1184b1177458c06703ebb3fdbdce7ca23932deca00cdfe617609514",
+              "pollIntervalMs": 5,
+              "ms": 2005.925463
+            }
+          ],
+          "samples": 7,
+          "medianMs": 2008.52952,
+          "p95Ms": 2009.906316
+        }
+      },
+      "format": {
+        "boldDelimiterInsertions": 1900,
+        "sha256": "d2002d5fdac3a2382bc77219eab10ee4cfcedcff533751bbafb8d0349f10dcbb"
+      },
+      "blocks": 800,
+      "launchFlags": [
+        "--no-sandbox",
+        "--disable-gpu",
+        "--force-device-scale-factor=1",
+        "--lang=en-US",
+        "--remote-debugging-port=9791"
+      ],
+      "editor": "Markdown source with default style; Live Preview disabled",
+      "persistence": "Auto-save; edit to whole Markdown file readback",
+      "open": "Switch from standby document to the fixture via file-tree click"
+    },
+    {
+      "app": "Obsidian",
+      "version": "1.13.7",
+      "fixtureSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+      "inputBytes": 615089,
+      "workspace": "Linux-5.15.133.1-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+      "region": [
+        625,
+        155,
+        300,
+        110
+      ],
+      "metrics": {
+        "open": {
+          "warmups": [
+            {
+              "gesture": "click:125,124",
+              "beforeSha256": "9b3bd700a2520c705e9ee09077cec2cd8706df500bde2f40ba0cc8b9790af7e5",
+              "afterSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "pollIntervalMs": 5,
+              "ms": 42.146071
+            },
+            {
+              "gesture": "click:125,124",
+              "beforeSha256": "9b3bd700a2520c705e9ee09077cec2cd8706df500bde2f40ba0cc8b9790af7e5",
+              "afterSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "pollIntervalMs": 5,
+              "ms": 36.815319
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "click:125,124",
+              "beforeSha256": "9b3bd700a2520c705e9ee09077cec2cd8706df500bde2f40ba0cc8b9790af7e5",
+              "afterSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "pollIntervalMs": 5,
+              "ms": 36.750112
+            },
+            {
+              "gesture": "click:125,124",
+              "beforeSha256": "9b3bd700a2520c705e9ee09077cec2cd8706df500bde2f40ba0cc8b9790af7e5",
+              "afterSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "pollIntervalMs": 5,
+              "ms": 15.839135
+            },
+            {
+              "gesture": "click:125,124",
+              "beforeSha256": "9b3bd700a2520c705e9ee09077cec2cd8706df500bde2f40ba0cc8b9790af7e5",
+              "afterSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "pollIntervalMs": 5,
+              "ms": 21.154023
+            },
+            {
+              "gesture": "click:125,124",
+              "beforeSha256": "9b3bd700a2520c705e9ee09077cec2cd8706df500bde2f40ba0cc8b9790af7e5",
+              "afterSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "pollIntervalMs": 5,
+              "ms": 21.105261
+            },
+            {
+              "gesture": "click:125,124",
+              "beforeSha256": "9b3bd700a2520c705e9ee09077cec2cd8706df500bde2f40ba0cc8b9790af7e5",
+              "afterSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "pollIntervalMs": 5,
+              "ms": 15.91634
+            },
+            {
+              "gesture": "click:125,124",
+              "beforeSha256": "9b3bd700a2520c705e9ee09077cec2cd8706df500bde2f40ba0cc8b9790af7e5",
+              "afterSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "pollIntervalMs": 5,
+              "ms": 21.277494
+            },
+            {
+              "gesture": "click:125,124",
+              "beforeSha256": "9b3bd700a2520c705e9ee09077cec2cd8706df500bde2f40ba0cc8b9790af7e5",
+              "afterSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "pollIntervalMs": 5,
+              "ms": 15.913127
+            }
+          ],
+          "samples": 7,
+          "medianMs": 21.105261,
+          "p95Ms": 36.750112
+        },
+        "input": {
+          "warmups": [
+            {
+              "gesture": "7",
+              "beforeSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "afterSha256": "042fe9120c6ce1210b3838c03ac36eb53ea8704a4bb4b5cf05443228896f4cbf",
+              "pollIntervalMs": 5,
+              "ms": 10.879265
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "afterSha256": "042fe9120c6ce1210b3838c03ac36eb53ea8704a4bb4b5cf05443228896f4cbf",
+              "pollIntervalMs": 5,
+              "ms": 10.840476
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "7",
+              "beforeSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "afterSha256": "042fe9120c6ce1210b3838c03ac36eb53ea8704a4bb4b5cf05443228896f4cbf",
+              "pollIntervalMs": 5,
+              "ms": 10.892641
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "afterSha256": "042fe9120c6ce1210b3838c03ac36eb53ea8704a4bb4b5cf05443228896f4cbf",
+              "pollIntervalMs": 5,
+              "ms": 10.79904
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "afterSha256": "042fe9120c6ce1210b3838c03ac36eb53ea8704a4bb4b5cf05443228896f4cbf",
+              "pollIntervalMs": 5,
+              "ms": 10.715637
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "afterSha256": "042fe9120c6ce1210b3838c03ac36eb53ea8704a4bb4b5cf05443228896f4cbf",
+              "pollIntervalMs": 5,
+              "ms": 10.76789
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "afterSha256": "042fe9120c6ce1210b3838c03ac36eb53ea8704a4bb4b5cf05443228896f4cbf",
+              "pollIntervalMs": 5,
+              "ms": 10.79332
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "afterSha256": "042fe9120c6ce1210b3838c03ac36eb53ea8704a4bb4b5cf05443228896f4cbf",
+              "pollIntervalMs": 5,
+              "ms": 10.858423
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "a25fe6a6f140503df09cfb2ffa814b59488db8f7de36289b7a7976c4f320bf7a",
+              "afterSha256": "042fe9120c6ce1210b3838c03ac36eb53ea8704a4bb4b5cf05443228896f4cbf",
+              "pollIntervalMs": 5,
+              "ms": 10.793121
+            }
+          ],
+          "samples": 7,
+          "medianMs": 10.79332,
+          "p95Ms": 10.892641
+        },
+        "format": {
+          "warmups": [
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": "e579eb04f9564df750f6526bc083d9fc1d37748b1279311b00db0fe9a8366ffa",
+              "afterSha256": "a715a30d352a590f9adb5229e8dd72de51139109286fdb1b2cf88508ba279732",
+              "pollIntervalMs": 5,
+              "ms": 67.969487
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": "e579eb04f9564df750f6526bc083d9fc1d37748b1279311b00db0fe9a8366ffa",
+              "afterSha256": "a715a30d352a590f9adb5229e8dd72de51139109286fdb1b2cf88508ba279732",
+              "pollIntervalMs": 5,
+              "ms": 68.276194
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": "e579eb04f9564df750f6526bc083d9fc1d37748b1279311b00db0fe9a8366ffa",
+              "afterSha256": "a715a30d352a590f9adb5229e8dd72de51139109286fdb1b2cf88508ba279732",
+              "pollIntervalMs": 5,
+              "ms": 68.243686
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": "e579eb04f9564df750f6526bc083d9fc1d37748b1279311b00db0fe9a8366ffa",
+              "afterSha256": "a715a30d352a590f9adb5229e8dd72de51139109286fdb1b2cf88508ba279732",
+              "pollIntervalMs": 5,
+              "ms": 68.56517
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": "e579eb04f9564df750f6526bc083d9fc1d37748b1279311b00db0fe9a8366ffa",
+              "afterSha256": "a715a30d352a590f9adb5229e8dd72de51139109286fdb1b2cf88508ba279732",
+              "pollIntervalMs": 5,
+              "ms": 68.002612
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": "e579eb04f9564df750f6526bc083d9fc1d37748b1279311b00db0fe9a8366ffa",
+              "afterSha256": "a715a30d352a590f9adb5229e8dd72de51139109286fdb1b2cf88508ba279732",
+              "pollIntervalMs": 5,
+              "ms": 67.966883
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": "e579eb04f9564df750f6526bc083d9fc1d37748b1279311b00db0fe9a8366ffa",
+              "afterSha256": "a715a30d352a590f9adb5229e8dd72de51139109286fdb1b2cf88508ba279732",
+              "pollIntervalMs": 5,
+              "ms": 68.191723
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": "e579eb04f9564df750f6526bc083d9fc1d37748b1279311b00db0fe9a8366ffa",
+              "afterSha256": "a715a30d352a590f9adb5229e8dd72de51139109286fdb1b2cf88508ba279732",
+              "pollIntervalMs": 5,
+              "ms": 68.079747
+            },
+            {
+              "gesture": "Control_L+b",
+              "beforeSha256": "e579eb04f9564df750f6526bc083d9fc1d37748b1279311b00db0fe9a8366ffa",
+              "afterSha256": "a715a30d352a590f9adb5229e8dd72de51139109286fdb1b2cf88508ba279732",
+              "pollIntervalMs": 5,
+              "ms": 62.572648
+            }
+          ],
+          "samples": 7,
+          "medianMs": 68.079747,
+          "p95Ms": 68.56517
+        },
+        "paste": {
+          "warmups": [
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "13b779a92ce54e15201cf23d523111e9700716f3b3c2ac5e4de0e4738d1c3db0",
+              "afterSha256": "f6e815117a89edea48ce14acc00598d956738992308baec11f774ae410ad8a03",
+              "pollIntervalMs": 5,
+              "ms": 15.903655
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "13b779a92ce54e15201cf23d523111e9700716f3b3c2ac5e4de0e4738d1c3db0",
+              "afterSha256": "f6e815117a89edea48ce14acc00598d956738992308baec11f774ae410ad8a03",
+              "pollIntervalMs": 5,
+              "ms": 10.686699
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "13b779a92ce54e15201cf23d523111e9700716f3b3c2ac5e4de0e4738d1c3db0",
+              "afterSha256": "f6e815117a89edea48ce14acc00598d956738992308baec11f774ae410ad8a03",
+              "pollIntervalMs": 5,
+              "ms": 10.649509
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "13b779a92ce54e15201cf23d523111e9700716f3b3c2ac5e4de0e4738d1c3db0",
+              "afterSha256": "f6e815117a89edea48ce14acc00598d956738992308baec11f774ae410ad8a03",
+              "pollIntervalMs": 5,
+              "ms": 10.599514
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "13b779a92ce54e15201cf23d523111e9700716f3b3c2ac5e4de0e4738d1c3db0",
+              "afterSha256": "f6e815117a89edea48ce14acc00598d956738992308baec11f774ae410ad8a03",
+              "pollIntervalMs": 5,
+              "ms": 15.810087
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "13b779a92ce54e15201cf23d523111e9700716f3b3c2ac5e4de0e4738d1c3db0",
+              "afterSha256": "f6e815117a89edea48ce14acc00598d956738992308baec11f774ae410ad8a03",
+              "pollIntervalMs": 5,
+              "ms": 15.895433
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "13b779a92ce54e15201cf23d523111e9700716f3b3c2ac5e4de0e4738d1c3db0",
+              "afterSha256": "f6e815117a89edea48ce14acc00598d956738992308baec11f774ae410ad8a03",
+              "pollIntervalMs": 5,
+              "ms": 15.832324
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "13b779a92ce54e15201cf23d523111e9700716f3b3c2ac5e4de0e4738d1c3db0",
+              "afterSha256": "f6e815117a89edea48ce14acc00598d956738992308baec11f774ae410ad8a03",
+              "pollIntervalMs": 5,
+              "ms": 10.763607
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "13b779a92ce54e15201cf23d523111e9700716f3b3c2ac5e4de0e4738d1c3db0",
+              "afterSha256": "f6e815117a89edea48ce14acc00598d956738992308baec11f774ae410ad8a03",
+              "pollIntervalMs": 5,
+              "ms": 15.891962
+            }
+          ],
+          "samples": 7,
+          "medianMs": 15.810087,
+          "p95Ms": 15.895433
+        },
+        "save": {
+          "warmups": [
+            {
+              "gesture": "7",
+              "beforeSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+              "afterSha256": "cc2e5ecbd271eb96d3db884c4214b68f95f4b668993098ec7d5016b42ef1a3a9",
+              "pollIntervalMs": 5,
+              "ms": 2012.46543
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+              "afterSha256": "cc2e5ecbd271eb96d3db884c4214b68f95f4b668993098ec7d5016b42ef1a3a9",
+              "pollIntervalMs": 5,
+              "ms": 2009.309904
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "7",
+              "beforeSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+              "afterSha256": "cc2e5ecbd271eb96d3db884c4214b68f95f4b668993098ec7d5016b42ef1a3a9",
+              "pollIntervalMs": 5,
+              "ms": 2006.7966
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+              "afterSha256": "cc2e5ecbd271eb96d3db884c4214b68f95f4b668993098ec7d5016b42ef1a3a9",
+              "pollIntervalMs": 5,
+              "ms": 2009.062578
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+              "afterSha256": "cc2e5ecbd271eb96d3db884c4214b68f95f4b668993098ec7d5016b42ef1a3a9",
+              "pollIntervalMs": 5,
+              "ms": 2012.166186
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+              "afterSha256": "cc2e5ecbd271eb96d3db884c4214b68f95f4b668993098ec7d5016b42ef1a3a9",
+              "pollIntervalMs": 5,
+              "ms": 2012.380491
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+              "afterSha256": "cc2e5ecbd271eb96d3db884c4214b68f95f4b668993098ec7d5016b42ef1a3a9",
+              "pollIntervalMs": 5,
+              "ms": 2009.597173
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+              "afterSha256": "cc2e5ecbd271eb96d3db884c4214b68f95f4b668993098ec7d5016b42ef1a3a9",
+              "pollIntervalMs": 5,
+              "ms": 2008.004965
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+              "afterSha256": "cc2e5ecbd271eb96d3db884c4214b68f95f4b668993098ec7d5016b42ef1a3a9",
+              "pollIntervalMs": 5,
+              "ms": 2010.407994
+            }
+          ],
+          "samples": 7,
+          "medianMs": 2009.597173,
+          "p95Ms": 2012.380491
+        }
+      },
+      "format": {
+        "boldDelimiterInsertions": 9580,
+        "sha256": "a9f2a8a12e42d59b861024643c3830c89be81b9c0b9442cf41f3a91e943b1357"
+      },
+      "blocks": 4000,
+      "launchFlags": [
+        "--no-sandbox",
+        "--disable-gpu",
+        "--force-device-scale-factor=1",
+        "--lang=en-US",
+        "--remote-debugging-port=9791"
+      ],
+      "editor": "Markdown source with default style; Live Preview disabled",
+      "persistence": "Auto-save; edit to whole Markdown file readback",
+      "open": "Switch from standby document to the fixture via file-tree click"
+    },
+    {
+      "app": "Typora",
+      "version": "1.14.9",
+      "fixtureSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+      "inputBytes": 122369,
+      "workspace": "Linux-5.15.133.1-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+      "region": [
+        480,
+        55,
+        225,
+        92
+      ],
+      "metrics": {
+        "open": {
+          "warmups": [
+            {
+              "gesture": "Control_L+slash",
+              "beforeSha256": null,
+              "afterSha256": "5bc2d11e41173485628e80a22ec7ba395886b734d849b8156be374414aa3acab",
+              "pollIntervalMs": 5,
+              "ms": 51.572312
+            },
+            {
+              "gesture": "Control_L+slash",
+              "beforeSha256": null,
+              "afterSha256": "5bc2d11e41173485628e80a22ec7ba395886b734d849b8156be374414aa3acab",
+              "pollIntervalMs": 5,
+              "ms": 47.190244
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "Control_L+slash",
+              "beforeSha256": null,
+              "afterSha256": "5bc2d11e41173485628e80a22ec7ba395886b734d849b8156be374414aa3acab",
+              "pollIntervalMs": 5,
+              "ms": 51.870081
+            },
+            {
+              "gesture": "Control_L+slash",
+              "beforeSha256": null,
+              "afterSha256": "5bc2d11e41173485628e80a22ec7ba395886b734d849b8156be374414aa3acab",
+              "pollIntervalMs": 5,
+              "ms": 46.546391
+            },
+            {
+              "gesture": "Control_L+slash",
+              "beforeSha256": null,
+              "afterSha256": "5bc2d11e41173485628e80a22ec7ba395886b734d849b8156be374414aa3acab",
+              "pollIntervalMs": 5,
+              "ms": 48.074045
+            },
+            {
+              "gesture": "Control_L+slash",
+              "beforeSha256": null,
+              "afterSha256": "5bc2d11e41173485628e80a22ec7ba395886b734d849b8156be374414aa3acab",
+              "pollIntervalMs": 5,
+              "ms": 48.967805
+            },
+            {
+              "gesture": "Control_L+slash",
+              "beforeSha256": null,
+              "afterSha256": "5bc2d11e41173485628e80a22ec7ba395886b734d849b8156be374414aa3acab",
+              "pollIntervalMs": 5,
+              "ms": 48.88439
+            },
+            {
+              "gesture": "Control_L+slash",
+              "beforeSha256": null,
+              "afterSha256": "5bc2d11e41173485628e80a22ec7ba395886b734d849b8156be374414aa3acab",
+              "pollIntervalMs": 5,
+              "ms": 51.419314
+            },
+            {
+              "gesture": "Control_L+slash",
+              "beforeSha256": null,
+              "afterSha256": "5bc2d11e41173485628e80a22ec7ba395886b734d849b8156be374414aa3acab",
+              "pollIntervalMs": 5,
+              "ms": 46.546783
+            }
+          ],
+          "samples": 7,
+          "medianMs": 48.88439,
+          "p95Ms": 51.870081
+        },
+        "input": {
+          "warmups": [
+            {
+              "gesture": "7",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "416e2787d54c08892c2486a42cb830c2ec65e727e57b07f220a164adf3447521",
+              "pollIntervalMs": 5,
+              "ms": 10.747131
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "416e2787d54c08892c2486a42cb830c2ec65e727e57b07f220a164adf3447521",
+              "pollIntervalMs": 5,
+              "ms": 10.668695
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "7",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "416e2787d54c08892c2486a42cb830c2ec65e727e57b07f220a164adf3447521",
+              "pollIntervalMs": 5,
+              "ms": 10.731788
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "416e2787d54c08892c2486a42cb830c2ec65e727e57b07f220a164adf3447521",
+              "pollIntervalMs": 5,
+              "ms": 10.780056
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "416e2787d54c08892c2486a42cb830c2ec65e727e57b07f220a164adf3447521",
+              "pollIntervalMs": 5,
+              "ms": 10.703762
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "416e2787d54c08892c2486a42cb830c2ec65e727e57b07f220a164adf3447521",
+              "pollIntervalMs": 5,
+              "ms": 10.845042
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "416e2787d54c08892c2486a42cb830c2ec65e727e57b07f220a164adf3447521",
+              "pollIntervalMs": 5,
+              "ms": 10.669415
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "416e2787d54c08892c2486a42cb830c2ec65e727e57b07f220a164adf3447521",
+              "pollIntervalMs": 5,
+              "ms": 10.715954
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "416e2787d54c08892c2486a42cb830c2ec65e727e57b07f220a164adf3447521",
+              "pollIntervalMs": 5,
+              "ms": 10.646815
+            }
+          ],
+          "samples": 7,
+          "medianMs": 10.715954,
+          "p95Ms": 10.845042
+        },
+        "format": {
+          "available": false,
+          "gesture": "Control_L+b",
+          "sourceVerified": true,
+          "sourceSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+          "reason": "Strong is disabled in source code mode"
+        },
+        "paste": {
+          "warmups": [
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "89faeafa741ff40d32bf2cebee5fb564f50b8dd403cdde0da6b78ebe2897ee43",
+              "pollIntervalMs": 5,
+              "ms": 15.838152
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "89faeafa741ff40d32bf2cebee5fb564f50b8dd403cdde0da6b78ebe2897ee43",
+              "pollIntervalMs": 5,
+              "ms": 15.732911
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "89faeafa741ff40d32bf2cebee5fb564f50b8dd403cdde0da6b78ebe2897ee43",
+              "pollIntervalMs": 5,
+              "ms": 15.788152
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "89faeafa741ff40d32bf2cebee5fb564f50b8dd403cdde0da6b78ebe2897ee43",
+              "pollIntervalMs": 5,
+              "ms": 15.858394
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "89faeafa741ff40d32bf2cebee5fb564f50b8dd403cdde0da6b78ebe2897ee43",
+              "pollIntervalMs": 5,
+              "ms": 15.749045
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "89faeafa741ff40d32bf2cebee5fb564f50b8dd403cdde0da6b78ebe2897ee43",
+              "pollIntervalMs": 5,
+              "ms": 15.75527
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "89faeafa741ff40d32bf2cebee5fb564f50b8dd403cdde0da6b78ebe2897ee43",
+              "pollIntervalMs": 5,
+              "ms": 15.882099
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "89faeafa741ff40d32bf2cebee5fb564f50b8dd403cdde0da6b78ebe2897ee43",
+              "pollIntervalMs": 5,
+              "ms": 15.806729
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "89faeafa741ff40d32bf2cebee5fb564f50b8dd403cdde0da6b78ebe2897ee43",
+              "pollIntervalMs": 5,
+              "ms": 15.753403
+            }
+          ],
+          "samples": 7,
+          "medianMs": 15.788152,
+          "p95Ms": 15.882099
+        },
+        "save": {
+          "warmups": [
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+              "afterSha256": "81813077d1184b1177458c06703ebb3fdbdce7ca23932deca00cdfe617609514",
+              "pollIntervalMs": 5,
+              "ms": 10.754568
+            },
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+              "afterSha256": "81813077d1184b1177458c06703ebb3fdbdce7ca23932deca00cdfe617609514",
+              "pollIntervalMs": 5,
+              "ms": 5.445267
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+              "afterSha256": "81813077d1184b1177458c06703ebb3fdbdce7ca23932deca00cdfe617609514",
+              "pollIntervalMs": 5,
+              "ms": 5.505039
+            },
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+              "afterSha256": "81813077d1184b1177458c06703ebb3fdbdce7ca23932deca00cdfe617609514",
+              "pollIntervalMs": 5,
+              "ms": 5.503645
+            },
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+              "afterSha256": "81813077d1184b1177458c06703ebb3fdbdce7ca23932deca00cdfe617609514",
+              "pollIntervalMs": 5,
+              "ms": 5.507112
+            },
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+              "afterSha256": "81813077d1184b1177458c06703ebb3fdbdce7ca23932deca00cdfe617609514",
+              "pollIntervalMs": 5,
+              "ms": 5.436305
+            },
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+              "afterSha256": "81813077d1184b1177458c06703ebb3fdbdce7ca23932deca00cdfe617609514",
+              "pollIntervalMs": 5,
+              "ms": 5.522675
+            },
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+              "afterSha256": "81813077d1184b1177458c06703ebb3fdbdce7ca23932deca00cdfe617609514",
+              "pollIntervalMs": 5,
+              "ms": 5.411585
+            },
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "4157a1436f0f232418b1697c1de63a38f9f988dc653b1473ac1ea180e384eaab",
+              "afterSha256": "81813077d1184b1177458c06703ebb3fdbdce7ca23932deca00cdfe617609514",
+              "pollIntervalMs": 5,
+              "ms": 5.551552
+            }
+          ],
+          "samples": 7,
+          "medianMs": 5.505039,
+          "p95Ms": 5.551552
+        }
+      },
+      "blocks": 800,
+      "launchFlags": [
+        "--no-sandbox",
+        "--disable-gpu",
+        "--force-device-scale-factor=1",
+        "--lang=en-US"
+      ],
+      "editor": "Source code mode",
+      "persistence": "Explicit save; Ctrl+S to whole Markdown file readback",
+      "open": "Document already loaded; enter source-code mode via Ctrl+/",
+      "openProbe": {
+        "type": "ink and source-mode footer",
+        "region": [
+          457,
+          38,
+          34,
+          325
+        ],
+        "footer": [
+          6,
+          844,
+          158,
+          19
+        ]
+      },
+      "formatEvidence": "markdown-workflow-typora-source-format.png"
+    },
+    {
+      "app": "Typora",
+      "version": "1.14.9",
+      "fixtureSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+      "inputBytes": 615089,
+      "workspace": "Linux-5.15.133.1-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+      "region": [
+        480,
+        55,
+        225,
+        92
+      ],
+      "metrics": {
+        "open": {
+          "warmups": [
+            {
+              "gesture": "Control_L+slash",
+              "beforeSha256": null,
+              "afterSha256": "5bc2d11e41173485628e80a22ec7ba395886b734d849b8156be374414aa3acab",
+              "pollIntervalMs": 5,
+              "ms": 93.169183
+            },
+            {
+              "gesture": "Control_L+slash",
+              "beforeSha256": null,
+              "afterSha256": "5bc2d11e41173485628e80a22ec7ba395886b734d849b8156be374414aa3acab",
+              "pollIntervalMs": 5,
+              "ms": 77.473509
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "Control_L+slash",
+              "beforeSha256": null,
+              "afterSha256": "5bc2d11e41173485628e80a22ec7ba395886b734d849b8156be374414aa3acab",
+              "pollIntervalMs": 5,
+              "ms": 72.333147
+            },
+            {
+              "gesture": "Control_L+slash",
+              "beforeSha256": null,
+              "afterSha256": "5bc2d11e41173485628e80a22ec7ba395886b734d849b8156be374414aa3acab",
+              "pollIntervalMs": 5,
+              "ms": 72.151335
+            },
+            {
+              "gesture": "Control_L+slash",
+              "beforeSha256": null,
+              "afterSha256": "5bc2d11e41173485628e80a22ec7ba395886b734d849b8156be374414aa3acab",
+              "pollIntervalMs": 5,
+              "ms": 72.067257
+            },
+            {
+              "gesture": "Control_L+slash",
+              "beforeSha256": null,
+              "afterSha256": "5bc2d11e41173485628e80a22ec7ba395886b734d849b8156be374414aa3acab",
+              "pollIntervalMs": 5,
+              "ms": 77.151934
+            },
+            {
+              "gesture": "Control_L+slash",
+              "beforeSha256": null,
+              "afterSha256": "5bc2d11e41173485628e80a22ec7ba395886b734d849b8156be374414aa3acab",
+              "pollIntervalMs": 5,
+              "ms": 67.043048
+            },
+            {
+              "gesture": "Control_L+slash",
+              "beforeSha256": null,
+              "afterSha256": "5bc2d11e41173485628e80a22ec7ba395886b734d849b8156be374414aa3acab",
+              "pollIntervalMs": 5,
+              "ms": 72.302408
+            },
+            {
+              "gesture": "Control_L+slash",
+              "beforeSha256": null,
+              "afterSha256": "5bc2d11e41173485628e80a22ec7ba395886b734d849b8156be374414aa3acab",
+              "pollIntervalMs": 5,
+              "ms": 72.107068
+            }
+          ],
+          "samples": 7,
+          "medianMs": 72.151335,
+          "p95Ms": 77.151934
+        },
+        "input": {
+          "warmups": [
+            {
+              "gesture": "7",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "416e2787d54c08892c2486a42cb830c2ec65e727e57b07f220a164adf3447521",
+              "pollIntervalMs": 5,
+              "ms": 10.660399
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "416e2787d54c08892c2486a42cb830c2ec65e727e57b07f220a164adf3447521",
+              "pollIntervalMs": 5,
+              "ms": 10.633668
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "7",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "416e2787d54c08892c2486a42cb830c2ec65e727e57b07f220a164adf3447521",
+              "pollIntervalMs": 5,
+              "ms": 10.805991
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "416e2787d54c08892c2486a42cb830c2ec65e727e57b07f220a164adf3447521",
+              "pollIntervalMs": 5,
+              "ms": 15.825308
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "416e2787d54c08892c2486a42cb830c2ec65e727e57b07f220a164adf3447521",
+              "pollIntervalMs": 5,
+              "ms": 10.659422
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "416e2787d54c08892c2486a42cb830c2ec65e727e57b07f220a164adf3447521",
+              "pollIntervalMs": 5,
+              "ms": 10.86147
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "416e2787d54c08892c2486a42cb830c2ec65e727e57b07f220a164adf3447521",
+              "pollIntervalMs": 5,
+              "ms": 15.935352
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "416e2787d54c08892c2486a42cb830c2ec65e727e57b07f220a164adf3447521",
+              "pollIntervalMs": 5,
+              "ms": 10.931804
+            },
+            {
+              "gesture": "7",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "416e2787d54c08892c2486a42cb830c2ec65e727e57b07f220a164adf3447521",
+              "pollIntervalMs": 5,
+              "ms": 10.710652
+            }
+          ],
+          "samples": 7,
+          "medianMs": 10.86147,
+          "p95Ms": 15.935352
+        },
+        "format": {
+          "available": false,
+          "gesture": "Control_L+b",
+          "sourceVerified": true,
+          "sourceSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+          "reason": "Strong is disabled in source code mode"
+        },
+        "paste": {
+          "warmups": [
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "89faeafa741ff40d32bf2cebee5fb564f50b8dd403cdde0da6b78ebe2897ee43",
+              "pollIntervalMs": 5,
+              "ms": 15.685155
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "89faeafa741ff40d32bf2cebee5fb564f50b8dd403cdde0da6b78ebe2897ee43",
+              "pollIntervalMs": 5,
+              "ms": 15.869967
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "89faeafa741ff40d32bf2cebee5fb564f50b8dd403cdde0da6b78ebe2897ee43",
+              "pollIntervalMs": 5,
+              "ms": 15.726331
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "89faeafa741ff40d32bf2cebee5fb564f50b8dd403cdde0da6b78ebe2897ee43",
+              "pollIntervalMs": 5,
+              "ms": 15.740423
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "89faeafa741ff40d32bf2cebee5fb564f50b8dd403cdde0da6b78ebe2897ee43",
+              "pollIntervalMs": 5,
+              "ms": 15.727675
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "89faeafa741ff40d32bf2cebee5fb564f50b8dd403cdde0da6b78ebe2897ee43",
+              "pollIntervalMs": 5,
+              "ms": 15.759855
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "89faeafa741ff40d32bf2cebee5fb564f50b8dd403cdde0da6b78ebe2897ee43",
+              "pollIntervalMs": 5,
+              "ms": 15.731766
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "89faeafa741ff40d32bf2cebee5fb564f50b8dd403cdde0da6b78ebe2897ee43",
+              "pollIntervalMs": 5,
+              "ms": 15.92467
+            },
+            {
+              "gesture": "Control_L+v",
+              "beforeSha256": "081740052742d625d3bf7e32c479abdeda1f2224247d9f7217ef01f9305b5e3c",
+              "afterSha256": "89faeafa741ff40d32bf2cebee5fb564f50b8dd403cdde0da6b78ebe2897ee43",
+              "pollIntervalMs": 5,
+              "ms": 15.814408
+            }
+          ],
+          "samples": 7,
+          "medianMs": 15.740423,
+          "p95Ms": 15.92467
+        },
+        "save": {
+          "warmups": [
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+              "afterSha256": "cc2e5ecbd271eb96d3db884c4214b68f95f4b668993098ec7d5016b42ef1a3a9",
+              "pollIntervalMs": 5,
+              "ms": 22.311671
+            },
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+              "afterSha256": "cc2e5ecbd271eb96d3db884c4214b68f95f4b668993098ec7d5016b42ef1a3a9",
+              "pollIntervalMs": 5,
+              "ms": 11.401853
+            }
+          ],
+          "raw": [
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+              "afterSha256": "cc2e5ecbd271eb96d3db884c4214b68f95f4b668993098ec7d5016b42ef1a3a9",
+              "pollIntervalMs": 5,
+              "ms": 11.427093
+            },
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+              "afterSha256": "cc2e5ecbd271eb96d3db884c4214b68f95f4b668993098ec7d5016b42ef1a3a9",
+              "pollIntervalMs": 5,
+              "ms": 11.529005
+            },
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+              "afterSha256": "cc2e5ecbd271eb96d3db884c4214b68f95f4b668993098ec7d5016b42ef1a3a9",
+              "pollIntervalMs": 5,
+              "ms": 11.451108
+            },
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+              "afterSha256": "cc2e5ecbd271eb96d3db884c4214b68f95f4b668993098ec7d5016b42ef1a3a9",
+              "pollIntervalMs": 5,
+              "ms": 11.4001
+            },
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+              "afterSha256": "cc2e5ecbd271eb96d3db884c4214b68f95f4b668993098ec7d5016b42ef1a3a9",
+              "pollIntervalMs": 5,
+              "ms": 11.561259
+            },
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+              "afterSha256": "cc2e5ecbd271eb96d3db884c4214b68f95f4b668993098ec7d5016b42ef1a3a9",
+              "pollIntervalMs": 5,
+              "ms": 11.624444
+            },
+            {
+              "gesture": "Control_L+s",
+              "beforeSha256": "3439c0ef175632fe2b6416435a96f07dc0e84406e7b78568fc93e3649bece823",
+              "afterSha256": "cc2e5ecbd271eb96d3db884c4214b68f95f4b668993098ec7d5016b42ef1a3a9",
+              "pollIntervalMs": 5,
+              "ms": 11.54362
+            }
+          ],
+          "samples": 7,
+          "medianMs": 11.529005,
+          "p95Ms": 11.624444
+        }
+      },
+      "blocks": 4000,
+      "launchFlags": [
+        "--no-sandbox",
+        "--disable-gpu",
+        "--force-device-scale-factor=1",
+        "--lang=en-US"
+      ],
+      "editor": "Source code mode",
+      "persistence": "Explicit save; Ctrl+S to whole Markdown file readback",
+      "open": "Document already loaded; enter source-code mode via Ctrl+/",
+      "openProbe": {
+        "type": "ink and source-mode footer",
+        "region": [
+          457,
+          38,
+          34,
+          325
+        ],
+        "footer": [
+          6,
+          844,
+          158,
+          19
+        ]
+      },
+      "formatEvidence": "markdown-workflow-typora-source-format.png"
+    }
+  ]
+}

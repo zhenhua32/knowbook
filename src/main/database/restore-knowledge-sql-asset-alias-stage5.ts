@@ -28,13 +28,13 @@ import { projectTemplate3ContentStringEdits, template3ContentStringRanges } from
 import { assertOriginCatalogDirectory, syncOriginCatalogAncestors } from './restore-knowledge-origin-bundle-files'
 import { restoreDirectory, syncRestoreDirectory, syncRestoreFile } from './restore-safety-files'
 import { restoreSqliteFilename } from './restore-safety-sqlite-path'
-import { withStoredNavigation3TableScan, type StoreNavigation3Table } from './restore-knowledge-navigation3-tables'
+import { navigation3RowLookup, withStoredNavigation3TableScan, type StoreNavigation3Table } from './restore-knowledge-navigation3-tables'
 import { deriveStage4AliasNavigation, type Stage4AliasNavigationInput } from './restore-knowledge-derived-stage4-observation'
 
 type Source = Awaited<ReturnType<typeof readRootRestoreAssetAliasSqlSource5>>
 type Sql = Source['source']['physical']
 type Table = Sql['tables'][number]
-type Row = Table['rows'][number]
+type Row = NonNullable<ReturnType<Table['rows']['at']>>
 type Edit = Navigation3TextEdit & { uri: string; kind: MarkdownDestination['kind']; syntax?: MarkdownDestination['syntax']; destination?: string }
 type Column = 'content' | 'summary' | 'blocks_json'
 type Token = { from: number; to: number; index: number }
@@ -76,17 +76,21 @@ function sqlBase(input: Source, canonical?: Canonical): Base {
     if (!before || !after || before.encoding !== after.encoding || !same(before.columns, after.columns)
       || !same(before.primaryKey, after.primaryKey) || before.rows.length !== after.rows.length)
       return fail('canonical SQL 改变了附件目标表')
-    const rows = new Map(after.rows.map(row => [row.targetRowId, row]))
+    if (before === after) continue
     // Each Stage3 producer allocates a fresh document CAS timestamp. The
     // original coordinate, identity, birth, owner and content must match.
     const cas = name === 'documents' ? before.columns.indexOf('updated_at') : -1
-    for (const { cells, ...row } of before.rows) {
-      const next = rows.get(row.targetRowId)
-      if (!next) return fail('canonical SQL 缺附件原坐标')
-      const { cells: nextCells, ...nextRow } = next
-      if (!same(row, nextRow) || cells.some((cell, index) => index !== cas && !same(cell, nextCells[index])))
-        return fail('canonical SQL 改变了附件原坐标、属主或原始列')
-    }
+    const rows = after.rows[Symbol.iterator]()
+    try {
+      for (const { cells, ...row } of before.rows) {
+        const next = rows.next()
+        if (next.done) return fail('canonical SQL 缺附件原坐标')
+        const { cells: nextCells, ...nextRow } = next.value
+        if (!same(row, nextRow) || cells.some((cell, index) => index !== cas && !same(cell, nextCells[index])))
+          return fail('canonical SQL 改变了附件原坐标、属主或原始列')
+      }
+      if (!rows.next().done) return fail('canonical SQL 多出附件原坐标')
+    } finally { rows.return?.() }
   }
   return { physical: value, stage, lineage: { canonicalStageId: stageId, canonicalStageManifestHash: manifestHash,
     canonicalAssetPlanHash: proof.planHash } }
@@ -113,8 +117,12 @@ function rewriteMarkdown(target: MarkdownTarget) {
 function plan(input: Source, format: Format, base: Base) {
   const { audit, matched, physical, location } = input.source
   const assetRoot = join(location.profileRoot, 'storage', 'assets')
-  const tables = new Map(physical.tables.filter(table => editableTables.includes(table.name))
-    .map(table => [table.name, { table, rows: new Map(table.rows.map(row => [row.targetRowId, row])) }]))
+  const coordinates = new Map(editableTables.map(name => [name, new Set<string>()]))
+  for (const { entry } of matched) {
+    if (entry.domain === 'final-sql' && entry.cell) coordinates.get(entry.cell.sourceRef.table)?.add(entry.cell.targetRowId)
+  }
+  const tables = new Map(physical.tables.filter(table => editableTables.includes(table.name)).map(table =>
+    [table.name, { table, readRow: navigation3RowLookup(table, row => row.targetRowId, coordinates.get(table.name)!) }] as const))
   const aliases = new Map(input.aliases.map(alias => [capsuleJson([alias.hash, alias.logicalName]), alias]))
   const conflicts = new Set(input.remaining.aliasPathConflicts.flat())
   const targets = new Map<string, Target>()
@@ -153,8 +161,8 @@ function plan(input: Source, format: Format, base: Base) {
       : context?.kind === 'template-content' ? column !== 'blocks_json' || !cell.token : column !== 'summary' || cell.token)
       return fail('附件列或模板 token 越界')
     const tableName = template ? 'document_templates' : column === 'content' ? 'blocks' : 'documents'
-    const { table, rows } = tables.get(tableName) ?? fail('缺实际附件表')
-    const row = rows.get(targetRowId)
+    const { table, readRow } = tables.get(tableName) ?? fail('缺实际附件表')
+    const row = readRow(targetRowId)
     if (!row || !same(row.sourceRef, cell.sourceRef) || table.name !== cell.sourceRef.table
       || cellText(table, row, tableName === 'blocks' ? 'document_id' : 'id') !== scope[1])
       return fail('附件的原角色、落盘行或宿主不同')
@@ -296,20 +304,22 @@ function assertSqlReadback(db: Database.Database, physical: Sql, source: Physica
         return fail('实际内容表身份变化')
       const { rows: expectedRows, ...layout } = expected
       const checked = function* () {
-        let ordinal = 0
-        for (const observed of actual.rows) {
-          const row = expectedRows[ordinal++]
-          if (!row || observed.sourceRowId !== row.targetRowId) return fail('实际内容表 rowid 顺序变化')
-          const changed = changedRows.get(expected.name + ':' + row.targetRowId)
-          const cells = changed ? row.cells.map((cell, index) => {
-            const value = changed.get(expected.columns[index])
-            return value === undefined ? cell : graph3Encode(value, expected.encoding)
-          }) : row.cells
-          if (observed.cells.length !== cells.length || observed.cells.some(([kind, value], index) => kind !== cells[index][0] || value !== cells[index][1]))
-            return fail('原行或声明改写之外的 SQL 数据变化')
-          yield { ...row, cells: observed.cells }
-        }
-        if (ordinal !== expectedRows.length) return fail('实际内容表行数变化')
+        const rows = expectedRows[Symbol.iterator]()
+        try {
+          for (const observed of actual.rows) {
+            const next = rows.next()
+            if (next.done || observed.sourceRowId !== next.value.targetRowId) return fail('实际内容表 rowid 顺序变化')
+            const row = next.value, changed = changedRows.get(expected.name + ':' + row.targetRowId)
+            const cells = changed ? row.cells.map((cell, index) => {
+              const value = changed.get(expected.columns[index])
+              return value === undefined ? cell : graph3Encode(value, expected.encoding)
+            }) : row.cells
+            if (observed.cells.length !== cells.length || observed.cells.some(([kind, value], index) => kind !== cells[index][0] || value !== cells[index][1]))
+              return fail('原行或声明改写之外的 SQL 数据变化')
+            yield { ...row, cells: observed.cells }
+          }
+          if (!rows.next().done) return fail('实际内容表行数变化')
+        } finally { rows.return?.() }
       }()
       if (publish) publish(layout, checked)
       else for (const _row of checked) { /* A plain alias read only needs the SQL proof. */ }

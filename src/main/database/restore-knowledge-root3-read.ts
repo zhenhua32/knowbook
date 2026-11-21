@@ -77,7 +77,8 @@ export async function withPreparedRootKnowledgeInputs5<T>(
   input: Parameters<typeof captureQualifiedOriginalBundle>[0],
   run: (root: Awaited<ReturnType<typeof captureRootKnowledgeConservationPlanFromCertifiedSources3>>, scope: PreparedRootKnowledgeInputs5) => Promise<T>) {
   return withReferenceOriginalRows5(async (...stores) => {
-    const { pair, working, ...captured } = await captureQualifiedOriginalBundleWithInitialContent5(input, stores[2])
+    const { pair, working, ...captured } = await captureQualifiedOriginalBundleWithInitialContent5(input, stores[2],
+      [stores[3]('source'), stores[3]('current')])
     const knowledge = await mintFromInitial(captured.bundle, captured.originalPackage)
     const root = Object.freeze({ ...captured, knowledgePlan: knowledge.plan, knowledgeValue: knowledge.value })
     const originals = scopeQualifiedContent5(pair, stores)
@@ -107,7 +108,8 @@ export async function readPreparedRootKnowledgeInputs5(plan: RootKnowledgeConser
 export async function withReopenedRootKnowledgeConservationInputs5<T>(input: Parameters<typeof captureReopenedQualifiedOriginalBundle>[0],
   run: (plan: RootKnowledgeConservationPlan3, scope: ReopenedRootKnowledgeInputs5) => Promise<T>): Promise<T> {
   return withReferenceOriginalRows5(async (...stores) => {
-    const { bundle, originalPackage, pair, working } = await captureReopenedQualifiedOriginalContent5(input, stores[2])
+    const { bundle, originalPackage, pair, working } = await captureReopenedQualifiedOriginalContent5(input, stores[2],
+      [stores[3]('source'), stores[3]('current')])
     const { plan, value: knowledge } = await mintFromInitial(bundle, originalPackage)
     const originals = scopeQualifiedContent5(pair, stores)
     const value = Object.freeze({ knowledge, source: originals.source, current: originals.current })

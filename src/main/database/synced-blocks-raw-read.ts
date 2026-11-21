@@ -63,9 +63,15 @@ export function readRawSyncedWorkspaceScopeOwned(db: Database.Database): string 
 }
 
 export function readRawSyncedGroupSnapshotsOwned(db: Database.Database, ids: readonly string[]): Map<string, SyncedGroupSnapshot> {
+  return readRawSyncedGroupSnapshotScopeOwned(db).read(ids)
+}
+
+/** Reuse the same complete deletion and retirement observations across batches in the owned SQL read. */
+export function readRawSyncedGroupSnapshotScopeOwned(db: Database.Database) {
   owned(db)
   const deleted = (db.pragma('user_version', { simple: true }) as number) >= 27 ? assertSyncedLogicalDeletionRecords(db) : undefined
-  return readRawSyncedGroupSnapshots(db, ids, deleted, readV3SourceGroupRetirementsOwned(db))
+  const retired = readV3SourceGroupRetirementsOwned(db)
+  return { deleted, retired, read(ids: readonly string[]) { owned(db); return readRawSyncedGroupSnapshots(db, ids, deleted, retired) } }
 }
 
 /** Use one logical-deletion check for the entire owned read transaction. */

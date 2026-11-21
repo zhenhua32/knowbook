@@ -13,6 +13,9 @@ import { readRawValidatedSyncedPersistentPublicationSnapshotOwned } from '../src
 import { allTables, randomUUID, sha256, withV3Fixture } from './helpers/synced-backup-v3-fixture'
 
 test('verified V3 becomes a separate cold SQLite source with its original shared body and typed catalog values', () => withV3Fixture(async f => {
+  const astral = f.store.createDatabase({ name: 'Astral sort witness', description: '\u{10000}' })
+  const bmp = f.store.createDatabase({ name: 'BMP sort witness', description: '\uE000' })
+  f.db.prepare('UPDATE databases SET created_at=? WHERE id IN (?,?)').run('2042-01-02T03:04:05.006Z', astral.id, bmp.id)
   const snapshotId = randomUUID(), captured = readSyncedBackupV3Capture(captureSyncedBackupV3(f.db))
   assert.ok(captured)
   const bytes = Buffer.from('independent V3 SQL attachment'), hash = sha256(bytes), name = 'proof.png'
@@ -44,6 +47,8 @@ test('verified V3 becomes a separate cold SQLite source with its original shared
       assertBackupV3RestoreSqlArchiveProjection(db, archive)
       assert.throws(() => assertBackupV3RestoreSqlArchiveProjection(db, { ...archive, documents: archive.documents.map(doc =>
         doc.id === f.hostId ? { ...doc, title: 'different text, same attachment references' } : doc) }), /differs from its source records/)
+      assert.throws(() => assertBackupV3RestoreSqlArchiveProjection(db, { ...archive, standaloneDatabases: archive.standaloneDatabases.map(item =>
+        item.id === astral.id ? { ...item, description: 'different database field' } : item) }), /differs from its source records/)
       return readRawValidatedSyncedPersistentPublicationSnapshotOwned(db)
     })()
     assert.equal(snapshot.catalogId, f.catalogId)
@@ -56,6 +61,8 @@ test('verified V3 becomes a separate cold SQLite source with its original shared
     assert.equal(db.prepare('SELECT instance_id FROM synced_instances WHERE group_id=?').pluck().get(f.groupId), f.instanceId)
     assert.equal(db.prepare('SELECT value_text FROM document_database_values WHERE document_id=? AND column_id=?').pluck().get(f.hostId, f.catalogColumn.id), 'catalog actual value')
     assert.equal(db.prepare('SELECT value_text FROM database_entity_values WHERE entity_id=? AND column_id=?').pluck().get(f.entity.id, f.customColumn.id), 'original custom value')
+    assert.deepEqual(db.prepare('SELECT id FROM databases WHERE id IN (?,?) ORDER BY rowid').pluck().all(astral.id, bmp.id),
+      [astral.id, bmp.id], 'The disk sort preserves ascending UTF-16 order even when UTF-8 orders these fields differently')
     const summary = db.prepare('SELECT summary FROM documents WHERE id=?').pluck().get(f.hostId)
     assert.equal(summary, `![proof](<${uri}>)`)
     const relativeAsset = relativePath.slice('__knowbook/assets/'.length)

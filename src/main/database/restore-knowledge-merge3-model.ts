@@ -3,11 +3,12 @@ import { capsuleBytesHash, capsuleJson, capsuleRecord, freezeCapsuleValue } from
 import { hashBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
 import { CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-model'
 import { graph3Conflict, graph3Key, graph3PatchTable, graph3Text, graph3Value, type Graph3Inputs } from './restore-knowledge-graph3-data'
-import { applyMerge3DocumentLayout3 } from './restore-knowledge-merge3-layout'
+import { withMerge3DocumentLayout3 } from './restore-knowledge-merge3-layout'
 import { MERGE3_PHYSICAL_TABLES, selectMerge3PhysicalRows3 } from './restore-knowledge-merge3-physical'
-import { MERGE3_CONTENT_TABLES, assertMerge3JsonBudget, assertMerge3StorageTablesBudget, finishMerge3Table, prepareMerge3Table,
-  type FinishedMerge3Table, type Merge3ContentTable, type Merge3InputRow,
+import { MERGE3_CONTENT_TABLES, assertMerge3JsonBudget, assertMerge3ScopedStorageRowsBudget, prepareMerge3Table, scanMerge3Table,
+  type Merge3ContentTable, type Merge3InputRow, type MergedRow3,
   type Merge3RowDisposition, type Merge3SelectedRow, type PreparedMerge3Table } from './restore-knowledge-merge3-storage'
+import { materializeNavigation3Tables, navigation3TableHashInput, withStoredNavigation3TableScan, type Navigation3TableSource } from './restore-knowledge-navigation3-tables'
 import { deriveRootRestoreTemplateReferences3 } from './restore-knowledge-template3-model'
 
 export interface Merge3Choices { readonly anonymousValues: 'source' | 'current' | 'unresolved' }
@@ -22,9 +23,8 @@ export interface Merge3ReplacementScope {
 }
 type Values = Record<string, unknown>
 type Row = { readonly row: Merge3InputRow; readonly value: Values }
-type FinalTable = FinishedMerge3Table['table']
-type FinalRow = FinalTable['rows'][number]
-type FinalEntry = { readonly row: FinalRow; readonly value: Values }
+type FinalTable = Navigation3TableSource
+type FinalEntry<Row extends Pick<MergedRow3, 'key'> = MergedRow3> = { readonly row: Row; readonly value: Values }
 const definitionTables = ['databases', 'document_database_columns', 'database_saved_views', 'database_entities'] as const
 const text = (value: unknown): string => typeof value === 'string' ? value : graph3Conflict('merge-content-expected-text', typeof value)
 const nullableText = (value: unknown): string | null => value === null ? null : text(value)
@@ -70,6 +70,12 @@ function* finalRows(table: FinalTable, columns: readonly string[]): IterableIter
  * owner. Source content transformations and current retention are explicit;
  * no execution history, policy, credential or source operation is replayed. */
 export function deriveRootRestoreMergedContent3(data: Graph3Inputs, inputChoices?: Merge3Choices) {
+  return withRootRestoreMergedContent3(data, inputChoices, merged =>
+    freezeCapsuleValue({ ...merged, tables: materializeNavigation3Tables(merged.tables) }))
+}
+
+export function withRootRestoreMergedContent3<Result>(data: Graph3Inputs, inputChoices: Merge3Choices | undefined,
+  read: (merged: ReturnType<typeof finalizeMergedContent>) => Result): Result {
   const choices = normalizeChoices(inputChoices), upstream = deriveRootRestoreTemplateReferences3(data)
   const source = data.inputs.source.source.sourceContent, current = data.inputs.current.source.sourceContent
   for (const [side, content] of [['source', source], ['current', current]] as const) {
@@ -293,24 +299,6 @@ export function deriveRootRestoreMergedContent3(data: Graph3Inputs, inputChoices
     else scope(name, name === 'documents' ? 'document' : 'group', null, table.sourceRows.map(row => row.key),
       table.currentRows.map(row => row.key), 'source-exact-header-current-unparticipating-retained')
   }
-  const finished = prepared.map(table => {
-    const selection = selections.get(table.name) ?? graph3Conflict('merge-missing-table-dispositions', table.name)
-    return finishMerge3Table(table, selection.selectedRows, selection.dispositions)
-  })
-  assertMerge3StorageTablesBudget(finished)
-  const layout = applyMerge3DocumentLayout3(data, finished.map(value => value.table))
-  const finalByName = new Map(layout.tables.map(table => [table.name, table]))
-  if (layout.tables.length !== MERGE3_CONTENT_TABLES.length || finalByName.size !== MERGE3_CONTENT_TABLES.length)
-    return graph3Conflict('merge-layout-content-table-closure', null)
-  const finalFinished = finished.map(value => ({ ...value, table: finalByName.get(value.table.name) ?? graph3Conflict('merge-layout-table-missing', value.table.name) }))
-  assertMerge3StorageTablesBudget(finalFinished)
-  const catalogConflicts = validateCatalogRelations(finalFinished.map(value => value.table), data.value.targetCatalogId)
-  conflicts.push(...layout.conflicts, ...catalogConflicts)
-  const storage = finished.map(value => ({ name: value.table.name, preparedHash: value.preparedHash, storageHash: value.storageHash,
-    dispositions: value.dispositions, conflicts: value.conflicts }))
-  const replacedCurrentRows = storage.flatMap(table => table.dispositions.filter(row => row.sourceRef.side === 'current' && row.status === 'replaced').map(row => row.sourceRef))
-  const reusedCurrentRefs = new Set(finished.flatMap(table => table.table.rows.flatMap(row => row.replaces ? [graph3Key(row.replaces)] : [])))
-  const removedCurrentRows = replacedCurrentRows.filter(ref => !reusedCurrentRefs.has(graph3Key(ref)))
   const birthRows = new Map(definitionTables.map(name => {
     const table = byName.get(name)!
     return [name, { source: new Map(table.sourceRows.map(row => [row.ref.sourceRowId, row])), current: new Map(table.currentRows.map(row => [row.ref.sourceRowId, row])) }] as const
@@ -319,12 +307,66 @@ export function deriveRootRestoreMergedContent3(data: Graph3Inputs, inputChoices
     const table = birthRows.get(change.table)!, sourceRow = table.source.get(change.sourceRowId)!, currentRow = table.current.get(change.currentRowId)!
     return { table: change.table, column: 'created_at' as const, sourceRef: sourceRow.ref, currentRef: currentRow.ref, value: change.value }
   })
+  const facts = { choices, replacementScopes, conflicts, definitionBirthRetentions, physical,
+    templateReferenceHash: upstream.templateReferenceHash }
+  return withStoredNavigation3TableScan(append => prepared.map(table => {
+    const selection = selections.get(table.name) ?? graph3Conflict('merge-missing-table-dispositions', table.name)
+    const { table: { rows, ...layout }, ...metadata } = scanMerge3Table(table, selection.selectedRows, selection.dispositions)
+    append(layout, rows)
+    return metadata
+  }), (metadata, tables) => {
+    const originals = navigation3TableHashInput(tables)
+    const finished = metadata.map((entry, index) => {
+      const body = { ...entry, table: originals[index] }
+      const storageHash = hashBoundedCapsuleJson(body, CAPSULE2_RAW_MAX_JSON_BYTES, 'knowbook.restore.merge3.selected-table.v1\0')
+        ?? graph3Conflict('merge-selected-table-budget', entry.preparedHash)
+      return { ...body, storageHash }
+    })
+    assertMerge3ScopedStorageRowsBudget(tables)
+    assertSelectedMergePacketBudget(finished)
+    const reused = new Set<string>()
+    for (const table of tables) for (const row of table.rows) if (row.replaces) reused.add(graph3Key(row.replaces))
+    const storage = finished.map(value => ({ name: value.table.name, preparedHash: value.preparedHash, storageHash: value.storageHash,
+      dispositions: value.dispositions, conflicts: value.conflicts }))
+    return withMerge3DocumentLayout3(data, tables, layout => {
+      assertMerge3ScopedStorageRowsBudget(layout.tables)
+      const laidOut = navigation3TableHashInput(layout.tables)
+      assertSelectedMergePacketBudget(finished.map((value, index) => ({ ...value, table: laidOut[index] })))
+      return read(finalizeMergedContent(data, { ...facts, storage, reused }, layout))
+    })
+  })
+}
+
+function assertSelectedMergePacketBudget(packet: object) {
+  assertMerge3JsonBudget(packet)
+  if (!hashBoundedCapsuleJson(packet, CAPSULE2_RAW_MAX_JSON_BYTES)) return graph3Conflict('complete-merged-table-storage-budget', null)
+}
+
+function finalizeMergedContent(data: Graph3Inputs, facts: {
+  choices: Merge3Choices
+  replacementScopes: readonly Merge3ReplacementScope[]
+  conflicts: Merge3Conflict[]
+  definitionBirthRetentions: readonly { table: typeof definitionTables[number]; column: 'created_at'; sourceRef: Merge3InputRow['ref'];
+    currentRef: Merge3InputRow['ref']; value: string }[]
+  physical: ReturnType<typeof selectMerge3PhysicalRows3>
+  templateReferenceHash: string
+  storage: readonly (Pick<ReturnType<typeof scanMerge3Table>, 'preparedHash' | 'dispositions' | 'conflicts'> & {
+    name: Merge3ContentTable; storageHash: string
+  })[]
+  reused: ReadonlySet<string>
+}, layout: Parameters<Parameters<typeof withMerge3DocumentLayout3>[2]>[0]) {
+  const { conflicts, storage, physical, definitionBirthRetentions, choices, replacementScopes, templateReferenceHash, reused } = facts
+  const source = data.inputs.source.source.sourceContent, current = data.inputs.current.source.sourceContent
+  const catalogConflicts = validateCatalogRelations(layout.tables, data.value.targetCatalogId)
+  conflicts.push(...layout.conflicts, ...catalogConflicts)
+  const replacedCurrentRows = storage.flatMap(table => table.dispositions.filter(row => row.sourceRef.side === 'current' && row.status === 'replaced').map(row => row.sourceRef))
+  const removedCurrentRows = replacedCurrentRows.filter(ref => !reused.has(graph3Key(ref)))
   const body = { kind: 'root-restore-current-aware-merged-content-candidate' as const, version: 3 as const,
     scope: 'root-source-and-current-content' as const, conservationHash: data.inputs.knowledge.conservationHash,
-    identityAllocationHash: data.value.allocationHash, templateReferenceHash: upstream.templateReferenceHash,
+    identityAllocationHash: data.value.allocationHash, templateReferenceHash,
     sourceMaterialHash: data.inputs.source.materialHash, currentMaterialHash: data.inputs.current.materialHash,
     sourceEncoding: source.encoding, currentEncoding: current.encoding, targetEncoding: current.encoding,
-    tables: finalFinished.map(value => value.table), storage, definitionBirthRetentions,
+    tables: layout.tables, storage, definitionBirthRetentions,
     physical: { physicalSelectionHash: physical.physicalSelectionHash, participatingDocumentIds: physical.participatingDocumentIds,
       participatingGroupIds: physical.participatingGroupIds, participatingGroups: physical.participatingGroups, groupStates: physical.groupStates,
       physicalShapeValidated: physical.physicalShapeValidated, originalGroupActivityPreserved: physical.originalGroupActivityPreserved,
@@ -341,8 +383,9 @@ export function deriveRootRestoreMergedContent3(data: Graph3Inputs, inputChoices
     fullCurrentContentSelectionComplete: true as const, catalogRelationsValidated: catalogConflicts.length === 0,
     catalogNameNativeCheckPending: true as const, referenceRewriteComplete: false as const,
     semanticValidationComplete: false as const, acceptedCoverage: false as const, effective: false as const, permit: false as const }
-  assertMerge3JsonBudget(body)
-  const mergedContentHash = hashBoundedCapsuleJson(body, CAPSULE2_RAW_MAX_JSON_BYTES, 'knowbook.restore.merge3.content.v1\0')
+  const packet = { ...body, tables: navigation3TableHashInput(layout.tables) }
+  assertMerge3JsonBudget(packet)
+  const mergedContentHash = hashBoundedCapsuleJson(packet, CAPSULE2_RAW_MAX_JSON_BYTES, 'knowbook.restore.merge3.content.v1\0')
     ?? graph3Conflict('complete-merged-content-budget', null)
   return freezeCapsuleValue({ ...body, mergedContentHash })
 }
@@ -350,15 +393,15 @@ export function deriveRootRestoreMergedContent3(data: Graph3Inputs, inputChoices
 function validateCatalogRelations(tables: readonly FinalTable[], catalogId: string): Merge3Conflict[] {
   const byName = new Map(tables.map(table => [table.name, table])), conflicts: Merge3Conflict[] = []
   const definitions = (name: 'documents' | typeof definitionTables[number], columns: readonly string[] = []) => {
-    const table = byName.get(name)!, values = new Map<string, FinalEntry>()
-    for (const entry of finalRows(table, ['id', ...columns])) values.set(text(entry.value.id), entry)
+    const table = byName.get(name)!, values = new Map<string, FinalEntry<Pick<MergedRow3, 'key'>>>()
+    for (const { row, value } of finalRows(table, ['id', ...columns])) values.set(text(value.id), { row: { key: row.key }, value })
     if (values.size !== table.rows.length) return graph3Conflict('merge-final-definition-pk', name)
     return values
   }
   const documents = definitions('documents'), databases = definitions('databases')
   const columns = definitions('document_database_columns', ['database_id']), views = definitions('database_saved_views', ['database_id'])
   const entities = definitions('database_entities', ['database_id', 'document_id'])
-  const conflict = (code: string, table: Merge3ContentTable, rows: readonly FinalEntry[], detail: unknown) =>
+  const conflict = (code: string, table: Merge3ContentTable, rows: readonly FinalEntry<Pick<MergedRow3, 'key'>>[], detail: unknown) =>
     conflicts.push({ code, table, rowKeys: rows.map(row => row.row.key), detail })
   if (!databases.has(catalogId)) conflict('merged-default-catalog-missing', 'databases', [], { catalogId })
   for (const [name, definitions] of [['document_database_columns', columns], ['database_saved_views', views], ['database_entities', entities]] as const) {
@@ -367,7 +410,7 @@ function validateCatalogRelations(tables: readonly FinalTable[], catalogId: stri
       if (!databases.has(databaseId)) conflict('merged-catalog-definition-database-missing', name, [entry], { databaseId })
     }
   }
-  const linkedDocuments = new Map<string, FinalEntry>()
+  const linkedDocuments = new Map<string, FinalEntry<Pick<MergedRow3, 'key'>>>()
   for (const entry of entities.values()) {
     const documentId = nullableText(entry.value.document_id)
     if (documentId === null) continue

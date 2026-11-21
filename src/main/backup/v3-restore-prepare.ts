@@ -18,11 +18,12 @@ import { requiredReferenceRoots } from '../database/restore-knowledge-reference-
 import { withPreparedRootKnowledgeInputs5, type captureRootKnowledgeConservationPlanFromCertifiedSources3 } from '../database/restore-knowledge-root3-read'
 import { withPreparedRootRestoreIdentityInputs5, type prepareRootRestoreIdentityPlan3, type PreparedRootIdentityInputs5 } from '../database/restore-knowledge-identity3-read'
 import { prepareRootRestoreReferencePlan3, readRootRestoreStageInputs5, withPreparedRootRestoreReferenceInputs5,
-  type Reference3Value, type RootRestoreReferencePlan3, type RootRestoreStageInputs5 } from '../database/restore-knowledge-reference3-read'
+  type ScopedReference3Value, type RootRestoreReferencePlan3, type RootRestoreStageInputs5 } from '../database/restore-knowledge-reference3-read'
 import type { Reference3Choices } from '../database/restore-knowledge-reference3-model'
+import { withReferenceOriginalRows5 } from '../database/restore-knowledge-reference-original-rows5'
 import { restoreSqliteFilename } from '../database/restore-safety-sqlite-path'
 import { readInheritedInitialIncomingTombstones } from '../database/synced-initial-incoming-read'
-import { prepareRootRestoreSqlAssetStage5 } from '../database/restore-knowledge-sql-asset-stage5'
+import { prepareRootRestoreSqlAssetOwner5 } from '../database/restore-knowledge-sql-asset-stage5'
 import { prepareRootRestoreFinalAssetSqlOwners5 } from '../database/restore-knowledge-derived-stage4'
 import { prepareRootRestoreCoverageSql } from '../database/restore-knowledge-stage3-history-sql'
 import { withPreparedRestoreHistoryScope3 } from '../database/restore-knowledge-stage3-physical'
@@ -100,12 +101,15 @@ async function withPlanIdentityFromCurrent<T>(input: BackupV3RestorePreparation,
   } finally { currentDb.close() }
   const v3Sql = await prepareBackupV3RestoreSqlStage(source, profileRoot, operationId)
   const archive = await prepareCapsule2AssetArchiveFromVerifiedV3(v3Sql, source)
-  const { source: incoming } = await captureSealedCapsule2SourceFromArchive(archive)
-  const { source: current, value: { priorCoverageRequirements: requirements } } = hasWorkingJobs
-    ? await captureSealedCapsule2SourceWithWorkingProvenance5(currentOriginal, installedAssets)
-    : installedAssets
-      ? await captureSealedCapsule2SourceFromArchive(await prepareCapsule2AssetArchiveWithInstalledV3(currentOriginal, installedAssets))
-      : await captureSealedCapsule2SourceWithAssetProvenance3(currentOriginal)
+  const { incoming, current, requirements } = await withReferenceOriginalRows5(async (_rows, _physical, _blocks, bodies) => {
+    const { source: incoming } = await captureSealedCapsule2SourceFromArchive(archive, bodies('source'))
+    const { source: current, value: { priorCoverageRequirements: requirements } } = hasWorkingJobs
+      ? await captureSealedCapsule2SourceWithWorkingProvenance5(currentOriginal, installedAssets, bodies('current'))
+      : installedAssets
+        ? await captureSealedCapsule2SourceFromArchive(await prepareCapsule2AssetArchiveWithInstalledV3(currentOriginal, installedAssets), bodies('current'))
+        : await captureSealedCapsule2SourceWithAssetProvenance3(currentOriginal, bodies('current'))
+    return { incoming, current, requirements }
+  }, async originals => originals)
   const incomingCertificate = await certifyCapsule2Source(incoming)
   if (incomingCertificate.status !== 'certified-without-prior-coverage') throw new Error('The V3 source unexpectedly carries prior coverage.')
   const currentCertificate = await certifyCapsule2Source(current)
@@ -117,18 +121,21 @@ async function withPlanIdentityFromCurrent<T>(input: BackupV3RestorePreparation,
   const references = requiredReferenceRoots(requirements)
   const currentInput = currentCertificate.status === 'certified-without-prior-coverage'
     ? currentCertificate.source
-    : (await captureBoundOriginalInputsFromReferences({ source: current, parents: references.map(reference => {
-      const original = originals.get(reference.operationId)
-      if (!original) throw new Error('The sealed current source is missing a verified installed original.')
-      return original
-    }) })).source
+    : await withReferenceOriginalRows5(async (_rows, _physical, _blocks, bodies) => {
+      const parents = references.map(reference => {
+        const original = originals.get(reference.operationId)
+        if (!original) throw new Error('The sealed current source is missing a verified installed original.')
+        return original
+      })
+      return (await captureBoundOriginalInputsFromReferences({ source: current, parents }, bodies('current'))).source
+    }, async bound => bound)
   return withPreparedRootKnowledgeInputs5({
     profileRoot, operationId, dagId: randomUUID(), source: incomingCertificate.source, current: currentInput
   }, (root, scope) => withPreparedRootRestoreIdentityInputs5(root.knowledgePlan, scope, { repeatV3: prior },
     (identity, identityScope) => run({ v3Sql, root, identity, prior }, identityScope)))
 }
 
-function previewResolvedReference({ candidate }: Reference3Value) {
+function previewResolvedReference({ candidate }: ScopedReference3Value) {
   const { conflicts } = candidate
   if (conflicts.length) {
     const paths = conflicts.flatMap(({ code, detail }) => code === 'duplicate-document-path' && detail && typeof detail === 'object'
@@ -155,7 +162,7 @@ function previewResolvedReference({ candidate }: Reference3Value) {
 }
 
 async function inspectSourceOwnership(input: BackupV3RestorePreparation, current: OwnedRawCapsuleOriginal,
-  prior: readonly RestoreKnowledgePriorInstall[], reference: Reference3Value,
+  prior: readonly RestoreKnowledgePriorInstall[], reference: ScopedReference3Value,
   readOriginals: () => Promise<Graph3Inputs['inputs']>) {
   const { profileRoot, operationId, source, retirementCredentials } = input
   if (!prior.length) return { retained: [] }
@@ -215,7 +222,7 @@ async function inspectSourceOwnership(input: BackupV3RestorePreparation, current
 }
 
 async function inspectPreparedReference(input: BackupV3RestorePreparation, original: OwnedRawCapsuleOriginal,
-  prior: readonly RestoreKnowledgePriorInstall[], value: Reference3Value, reference: RootRestoreReferencePlan3, scope: RootRestoreStageInputs5) {
+  prior: readonly RestoreKnowledgePriorInstall[], value: ScopedReference3Value, reference: RootRestoreReferencePlan3, scope: RootRestoreStageInputs5) {
   const disposition = previewResolvedReference(value)
   const { retained, retirement } = await inspectSourceOwnership(input, original, prior, value,
     async () => (await readRootRestoreStageInputs5(reference, scope)).actual.data.inputs)
@@ -238,7 +245,7 @@ export async function prepareBackupV3RestoreCandidate(input: BackupV3RestorePrep
         assertBackupV3RestoreSourceCurrent(source)
         return inspectPreparedReference(input, currentOriginal, plan.prior, value, reference.plan, stageScope)
       }, async (reference, stageScope, { preview, retirement }) => {
-        const { stage: combined } = await prepareRootRestoreSqlAssetStage5(reference.plan, stageScope)
+        const combined = await prepareRootRestoreSqlAssetOwner5(reference.plan, stageScope)
         const final = await prepareRootRestoreFinalAssetSqlOwners5(reference.plan, combined, historyScope, stageScope)
         return { root: { mountId: plan.root.mountId, descriptorHash: plan.root.descriptorHash, materialHash: plan.root.value.materialHash },
           identity: { planId: plan.identity.planId, manifestHash: plan.identity.manifestHash }, prior: plan.prior, reference, preview, final, retirement }

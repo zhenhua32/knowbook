@@ -2,7 +2,7 @@ import type Database from 'better-sqlite3'
 import { STORED_PLUGIN_POLICY_TABLES } from '../plugin-platform/repository'
 import { capsuleBytesHash, capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { readRawCapsule2ContentOwned, readRawCapsule2PolicyContentOwned } from './restore-knowledge-capsule2-content-raw-read'
-import { readRawCapsule2PhysicalGraphOwned } from './restore-knowledge-capsule2-physical-raw-read'
+import { readRawCapsule2PhysicalGraphOwned, type Capsule2PhysicalBodyStore } from './restore-knowledge-capsule2-physical-raw-read'
 import { assertRawCapsule2OrdinaryHistoryOwned } from './restore-knowledge-capsule2-ordinary-history-read'
 import { assertRawCapsule2TemplatesOwned } from './restore-knowledge-capsule2-templates-read'
 import { assertRawCapsule2MovesOwned } from './restore-knowledge-capsule2-moves-read'
@@ -41,18 +41,20 @@ export interface RawCapsule2SourcePolicy {
  * This returns full private source data; never expose it as UI diagnostics.
  * Reserved metadata still needs the outer historical interpreter. Classifying
  * its source bytes as retained data cannot turn it into ordinary/empty K. */
-export function readRawCapsule2OrdinaryPolicySourceOwned(db: Database.Database, blocks?: StoreCapsule2Archive6Blocks5) {
+export function readRawCapsule2OrdinaryPolicySourceOwned(db: Database.Database, blocks?: StoreCapsule2Archive6Blocks5,
+  physicalBodies?: Capsule2PhysicalBodyStore) {
   const sourceContent = readRawCapsule2ContentOwned(db, blocks)
-  return Object.freeze({ sourceContent, ...observeOrdinaryPolicySource(db, summarizeCapsule2RawPolicyContent(sourceContent)) })
+  return Object.freeze({ sourceContent, ...observeOrdinaryPolicySource(db, summarizeCapsule2RawPolicyContent(sourceContent), physicalBodies) })
 }
 
 /** Fixed original selection preflight for consumers that only need evidence. */
-export function readRawCapsule2OrdinaryPolicyEvidenceOwned(db: Database.Database) {
-  return observeOrdinaryPolicySource(db, readRawCapsule2PolicyContentOwned(db))
+export function readRawCapsule2OrdinaryPolicyEvidenceOwned(db: Database.Database, physicalBodies?: Capsule2PhysicalBodyStore) {
+  return observeOrdinaryPolicySource(db, readRawCapsule2PolicyContentOwned(db), physicalBodies)
 }
 
-function observeOrdinaryPolicySource(db: Database.Database, content: ReturnType<typeof readRawCapsule2PolicyContentOwned>) {
-  const physical = readRawCapsule2PhysicalGraphOwned(db)
+function observeOrdinaryPolicySource(db: Database.Database, content: ReturnType<typeof readRawCapsule2PolicyContentOwned>,
+  physicalBodies?: Capsule2PhysicalBodyStore) {
+  const physical = readRawCapsule2PhysicalGraphOwned(db, physicalBodies)
   assertRawCapsule2OrdinaryHistoryOwned(db)
   assertRawCapsule2TemplatesOwned(db)
   assertRawCapsule2MovesOwned(db)

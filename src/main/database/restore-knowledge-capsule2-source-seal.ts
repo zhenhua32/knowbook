@@ -13,6 +13,7 @@ import type { InstalledV3AssetContinuity } from './restore-knowledge-installed-v
 import { captureCapsule2SourceMaterial, captureCapsule2SourceMaterialWithWorking5, readCapsule2SourceMaterial, readCapsule2SourceInputsWithWorking5, tryAssertCapsule2SourceWorking5OriginalBytes5, readCapsule2SourceSealInput,
   assertCapsule2SourceOriginalBytes, readCapsule2SourceBaseProjection4, readCapsule2SourceWorkingOriginals5, type PreparedCapsule2SourceMaterial } from './restore-knowledge-capsule2-source-material'
 import { CAPSULE2_RAW_MAX_JSON_BYTES, CAPSULE2_READER, type StoreCapsule2Archive6Blocks5 } from './restore-knowledge-capsule2-raw-model'
+import type { Capsule2PhysicalBodyStore } from './restore-knowledge-capsule2-physical-raw-read'
 import { capsule2SourceManifestHash, parseCapsule2SourceManifest, capsule2SourceSealInvalid as bad,
   type Capsule2SourceManifest } from './restore-knowledge-capsule2-source-seal-model'
 
@@ -35,7 +36,7 @@ function manifestFor(value: Packet): Capsule2SourceManifest {
     requiredRoots: value.priorCoverageRequirements.entries.length, certified: false, semanticValidationComplete: false,
     acceptedCoverage: false, effective: false, permit: false })
 }
-async function verify(entry: Saved) {
+async function verify(entry: Saved, physicalBodies?: Capsule2PhysicalBodyStore) {
   const closure = async () => {
     await directory(entry.directory, entry.root)
     if (capsuleJson(await readdir(entry.directory)) !== capsuleJson(['manifest.json'])) return bad('来源清单目录闭集变化')
@@ -43,7 +44,7 @@ async function verify(entry: Saved) {
   const manifestPath = join(entry.directory, 'manifest.json')
   await assertOwnedRawCapsuleOriginal(entry.original); await closure()
   await readExact(manifestPath, entry.root, entry.bytes.length, capsuleBytesHash(entry.bytes), CAPSULE2_RAW_MAX_JSON_BYTES)
-  const value = await readCapsule2SourceMaterial(entry.material)
+  const value = await readCapsule2SourceMaterial(entry.material, physicalBodies)
   if (capsuleJson(manifestFor(value)) !== capsuleJson(entry.manifest)) return bad('完整实际SQL/K/政策/附件/原要求与来源清单不一致')
   await closure(); await readExact(manifestPath, entry.root, entry.bytes.length, capsuleBytesHash(entry.bytes), CAPSULE2_RAW_MAX_JSON_BYTES)
   await assertOwnedRawCapsuleOriginal(entry.original)
@@ -80,7 +81,7 @@ export async function captureReopenedSealedCapsule2Source(input: { profileRoot: 
 }
 /** Fixed cold seam for consumers of the same complete original observation. */
 export async function captureReopenedSealedCapsule2SourceWithWorking5(input: { profileRoot: string; operationId: string; capsuleId: string; expectedManifestHash: string },
-  blocks?: StoreCapsule2Archive6Blocks5) {
+  blocks?: StoreCapsule2Archive6Blocks5, physicalBodies?: Capsule2PhysicalBodyStore) {
   const row = capsuleRecord(input, ['profileRoot','operationId','capsuleId','expectedManifestHash'])
   if (typeof row.profileRoot !== 'string' || !isAbsolute(row.profileRoot) || row.profileRoot.includes('\0')
     || (process.platform === 'win32' ? resolve(row.profileRoot).toLowerCase() !== row.profileRoot.toLowerCase() : resolve(row.profileRoot) !== row.profileRoot)) return bad('profile不是准确绝对路径')
@@ -99,7 +100,7 @@ export async function captureReopenedSealedCapsule2SourceWithWorking5(input: { p
   return withReopenedCapsule2ArchiveInputs5(original, manifest.assetArchiveHash, async (archive, scope) => {
     await assertOwnedRawCapsuleOriginal(original); await closure()
     await readExact(path, root, bytes.length, capsuleBytesHash(bytes), CAPSULE2_RAW_MAX_JSON_BYTES)
-    const { material, value, working } = await captureCapsule2SourceMaterialWithWorking5(archive, scope, blocks)
+    const { material, value, working } = await captureCapsule2SourceMaterialWithWorking5(archive, scope, blocks, physicalBodies)
     if (capsuleJson(manifestFor(value)) !== capsuleJson(manifest)) return bad('完整实际SQL/K/政策/附件/原要求与来源清单不一致')
     await closure(); await readExact(path, root, bytes.length, capsuleBytesHash(bytes), CAPSULE2_RAW_MAX_JSON_BYTES)
     await assertOwnedRawCapsuleOriginal(original)
@@ -121,10 +122,10 @@ export async function readSealedCapsule2SourceMaterial(handle: SealedCapsule2Sou
 }
 /** Main-only certification seam: both values come from the same complete
  * original verification, never from independently supplied DTOs or counts. */
-export async function readSealedCapsule2SourceInputs(handle: SealedCapsule2Source) {
+export async function readSealedCapsule2SourceInputs(handle: SealedCapsule2Source, physicalBodies?: Capsule2PhysicalBodyStore) {
   const entry = sealed.get(handle)
   if (!entry) return bad('不是Main实际封存的私有来源句柄')
-  return { ...await verify(entry), profileRoot: entry.root }
+  return { ...await verify(entry, physicalBodies), profileRoot: entry.root }
 }
 export async function diagnoseSealedCapsule2Source(handle: SealedCapsule2Source) {
   const info = await readSealedCapsule2Source(handle)
@@ -152,8 +153,8 @@ export async function assertSealedCapsule2SourceOriginalBytes(handle: SealedCaps
 /** One new complete capture from a genuine archive, immediately sealed to its
  * exact immutable bytes. No existing source/DTO can select an old snapshot.
  * Ordinary later reads retain verify's complete actual SQL reconstruction. */
-export async function captureSealedCapsule2SourceFromArchive(archive: PreparedCapsule2AssetArchive) {
-  const { material, value } = await captureCapsule2SourceMaterial(archive)
+export async function captureSealedCapsule2SourceFromArchive(archive: PreparedCapsule2AssetArchive, physicalBodies?: Capsule2PhysicalBodyStore) {
+  const { material, value } = await captureCapsule2SourceMaterial(archive, physicalBodies)
   const original = await readCapsule2ArchiveSourceOriginal(archive), info = readOwnedRawCapsuleOriginal(original)
   if (used.has(material)) return bad('同一材料已开始或失败')
   used.add(material)
@@ -173,8 +174,8 @@ export async function captureSealedCapsule2SourceFromArchive(archive: PreparedCa
 /** Explicit base-observer URI ownership producer. The unchanged source seal
  * hashes the actual nested archive v2, including strict partial coverage.
  * Future supplemental/context capture requires a distinct archive version. */
-export async function captureSealedCapsule2SourceWithAssetProvenance3(original: OwnedRawCapsuleOriginal) {
-  return captureSealedCapsule2SourceFromArchive(await prepareCapsule2AssetArchiveWithProvenance3(original))
+export async function captureSealedCapsule2SourceWithAssetProvenance3(original: OwnedRawCapsuleOriginal, physicalBodies?: Capsule2PhysicalBodyStore) {
+  return captureSealedCapsule2SourceFromArchive(await prepareCapsule2AssetArchiveWithProvenance3(original), physicalBodies)
 }
 
 /** Explicit v3 context/supplement producer. Base-only archive2 remains an
@@ -202,8 +203,9 @@ export async function readSealedCapsule2SourceBaseProjection4(handle: SealedCaps
 
 /** Explicit all-merge Working5 source. Released custom-only v3/v4 factories
  * keep their selectors, observer/hash domains and persisted bytes. */
-export async function captureSealedCapsule2SourceWithWorkingProvenance5(original:OwnedRawCapsuleOriginal, readInstalled?:()=>Promise<InstalledV3AssetContinuity>){
- return captureSealedCapsule2SourceFromArchive(await prepareCapsule2AssetArchiveWithWorkingProvenance5(original,readInstalled))
+export async function captureSealedCapsule2SourceWithWorkingProvenance5(original:OwnedRawCapsuleOriginal,
+  readInstalled?:()=>Promise<InstalledV3AssetContinuity>, physicalBodies?: Capsule2PhysicalBodyStore){
+ return captureSealedCapsule2SourceFromArchive(await prepareCapsule2AssetArchiveWithWorkingProvenance5(original,readInstalled), physicalBodies)
 }
 /** Native transport sees the real registered Working5 text/members only.
  * Non5 returns undefined after the same original/manifest byte bracket. */
@@ -215,7 +217,7 @@ export async function readSealedCapsule2SourceWorkingOriginals5(handle:SealedCap
  return working
 }
 
-async function verifyWithWorking5(entry: Saved) {
+async function verifyWithWorking5(entry: Saved, physicalBodies?: Capsule2PhysicalBodyStore) {
   const closure = async () => {
     await directory(entry.directory, entry.root)
     if (capsuleJson(await readdir(entry.directory)) !== capsuleJson(['manifest.json'])) return bad('来源清单目录闭集变化')
@@ -223,7 +225,7 @@ async function verifyWithWorking5(entry: Saved) {
   const manifestPath = join(entry.directory, 'manifest.json')
   await assertOwnedRawCapsuleOriginal(entry.original); await closure()
   await readExact(manifestPath, entry.root, entry.bytes.length, capsuleBytesHash(entry.bytes), CAPSULE2_RAW_MAX_JSON_BYTES)
-  const captured = await readCapsule2SourceInputsWithWorking5(entry.material), value = captured.value
+  const captured = await readCapsule2SourceInputsWithWorking5(entry.material, physicalBodies), value = captured.value
   if (capsuleJson(manifestFor(value)) !== capsuleJson(entry.manifest)) return bad('完整实际SQL/K/政策/附件/原要求与来源清单不一致')
   await closure(); await readExact(manifestPath, entry.root, entry.bytes.length, capsuleBytesHash(entry.bytes), CAPSULE2_RAW_MAX_JSON_BYTES)
   await assertOwnedRawCapsuleOriginal(entry.original)
@@ -231,10 +233,10 @@ async function verifyWithWorking5(entry: Saved) {
 }
 /** Main-only same-invocation source/K/Working originals. Registry dispatch,
  * both source-manifest reads and both original-byte tails precede the return. */
-export async function readSealedCapsule2SourceInputsWithWorking5(handle: SealedCapsule2Source) {
+export async function readSealedCapsule2SourceInputsWithWorking5(handle: SealedCapsule2Source, physicalBodies?: Capsule2PhysicalBodyStore) {
   const entry = sealed.get(handle)
   if (!entry) return bad('不是Main实际封存的私有来源句柄')
-  return { ...await verifyWithWorking5(entry), profileRoot: entry.root }
+  return { ...await verifyWithWorking5(entry, physicalBodies), profileRoot: entry.root }
 }
 
 /** The private archive5 identity and all sealed source/SQL/base/Working bytes

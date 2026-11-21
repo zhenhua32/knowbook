@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { capsuleJson } from './restore-knowledge-capsule-model'
+import { capsuleJson, freezeCapsuleArrayView } from './restore-knowledge-capsule-model'
 
 const bufferLimit = 64 * 1024
 const stringUnits = Math.floor(bufferLimit / 6) // An escaped code unit can occupy six bytes.
@@ -7,8 +7,8 @@ const storedArrays = new WeakMap<readonly unknown[], () => Iterable<string>>()
 const projectedArrays = new WeakMap<readonly unknown[], () => Iterable<unknown>>()
 
 /** Private hash serializer input for arrays already encoded by an owned plan. */
-export function capsuleJsonStoredArray<T>(encodedItems: () => Iterable<string>): readonly T[] {
-  const array: readonly T[] = Object.freeze([])
+export function capsuleJsonStoredArray<T>(encodedItems: () => Iterable<string>, view?: readonly T[]): readonly T[] {
+  const array = view ? freezeCapsuleArrayView(view) : Object.freeze([]) as readonly T[]
   storedArrays.set(array, encodedItems)
   return array
 }
@@ -48,12 +48,27 @@ export function capsuleJsonStringBytes(value: string, limit: number): number {
  * object keys numerically after the canonical lexical property sort. */
 export function hashBoundedCapsuleJson(value: object, maxBytes: number, prefix = ''): string | null {
   const hash = createHash('sha256').update(prefix)
+  return visitBoundedCapsuleJson(value, maxBytes, part => hash.update(part)) === null ? null : hash.digest('hex')
+}
+
+/** Knowledge hashes include the canonical domain/value wrapper. The original
+ * byte limit applies to the value inside that wrapper. */
+export function hashBoundedKnowledgeJson(domain: string, value: object, maxValueBytes: number): string | null {
+  const wrapperBytes = Buffer.byteLength(capsuleJson({ domain, value: null })) - 4
+  return hashBoundedCapsuleJson({ domain, value }, maxValueBytes + wrapperBytes)
+}
+
+export function measureBoundedCapsuleJson(value: unknown, maxBytes: number): number | null {
+  return visitBoundedCapsuleJson(value, maxBytes)
+}
+
+function visitBoundedCapsuleJson(value: unknown, maxBytes: number, consume?: (part: string) => void): number | null {
   let pending = '', bytes = 0
   const emit = (part: string) => {
     if (part.length >= bufferLimit) {
       flush()
       bytes += Buffer.byteLength(part)
-      if (bytes <= maxBytes) hash.update(part)
+      if (bytes <= maxBytes) consume?.(part)
       return
     }
     pending += part
@@ -61,7 +76,7 @@ export function hashBoundedCapsuleJson(value: object, maxBytes: number, prefix =
   }
   const flush = () => {
     bytes += Buffer.byteLength(pending)
-    if (bytes <= maxBytes) hash.update(pending)
+    if (bytes <= maxBytes) consume?.(pending)
     pending = ''
   }
   const writeString = (value: string) => {
@@ -122,5 +137,5 @@ export function hashBoundedCapsuleJson(value: object, maxBytes: number, prefix =
   }
   write(value)
   flush()
-  return bytes <= maxBytes ? hash.digest('hex') : null
+  return bytes <= maxBytes ? bytes : null
 }

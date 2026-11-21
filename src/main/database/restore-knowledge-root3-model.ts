@@ -3,6 +3,7 @@ import type { CompleteOriginalRootData, OriginalSourceInput } from './restore-kn
 import type { KnowledgeOccupancy } from './restore-knowledge-payload-model'
 import { capsuleJson, freezeCapsuleValue } from './restore-knowledge-capsule-model'
 import { knowledgeGroupComparisonKey, knowledgeHash } from './restore-knowledge-payload-model'
+import { hashBoundedKnowledgeJson, measureBoundedCapsuleJson } from './restore-knowledge-capsule-json-hash'
 import { requiredDagRootLocator } from './restore-knowledge-required-dag-model'
 import { CAPSULE2_RAW_MAX_JSON_BYTES } from './restore-knowledge-capsule2-raw-model'
 import { DURABLE_SQL_DAG_MAX_CAPSULES, DURABLE_SQL_DAG_MAX_DEPTH, DURABLE_SQL_DAG_MAX_NODES } from './restore-knowledge-dag-model'
@@ -89,8 +90,9 @@ export function deriveRoot3KnowledgeConstraints(original: CompleteOriginalRootDa
   const consumedResolutions = new Set<Root3ReferenceResolution>()
   let planningBytes = 0
   const charge = (value: unknown): void => {
-    planningBytes += Buffer.byteLength(capsuleJson(value))
-    if (planningBytes > CAPSULE2_RAW_MAX_JSON_BYTES) return root3Invalid('完整规划数据超原有限JSON预算，不截断')
+    const bytes = measureBoundedCapsuleJson(value, CAPSULE2_RAW_MAX_JSON_BYTES - planningBytes)
+    if (bytes === null) return root3Invalid('完整规划数据超原有限JSON预算，不截断')
+    planningBytes += bytes
   }
   function walk(value: CompleteOriginalRootData, domain: readonly CoverageRootReference[]): void {
     if (domain.length >= DURABLE_SQL_DAG_MAX_DEPTH || nodes.length >= DURABLE_SQL_DAG_MAX_NODES) return root3Invalid('完整原域图超原深度/节点预算')
@@ -199,8 +201,9 @@ export function deriveRoot3KnowledgeConstraints(original: CompleteOriginalRootDa
       variants: [...value.variants].sort(([a], [b]) => compare(a, b)).map(([, variant]) => variant), requiresQualifiedMapping: true as const })),
     priorCoverage, completeOriginalInputSet: 'requires-private-main-owner' as const, coverageAcceptanceRequired: priorCoverage.length,
     semanticValidationComplete: false as const, acceptedCoverage: false as const, effective: false as const, permit: false as const }
-  if (Buffer.byteLength(capsuleJson(body)) > CAPSULE2_RAW_MAX_JSON_BYTES) return root3Invalid('完整知识规划超原有限JSON预算，不截断')
-  return freezeCapsuleValue({ ...body, conservationHash: knowledgeHash('knowbook.qualified-knowledge-conservation-plan.v3', body) })
+  const conservationHash = hashBoundedKnowledgeJson('knowbook.qualified-knowledge-conservation-plan.v3', body, CAPSULE2_RAW_MAX_JSON_BYTES)
+    ?? root3Invalid('完整知识规划超原有限JSON预算，不截断')
+  return freezeCapsuleValue({ ...body, conservationHash })
 }
 
 /** Exact fact lookup retains the original reader's full projection, including

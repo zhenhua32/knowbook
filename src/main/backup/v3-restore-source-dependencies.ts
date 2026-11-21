@@ -12,7 +12,8 @@ import { EditorRecoveryDraftStore } from '../editor-recovery/draft-store'
 import { join } from 'node:path'
 import { graph3Value, type Graph3Inputs } from '../database/restore-knowledge-graph3-data'
 import { capsule2RawTableRows, type Capsule2RawContentStream } from '../database/restore-knowledge-capsule2-raw-model'
-import type { Reference3Value } from '../database/restore-knowledge-reference3-read'
+import type { MergedRow3 } from '../database/restore-knowledge-merge3-storage'
+import type { ScopedReference3Value } from '../database/restore-knowledge-reference3-read'
 import { restoreExists } from '../database/restore-safety-files'
 
 function stableTargets(groups: readonly SyncedGroupWire[]) {
@@ -171,46 +172,70 @@ function referencesGroupContent(group: Pick<SyncedGroupWire, 'origin' | 'blocks'
     { documentId: group.origin.documentId, path: group.origin.pathAtCreation })
 }
 
-export function hasNoV3RetirementReferenceDependencies(candidate: Reference3Value['candidate'], groups: readonly SyncedGroupWire[]) {
+export function hasNoV3RetirementReferenceDependencies(candidate: ScopedReference3Value['candidate'], groups: readonly SyncedGroupWire[]) {
   try {
     if (candidate.pendingLocalBody || !candidate.finalForestValidated || !candidate.candidateConflictFree) return false
     const documentsTable = candidate.tables.find(table => table.name === 'documents')
     if (!documentsTable) return false
     const documentColumns = new Map(documentsTable.columns.map((name, index) => [name, index]))
-    const documents: Array<LinkDocument & { summary: string }> = []
-    for (const row of documentsTable.rows) {
+    const documents: Array<LinkDocument & { ordinal: number }> = []
+    const summaryColumn = documentColumns.get('summary')!
+    for (const [ordinal, row] of documentsTable.rows.entries()) {
       const get = (name: string) => graph3Value(row.cells[documentColumns.get(name)!], documentsTable.encoding)
-      const documentId = get('id'), path = get('path'), title = get('title'), summary = get('summary')
-      if (!isSyncedBlockId(documentId) || typeof path !== 'string' || typeof title !== 'string' || typeof summary !== 'string') return false
-      documents.push({ documentId, path, title, summary })
+      const documentId = get('id'), path = get('path'), title = get('title')
+      if (!isSyncedBlockId(documentId) || typeof path !== 'string' || typeof title !== 'string') return false
+      documents.push({ documentId, path, title, ordinal })
     }
     const retiring = targets(groups, documents)
-    if (candidate.activeGroupWires.some(wire => !retiring.groups.has(wire.id) && referencesGroupContent(wire, retiring))
-      || documents.some(document => referencesMarkdown(document.title, retiring, document)
-        || referencesMarkdown(document.summary, retiring, document))) return false
-    const ordinary = new Map<string, Array<{ order: bigint; block: MarkdownRenderableBlock }>>()
+    for (const wire of candidate.activeGroupWires)
+      if (!retiring.groups.has(wire.id) && referencesGroupContent(wire, retiring)) return false
+    for (const document of documents) {
+      const row = documentsTable.rows.at(document.ordinal)
+      const summary = row && graph3Value(row.cells[summaryColumn], documentsTable.encoding)
+      if (typeof summary !== 'string' || referencesMarkdown(document.title, retiring, document)
+        || referencesMarkdown(summary, retiring, document)) return false
+    }
     for (const table of candidate.tables) {
       if (!['blocks', 'document_templates', 'synced_instances'].includes(table.name)) continue
       const columns = new Map(table.columns.map((name, index) => [name, index]))
-      for (const row of table.rows) {
-        const get = (name: string) => graph3Value(row.cells[columns.get(name)!], table.encoding)
-        if (table.name === 'synced_instances' && retiring.groups.has(String(get('group_id')))) return false
-        if (table.name === 'document_templates' && referencesTemplate(JSON.parse(String(get('blocks_json'))), get('title'), get('summary'), retiring)) return false
-        if (table.name !== 'blocks') continue
-        const id = get('id'), documentId = get('document_id'), type = get('type'), content = get('content'), order = get('sort_order')
-        if (!isSyncedBlockId(id) || !isSyncedBlockId(documentId) || typeof type !== 'string' || typeof content !== 'string' || typeof order !== 'bigint') return false
-        const language = get('language'), listStart = get('list_start'), parent = get('parent_block_id'), format = get('markdown_format_json')
-        const block = { id, type, content, checked: get('checked') === 1n, depth: Number(get('depth')),
-          parentBlockId: typeof parent === 'string' ? parent : null, language: typeof language === 'string' ? language : undefined,
-          listStart: typeof listStart === 'bigint' ? Number(listStart) : undefined,
-          markdownFormat: decodeMarkdownFormat(type, typeof format === 'string' ? format : null) }
-        const rows = ordinary.get(documentId) ?? []
-        rows.push({ order, block })
-        ordinary.set(documentId, rows)
+      const value = (row: MergedRow3, name: string) => graph3Value(row.cells[columns.get(name)!], table.encoding)
+      if (table.name !== 'blocks') {
+        for (const row of table.rows) {
+          const get = (name: string) => value(row, name)
+          if (table.name === 'synced_instances' && retiring.groups.has(String(get('group_id')))) return false
+          if (table.name === 'document_templates' && referencesTemplate(JSON.parse(String(get('blocks_json'))), get('title'), get('summary'), retiring)) return false
+        }
+        continue
+      }
+      // Only the row positions and sort order survive the initial scan. The
+      // serializer needs siblings together, so decode just the current document.
+      const ordinary = new Map<string, Array<{ ordinal: number; order: bigint }>>()
+      for (const [ordinal, row] of table.rows.entries()) {
+        const documentId = value(row, 'document_id'), order = value(row, 'sort_order')
+        if (!isSyncedBlockId(documentId) || typeof order !== 'bigint') return false
+        const positions = ordinary.get(documentId) ?? []
+        positions.push({ ordinal, order })
+        ordinary.set(documentId, positions)
+      }
+      for (const [documentId, positions] of ordinary) {
+        positions.sort((a, b) => a.order < b.order ? -1 : Number(a.order > b.order))
+        const body: MarkdownRenderableBlock[] = []
+        for (const { ordinal } of positions) {
+          const row = table.rows.at(ordinal)
+          if (!row) return false
+          const get = (name: string) => value(row, name)
+          const id = get('id'), type = get('type'), content = get('content')
+          if (!isSyncedBlockId(id) || typeof type !== 'string' || typeof content !== 'string') return false
+          const language = get('language'), listStart = get('list_start'), parent = get('parent_block_id'), format = get('markdown_format_json')
+          body.push({ id, type, content, checked: get('checked') === 1n, depth: Number(get('depth')),
+            parentBlockId: typeof parent === 'string' ? parent : null, language: typeof language === 'string' ? language : undefined,
+            listStart: typeof listStart === 'bigint' ? Number(listStart) : undefined,
+            markdownFormat: decodeMarkdownFormat(type, typeof format === 'string' ? format : null) })
+        }
+        if (referencesBody(body, retiring, { documentId })) return false
       }
     }
-    return [...ordinary].every(([documentId, rows]) => !referencesBody(
-      rows.sort((a, b) => a.order < b.order ? -1 : Number(a.order > b.order)).map(row => row.block), retiring, { documentId }))
+    return true
   } catch { return false }
 }
 

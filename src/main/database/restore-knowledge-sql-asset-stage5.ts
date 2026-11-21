@@ -11,7 +11,8 @@ import { assertRootRestoreReferenceOriginalBytes3, readRootRestoreReferenceCopyS
   type RootRestoreReferencePlan3, type RootRestoreStageInputs5 } from './restore-knowledge-reference3-read'
 import { assertRootRestoreStage3FilesHeld3, closeRootRestoreStage3FilesHeld3, holdRootRestoreStage3Files3,
   verifyRootRestoreStage3FilesHeld3 } from './restore-knowledge-stage3-files'
-import { holdRootRestorePhysicalStageOriginalBytes3, prepareRootRestorePhysicalStage3, readRootRestorePhysicalStage3, readRootRestorePhysicalStageAssetEvidence3,
+import { holdRootRestorePhysicalStageOriginalBytes3, materializeRootRestorePhysicalStageValue3, prepareRootRestorePhysicalStage3,
+  prepareScopedRootRestorePhysicalStage3, readRootRestorePhysicalStage3, readRootRestorePhysicalStageAssetEvidence3,
   reopenRootRestorePhysicalStage3, type RootRestorePhysicalStage3 } from './restore-knowledge-stage3-physical'
 import { assertRootRestoreWorkingAssetStageOriginalBytes5, prepareRootRestoreWorkingAssetStage5, readRootRestoreWorkingAssetStage5, readRootRestoreWorkingAssetStageAndSources5,
   reopenRootRestoreWorkingAssetStage5, workingAssetSelectedCellHash5, type RootRestoreWorkingAssetStage5 } from './restore-knowledge-working-asset-stage5'
@@ -22,10 +23,11 @@ import { observeRootRestoreFinalAssetClosure5, rootRestoreFinalAssetCellKey5, ro
 import { referenceContextFileKey, referenceContextObjectPath } from './restore-knowledge-reference-context-model'
 import type { OriginalFrameCopy } from './restore-knowledge-original-frame-files'
 import { prepareRootRestoreRetainedAssetPolicy5 } from './restore-knowledge-retained-asset-policy5'
+import { materializeNavigation3Tables, navigation3RowLookup } from './restore-knowledge-navigation3-tables'
 
 export interface RootRestoreSqlAssetStage5 { readonly kind: 'main-root-restore-non-executable-sql-asset-stage5' }
 type Reference = Awaited<ReturnType<typeof readRootRestoreReferenceCopySource3>>
-type Sql = Awaited<ReturnType<typeof readRootRestorePhysicalStage3>>
+type Sql = Awaited<ReturnType<typeof prepareScopedRootRestorePhysicalStage3>>['value']
 type Assets = Awaited<ReturnType<typeof readRootRestoreWorkingAssetStage5>>
 type Saved = { reference: RootRestoreReferencePlan3; stageId: string; expectedManifestHash: string;
   sql: RootRestorePhysicalStage3; assets: RootRestoreWorkingAssetStage5 }
@@ -38,13 +40,25 @@ function combined(reference: Reference, stageId: string, sql: Sql, assets: Asset
   if (sql.checkedCanonicalCandidateHash !== reference.checkedCanonicalCandidateHash || assets.checkedCanonicalCandidateHash !== sql.checkedCanonicalCandidateHash
     || assets.referencePlanId !== reference.referencePlanId || assets.referenceManifestHash !== reference.referenceManifestHash
     || !sql.actual12TablesRead) return fail('两个实际阶段缺同一原始候选')
-  const tables = new Map(sql.tables.map(table => [table.name, { table, rows: new Map(table.rows.map(row => [row.targetRowId, row])) }]))
   if (reference.pendingCellProofHash !== (assets.version === 4 ? assets.pendingCellProofHash : undefined)) return fail('两个暂存的 pending 单元格证明不同')
   const selectedAssets = assets.version === 2 ? assets.selected.map(row => ({ ...row, context: null })) : assets.selected
+  const coordinates = new Map<string, Set<string>>()
+  const remember = (table: string, id: string) => {
+    let rows = coordinates.get(table)
+    if (!rows) coordinates.set(table, rows = new Set())
+    rows.add(id)
+  }
+  for (const { sourceRef, targetRowId, context } of selectedAssets) {
+    remember(sourceRef.table, targetRowId)
+    if (context?.kind === 'canonical') remember('synced_groups', context.owner.targetRowId)
+  }
+  const tables = new Map(sql.tables.map(table => [table.name, {
+    table, readRow: navigation3RowLookup(table, row => row.targetRowId, coordinates.get(table.name) ?? new Set())
+  }]))
   let pendingOccurrences = 0
   for (const selected of selectedAssets) {
-    const { table, rows } = tables.get(selected.sourceRef.table) ?? fail('SQL 回读缺选中表')
-    const row = rows.get(selected.targetRowId), column = table.columns.indexOf(selected.column)
+    const { table, readRow } = tables.get(selected.sourceRef.table) ?? fail('SQL 回读缺选中表')
+    const row = readRow(selected.targetRowId), column = table.columns.indexOf(selected.column)
     if (!row || column < 0 || capsuleJson(row.sourceRef) !== capsuleJson(selected.sourceRef)) return fail('实际 SQL 回读缺确切入选 row/cell')
     const content = graph3Text(row.cells[column], table.encoding)
     if (workingAssetSelectedCellHash5(content) !== selected.finalCellHash || content.slice(selected.finalFrom, selected.finalTo) !== selected.raw)
@@ -52,7 +66,7 @@ function combined(reference: Reference, stageId: string, sql: Sql, assets: Asset
     const context = selected.context
     if (context?.kind === 'canonical') {
       const owner = tables.get('synced_groups') ?? fail('实际 SQL 缺 canonical 元数据表')
-      const group = owner.rows.get(context.owner.targetRowId)
+      const group = owner.readRow(context.owner.targetRowId)
       if (table.name !== 'synced_group_blocks' || selected.column !== 'content' || !group
         || capsuleJson(group.sourceRef) !== capsuleJson(context.owner.sourceRef)) return fail('实际 SQL canonical 原属主不符')
       const groupColumn = (name: string) => graph3Text(group.cells[owner.table.columns.indexOf(name)], owner.table.encoding)
@@ -128,10 +142,19 @@ function mint(saved: Saved) {
 /** SQL and assets derive from one fresh Reference3 reconstruction.
  * The combined handle is issued only after actual SQL and file tails. */
 export async function prepareRootRestoreSqlAssetStage5(reference: RootRestoreReferencePlan3, scope?: RootRestoreStageInputs5) {
+  const prepared = await prepareSqlAssetStage(reference, scope)
+  return Object.freeze({ ...prepared, sql: Object.freeze({ ...prepared.sql, value: materializeRootRestorePhysicalStageValue3(prepared.sql.value) }) })
+}
+
+export async function prepareRootRestoreSqlAssetOwner5(reference: RootRestoreReferencePlan3, scope: RootRestoreStageInputs5) {
+  return (await prepareSqlAssetStage(reference, scope)).stage
+}
+
+async function prepareSqlAssetStage(reference: RootRestoreReferencePlan3, scope?: RootRestoreStageInputs5) {
   const binding = await readRootRestoreReferenceCopySource3(reference), stageId = randomUUID()
-  const prepare = async (scope: RootRestoreStageInputs5) => {
-    const assets = await prepareRootRestoreWorkingAssetStage5(reference, scope)
-    const sql = await prepareRootRestorePhysicalStage3(reference, scope)
+  const prepare = async (readScope: RootRestoreStageInputs5) => {
+    const assets = await prepareRootRestoreWorkingAssetStage5(reference, readScope)
+    const sql = scope ? await prepareScopedRootRestorePhysicalStage3(reference, scope) : await prepareRootRestorePhysicalStage3(reference, readScope)
     return { assets, sql }
   }
   const { assets, sql } = scope ? await prepare(scope) : await withRootRestoreStageInputs5(reference, binding.pendingCellProofHash, prepare)
@@ -159,10 +182,15 @@ async function readClosure(stage: RootRestoreSqlAssetStage5, scope?: RootRestore
   const saved = owners.get(stage)
   if (!saved) return fail('不是实际合并阶段句柄')
   const binding = await readRootRestoreReferenceCopySource3(saved.reference)
-  const read = async (scope: RootRestoreStageInputs5) => {
-    const sql = await readRootRestorePhysicalStageAssetEvidence3(saved.sql, scope)
-    const assets = await readRootRestoreWorkingAssetStageAndSources5(saved.assets, scope)
-    return { sql, assets }
+  const read = async (readScope: RootRestoreStageInputs5) => {
+    const sql = await readRootRestorePhysicalStageAssetEvidence3(saved.sql, readScope, scope)
+    const assets = await readRootRestoreWorkingAssetStageAndSources5(saved.assets, readScope)
+    if (scope) return { sql, assets }
+    const { sources } = assets, { captured } = sources, { actual } = captured
+    const candidate = freezeCapsuleValue({ ...actual.candidate, tables: materializeNavigation3Tables(actual.candidate.tables),
+      activeGroupWires: Array.from(actual.candidate.activeGroupWires) })
+    const legacy = Object.freeze({ ...actual, candidate, value: Object.freeze({ ...actual.value, candidate }) })
+    return { sql, assets: { ...assets, sources: { ...sources, captured: { ...captured, actual: legacy } } } }
   }
   const { sql, assets } = scope ? await read(scope) : await withRootRestoreStageInputs5(saved.reference, binding.pendingCellProofHash, read)
   const audit = observeRootRestoreFinalAssetClosure5(sql, assets)
