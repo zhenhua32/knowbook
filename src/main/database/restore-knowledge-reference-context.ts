@@ -106,8 +106,10 @@ export async function captureOriginalReferenceContextWithInitialInputs(input: Pa
   const mounted = referenceContextMountedRoots(descriptor)
   const parents = originals.map((original, index) => ({ original: original.original,
     reference: mounted.find(root => root.namespace.kind === 'imported-bundle' && root.namespace.mountId === descriptor.parents[index].mountId)! }))
-  const value = { source, parents, descriptor, contextHash: entry.hash, contextText: text, profileRoot, directory }
-  return Object.freeze({ context: mint(entry), value: freezeCapsuleValue(value) })
+  const metadata = freezeCapsuleValue({ parents, descriptor, contextHash: entry.hash, contextText: text, profileRoot, directory })
+  // The verified source packet is already immutable and may hold lazy SQLite views.
+  const value = Object.freeze({ source: Object.freeze(source), ...metadata })
+  return Object.freeze({ context: mint(entry), value })
 }
 export async function readOriginalReferenceContext(handle: OwnedOriginalReferenceContext) {
   const entry = contexts.get(handle); if (!entry) return bad('不是Main完整原件context私有句柄')
