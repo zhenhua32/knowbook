@@ -59,6 +59,7 @@ jobs:
           - ubuntu-latest
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      NODE_OPTIONS: ${{ matrix.os == 'macos-latest' && '--max-old-space-size=4096' || '' }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       WINDOWS_CERTIFICATE_PFX_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_PFX_BASE64 }}
       WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
